@@ -79,6 +79,7 @@ export default async function EditarProdutoPage({
     // PERSONALIZADO/RECEITA — form próprio (ficha técnica + split DRINK/PRATO).
     if (p.tipo === "PERSONALIZADO") {
       const candidates = await loadComponentCandidates();
+      const inferredType = p.tipoReceita ?? (p.variants.length > 0 ? "DRINK" : "OUTRO");
       const receita: ReceitaData = {
         id: p.id,
         nome: p.nome,
@@ -92,7 +93,7 @@ export default async function EditarProdutoPage({
         fiscalProfileId: p.fiscalProfileId,
         restricaoIdade: p.restricaoIdade,
         ativo: p.ativo,
-        tipoReceita: (p.tipoReceita ?? "OUTRO") as RecipeType,
+        tipoReceita: inferredType as RecipeType,
         modoPreparo: p.modoPreparo,
         vendeOnline: p.vendeOnline,
         pesoGramas: p.pesoGramas,

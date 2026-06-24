@@ -23,6 +23,19 @@ export default async function SitesPage() {
           nome: s.nome,
           tipo: s.tipo,
           ativo: s.ativo,
+          cep: s.cep,
+          rua: s.rua,
+          numero: s.numero,
+          cidade: s.cidade,
+          estado: s.estado,
+          estoquePropio: s.estoquePropio,
+          cdAbastecedorId: s.cdAbastecedorId,
+        }))}
+        allSites={sites.map((s) => ({
+          id: s.id,
+          nome: s.nome,
+          tipo: s.tipo,
+          ativo: s.ativo,
         }))}
       />
     </div>

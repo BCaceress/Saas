@@ -28,6 +28,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/misc";
 import { Sheet } from "@/components/ui/sheet";
+import { toast } from "@/components/ui/toast";
 import { PAYMENT_METHOD_LABELS } from "@/lib/presets";
 import { finalizarVendaPdvAction, cancelarVendaAction } from "./actions";
 import {
@@ -107,7 +108,6 @@ export function PdvClient({
   const [metodoSel, setMetodoSel] = useState<PaymentMethod | null>(null);
   const [recebido, setRecebido] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [sucesso, setSucesso] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [pdvModal, setPdvModal] = useState<ProdutoVenda | null>(null);
   const buscaRef = useRef<HTMLInputElement>(null);
@@ -189,7 +189,6 @@ export function PdvClient({
         },
       ];
     });
-    setSucesso(null);
     buscaRef.current?.focus();
   }
 
@@ -228,7 +227,7 @@ export function PdvClient({
             { metodo: metodoSel, valor: total, troco: troco || null },
           ],
         });
-        setSucesso(`Venda finalizada — ${brl(total)}.`);
+        toast.success("Venda concluída com sucesso!", `${brl(total)}`);
         limpar();
         router.refresh();
       } catch (e) {
@@ -565,18 +564,11 @@ export function PdvClient({
               </div>
             </div>
 
-            {(error || sucesso) && (
+            {error && (
               <div className="px-4 pb-1">
-                {error && (
-                  <p className="rounded-[var(--radius)] bg-danger-soft px-3 py-2 text-sm text-danger">
-                    {error}
-                  </p>
-                )}
-                {sucesso && (
-                  <p className="flex items-center gap-2 rounded-[var(--radius)] bg-ok-soft px-3 py-2 text-sm text-ok">
-                    <CheckCircle2 size={15} /> {sucesso}
-                  </p>
-                )}
+                <p className="rounded-[var(--radius)] bg-danger-soft px-3 py-2 text-sm text-danger">
+                  {error}
+                </p>
               </div>
             )}
 

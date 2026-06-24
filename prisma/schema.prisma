@@ -626,22 +626,37 @@ model Site {
   nome      String
   tipo      SiteType @default(LOJA)
   ativo     Boolean  @default(true)
+
+  // Endereço (opcional)
+  cep       String?
+  rua       String?
+  numero    String?
+  cidade    String?
+  estado    String?
+
+  // Estoque: próprio ou abastecido por CD
+  estoquePropio      Boolean @default(true)
+  cdAbastecedorId    String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  stocks           Stock[]
-  storageLocations StorageLocation[]
-  purchases        Purchase[]
-  productions      Production[]
-  transfersOut     Transfer[]        @relation("TransferOrigem")
-  transfersIn      Transfer[]        @relation("TransferDestino")
-  sales            Sale[]
-  cashSessions     CashSession[]
-  paymentMethods   SitePaymentMethod[]
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cdAbastecedor      Site?               @relation("CDAbastecimento", fields: [cdAbastecedorId], references: [id], onDelete: SetNull)
+  lojasCom           Site[]              @relation("CDAbastecimento")
+  stocks             Stock[]
+  storageLocations   StorageLocation[]
+  purchases          Purchase[]
+  productions        Production[]
+  transfersOut       Transfer[]          @relation("TransferOrigem")
+  transfersIn        Transfer[]          @relation("TransferDestino")
+  sales              Sale[]
+  cashSessions       CashSession[]
+  paymentMethods     SitePaymentMethod[]
 
   @@unique([tenantId, nome])
   @@index([tenantId])
+  @@index([cdAbastecedorId])
 }
 
 // Razão append-only: toda mudança de saldo = uma linha.

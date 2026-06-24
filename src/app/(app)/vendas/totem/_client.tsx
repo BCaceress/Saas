@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Minus, Trash2, Loader2, ShoppingCart, QrCode, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "@/components/ui/toast";
 import { criarVendaTotemAction, confirmarPagamentoTotemAction } from "../actions";
 import type { ProdutoVenda } from "../_data";
 import type { PaymentMethod } from "@/generated/prisma";
@@ -97,6 +98,7 @@ export function TotemClient({
     startTransition(async () => {
       try {
         await confirmarPagamentoTotemAction(saleId);
+        toast.success("Venda concluída com sucesso!", `${brl(total)}`);
         setEtapa("confirmado");
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao confirmar pagamento.");

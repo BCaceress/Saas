@@ -201,7 +201,14 @@ export function ReceitaForm({
     receita?.tipoReceita ?? tipoInicial,
   );
   const [nome, setNome] = useState(receita?.nome ?? "");
-  const [copoMl, setCopoMl] = useState<string>("");
+  const [copoMl, setCopoMl] = useState<string>(() => {
+    const tipo = receita?.tipoReceita ?? tipoInicial;
+    if (tipo === "DRINK" && receita?.variants?.length) {
+      const defaultVar = receita.variants.find((v) => v.isDefault) ?? receita.variants[0];
+      return defaultVar?.volumeMl?.toString() ?? "";
+    }
+    return "";
+  });
   const [subcategoryId, setSubcategoryId] = useState(receita?.subcategoryId ?? "");
   const [precoVenda, setPrecoVenda] = useState(moneyToMask(receita?.precoVenda));
   const [imagemUrl, setImagemUrl] = useState(receita?.imagemUrl ?? "");

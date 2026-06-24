@@ -12,6 +12,21 @@ export type VariantVenda = {
   volumeMl: number | null;
 };
 
+export type ComponentGroupVenda = {
+  id: string;
+  nome: string;
+  obrigatoria: boolean;
+  tipoSelecao: "UNICA" | "MULTIPLA";
+  maxSelecoes: number | null;
+  items: {
+    componentProductId: string;
+    nome: string;
+    preco: number;
+    isDefault: boolean;
+    acrescimoPreco: number | null;
+  }[];
+};
+
 export type ProdutoVenda = {
   id: string;
   nome: string;
@@ -25,6 +40,7 @@ export type ProdutoVenda = {
   imagemUrl: string | null;
   categoria: string | null;
   variants: VariantVenda[];
+  groups?: ComponentGroupVenda[];
 };
 
 /** Produtos vendáveis no site (SIMPLES/COMBO/PERSONALIZADO ativos; INSUMO fora). */
@@ -46,6 +62,24 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
         where: { ativo: true },
         orderBy: { nome: "asc" },
         select: { id: true, nome: true, precoVenda: true, fatorEscala: true, volumeMl: true },
+      },
+      componentGroups: {
+        orderBy: { ordem: "asc" },
+        select: {
+          id: true,
+          nome: true,
+          obrigatoria: true,
+          tipoSelecao: true,
+          maxSelecoes: true,
+          components: {
+            select: {
+              componentProductId: true,
+              isDefault: true,
+              acrescimoPreco: true,
+              component: { select: { nome: true, precoVenda: true } },
+            },
+          },
+        },
       },
       stocks: siteId
         ? { where: { siteId }, select: { estoqueFechado: true } }
@@ -73,6 +107,23 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
       fatorEscala: num(v.fatorEscala),
       volumeMl: v.volumeMl != null ? num(v.volumeMl) : null,
     })),
+    groups:
+      p.tipo === "PERSONALIZADO"
+        ? p.componentGroups.map((g) => ({
+            id: g.id,
+            nome: g.nome,
+            obrigatoria: g.obrigatoria,
+            tipoSelecao: g.tipoSelecao as "UNICA" | "MULTIPLA",
+            maxSelecoes: g.maxSelecoes,
+            items: g.components.map((c) => ({
+              componentProductId: c.componentProductId,
+              nome: c.component.nome,
+              preco: num(c.component.precoVenda),
+              isDefault: c.isDefault,
+              acrescimoPreco: c.acrescimoPreco != null ? num(c.acrescimoPreco) : null,
+            })),
+          }))
+        : undefined,
   }));
 }
 

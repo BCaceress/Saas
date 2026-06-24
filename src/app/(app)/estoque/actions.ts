@@ -26,6 +26,13 @@ const ok = () => revalidatePath("/estoque", "layout");
 const siteSchema = z.object({
   nome: z.string().min(2, "Informe o nome do site."),
   tipo: z.enum(["LOJA", "CD"]),
+  cep: z.string().optional().nullable(),
+  rua: z.string().optional().nullable(),
+  numero: z.string().optional().nullable(),
+  cidade: z.string().optional().nullable(),
+  estado: z.string().optional().nullable(),
+  estoquePropio: z.boolean().default(true),
+  cdAbastecedorId: z.string().optional().nullable(),
 });
 
 export async function createSite(input: z.input<typeof siteSchema>) {
@@ -34,7 +41,20 @@ export async function createSite(input: z.input<typeof siteSchema>) {
     const nome = d.nome.trim();
     const dup = await db.site.findFirst({ where: { nome: { equals: nome, mode: "insensitive" } } });
     if (dup) throw new Error(`Já existe um site com o nome "${nome}".`);
-    const site = await db.site.create({ data: { tenantId: tid, nome, tipo: d.tipo } });
+    const site = await db.site.create({
+      data: {
+        tenantId: tid,
+        nome,
+        tipo: d.tipo,
+        cep: d.cep,
+        rua: d.rua,
+        numero: d.numero,
+        cidade: d.cidade,
+        estado: d.estado,
+        estoquePropio: d.estoquePropio,
+        cdAbastecedorId: d.cdAbastecedorId,
+      },
+    });
     ok();
     return site.id;
   });
@@ -46,7 +66,20 @@ export async function updateSite(id: string, input: z.input<typeof siteSchema>) 
     const nome = d.nome.trim();
     const dup = await db.site.findFirst({ where: { nome: { equals: nome, mode: "insensitive" }, id: { not: id } } });
     if (dup) throw new Error(`Já existe um site com o nome "${nome}".`);
-    await db.site.update({ where: { id }, data: { nome, tipo: d.tipo } });
+    await db.site.update({
+      where: { id },
+      data: {
+        nome,
+        tipo: d.tipo,
+        cep: d.cep,
+        rua: d.rua,
+        numero: d.numero,
+        cidade: d.cidade,
+        estado: d.estado,
+        estoquePropio: d.estoquePropio,
+        cdAbastecedorId: d.cdAbastecedorId,
+      },
+    });
     ok();
   });
 }
