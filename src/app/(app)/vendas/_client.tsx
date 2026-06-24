@@ -917,6 +917,42 @@ function PersonalizadoModal({
           </div>
         )}
 
+        {/* Grupos (ficha técnica) */}
+        {produto.groups && produto.groups.length > 0 && (
+          <div className="flex-1 overflow-y-auto border-b border-line">
+            {produto.groups.map((g) => (
+              <div key={g.id} className="border-b border-line last:border-0">
+                <div className="bg-canvas px-4 py-2">
+                  <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.15em] text-muted">
+                    {g.nome}
+                  </span>
+                </div>
+                <div className="divide-y divide-line">
+                  {g.items.map((item) => (
+                    <div
+                      key={item.componentProductId}
+                      className="flex w-full items-center gap-3 py-3 px-4 text-left"
+                    >
+                      <span className="flex-1 truncate text-[13px] font-normal text-ink-2">
+                        {item.nome}
+                      </span>
+                      {item.acrescimoPreco ? (
+                        <span className="shrink-0 font-mono text-[12px] font-semibold text-muted">
+                          +{brl(item.acrescimoPreco)}
+                        </span>
+                      ) : (
+                        <span className="shrink-0 rounded-full bg-ok-soft px-2 py-0.5 font-mono text-[10px] font-semibold text-ok">
+                          incluso
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Sem imagem + sem variantes: estado vazio de escolhas */}
         {!temVariants && !produto.imagemUrl && (
           <div className="flex flex-col items-center gap-2 px-6 py-8 text-center">
