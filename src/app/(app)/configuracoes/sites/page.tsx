@@ -12,8 +12,10 @@ export default async function SitesPage() {
   return (
     <div className="flex flex-col gap-5">
       <div>
-        <h1 className="text-xl font-semibold text-ink">Sites e pontos</h1>
-        <p className="text-sm text-muted">Lojas, pontos autônomos e centros de distribuição do tenant.</p>
+        <h1 className="text-xl font-semibold text-ink">Lojas e pontos</h1>
+        <p className="text-sm text-muted">
+          Lojas, pontos autônomos e centros de distribuição do tenant.
+        </p>
       </div>
       <SitesManager
         sites={sites.map((s) => ({

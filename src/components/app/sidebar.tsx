@@ -261,7 +261,7 @@ export function Sidebar({
                 <span className="truncate">{trialLabel}</span>
               </div>
             )}
-            <p className="px-0.5 pb-1 text-xs text-muted">Plano {planoLabel}</p>
+            {/* <p className="px-0.5 pb-1 text-xs text-muted">Plano {planoLabel}</p> */}
 
             <Link
               href="/configuracoes"

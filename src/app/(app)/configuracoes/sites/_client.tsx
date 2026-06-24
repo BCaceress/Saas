@@ -1,7 +1,15 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Plus, Pencil, ToggleLeft, ToggleRight, Loader2, Store, Warehouse } from "lucide-react";
+import {
+  Plus,
+  Pencil,
+  ToggleLeft,
+  ToggleRight,
+  Loader2,
+  Store,
+  Warehouse,
+} from "lucide-react";
 import { createSite, updateSite, toggleSiteAtivo } from "../../estoque/actions";
 import { cn } from "@/lib/utils";
 
@@ -42,16 +50,26 @@ export function SitesManager({ sites: initial }: { sites: Site[] }) {
   function save() {
     setError(null);
     const nomeClean = nome.trim();
-    if (nomeClean.length < 2) { setError("Informe o nome (mín. 2 caracteres)."); return; }
+    if (nomeClean.length < 2) {
+      setError("Informe o nome (mín. 2 caracteres).");
+      return;
+    }
 
     startTransition(async () => {
       try {
         if (editing) {
           await updateSite(editing.id, { nome: nomeClean, tipo });
-          setSites((prev) => prev.map((s) => s.id === editing.id ? { ...s, nome: nomeClean, tipo } : s));
+          setSites((prev) =>
+            prev.map((s) =>
+              s.id === editing.id ? { ...s, nome: nomeClean, tipo } : s,
+            ),
+          );
         } else {
           const id = await createSite({ nome: nomeClean, tipo });
-          setSites((prev) => [...prev, { id, nome: nomeClean, tipo, ativo: true }]);
+          setSites((prev) => [
+            ...prev,
+            { id, nome: nomeClean, tipo, ativo: true },
+          ]);
         }
         cancel();
       } catch (e) {
@@ -64,7 +82,9 @@ export function SitesManager({ sites: initial }: { sites: Site[] }) {
     startTransition(async () => {
       try {
         await toggleSiteAtivo(s.id, !s.ativo);
-        setSites((prev) => prev.map((p) => p.id === s.id ? { ...p, ativo: !p.ativo } : p));
+        setSites((prev) =>
+          prev.map((p) => (p.id === s.id ? { ...p, ativo: !p.ativo } : p)),
+        );
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao alterar.");
       }
@@ -80,17 +100,21 @@ export function SitesManager({ sites: initial }: { sites: Site[] }) {
           onClick={openAdd}
           className="flex items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
         >
-          <Plus size={16} /> Adicionar site
+          <Plus size={16} /> Adicionar ponto/loja
         </button>
       </div>
 
       {/* Form */}
       {showForm && (
         <div className="flex flex-col gap-4 rounded-[var(--radius-lg)] border border-brand bg-brand-soft p-5">
-          <p className="text-sm font-semibold text-ink">{editing ? "Editar site" : "Novo site"}</p>
+          <p className="text-sm font-semibold text-ink">
+            {editing ? "Editar loja" : "Nova loja"}
+          </p>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wide text-faint">Nome</label>
+              <label className="text-xs font-semibold uppercase tracking-wide text-faint">
+                Nome
+              </label>
               <input
                 autoFocus
                 value={nome}
@@ -100,7 +124,9 @@ export function SitesManager({ sites: initial }: { sites: Site[] }) {
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wide text-faint">Tipo</label>
+              <label className="text-xs font-semibold uppercase tracking-wide text-faint">
+                Tipo
+              </label>
               <div className="flex gap-2">
                 {(["LOJA", "CD"] as const).map((t) => (
                   <button
@@ -109,10 +135,16 @@ export function SitesManager({ sites: initial }: { sites: Site[] }) {
                     onClick={() => setTipo(t)}
                     className={cn(
                       "flex flex-1 items-center justify-center gap-2 rounded-[var(--radius)] border px-3 py-2.5 text-sm font-medium transition-colors",
-                      tipo === t ? "border-brand bg-surface text-brand" : "border-line text-muted hover:bg-surface"
+                      tipo === t
+                        ? "border-brand bg-surface text-brand"
+                        : "border-line text-muted hover:bg-surface",
                     )}
                   >
-                    {t === "LOJA" ? <Store size={15} /> : <Warehouse size={15} />}
+                    {t === "LOJA" ? (
+                      <Store size={15} />
+                    ) : (
+                      <Warehouse size={15} />
+                    )}
                     {t === "LOJA" ? "Loja / Ponto" : "CD"}
                   </button>
                 ))}
@@ -143,7 +175,9 @@ export function SitesManager({ sites: initial }: { sites: Site[] }) {
       {sites.length === 0 ? (
         <div className="flex flex-col items-center gap-3 rounded-[var(--radius-xl)] border border-line bg-surface py-12 text-center">
           <Store size={32} className="text-faint" />
-          <p className="text-sm text-muted">Nenhum site cadastrado. Adicione o primeiro.</p>
+          <p className="text-sm text-muted">
+            Nenhum site cadastrado. Adicione o primeiro.
+          </p>
         </div>
       ) : (
         <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
@@ -152,18 +186,35 @@ export function SitesManager({ sites: initial }: { sites: Site[] }) {
               key={s.id}
               className={cn(
                 "flex items-center gap-4 px-5 py-4 transition-colors hover:bg-surface-2",
-                idx !== 0 && "border-t border-line"
+                idx !== 0 && "border-t border-line",
               )}
             >
-              <span className={cn(
-                "grid h-9 w-9 shrink-0 place-items-center rounded-xl",
-                s.tipo === "CD" ? "bg-surface-2 text-muted" : "bg-brand-soft text-brand"
-              )}>
-                {s.tipo === "CD" ? <Warehouse size={16} /> : <Store size={16} />}
+              <span
+                className={cn(
+                  "grid h-9 w-9 shrink-0 place-items-center rounded-xl",
+                  s.tipo === "CD"
+                    ? "bg-surface-2 text-muted"
+                    : "bg-brand-soft text-brand",
+                )}
+              >
+                {s.tipo === "CD" ? (
+                  <Warehouse size={16} />
+                ) : (
+                  <Store size={16} />
+                )}
               </span>
               <div className="min-w-0 flex-1">
-                <p className={cn("font-medium", s.ativo ? "text-ink" : "text-muted line-through")}>{s.nome}</p>
-                <p className="text-xs text-faint">{s.tipo === "CD" ? "Centro de Distribuição" : "Loja / Ponto"}</p>
+                <p
+                  className={cn(
+                    "font-medium",
+                    s.ativo ? "text-ink" : "text-muted line-through",
+                  )}
+                >
+                  {s.nome}
+                </p>
+                <p className="text-xs text-faint">
+                  {s.tipo === "CD" ? "Centro de Distribuição" : "Loja / Ponto"}
+                </p>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -177,11 +228,17 @@ export function SitesManager({ sites: initial }: { sites: Site[] }) {
                   disabled={pending}
                   className={cn(
                     "grid h-9 w-9 place-items-center rounded-lg transition-colors",
-                    s.ativo ? "text-ok hover:bg-ok-soft" : "text-muted hover:bg-surface-2"
+                    s.ativo
+                      ? "text-ok hover:bg-ok-soft"
+                      : "text-muted hover:bg-surface-2",
                   )}
                   title={s.ativo ? "Desativar" : "Ativar"}
                 >
-                  {s.ativo ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
+                  {s.ativo ? (
+                    <ToggleRight size={18} />
+                  ) : (
+                    <ToggleLeft size={18} />
+                  )}
                 </button>
               </div>
             </div>
