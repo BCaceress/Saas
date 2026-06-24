@@ -830,7 +830,7 @@ export function ReceitaForm({
                 ) : undefined
               }
             >
-              {tipoReceita === "DRINK" && !parseNum(copoMl) ? (
+              {tipoReceita === "DRINK" && !parseNum(copoMl) && groups.length === 0 ? (
                 <div className="flex flex-col items-center gap-3 rounded-(--radius) border border-dashed border-line-strong px-6 py-10 text-center">
                   <span className="grid h-11 w-11 place-items-center rounded-full bg-brand-soft text-brand-strong">
                     <GlassWater size={20} />
