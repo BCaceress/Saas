@@ -1,0 +1,51 @@
+"use server";
+
+import { z } from "zod";
+import { redirect } from "next/navigation";
+import { basePrisma } from "@/lib/prisma";
+import { requireActiveTenant } from "@/lib/current-tenant";
+import { PRESETS, tierFromPontos } from "@/lib/presets";
+
+const schema = z.object({
+  tipoOperacao: z.enum(["AUTONOMO", "MERCADINHO", "CONVENIENCIA_BEBIDAS"]),
+  pontos: z.enum(["1", "2-5", "6+"]),
+  topologia: z.enum(["LOCAL", "CD_ABASTECE", "MISTO"]),
+  // resposta da pergunta específica (liga o toggle "perguntado")
+  perguntaSim: z.boolean().default(false),
+  nomeMercado: z.string().trim().min(2).max(80).optional(),
+});
+
+export type OnboardingInput = z.infer<typeof schema>;
+
+export async function saveOnboarding(input: OnboardingInput) {
+  const ctx = await requireActiveTenant();
+  if (ctx.role !== "OWNER" && ctx.role !== "ADMIN") {
+    throw new Error("Sem permissão para concluir o setup.");
+  }
+
+  const parsed = schema.parse(input);
+  const preset = PRESETS[parsed.tipoOperacao];
+
+  // Toggles = preset + override da pergunta específica.
+  const toggles = { ...preset.toggles };
+  if (preset.pergunta === "comodato") toggles.moduloComodato = parsed.perguntaSim;
+  if (preset.pergunta === "fiscal") toggles.moduloFiscal = parsed.perguntaSim;
+
+  const numPontos = parsed.pontos === "1" ? 1 : parsed.pontos === "2-5" ? 3 : 6;
+
+  await basePrisma.tenant.update({
+    where: { id: ctx.tenant.id },
+    data: {
+      tipoOperacao: parsed.tipoOperacao,
+      atendimento: preset.atendimento,
+      topologia: parsed.topologia,
+      numPontos,
+      plano: tierFromPontos(parsed.pontos),
+      ...toggles,
+      onboardingDone: true,
+      ...(parsed.nomeMercado ? { nome: parsed.nomeMercado } : {}),
+    },
+  });
+
+  redirect("/produtos");
+}
