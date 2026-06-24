@@ -68,6 +68,8 @@ import type {
 
 type Tipo = "SIMPLES" | "INSUMO";
 
+type PackagingRow = { nome: string; ean: string; fatorConversao: string };
+
 const TITLE_NEW: Record<Tipo, string> = {
   SIMPLES: "Novo produto simples",
   INSUMO: "Novo insumo",
@@ -306,6 +308,17 @@ export function ProductForm({
     product?.packagings?.[0]?.fatorConversao?.toString() ?? "",
   );
 
+  //  lista dinâmica de embalagens para o modo INSUMO
+  const [packagings, setPackagings] = useState<PackagingRow[]>(
+    tipo === "INSUMO"
+      ? (product?.packagings?.map((p) => ({
+          nome: p.nome ?? "",
+          ean: p.ean ?? "",
+          fatorConversao: p.fatorConversao?.toString() ?? "",
+        })) ?? [])
+      : [],
+  );
+
   // Fornecedores — primeiro é o principal (schema suporta um; UI permite marcar vários).
   const [fornecedoresList, setFornecedoresList] = useState<string[]>(
     product?.fornecedorPrincipalId ? [product.fornecedorPrincipalId] : [],
@@ -314,6 +327,28 @@ export function ProductForm({
     setFornecedoresList((prev) => (prev.includes(id) ? prev : [...prev, id]));
   const removeFornecedor = (id: string) =>
     setFornecedoresList((prev) => prev.filter((fid) => fid !== id));
+
+  // ← ADICIONAR — fornecedor simplificado (select único) para INSUMO
+  const fornecedorPrincipalId = fornecedoresList[0] ?? "";
+  function setFornecedor(id: string) {
+    setFornecedoresList(id ? [id] : []);
+  }
+
+  // ← ADICIONAR — CRUD de embalagens para INSUMO
+  function addPackaging() {
+    setPackagings((prev) => [
+      ...prev,
+      { nome: "", ean: "", fatorConversao: "" },
+    ]);
+  }
+  function updatePackaging(i: number, patch: Partial<PackagingRow>) {
+    setPackagings((prev) =>
+      prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)),
+    );
+  }
+  function removePackaging(i: number) {
+    setPackagings((prev) => prev.filter((_, idx) => idx !== i));
+  }
 
   const [unidadeBase, setUnidadeBase] = useState<"UN" | "ML" | "G">(
     product?.unidadeBase ?? "UN",
@@ -524,7 +559,10 @@ export function ProductForm({
     }
     if (!subcategoryId) return setError("Escolha a subcategoria.");
     if (!parseMoney(precoVenda)) {
-      toast.error("Preço obrigatório", "Informe o preço de venda antes de salvar.");
+      toast.error(
+        "Preço obrigatório",
+        "Informe o preço de venda antes de salvar.",
+      );
       return setError("Informe o preço de venda.");
     }
 
@@ -561,8 +599,8 @@ export function ProductForm({
       estoqueInicial: n(estoqueInicial) ?? 0,
       locationId: locationId || undefined,
       fornecedorPrincipalId: fornecedoresList[0] || undefined,
-      packagings:
-        pkNome.trim() && (n(pkFator) ?? 0) > 0
+      packagings: isSimples
+        ? pkNome.trim() && (n(pkFator) ?? 0) > 0
           ? [
               {
                 nome: pkNome.trim(),
@@ -570,7 +608,14 @@ export function ProductForm({
                 fatorConversao: n(pkFator)!,
               },
             ]
-          : [],
+          : []
+        : packagings
+            .filter((p) => p.nome.trim() && (n(p.fatorConversao) ?? 0) > 0)
+            .map((p) => ({
+              nome: p.nome.trim(),
+              ean: p.ean.trim() || undefined,
+              fatorConversao: n(p.fatorConversao)!,
+            })),
       vendeOnline,
       pesoGramas: n(pesoGramas) ?? undefined,
       descricaoOnline: descricaoOnline || undefined,
@@ -1099,7 +1144,11 @@ export function ProductForm({
               {/* Estoque */}
               <SectionBlock icon={<Warehouse size={13} />} title="Estoque">
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  <Field label="Estoque mínimo" htmlFor="min" hint={pkHintText(estoqueMinimo)}>
+                  <Field
+                    label="Estoque mínimo"
+                    htmlFor="min"
+                    hint={pkHintText(estoqueMinimo)}
+                  >
                     <Input
                       id="min"
                       value={estoqueMinimo}
@@ -1109,7 +1158,11 @@ export function ProductForm({
                       className="font-mono"
                     />
                   </Field>
-                  <Field label="Estoque ideal" htmlFor="ideal" hint={pkHintText(estoqueIdeal)}>
+                  <Field
+                    label="Estoque ideal"
+                    htmlFor="ideal"
+                    hint={pkHintText(estoqueIdeal)}
+                  >
                     <Input
                       id="ideal"
                       value={estoqueIdeal}
@@ -1434,7 +1487,11 @@ export function ProductForm({
                 className="hidden"
               />
               <div className="flex items-end gap-3">
-                <ImageThumb />
+                <ImageThumb
+                  imagemUrl={imagemUrl}
+                  onPick={() => imgFileRef.current?.click()}
+                  onClear={() => setImagemUrl("")}
+                />
                 <Field
                   label="Nome do produto"
                   htmlFor="nome"
