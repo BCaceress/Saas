@@ -956,7 +956,9 @@ function PersonalizadoModal({
                   </span>
                 </div>
                 <div className="divide-y divide-line">
-                  {g.items.map((item) => {
+                  {[...g.items]
+                    .sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0))
+                    .map((item) => {
                     const isSelected = selections[g.id] === item.componentProductId;
                     return (
                       <button
