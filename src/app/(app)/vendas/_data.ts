@@ -24,6 +24,7 @@ export type ComponentGroupVenda = {
     preco: number;
     isDefault: boolean;
     acrescimoPreco: number | null;
+    imagemUrl: string | null;
   }[];
 };
 
@@ -39,6 +40,7 @@ export type ProdutoVenda = {
   estoqueFechado: number | null; // null = derivado (combo/personalizado)
   imagemUrl: string | null;
   categoria: string | null;
+  modoPreparo: string | null;
   variants: VariantVenda[];
   groups?: ComponentGroupVenda[];
 };
@@ -57,6 +59,7 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
       restricaoIdade: true,
       unidadeBase: true,
       imagemUrl: true,
+      modoPreparo: true,
       subcategory: { select: { category: { select: { nome: true } } } },
       variants: {
         where: { ativo: true },
@@ -76,7 +79,7 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
               componentProductId: true,
               isDefault: true,
               acrescimoPreco: true,
-              component: { select: { nome: true, precoVenda: true } },
+              component: { select: { nome: true, precoVenda: true, imagemUrl: true } },
             },
           },
         },
@@ -98,6 +101,7 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
     restricaoIdade: p.restricaoIdade,
     unidadeBase: p.unidadeBase,
     imagemUrl: p.imagemUrl,
+    modoPreparo: p.modoPreparo,
     categoria: p.subcategory?.category?.nome ?? null,
     estoqueFechado: p.tipo === "SIMPLES" ? num(p.stocks[0]?.estoqueFechado) : null,
     variants: p.variants.map((v) => ({
@@ -121,6 +125,7 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
               preco: num(c.component.precoVenda),
               isDefault: c.isDefault,
               acrescimoPreco: c.acrescimoPreco != null ? num(c.acrescimoPreco) : null,
+              imagemUrl: c.component.imagemUrl,
             })),
           }))
         : undefined,

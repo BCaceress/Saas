@@ -749,7 +749,7 @@ function PersonalizadoModal({
   onAdd: (p: ProdutoVenda, variantId: string | null, qty: number) => void;
 }) {
   const [selectedVariant, setSelectedVariant] = useState<string | null>(null);
-  const [selections, setSelections] = useState<Record<string, string>>({});
+  const [selections, setSelections] = useState<Record<string, string | string[]>>({});
   const [qty, setQty] = useState(1);
 
   useEffect(() => {
@@ -758,11 +758,11 @@ function PersonalizadoModal({
     setQty(1);
     // Pre-seleciona items padrão de cada grupo
     if (produto.groups) {
-      const sels: Record<string, string> = {};
+      const sels: Record<string, string | string[]> = {};
       for (const g of produto.groups) {
         const defaultItem = g.items.find((i) => i.isDefault);
         if (defaultItem) {
-          sels[g.id] = defaultItem.componentProductId;
+          sels[g.id] = g.tipoSelecao === "MULTIPLA" ? [defaultItem.componentProductId] : defaultItem.componentProductId;
         }
       }
       setSelections(sels);
@@ -789,11 +789,14 @@ function PersonalizadoModal({
   let acrescimoTotal = 0;
   if (produto.groups) {
     for (const g of produto.groups) {
-      const selectedId = selections[g.id];
-      if (selectedId) {
-        const item = g.items.find((i) => i.componentProductId === selectedId);
-        if (item?.acrescimoPreco) {
-          acrescimoTotal += item.acrescimoPreco;
+      const selectedIds = selections[g.id];
+      if (selectedIds) {
+        const ids = Array.isArray(selectedIds) ? selectedIds : [selectedIds];
+        for (const id of ids) {
+          const item = g.items.find((i) => i.componentProductId === id);
+          if (item?.acrescimoPreco) {
+            acrescimoTotal += item.acrescimoPreco;
+          }
         }
       }
     }
@@ -813,269 +816,300 @@ function PersonalizadoModal({
       <div className="absolute inset-0 bg-ink/40 backdrop-blur-[3px]" />
 
       <div
-        className="relative z-10 flex w-full max-h-[92dvh] flex-col overflow-hidden rounded-t-[var(--radius-xl)] border border-line bg-surface shadow-[var(--shadow-2)] sm:max-w-[480px] sm:rounded-[var(--radius-xl)]"
+        className="relative z-10 h-full w-full overflow-hidden rounded-t-[var(--radius-lg)] border border-line bg-surface shadow-[var(--shadow-2)] sm:max-h-[90dvh] sm:max-w-4xl sm:rounded-[var(--radius-lg)]"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Hero: imagem ou cabeçalho */}
-        {produto.imagemUrl ? (
-          <div className="relative h-44 shrink-0 overflow-hidden">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={produto.imagemUrl}
-              alt=""
-              className="h-full w-full object-cover"
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-ink/70 via-ink/20 to-transparent" />
-            <div className="absolute inset-x-0 bottom-0 flex items-end gap-2.5 px-4 pb-4">
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/15 text-white backdrop-blur-sm">
-                <Sparkles size={16} />
-              </span>
-              <div className="min-w-0">
-                <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-white/60">
+
+        {/* Layout 2 colunas */}
+        <div className="flex min-h-0 flex-1 overflow-hidden sm:flex-row flex-col">
+          {/* Coluna Esquerda (35%) — Imagem + Info + Montagem */}
+          <div className="flex min-w-0 flex-col border-b border-line sm:border-b-0 sm:border-r sm:border-line sm:w-[35%] bg-surface-2">
+            {/* Imagem */}
+            <div className="relative aspect-square w-full bg-surface-3 sm:h-64">
+              {produto.imagemUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={produto.imagemUrl}
+                  alt=""
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <span className="grid h-full w-full place-items-center text-faint">
+                  <Wine size={32} />
+                </span>
+              )}
+            </div>
+
+            {/* Conteúdo da coluna esquerda (com scroll interno) */}
+            <div className="flex flex-1 flex-col overflow-y-auto px-4 py-4 sm:px-5 sm:py-5">
+              {/* Label + Nome */}
+              <div className="mb-4">
+                <p className="font-mono text-[9px] font-semibold uppercase tracking-[0.2em] text-faint mb-1">
                   Personalizado
                 </p>
-                <h2 className="truncate text-lg font-bold leading-tight text-white">
+                <h3 className="text-xl font-bold leading-tight text-ink mb-2">
                   {produto.nome}
-                </h2>
-              </div>
-            </div>
-            <button
-              type="button"
-              aria-label="Fechar"
-              onClick={onClose}
-              className="absolute right-3 top-3 grid h-8 w-8 cursor-pointer place-items-center rounded-full bg-ink/30 text-white/80 backdrop-blur-sm transition-colors hover:bg-ink/50"
-            >
-              <X size={15} />
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-3 border-b border-line bg-surface-2 px-4 py-3.5">
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-soft text-brand">
-              <Sparkles size={16} />
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-muted">
-                Personalizado
-              </p>
-              <h2 className="truncate text-[15px] font-semibold text-ink">
-                {produto.nome}
-              </h2>
-            </div>
-            <button
-              type="button"
-              aria-label="Fechar"
-              onClick={onClose}
-              className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-surface hover:text-ink-2"
-            >
-              <X size={15} />
-            </button>
-          </div>
-        )}
+                </h3>
 
-        {/* Preço base + acréscimos */}
-        <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
-          <span className="text-xs text-muted">
-            {temVariants ? "A partir de" : "Preço"}
-          </span>
-          <span className="font-mono text-sm font-semibold text-accent">
-            {brl(preco)}
-          </span>
-        </div>
-
-        {/* Variantes (tamanhos P/M/G) */}
-        {temVariants && (
-          <div className="border-b border-line">
-            <div className="bg-canvas px-4 py-2">
-              <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.15em] text-muted">
-                Tamanho
-              </span>
-            </div>
-            <div className="divide-y divide-line">
-              {produto.variants.map((v) => {
-                const sel = selectedVariant === v.id;
-                return (
-                  <button
-                    key={v.id}
-                    type="button"
-                    onClick={() => setSelectedVariant(v.id)}
-                    className={cn(
-                      "flex w-full cursor-pointer items-center gap-3 py-3 pr-4 text-left transition-colors",
-                      sel
-                        ? "border-l-[3px] border-brand bg-brand-soft pl-[13px]"
-                        : "border-l-[3px] border-transparent pl-[13px] hover:bg-surface-2",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-all",
-                        sel
-                          ? "border-brand bg-brand"
-                          : "border-line-strong bg-surface",
-                      )}
-                    >
-                      {sel && (
-                        <Check size={10} strokeWidth={3} className="text-white" />
-                      )}
-                    </span>
-                    <span
-                      className={cn(
-                        "flex-1 text-[13px]",
-                        sel ? "font-semibold text-ink" : "font-normal text-ink-2",
-                      )}
-                    >
-                      {v.nome}
-                      {v.volumeMl ? (
-                        <span className="ml-1.5 font-mono text-[11px] text-muted">
-                          {v.volumeMl}ml
-                        </span>
-                      ) : null}
-                    </span>
-                    <span
-                      className={cn(
-                        "shrink-0 font-mono text-[13px] font-semibold",
-                        sel ? "text-brand" : "text-muted",
-                      )}
-                    >
-                      {brl(v.preco)}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Grupos (ficha técnica) — selecionáveis */}
-        {produto.groups && produto.groups.length > 0 && (
-          <div className="flex-1 overflow-y-auto border-b border-line">
-            {produto.groups.map((g) => (
-              <div key={g.id} className="border-b border-line last:border-0">
-                <div className="bg-canvas px-4 py-2">
-                  <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.15em] text-muted">
-                    {g.nome}
-                  </span>
-                </div>
-                <div className="divide-y divide-line">
-                  {[...g.items]
-                    .sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0))
-                    .map((item) => {
-                    const isSelected = selections[g.id] === item.componentProductId;
-                    return (
-                      <button
-                        key={item.componentProductId}
-                        type="button"
-                        onClick={() =>
-                          setSelections((prev) => ({
-                            ...prev,
-                            [g.id]: item.componentProductId,
-                          }))
-                        }
-                        className={cn(
-                          "flex w-full cursor-pointer items-center gap-3 py-3 px-4 text-left transition-colors",
-                          isSelected
-                            ? "border-l-[3px] border-brand bg-brand-soft pl-[13px]"
-                            : "border-l-[3px] border-transparent pl-[13px] hover:bg-surface-2",
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-all",
-                            isSelected
-                              ? "border-brand bg-brand"
-                              : "border-line-strong bg-surface",
-                          )}
-                        >
-                          {isSelected && (
-                            <Check size={10} strokeWidth={3} className="text-white" />
-                          )}
-                        </span>
-                        <span
-                          className={cn(
-                            "flex-1 truncate text-[13px]",
-                            isSelected ? "font-semibold text-ink" : "font-normal text-ink-2",
-                          )}
-                        >
-                          {item.nome}
-                        </span>
-                        {item.acrescimoPreco ? (
-                          <span
+                {/* Variantes inline se houver */}
+                {temVariants && (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-xs font-semibold text-ink-2">Tamanho</p>
+                    <div className="flex gap-2 flex-wrap">
+                      {produto.variants.map((v) => {
+                        const sel = selectedVariant === v.id;
+                        return (
+                          <button
+                            key={v.id}
+                            type="button"
+                            onClick={() => setSelectedVariant(v.id)}
                             className={cn(
-                              "shrink-0 font-mono text-[12px] font-semibold",
-                              isSelected ? "text-accent" : "text-muted",
+                              "text-xs font-medium px-3 py-1.5 rounded-full border transition-colors cursor-pointer",
+                              sel
+                                ? "border-brand bg-brand text-on-brand"
+                                : "border-line bg-surface hover:border-brand hover:text-brand",
                             )}
                           >
-                            +{brl(item.acrescimoPreco)}
-                          </span>
-                        ) : (
-                          <span className="shrink-0 rounded-full bg-ok-soft px-2 py-0.5 font-mono text-[10px] font-semibold text-ok">
-                            incluso
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
+                            {v.nome}
+                            {v.volumeMl && <span className="ml-1 text-[10px]">{v.volumeMl}ml</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Card de montagem */}
+              {produto.modoPreparo && (
+                <div className="rounded-[14px] border border-line-strong bg-surface p-3.5">
+                  <div className="flex items-start gap-2.5 mb-2">
+                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand">
+                      <Wine size={16} />
+                    </span>
+                    <p className="font-mono text-xs font-semibold uppercase tracking-[0.1em] text-ink">
+                      Modo de preparo
+                    </p>
+                  </div>
+                  <ul className="flex flex-col gap-1 text-xs text-ink-2">
+                    {produto.modoPreparo.split('\n').filter(line => line.trim()).map((line, idx) => (
+                      <li key={idx} className="flex gap-2">
+                        <span className="shrink-0 text-faint">•</span>
+                        <span>{line.trim()}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Coluna Direita (65%) — Grupos com etapas */}
+          <div className="flex min-h-0 flex-1 flex-col sm:w-[65%]">
+            {/* Conteúdo scrollável */}
+            <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6">
+              {!produto.groups || produto.groups.length === 0 ? (
+                <div className="flex h-full flex-col items-center justify-center text-center">
+                  <span className="grid h-10 w-10 place-items-center rounded-full bg-surface-2 text-faint mb-2">
+                    <Sparkles size={18} />
+                  </span>
+                  <p className="text-sm text-muted">
+                    Sem personalizações disponíveis
+                  </p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-5">
+                  {produto.groups.map((g, idx) => (
+                    <div key={g.id} className="flex flex-col gap-3">
+                      {/* Título do grupo com número */}
+                      <div className="flex items-center gap-2.5">
+                        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand text-on-brand font-mono text-xs font-bold">
+                          {idx + 1}
+                        </span>
+                        <h4 className="text-sm font-semibold text-ink">
+                          {idx + 1}. {g.nome}
+                          {g.obrigatoria && <span className="ml-1 text-danger">*</span>}
+                        </h4>
+                      </div>
+
+                      {/* Separador */}
+                      <div className="h-px bg-line" />
+
+                      {/* Opções com radio + imagem + preço */}
+                      <div className="flex flex-col gap-1.5">
+                        {[...g.items].sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0)).map((item) => {
+                          const isSelected =
+                            g.tipoSelecao === "MULTIPLA"
+                              ? Array.isArray(selections[g.id]) && (selections[g.id] as string[]).includes(item.componentProductId)
+                              : selections[g.id] === item.componentProductId;
+
+                          return (
+                            <button
+                              key={item.componentProductId}
+                              type="button"
+                              onClick={() => {
+                                if (g.tipoSelecao === "MULTIPLA") {
+                                  const current = Array.isArray(selections[g.id]) ? (selections[g.id] as string[]) : [];
+                                  if (isSelected) {
+                                    setSelections((prev) => ({
+                                      ...prev,
+                                      [g.id]: current.filter((id) => id !== item.componentProductId),
+                                    }));
+                                  } else {
+                                    const maxSel = g.maxSelecoes || current.length + 1;
+                                    if (current.length < maxSel) {
+                                      setSelections((prev) => ({
+                                        ...prev,
+                                        [g.id]: [...current, item.componentProductId],
+                                      }));
+                                    }
+                                  }
+                                } else {
+                                  setSelections((prev) => ({
+                                    ...prev,
+                                    [g.id]: item.componentProductId,
+                                  }));
+                                }
+                              }}
+                              className={cn(
+                                "flex items-center gap-3 rounded-[12px] border-2 px-3 py-2 transition-all cursor-pointer",
+                                isSelected
+                                  ? "border-brand bg-brand/5"
+                                  : "border-line hover:border-brand/50 hover:bg-surface-2",
+                              )}
+                            >
+                              {/* Radio Button */}
+                              <span
+                                className={cn(
+                                  "grid h-5 w-5 shrink-0 place-items-center rounded-full border-2 transition-all",
+                                  isSelected
+                                    ? "border-brand bg-brand shadow-[0_0_0_3px_rgba(var(--brand-rgb),0.1)]"
+                                    : "border-line hover:border-brand/50",
+                                )}
+                              >
+                                {isSelected && (
+                                  <Check size={11} strokeWidth={4} className="text-white" />
+                                )}
+                              </span>
+
+                              {/* Imagem miniatura */}
+                              {item.imagemUrl && (
+                                <div className="h-14 w-14 shrink-0 rounded-[8px] bg-surface-3 overflow-hidden border border-line">
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={item.imagemUrl}
+                                    alt=""
+                                    className="h-full w-full object-cover"
+                                  />
+                                </div>
+                              )}
+
+                              {/* Nome + Preço */}
+                              <div className="flex-1 min-w-0 text-left">
+                                <p className={cn(
+                                  "text-sm font-medium truncate",
+                                  isSelected ? "text-ink" : "text-ink-2",
+                                )}>
+                                  {item.nome}
+                                </p>
+                              </div>
+
+                              {/* Preço adicional */}
+                              {item.acrescimoPreco && (
+                                <span className={cn(
+                                  "shrink-0 font-mono text-xs font-semibold whitespace-nowrap",
+                                  isSelected ? "text-brand" : "text-muted",
+                                )}>
+                                  +{brl(item.acrescimoPreco)}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Footer coluna direita */}
+            <div className="border-t border-line bg-surface px-4 py-3 sm:px-6">
+              {/* Breakdown de preço */}
+              <div className="flex items-center justify-between mb-3 text-xs">
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-faint">Base</span>
+                  <span className="font-mono font-semibold text-ink-2">{brl(precoBase)}</span>
+                </div>
+                {acrescimoTotal > 0 && (
+                  <>
+                    <span className="text-faint">+</span>
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-faint">Adicionais</span>
+                      <span className="font-mono font-semibold text-brand">+{brl(acrescimoTotal)}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between mb-3">
+                {/* Quantidade */}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label="Diminuir quantidade"
+                    onClick={() => setQty((q) => Math.max(1, q - 1))}
+                    disabled={qty <= 1}
+                    className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-line bg-surface text-ink transition-colors hover:border-brand disabled:opacity-40"
+                  >
+                    <Minus size={14} />
+                  </button>
+                  <span className="w-6 text-center font-mono text-sm font-bold text-ink">
+                    {qty}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Aumentar quantidade"
+                    onClick={() => setQty((q) => q + 1)}
+                    className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-line bg-surface text-ink transition-colors hover:border-brand"
+                  >
+                    <Plus size={14} />
+                  </button>
+                </div>
+
+                {/* Total */}
+                <div className="text-right">
+                  <p className="font-mono text-[9px] font-semibold uppercase tracking-[0.15em] text-faint mb-0.5">
+                    Total
+                  </p>
+                  <p className="font-display text-2xl font-bold leading-none tabular-nums text-brand">
+                    {brl(total)}
+                  </p>
                 </div>
               </div>
-            ))}
-          </div>
-        )}
 
-        {/* Sem imagem + sem variantes: estado vazio de escolhas */}
-        {!temVariants && !produto.imagemUrl && (
-          <div className="flex flex-col items-center gap-2 px-6 py-8 text-center">
-            <span className="grid h-10 w-10 place-items-center rounded-full bg-surface-2 text-faint">
-              <ImageOff size={18} />
-            </span>
-            <p className="text-sm text-muted">
-              Adicione ao carrinho para personalizar no balcão.
-            </p>
-          </div>
-        )}
-
-        {/* Footer: qty + total + CTA */}
-        <div className="shrink-0 border-t border-line bg-surface px-4 pb-6 pt-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+              {/* CTA Button */}
               <button
                 type="button"
-                aria-label="Diminuir quantidade"
-                onClick={() => setQty((q) => Math.max(1, q - 1))}
-                disabled={qty <= 1}
-                className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-line-strong bg-surface text-ink-2 transition-colors hover:bg-surface-2 disabled:opacity-40"
+                onClick={() => onAdd(produto, selectedVariant, qty)}
+                className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius-md)] bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong mb-2"
               >
-                <Minus size={14} />
+                <ShoppingCart size={16} />
+                Adicionar ao carrinho
               </button>
-              <span className="w-7 text-center font-mono text-sm font-bold text-ink">
-                {qty}
-              </span>
+
+              {/* Botão de fechar */}
               <button
                 type="button"
-                aria-label="Aumentar quantidade"
-                onClick={() => setQty((q) => q + 1)}
-                className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-line-strong bg-surface text-ink-2 transition-colors hover:bg-surface-2"
+                aria-label="Fechar"
+                onClick={onClose}
+                className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius-md)] bg-surface-2 px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-surface-3"
               >
-                <Plus size={14} />
+                <X size={16} />
+                Fechar
               </button>
             </div>
-
-            <div className="text-right">
-              <p className="font-mono text-[9px] font-semibold uppercase tracking-[0.15em] text-muted">
-                Total
-              </p>
-              <p className="font-mono text-xl font-bold tabular-nums text-ink">
-                {brl(total)}
-              </p>
-            </div>
           </div>
-
-          <button
-            type="button"
-            onClick={() => onAdd(produto, selectedVariant, qty)}
-            className="mt-3 flex w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] bg-brand px-5 py-3 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-          >
-            <ShoppingCart size={16} />
-            Adicionar ao carrinho
-          </button>
         </div>
       </div>
     </div>
