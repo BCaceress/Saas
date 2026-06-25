@@ -749,12 +749,24 @@ function PersonalizadoModal({
   onAdd: (p: ProdutoVenda, variantId: string | null, qty: number) => void;
 }) {
   const [selectedVariant, setSelectedVariant] = useState<string | null>(null);
+  const [selections, setSelections] = useState<Record<string, string>>({});
   const [qty, setQty] = useState(1);
 
   useEffect(() => {
     if (!produto) return;
     setSelectedVariant(produto.variants[0]?.id ?? null);
     setQty(1);
+    // Pre-seleciona items padrão de cada grupo
+    if (produto.groups) {
+      const sels: Record<string, string> = {};
+      for (const g of produto.groups) {
+        const defaultItem = g.items.find((i) => i.isDefault);
+        if (defaultItem) {
+          sels[g.id] = defaultItem.componentProductId;
+        }
+      }
+      setSelections(sels);
+    }
   }, [produto]);
 
   useEffect(() => {
@@ -771,7 +783,23 @@ function PersonalizadoModal({
   const variant = selectedVariant
     ? produto.variants.find((v) => v.id === selectedVariant) ?? null
     : null;
-  const preco = variant?.preco ?? produto.preco;
+  const precoBase = variant?.preco ?? produto.preco;
+
+  // Calcula acréscimo de itens selecionados
+  let acrescimoTotal = 0;
+  if (produto.groups) {
+    for (const g of produto.groups) {
+      const selectedId = selections[g.id];
+      if (selectedId) {
+        const item = g.items.find((i) => i.componentProductId === selectedId);
+        if (item?.acrescimoPreco) {
+          acrescimoTotal += item.acrescimoPreco;
+        }
+      }
+    }
+  }
+
+  const preco = precoBase + acrescimoTotal;
   const total = preco * qty;
   const temVariants = produto.variants.length > 0;
 
@@ -844,13 +872,13 @@ function PersonalizadoModal({
           </div>
         )}
 
-        {/* Preço base */}
+        {/* Preço base + acréscimos */}
         <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
           <span className="text-xs text-muted">
             {temVariants ? "A partir de" : "Preço"}
           </span>
           <span className="font-mono text-sm font-semibold text-accent">
-            {brl(produto.preco)}
+            {brl(preco)}
           </span>
         </div>
 
@@ -917,7 +945,7 @@ function PersonalizadoModal({
           </div>
         )}
 
-        {/* Grupos (ficha técnica) */}
+        {/* Grupos (ficha técnica) — selecionáveis */}
         {produto.groups && produto.groups.length > 0 && (
           <div className="flex-1 overflow-y-auto border-b border-line">
             {produto.groups.map((g) => (
@@ -928,25 +956,62 @@ function PersonalizadoModal({
                   </span>
                 </div>
                 <div className="divide-y divide-line">
-                  {g.items.map((item) => (
-                    <div
-                      key={item.componentProductId}
-                      className="flex w-full items-center gap-3 py-3 px-4 text-left"
-                    >
-                      <span className="flex-1 truncate text-[13px] font-normal text-ink-2">
-                        {item.nome}
-                      </span>
-                      {item.acrescimoPreco ? (
-                        <span className="shrink-0 font-mono text-[12px] font-semibold text-muted">
-                          +{brl(item.acrescimoPreco)}
+                  {g.items.map((item) => {
+                    const isSelected = selections[g.id] === item.componentProductId;
+                    return (
+                      <button
+                        key={item.componentProductId}
+                        type="button"
+                        onClick={() =>
+                          setSelections((prev) => ({
+                            ...prev,
+                            [g.id]: item.componentProductId,
+                          }))
+                        }
+                        className={cn(
+                          "flex w-full cursor-pointer items-center gap-3 py-3 px-4 text-left transition-colors",
+                          isSelected
+                            ? "border-l-[3px] border-brand bg-brand-soft pl-[13px]"
+                            : "border-l-[3px] border-transparent pl-[13px] hover:bg-surface-2",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-all",
+                            isSelected
+                              ? "border-brand bg-brand"
+                              : "border-line-strong bg-surface",
+                          )}
+                        >
+                          {isSelected && (
+                            <Check size={10} strokeWidth={3} className="text-white" />
+                          )}
                         </span>
-                      ) : (
-                        <span className="shrink-0 rounded-full bg-ok-soft px-2 py-0.5 font-mono text-[10px] font-semibold text-ok">
-                          incluso
+                        <span
+                          className={cn(
+                            "flex-1 truncate text-[13px]",
+                            isSelected ? "font-semibold text-ink" : "font-normal text-ink-2",
+                          )}
+                        >
+                          {item.nome}
                         </span>
-                      )}
-                    </div>
-                  ))}
+                        {item.acrescimoPreco ? (
+                          <span
+                            className={cn(
+                              "shrink-0 font-mono text-[12px] font-semibold",
+                              isSelected ? "text-accent" : "text-muted",
+                            )}
+                          >
+                            +{brl(item.acrescimoPreco)}
+                          </span>
+                        ) : (
+                          <span className="shrink-0 rounded-full bg-ok-soft px-2 py-0.5 font-mono text-[10px] font-semibold text-ok">
+                            incluso
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ))}
