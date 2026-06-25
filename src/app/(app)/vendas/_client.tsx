@@ -823,7 +823,7 @@ function PersonalizadoModal({
         {/* Layout 2 colunas */}
         <div className="flex min-h-0 flex-1 overflow-hidden sm:flex-row flex-col">
           {/* Coluna Esquerda (35%) — Imagem + Info + Montagem */}
-          <div className="flex min-w-0 flex-col border-b border-line sm:border-b-0 sm:border-r sm:border-line sm:w-[35%] bg-surface-2">
+          <div className="flex min-w-0 flex-col border-b border-line sm:border-b-0 sm:border-r sm:border-line sm:w-[35%] bg-surface-2 pb-0">
             {/* Imagem */}
             <div className="relative aspect-square w-full bg-surface-3 sm:h-64">
               {produto.imagemUrl ? (
@@ -906,6 +906,19 @@ function PersonalizadoModal({
 
           {/* Coluna Direita (65%) — Grupos com etapas */}
           <div className="flex min-h-0 flex-1 flex-col sm:w-[65%]">
+            {/* Header da coluna direita com botão fechar */}
+            <div className="flex items-center justify-between px-4 py-3 sm:px-6 border-b border-line">
+              <span className="text-sm font-semibold text-ink">Personalização</span>
+              <button
+                type="button"
+                aria-label="Fechar"
+                onClick={onClose}
+                className="grid h-9 w-9 cursor-pointer place-items-center rounded-full bg-surface-2 text-ink transition-colors hover:bg-surface-3"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
             {/* Conteúdo scrollável */}
             <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6">
               {!produto.groups || produto.groups.length === 0 ? (
@@ -1035,23 +1048,6 @@ function PersonalizadoModal({
 
             {/* Footer coluna direita */}
             <div className="border-t border-line bg-surface px-4 py-3 sm:px-6">
-              {/* Breakdown de preço */}
-              <div className="flex items-center justify-between mb-3 text-xs">
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-faint">Base</span>
-                  <span className="font-mono font-semibold text-ink-2">{brl(precoBase)}</span>
-                </div>
-                {acrescimoTotal > 0 && (
-                  <>
-                    <span className="text-faint">+</span>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-faint">Adicionais</span>
-                      <span className="font-mono font-semibold text-brand">+{brl(acrescimoTotal)}</span>
-                    </div>
-                  </>
-                )}
-              </div>
-
               <div className="flex items-center justify-between mb-3">
                 {/* Quantidade */}
                 <div className="flex items-center gap-2">
@@ -1092,21 +1088,10 @@ function PersonalizadoModal({
               <button
                 type="button"
                 onClick={() => onAdd(produto, selectedVariant, qty)}
-                className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius-md)] bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong mb-2"
+                className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius-md)] bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
               >
                 <ShoppingCart size={16} />
                 Adicionar ao carrinho
-              </button>
-
-              {/* Botão de fechar */}
-              <button
-                type="button"
-                aria-label="Fechar"
-                onClick={onClose}
-                className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius-md)] bg-surface-2 px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-surface-3"
-              >
-                <X size={16} />
-                Fechar
               </button>
             </div>
           </div>
