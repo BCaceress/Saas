@@ -907,8 +907,8 @@ function PersonalizadoModal({
           {/* Coluna Direita (65%) — Grupos com etapas */}
           <div className="flex min-h-0 flex-1 flex-col sm:w-[65%]">
             {/* Header da coluna direita com botão fechar */}
-            <div className="flex items-center justify-between px-4 py-3 sm:px-6 border-b border-line">
-              <span className="text-sm font-semibold text-ink">Personalização</span>
+            <div className="flex items-center justify-between px-4 py-3 sm:px-6 border-b border-line shrink-0">
+              <span className="text-sm font-semibold text-ink">Item Personalizado</span>
               <button
                 type="button"
                 aria-label="Fechar"
@@ -920,7 +920,7 @@ function PersonalizadoModal({
             </div>
 
             {/* Conteúdo scrollável */}
-            <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6">
+            <div className="flex-1 overflow-y-auto px-4 py-3 sm:px-6">
               {!produto.groups || produto.groups.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center text-center">
                   <span className="grid h-10 w-10 place-items-center rounded-full bg-surface-2 text-faint mb-2">
@@ -939,7 +939,7 @@ function PersonalizadoModal({
                         <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand text-on-brand font-mono text-xs font-bold">
                           {idx + 1}
                         </span>
-                        <h4 className="text-sm font-semibold text-ink">
+                        <h4 className="font-mono text-xs font-semibold uppercase tracking-[0.1em] text-ink">
                           {idx + 1}. {g.nome}
                           {g.obrigatoria && <span className="ml-1 text-danger">*</span>}
                         </h4>
@@ -1047,8 +1047,8 @@ function PersonalizadoModal({
             </div>
 
             {/* Footer coluna direita */}
-            <div className="border-t border-line bg-surface px-4 py-3 sm:px-6">
-              <div className="flex items-center justify-between mb-3">
+            <div className="border-t border-line bg-surface px-4 py-2 sm:px-6 shrink-0">
+              <div className="flex items-center justify-between mb-2">
                 {/* Quantidade */}
                 <div className="flex items-center gap-2">
                   <button
@@ -1056,7 +1056,7 @@ function PersonalizadoModal({
                     aria-label="Diminuir quantidade"
                     onClick={() => setQty((q) => Math.max(1, q - 1))}
                     disabled={qty <= 1}
-                    className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-line bg-surface text-ink transition-colors hover:border-brand disabled:opacity-40"
+                    className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-line-strong bg-surface text-ink transition-colors hover:border-brand disabled:opacity-40"
                   >
                     <Minus size={14} />
                   </button>
@@ -1067,7 +1067,7 @@ function PersonalizadoModal({
                     type="button"
                     aria-label="Aumentar quantidade"
                     onClick={() => setQty((q) => q + 1)}
-                    className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-line bg-surface text-ink transition-colors hover:border-brand"
+                    className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-line-strong bg-surface text-ink transition-colors hover:border-brand"
                   >
                     <Plus size={14} />
                   </button>
