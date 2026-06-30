@@ -52,6 +52,7 @@ type CartItem = {
   preco: number;
   quantidade: number;
   restricaoIdade: boolean;
+  selecoes: string[];
 };
 
 type CaixaInfo = {
@@ -107,7 +108,6 @@ export function PdvClient({
   const [maiorIdade, setMaiorIdade] = useState(false);
   const [metodoSel, setMetodoSel] = useState<PaymentMethod | null>(null);
   const [recebido, setRecebido] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [pdvModal, setPdvModal] = useState<ProdutoVenda | null>(null);
   const buscaRef = useRef<HTMLInputElement>(null);
@@ -131,6 +131,8 @@ export function PdvClient({
       .filter((p) => {
         // produtos com estoque controlado zerado ficam fora da vitrine
         if (p.estoqueFechado != null && p.estoqueFechado <= 0) return false;
+        // personalizado sem insumos para a receita mínima fica fora da vitrine
+        if (p.tipo === "PERSONALIZADO" && !p.disponivel) return false;
         if (filtroCat === "+18" && !p.restricaoIdade) return false;
         if (filtroCat && filtroCat !== "+18" && p.categoria !== filtroCat)
           return false;
@@ -160,7 +162,13 @@ export function PdvClient({
     (!precisaIdade || maiorIdade) &&
     !pending;
 
-  function addItem(p: ProdutoVenda, variantId: string | null, qty = 1) {
+  function addItem(
+    p: ProdutoVenda,
+    variantId: string | null,
+    qty = 1,
+    selecoes: string[] = [],
+    precoUnit?: number,
+  ) {
     if (!caixaOk) {
       setSheetOpen(true);
       return;
@@ -168,7 +176,8 @@ export function PdvClient({
     const variant = variantId
       ? (p.variants.find((v) => v.id === variantId) ?? null)
       : null;
-    const key = p.id + ":" + (variantId ?? "");
+    const selKey = selecoes.length ? ":" + [...selecoes].sort().join(",") : "";
+    const key = p.id + ":" + (variantId ?? "") + selKey;
     setCart((prev) => {
       const ex = prev.find((i) => i.key === key);
       if (ex)
@@ -183,9 +192,10 @@ export function PdvClient({
           variantId,
           nome: p.nome,
           variantNome: variant?.nome ?? null,
-          preco: variant?.preco ?? p.preco,
+          preco: precoUnit ?? variant?.preco ?? p.preco,
           quantidade: qty,
           restricaoIdade: p.restricaoIdade,
+          selecoes,
         },
       ];
     });
@@ -206,12 +216,10 @@ export function PdvClient({
     setMaiorIdade(false);
     setMetodoSel(null);
     setRecebido("");
-    setError(null);
   }
 
   function finalizar() {
     if (!podeFinalizar || !metodoSel) return;
-    setError(null);
     startTransition(async () => {
       try {
         await finalizarVendaPdvAction({
@@ -220,6 +228,7 @@ export function PdvClient({
             productId: i.productId,
             variantId: i.variantId,
             quantidade: i.quantidade,
+            selecoes: i.selecoes,
           })),
           descontoVenda,
           maiorIdadeConfirmada: maiorIdade,
@@ -231,7 +240,10 @@ export function PdvClient({
         limpar();
         router.refresh();
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Erro ao finalizar venda.");
+        toast.error(
+          "Erro ao finalizar venda",
+          e instanceof Error ? e.message : "Tente novamente.",
+        );
       }
     });
   }
@@ -242,7 +254,10 @@ export function PdvClient({
         await cancelarVendaAction(saleId);
         router.refresh();
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Erro ao cancelar.");
+        toast.error(
+          "Erro ao cancelar",
+          e instanceof Error ? e.message : "Tente novamente.",
+        );
       }
     });
   }
@@ -334,14 +349,19 @@ export function PdvClient({
             ))}
           </div>
 
-          <div className="grid min-h-0 flex-1 auto-rows-min content-start grid-cols-3 gap-2 overflow-y-auto sm:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8">
+          <div className="grid min-h-0 flex-1 auto-rows-min content-start grid-cols-[repeat(auto-fill,minmax(clamp(6.5rem,9vw,10rem),1fr))] gap-2 overflow-y-auto">
             {filtrados.length === 0 && (
               <p className="col-span-full py-8 text-center text-sm text-muted">
                 Nenhum produto encontrado.
               </p>
             )}
             {filtrados.map((p) => (
-              <ProdutoCard key={p.id} produto={p} onAdd={addItem} onOpenModal={setPdvModal} />
+              <ProdutoCard
+                key={p.id}
+                produto={p}
+                onAdd={addItem}
+                onOpenModal={setPdvModal}
+              />
             ))}
           </div>
         </div>
@@ -564,14 +584,6 @@ export function PdvClient({
               </div>
             </div>
 
-            {error && (
-              <div className="px-4 pb-1">
-                <p className="rounded-[var(--radius)] bg-danger-soft px-3 py-2 text-sm text-danger">
-                  {error}
-                </p>
-              </div>
-            )}
-
             {/* Finalizar */}
             <div className="border-t border-line p-3">
               <button
@@ -591,15 +603,14 @@ export function PdvClient({
               </button>
             </div>
           </div>
-
         </div>
       </div>
 
       <PersonalizadoModal
         produto={pdvModal}
         onClose={() => setPdvModal(null)}
-        onAdd={(p, variantId, qty) => {
-          addItem(p, variantId, qty);
+        onAdd={(p, variantId, qty, selecoes, precoUnit) => {
+          addItem(p, variantId, qty, selecoes, precoUnit);
           setPdvModal(null);
         }}
       />
@@ -746,23 +757,35 @@ function PersonalizadoModal({
 }: {
   produto: ProdutoVenda | null;
   onClose: () => void;
-  onAdd: (p: ProdutoVenda, variantId: string | null, qty: number) => void;
+  onAdd: (
+    p: ProdutoVenda,
+    variantId: string | null,
+    qty: number,
+    selecoes: string[],
+    precoUnit: number,
+  ) => void;
 }) {
   const [selectedVariant, setSelectedVariant] = useState<string | null>(null);
-  const [selections, setSelections] = useState<Record<string, string | string[]>>({});
+  const [selections, setSelections] = useState<
+    Record<string, string | string[]>
+  >({});
   const [qty, setQty] = useState(1);
 
   useEffect(() => {
     if (!produto) return;
     setSelectedVariant(produto.variants[0]?.id ?? null);
     setQty(1);
-    // Pre-seleciona items padrão de cada grupo
+    // Pre-seleciona items padrão de cada grupo (somente os com estoque)
     if (produto.groups) {
       const sels: Record<string, string | string[]> = {};
       for (const g of produto.groups) {
-        const defaultItem = g.items.find((i) => i.isDefault);
+        const disp = g.items.filter((i) => i.disponivel);
+        const defaultItem = disp.find((i) => i.isDefault) ?? disp[0];
         if (defaultItem) {
-          sels[g.id] = g.tipoSelecao === "MULTIPLA" ? [defaultItem.componentProductId] : defaultItem.componentProductId;
+          sels[g.id] =
+            g.tipoSelecao === "MULTIPLA"
+              ? [defaultItem.componentProductId]
+              : defaultItem.componentProductId;
         }
       }
       setSelections(sels);
@@ -781,7 +804,7 @@ function PersonalizadoModal({
   if (!produto) return null;
 
   const variant = selectedVariant
-    ? produto.variants.find((v) => v.id === selectedVariant) ?? null
+    ? (produto.variants.find((v) => v.id === selectedVariant) ?? null)
     : null;
   const precoBase = variant?.preco ?? produto.preco;
 
@@ -816,16 +839,15 @@ function PersonalizadoModal({
       <div className="absolute inset-0 bg-ink/40 backdrop-blur-[3px]" />
 
       <div
-        className="relative z-10 h-full w-full overflow-hidden rounded-t-[var(--radius-lg)] border border-line bg-surface shadow-[var(--shadow-2)] sm:max-h-[90dvh] sm:max-w-4xl sm:rounded-[var(--radius-lg)]"
+        className="relative z-10 w-full h-auto flex flex-col rounded-t-[var(--radius-lg)] border border-line bg-surface shadow-[var(--shadow-2)] overflow-hidden sm:max-h-[90dvh] sm:max-w-4xl sm:rounded-[var(--radius-lg)]"
         onClick={(e) => e.stopPropagation()}
       >
-
         {/* Layout 2 colunas */}
         <div className="flex min-h-0 flex-1 overflow-hidden sm:flex-row flex-col">
-          {/* Coluna Esquerda (35%) — Imagem + Info + Montagem */}
-          <div className="flex min-w-0 flex-col border-b border-line sm:border-b-0 sm:border-r sm:border-line sm:w-[35%] bg-surface-2 pb-0">
+          {/* Coluna Esquerda (30%) — Imagem + Info + Montagem */}
+          <div className="flex min-w-0 flex-col border-b border-line sm:border-b-0 sm:border-r sm:border-line sm:w-[38%] bg-surface-2 pb-0">
             {/* Imagem */}
-            <div className="relative aspect-square w-full bg-surface-3 sm:h-64">
+            <div className="relative aspect-2/3 w-full bg-surface-3 sm:h-80">
               {produto.imagemUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -871,7 +893,11 @@ function PersonalizadoModal({
                             )}
                           >
                             {v.nome}
-                            {v.volumeMl && <span className="ml-1 text-[10px]">{v.volumeMl}ml</span>}
+                            {v.volumeMl && (
+                              <span className="ml-1 text-[10px]">
+                                {v.volumeMl}ml
+                              </span>
+                            )}
                           </button>
                         );
                       })}
@@ -883,21 +909,24 @@ function PersonalizadoModal({
               {/* Card de montagem */}
               {produto.modoPreparo && (
                 <div className="rounded-[14px] border border-line-strong bg-surface p-3.5">
-                  <div className="flex items-start gap-2.5 mb-2">
-                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand">
-                      <Wine size={16} />
+                  <div className="flex items-center gap-2.5 mb-2">
+                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand">
+                      <Wine size={14} />
                     </span>
                     <p className="font-mono text-xs font-semibold uppercase tracking-[0.1em] text-ink">
                       Modo de preparo
                     </p>
                   </div>
                   <ul className="flex flex-col gap-1 text-xs text-ink-2">
-                    {produto.modoPreparo.split('\n').filter(line => line.trim()).map((line, idx) => (
-                      <li key={idx} className="flex gap-2">
-                        <span className="shrink-0 text-faint">•</span>
-                        <span>{line.trim()}</span>
-                      </li>
-                    ))}
+                    {produto.modoPreparo
+                      .split("\n")
+                      .filter((line) => line.trim())
+                      .map((line, idx) => (
+                        <li key={idx} className="flex gap-2">
+                          <span className="shrink-0 text-faint">•</span>
+                          <span>{line.trim()}</span>
+                        </li>
+                      ))}
                   </ul>
                 </div>
               )}
@@ -908,7 +937,9 @@ function PersonalizadoModal({
           <div className="flex min-h-0 flex-1 flex-col sm:w-[65%]">
             {/* Header da coluna direita com botão fechar */}
             <div className="flex items-center justify-between px-4 py-3 sm:px-6 border-b border-line shrink-0">
-              <span className="text-sm font-semibold text-ink">Item Personalizado</span>
+              <span className="text-sm font-semibold text-ink">
+                Item Personalizado
+              </span>
               <button
                 type="button"
                 aria-label="Fechar"
@@ -935,14 +966,23 @@ function PersonalizadoModal({
                   {produto.groups.map((g, idx) => (
                     <div key={g.id} className="flex flex-col gap-3">
                       {/* Título do grupo com número */}
-                      <div className="flex items-center gap-2.5">
+                      <div className="flex items-center gap-1.5">
                         <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand text-on-brand font-mono text-xs font-bold">
                           {idx + 1}
                         </span>
                         <h4 className="font-mono text-xs font-semibold uppercase tracking-[0.1em] text-ink">
-                          {idx + 1}. {g.nome}
-                          {g.obrigatoria && <span className="ml-1 text-danger">*</span>}
+                          {g.nome}
+                          {g.obrigatoria && (
+                            <span className="ml-0.5 text-[10px] text-danger relative -top-0.5">*</span>
+                          )}
                         </h4>
+                        {g.tipoSelecao === "MULTIPLA" && (
+                          <span className="ml-auto shrink-0 rounded-full border border-brand/30 bg-brand-soft px-2 py-0.5 text-[10px] font-semibold text-brand">
+                            {g.maxSelecoes
+                              ? `Escolha até ${g.maxSelecoes}`
+                              : "Várias opções"}
+                          </span>
+                        )}
                       </div>
 
                       {/* Separador */}
@@ -950,95 +990,131 @@ function PersonalizadoModal({
 
                       {/* Opções com radio + imagem + preço */}
                       <div className="flex flex-col gap-1.5">
-                        {[...g.items].sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0)).map((item) => {
-                          const isSelected =
-                            g.tipoSelecao === "MULTIPLA"
-                              ? Array.isArray(selections[g.id]) && (selections[g.id] as string[]).includes(item.componentProductId)
-                              : selections[g.id] === item.componentProductId;
+                        {[...g.items]
+                          .sort(
+                            (a, b) =>
+                              (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0),
+                          )
+                          .map((item) => {
+                            const isSelected =
+                              g.tipoSelecao === "MULTIPLA"
+                                ? Array.isArray(selections[g.id]) &&
+                                  (selections[g.id] as string[]).includes(
+                                    item.componentProductId,
+                                  )
+                                : selections[g.id] === item.componentProductId;
 
-                          return (
-                            <button
-                              key={item.componentProductId}
-                              type="button"
-                              onClick={() => {
-                                if (g.tipoSelecao === "MULTIPLA") {
-                                  const current = Array.isArray(selections[g.id]) ? (selections[g.id] as string[]) : [];
-                                  if (isSelected) {
-                                    setSelections((prev) => ({
-                                      ...prev,
-                                      [g.id]: current.filter((id) => id !== item.componentProductId),
-                                    }));
-                                  } else {
-                                    const maxSel = g.maxSelecoes || current.length + 1;
-                                    if (current.length < maxSel) {
+                            return (
+                              <button
+                                key={item.componentProductId}
+                                type="button"
+                                disabled={!item.disponivel}
+                                onClick={() => {
+                                  if (g.tipoSelecao === "MULTIPLA") {
+                                    const current = Array.isArray(
+                                      selections[g.id],
+                                    )
+                                      ? (selections[g.id] as string[])
+                                      : [];
+                                    if (isSelected) {
                                       setSelections((prev) => ({
                                         ...prev,
-                                        [g.id]: [...current, item.componentProductId],
+                                        [g.id]: current.filter(
+                                          (id) =>
+                                            id !== item.componentProductId,
+                                        ),
                                       }));
+                                    } else {
+                                      const maxSel =
+                                        g.maxSelecoes || current.length + 1;
+                                      if (current.length < maxSel) {
+                                        setSelections((prev) => ({
+                                          ...prev,
+                                          [g.id]: [
+                                            ...current,
+                                            item.componentProductId,
+                                          ],
+                                        }));
+                                      }
                                     }
+                                  } else {
+                                    setSelections((prev) => ({
+                                      ...prev,
+                                      [g.id]: item.componentProductId,
+                                    }));
                                   }
-                                } else {
-                                  setSelections((prev) => ({
-                                    ...prev,
-                                    [g.id]: item.componentProductId,
-                                  }));
-                                }
-                              }}
-                              className={cn(
-                                "flex items-center gap-3 rounded-[12px] border-2 px-3 py-2 transition-all cursor-pointer",
-                                isSelected
-                                  ? "border-brand bg-brand/5"
-                                  : "border-line hover:border-brand/50 hover:bg-surface-2",
-                              )}
-                            >
-                              {/* Radio Button */}
-                              <span
+                                }}
                                 className={cn(
-                                  "grid h-5 w-5 shrink-0 place-items-center rounded-full border-2 transition-all",
-                                  isSelected
-                                    ? "border-brand bg-brand shadow-[0_0_0_3px_rgba(var(--brand-rgb),0.1)]"
-                                    : "border-line hover:border-brand/50",
+                                  "flex items-center gap-3 rounded-[12px] border-2 px-3 py-1 transition-all",
+                                  !item.disponivel
+                                    ? "cursor-not-allowed border-line opacity-50"
+                                    : isSelected
+                                      ? "cursor-pointer border-brand bg-brand/5"
+                                      : "cursor-pointer border-line hover:border-brand/50 hover:bg-surface-2",
                                 )}
                               >
-                                {isSelected && (
-                                  <Check size={11} strokeWidth={4} className="text-white" />
-                                )}
-                              </span>
-
-                              {/* Imagem miniatura */}
-                              {item.imagemUrl && (
-                                <div className="h-14 w-14 shrink-0 rounded-[8px] bg-surface-3 overflow-hidden border border-line">
-                                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                                  <img
-                                    src={item.imagemUrl}
-                                    alt=""
-                                    className="h-full w-full object-cover"
-                                  />
-                                </div>
-                              )}
-
-                              {/* Nome + Preço */}
-                              <div className="flex-1 min-w-0 text-left">
-                                <p className={cn(
-                                  "text-sm font-medium truncate",
-                                  isSelected ? "text-ink" : "text-ink-2",
-                                )}>
-                                  {item.nome}
-                                </p>
-                              </div>
-
-                              {/* Preço adicional */}
-                              {item.acrescimoPreco && (
-                                <span className={cn(
-                                  "shrink-0 font-mono text-xs font-semibold whitespace-nowrap",
-                                  isSelected ? "text-brand" : "text-muted",
-                                )}>
-                                  +{brl(item.acrescimoPreco)}
+                                {/* Radio Button */}
+                                <span
+                                  className={cn(
+                                    "grid h-5 w-5 shrink-0 place-items-center rounded-full border-2 transition-all",
+                                    isSelected
+                                      ? "border-brand bg-brand shadow-[0_0_0_3px_rgba(var(--brand-rgb),0.1)]"
+                                      : "border-line hover:border-brand/50",
+                                  )}
+                                >
+                                  {isSelected && (
+                                    <Check
+                                      size={11}
+                                      strokeWidth={4}
+                                      className="text-white"
+                                    />
+                                  )}
                                 </span>
-                              )}
-                            </button>
-                          );
-                        })}
+
+                                {/* Imagem miniatura */}
+                                {item.imagemUrl && (
+                                  <div className="h-14 w-14 shrink-0 rounded-[8px] bg-surface-3 overflow-hidden border border-line">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      src={item.imagemUrl}
+                                      alt=""
+                                      className="h-full w-full object-cover"
+                                    />
+                                  </div>
+                                )}
+
+                                {/* Nome + Preço */}
+                                <div className="flex-1 min-w-0 text-left">
+                                  <p
+                                    className={cn(
+                                      "text-sm font-medium truncate",
+                                      isSelected ? "text-ink" : "text-ink-2",
+                                    )}
+                                  >
+                                    {item.nome}
+                                  </p>
+                                </div>
+
+                                {/* Esgotado ou preço adicional */}
+                                {!item.disponivel ? (
+                                  <span className="shrink-0 rounded-full bg-danger-soft px-2 py-0.5 font-mono text-[10px] font-semibold text-danger">
+                                    Esgotado
+                                  </span>
+                                ) : (
+                                  item.acrescimoPreco && (
+                                    <span
+                                      className={cn(
+                                        "shrink-0 font-mono text-xs font-semibold whitespace-nowrap",
+                                        isSelected ? "text-brand" : "text-muted",
+                                      )}
+                                    >
+                                      +{brl(item.acrescimoPreco)}
+                                    </span>
+                                  )
+                                )}
+                              </button>
+                            );
+                          })}
                       </div>
                     </div>
                   ))}
@@ -1087,10 +1163,26 @@ function PersonalizadoModal({
               {/* CTA Button */}
               <button
                 type="button"
-                onClick={() => onAdd(produto, selectedVariant, qty)}
-                className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius-md)] bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+                onClick={() => {
+                  // Valida grupos obrigatórios e achata as seleções.
+                  const flat: string[] = [];
+                  for (const g of produto.groups ?? []) {
+                    const sel = selections[g.id];
+                    const ids = Array.isArray(sel) ? sel : sel ? [sel] : [];
+                    if (g.obrigatoria && ids.length === 0) {
+                      toast.error(
+                        "Escolha incompleta",
+                        `Selecione uma opção em "${g.nome}".`,
+                      );
+                      return;
+                    }
+                    flat.push(...ids);
+                  }
+                  onAdd(produto, selectedVariant, qty, flat, preco);
+                }}
+                className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius-lg)] bg-brand px-6 py-3 text-base font-semibold text-on-brand transition-colors hover:bg-brand-strong"
               >
-                <ShoppingCart size={16} />
+                <ShoppingCart size={18} />
                 Adicionar ao carrinho
               </button>
             </div>

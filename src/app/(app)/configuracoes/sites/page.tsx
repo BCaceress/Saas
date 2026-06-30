@@ -2,6 +2,7 @@ import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { SitesManager } from "./_client";
+import { DistribuicaoConfig } from "./_distribuicao-config";
 
 export default async function SitesPage() {
   const ctx = await requireActiveTenant();
@@ -17,6 +18,10 @@ export default async function SitesPage() {
           Lojas, pontos autônomos e centros de distribuição do tenant.
         </p>
       </div>
+      <DistribuicaoConfig
+        topologiaInicial={ctx.tenant.topologia ?? "LOCAL"}
+        recebimentoInicial={ctx.tenant.recebimentoExigeContagem}
+      />
       <SitesManager
         sites={sites.map((s) => ({
           id: s.id,

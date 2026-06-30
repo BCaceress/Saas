@@ -81,6 +81,8 @@ export type NovoItemVenda = {
   variantId?: string | null;
   quantidade: number;
   desconto?: number;
+  /** PERSONALIZADO: componentes escolhidos no PDV (guiam preço e baixa). */
+  selecoes?: string[];
 };
 export type NovoPagamento = {
   metodo: PaymentMethod;
@@ -108,8 +110,9 @@ export async function criarVenda(
 
   const productIds = [...new Set(input.items.map((i) => i.productId))];
   const variantIds = input.items.map((i) => i.variantId).filter(Boolean) as string[];
+  const selecaoIds = [...new Set(input.items.flatMap((i) => i.selecoes ?? []))];
 
-  const [products, variants] = await Promise.all([
+  const [products, variants, selComps] = await Promise.all([
     basePrisma.product.findMany({
       where: { id: { in: productIds }, tenantId },
       select: { id: true, precoVenda: true },
@@ -120,15 +123,35 @@ export async function criarVenda(
           select: { id: true, precoVenda: true, fatorEscala: true },
         })
       : Promise.resolve([]),
+    selecaoIds.length
+      ? basePrisma.productComponent.findMany({
+          where: {
+            tenantId,
+            parentProductId: { in: productIds },
+            componentProductId: { in: selecaoIds },
+          },
+          select: { parentProductId: true, componentProductId: true, acrescimoPreco: true },
+        })
+      : Promise.resolve([]),
   ]);
   const prodMap = new Map(products.map((p) => [p.id, p]));
   const varMap = new Map(variants.map((v) => [v.id, v]));
+  // Acréscimo por (produto pai → componente escolhido).
+  const acrescimoMap = new Map<string, number>();
+  for (const c of selComps) {
+    acrescimoMap.set(`${c.parentProductId}:${c.componentProductId}`, num(c.acrescimoPreco));
+  }
 
   const itensResolvidos = input.items.map((i) => {
     const p = prodMap.get(i.productId);
     if (!p) throw new Error("Produto da venda não encontrado.");
     const v = i.variantId ? varMap.get(i.variantId) ?? null : null;
-    const preco = resolvePreco(p, v);
+    const selecoes = i.selecoes ?? [];
+    const acrescimo = selecoes.reduce(
+      (s, cid) => s + (acrescimoMap.get(`${i.productId}:${cid}`) ?? 0),
+      0,
+    );
+    const preco = resolvePreco(p, v) + acrescimo;
     const desconto = i.desconto ?? 0;
     const total = preco * i.quantidade - desconto;
     return {
@@ -138,6 +161,7 @@ export async function criarVenda(
       precoUnitario: preco,
       desconto,
       total,
+      selectedComponentIds: selecoes,
     };
   });
 
@@ -189,7 +213,12 @@ export async function criarVenda(
 async function aplicarBaixaItem(
   tenantId: string,
   siteId: string,
-  item: { productId: string; variantId: string | null; quantidade: number },
+  item: {
+    productId: string;
+    variantId: string | null;
+    quantidade: number;
+    selectedComponentIds?: string[];
+  },
   saleId: string,
   createdBy?: string
 ) {
@@ -220,6 +249,7 @@ async function aplicarBaixaItem(
       saleId,
       createdBy,
       observacao: "Baixa de venda",
+      selectedComponentIds: item.selectedComponentIds,
     });
     return;
   }
@@ -265,7 +295,14 @@ export async function finalizarVenda(
   const sale = await basePrisma.sale.findFirst({
     where: { id: saleId, tenantId },
     include: {
-      items: { select: { productId: true, variantId: true, quantidade: true } },
+      items: {
+        select: {
+          productId: true,
+          variantId: true,
+          quantidade: true,
+          selectedComponentIds: true,
+        },
+      },
       payments: { select: { status: true, valor: true } },
     },
   });
@@ -294,7 +331,12 @@ export async function finalizarVenda(
     await aplicarBaixaItem(
       tenantId,
       sale.siteId,
-      { productId: item.productId, variantId: item.variantId, quantidade: num(item.quantidade) },
+      {
+        productId: item.productId,
+        variantId: item.variantId,
+        quantidade: num(item.quantidade),
+        selectedComponentIds: item.selectedComponentIds,
+      },
       saleId,
       createdBy
     );

@@ -25,6 +25,7 @@ export type ComponentGroupVenda = {
     isDefault: boolean;
     acrescimoPreco: number | null;
     imagemUrl: string | null;
+    disponivel: boolean;
   }[];
 };
 
@@ -38,6 +39,8 @@ export type ProdutoVenda = {
   restricaoIdade: boolean;
   unidadeBase: string;
   estoqueFechado: number | null; // null = derivado (combo/personalizado)
+  /** PERSONALIZADO: false quando faltam insumos para montar a receita mínima. */
+  disponivel: boolean;
   imagemUrl: string | null;
   categoria: string | null;
   modoPreparo: string | null;
@@ -47,6 +50,10 @@ export type ProdutoVenda = {
 
 /** Produtos vendáveis no site (SIMPLES/COMBO/PERSONALIZADO ativos; INSUMO fora). */
 export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoVenda[]> {
+  const stockSel = siteId
+    ? ({ where: { siteId }, select: { estoqueFechado: true, estoqueAberto: true } } as const)
+    : ({ select: { estoqueFechado: true, estoqueAberto: true } } as const);
+
   const products = await db.product.findMany({
     where: { ativo: true, tipo: { in: ["SIMPLES", "COMBO", "PERSONALIZADO"] } },
     select: {
@@ -66,6 +73,14 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
         orderBy: { nome: "asc" },
         select: { id: true, nome: true, precoVenda: true, fatorEscala: true, volumeMl: true },
       },
+      // Componentes soltos (legado/sem grupo) — sempre necessários p/ montar.
+      components: {
+        where: { groupId: null },
+        select: {
+          componentProductId: true,
+          component: { select: { stocks: stockSel } },
+        },
+      },
       componentGroups: {
         orderBy: { ordem: "asc" },
         select: {
@@ -79,57 +94,77 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
               componentProductId: true,
               isDefault: true,
               acrescimoPreco: true,
-              component: { select: { nome: true, precoVenda: true, imagemUrl: true } },
+              component: {
+                select: { nome: true, precoVenda: true, imagemUrl: true, stocks: stockSel },
+              },
             },
           },
         },
       },
-      stocks: siteId
-        ? { where: { siteId }, select: { estoqueFechado: true } }
-        : { select: { estoqueFechado: true } },
+      stocks: stockSel,
     },
     orderBy: { nome: "asc" },
   });
 
-  return products.map((p) => ({
-    id: p.id,
-    nome: p.nome,
-    sku: p.sku,
-    ean: p.ean,
-    tipo: p.tipo,
-    preco: num(p.precoVenda),
-    restricaoIdade: p.restricaoIdade,
-    unidadeBase: p.unidadeBase,
-    imagemUrl: p.imagemUrl,
-    modoPreparo: p.modoPreparo,
-    categoria: p.subcategory?.category?.nome ?? null,
-    estoqueFechado: p.tipo === "SIMPLES" ? num(p.stocks[0]?.estoqueFechado) : null,
-    variants: p.variants.map((v) => ({
-      id: v.id,
-      nome: v.nome,
-      preco: resolvePreco(p, v),
-      fatorEscala: num(v.fatorEscala),
-      volumeMl: v.volumeMl != null ? num(v.volumeMl) : null,
-    })),
-    groups:
-      p.tipo === "PERSONALIZADO"
-        ? p.componentGroups.map((g) => ({
-            id: g.id,
-            nome: g.nome,
-            obrigatoria: g.obrigatoria,
-            tipoSelecao: g.tipoSelecao as "UNICA" | "MULTIPLA",
-            maxSelecoes: g.maxSelecoes,
-            items: g.components.map((c) => ({
-              componentProductId: c.componentProductId,
-              nome: c.component.nome,
-              preco: num(c.component.precoVenda),
-              isDefault: c.isDefault,
-              acrescimoPreco: c.acrescimoPreco != null ? num(c.acrescimoPreco) : null,
-              imagemUrl: c.component.imagemUrl,
-            })),
-          }))
-        : undefined,
-  }));
+  // Componente com saldo: qualquer unidade fechada ou aberta no site.
+  const temSaldo = (stocks: { estoqueFechado: unknown; estoqueAberto: unknown }[]) =>
+    stocks.some((s) => num(s.estoqueFechado) > 0 || num(s.estoqueAberto) > 0);
+
+  return products.map((p) => {
+    // Disponibilidade do personalizado: insumos soltos com saldo + cada grupo
+    // obrigatório com ao menos uma opção em estoque.
+    const looseOk =
+      p.tipo !== "PERSONALIZADO" ||
+      p.components.every((c) => temSaldo(c.component.stocks));
+    const gruposObrigatoriosOk =
+      p.tipo !== "PERSONALIZADO" ||
+      p.componentGroups
+        .filter((g) => g.obrigatoria)
+        .every((g) => g.components.some((c) => temSaldo(c.component.stocks)));
+    const disponivel = looseOk && gruposObrigatoriosOk;
+
+    return {
+      id: p.id,
+      nome: p.nome,
+      sku: p.sku,
+      ean: p.ean,
+      tipo: p.tipo,
+      preco: num(p.precoVenda),
+      restricaoIdade: p.restricaoIdade,
+      unidadeBase: p.unidadeBase,
+      disponivel,
+      imagemUrl: p.imagemUrl,
+      modoPreparo: p.modoPreparo,
+      categoria: p.subcategory?.category?.nome ?? null,
+      estoqueFechado: p.tipo === "SIMPLES" ? num(p.stocks[0]?.estoqueFechado) : null,
+      variants: p.variants.map((v) => ({
+        id: v.id,
+        nome: v.nome,
+        preco: resolvePreco(p, v),
+        fatorEscala: num(v.fatorEscala),
+        volumeMl: v.volumeMl != null ? num(v.volumeMl) : null,
+      })),
+      groups:
+        p.tipo === "PERSONALIZADO"
+          ? p.componentGroups.map((g) => ({
+              id: g.id,
+              nome: g.nome,
+              obrigatoria: g.obrigatoria,
+              tipoSelecao: g.tipoSelecao as "UNICA" | "MULTIPLA",
+              maxSelecoes: g.maxSelecoes,
+              items: g.components.map((c) => ({
+                componentProductId: c.componentProductId,
+                nome: c.component.nome,
+                preco: num(c.component.precoVenda),
+                isDefault: c.isDefault,
+                acrescimoPreco: c.acrescimoPreco != null ? num(c.acrescimoPreco) : null,
+                imagemUrl: c.component.imagemUrl,
+                disponivel: temSaldo(c.component.stocks),
+              })),
+            }))
+          : undefined,
+    };
+  });
 }
 
 export type VendaRow = {

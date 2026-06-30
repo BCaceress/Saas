@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Trash2, Loader2 } from "lucide-react";
+import { Plus, Trash2, Loader2, Package } from "lucide-react";
 import { registrarEntradaAction } from "../../actions";
 import { cn } from "@/lib/utils";
 
@@ -10,7 +10,8 @@ type Product = {
   id: string;
   nome: string;
   sku: string;
-  packagings: { id: string; nome: string; fatorConversao: unknown }[];
+  imagemUrl: string | null;
+  packagings: { id: string; nome: string; fatorConversao: unknown; isCompraDefault: boolean }[];
   suppliers: { supplierId: string }[];
   brand: { nome: string } | null;
 };
@@ -18,7 +19,7 @@ type Product = {
 type Supplier = { id: string; razaoSocial: string; nomeFantasia: string | null };
 type Site = { id: string; nome: string; tipo: string };
 
-type Item = {
+export type Item = {
   productId: string;
   quantidade: number;
   custoTotal: number;
@@ -26,14 +27,42 @@ type Item = {
   packagingId: string | null;
 };
 
+const itemVazio = (): Item => ({
+  productId: "",
+  quantidade: 1,
+  custoTotal: 0,
+  custoDisplay: "",
+  packagingId: null,
+});
+
+/** Converte texto digitado em centavos → { display pt-BR, total }. */
+function parseCusto(raw: string): { custoDisplay: string; custoTotal: number } {
+  const digits = raw.replace(/\D/g, "");
+  const num = parseInt(digits || "0", 10) / 100;
+  return {
+    custoDisplay: digits
+      ? num.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : "",
+    custoTotal: num,
+  };
+}
+
 export function NovaEntradaForm({
   products,
   suppliers,
   sites,
+  embedded = false,
+  onDone,
+  initialItems,
 }: {
   products: Product[];
   suppliers: Supplier[];
   sites: Site[];
+  /** Quando usado dentro de um sidepanel: não navega, chama onDone + refresh. */
+  embedded?: boolean;
+  onDone?: () => void;
+  /** Itens pré-carregados (ex: reposição a partir dos saldos). */
+  initialItems?: Item[];
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -44,12 +73,15 @@ export function NovaEntradaForm({
   const [supplierId, setSupplierId] = useState("");
   const [numeroNota, setNumeroNota] = useState("");
   const [observacao, setObservacao] = useState("");
-  const [items, setItems] = useState<Item[]>([
-    { productId: "", quantidade: 1, custoTotal: 0, custoDisplay: "", packagingId: null },
-  ]);
+  const [items, setItems] = useState<Item[]>(
+    initialItems && initialItems.length > 0 ? initialItems : [],
+  );
+  const [draft, setDraft] = useState<Item>(itemVazio);
 
-  function addItem() {
-    setItems((prev) => [...prev, { productId: "", quantidade: 1, custoTotal: 0, custoDisplay: "", packagingId: null }]);
+  function addDraft() {
+    if (!draft.productId || draft.quantidade <= 0) return;
+    setItems((prev) => [...prev, draft]);
+    setDraft(itemVazio());
   }
 
   function removeItem(idx: number) {
@@ -71,6 +103,7 @@ export function NovaEntradaForm({
   // Ao trocar de fornecedor, limpa itens cujo produto não pertence a ele.
   function changeSupplier(id: string) {
     setSupplierId(id);
+    setDraft(itemVazio());
     if (!id) return;
     setItems((prev) =>
       prev.map((it) => {
@@ -98,7 +131,12 @@ export function NovaEntradaForm({
           observacao: observacao || null,
           items: valid,
         });
-        router.push("/estoque/entradas");
+        if (embedded) {
+          router.refresh();
+          onDone?.();
+        } else {
+          router.push("/estoque/entradas");
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao registrar.");
       }
@@ -106,7 +144,8 @@ export function NovaEntradaForm({
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex h-full flex-col">
+     <div className="flex flex-1 flex-col gap-5">
       {/* Header fields */}
       <div className="grid gap-4 rounded-[var(--radius-lg)] border border-line bg-surface p-5 sm:grid-cols-2">
         {/* Local */}
@@ -190,29 +229,32 @@ export function NovaEntradaForm({
         </div>
       </div>
 
-      {/* Items */}
+      {/* Composer — escolhe um item e adiciona à lista abaixo */}
       <div className="flex flex-col gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-faint">Itens</p>
-        {items.map((item, idx) => {
-          const prod = products.find((p) => p.id === item.productId);
-          const usedIds = new Set(items.filter((_, i) => i !== idx).map((i) => i.productId).filter(Boolean));
-          const selectableProducts = availableProducts.filter((p) => !usedIds.has(p.id) || p.id === item.productId);
+        <p className="text-xs font-semibold uppercase tracking-wide text-faint">Adicionar item</p>
+        {(() => {
+          const draftProd = products.find((p) => p.id === draft.productId);
+          const usedIds = new Set(items.map((i) => i.productId).filter(Boolean));
+          const selectableProducts = availableProducts.filter(
+            (p) => !usedIds.has(p.id) || p.id === draft.productId,
+          );
+          const bloqueado = tipo === "FORNECEDOR" && !supplierId;
           return (
-            <div
-              key={idx}
-              className="grid gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4 sm:grid-cols-[2fr_1fr_1fr_1fr_auto]"
-            >
-              {/* Produto */}
+            <div className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4">
               <div className="flex flex-col gap-1">
                 <label className="text-[11px] font-semibold text-faint">Produto</label>
                 <select
-                  value={item.productId}
-                  onChange={(e) => updateItem(idx, { productId: e.target.value, packagingId: null })}
-                  disabled={tipo === "FORNECEDOR" && !supplierId}
-                  className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink disabled:opacity-50 focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  value={draft.productId}
+                  onChange={(e) => {
+                    const p = products.find((x) => x.id === e.target.value);
+                    const padrao = p?.packagings.find((pk) => pk.isCompraDefault);
+                    setDraft({ ...draft, productId: e.target.value, packagingId: padrao?.id ?? null });
+                  }}
+                  disabled={bloqueado}
+                  className="w-full rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink disabled:opacity-50 focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 >
                   <option value="">
-                    {tipo === "FORNECEDOR" && !supplierId
+                    {bloqueado
                       ? "Selecione o fornecedor primeiro"
                       : tipo === "FORNECEDOR" && availableProducts.length === 0
                         ? "Nenhum produto deste fornecedor"
@@ -224,77 +266,146 @@ export function NovaEntradaForm({
                 </select>
               </div>
 
-              {/* Embalagem */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-semibold text-faint">Embalagem</label>
-                <select
-                  value={item.packagingId ?? ""}
-                  onChange={(e) => updateItem(idx, { packagingId: e.target.value || null })}
-                  disabled={!prod || prod.packagings.length === 0}
-                  className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink disabled:opacity-50 focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                >
-                  <option value="">Unidade</option>
-                  {prod?.packagings.map((pk) => (
-                    <option key={pk.id} value={pk.id}>{pk.nome} (×{Number(pk.fatorConversao)})</option>
-                  ))}
-                </select>
-              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
+                {/* Embalagem */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-semibold text-faint">Embalagem</label>
+                  <select
+                    value={draft.packagingId ?? ""}
+                    onChange={(e) => setDraft({ ...draft, packagingId: e.target.value || null })}
+                    disabled={!draftProd || draftProd.packagings.length === 0}
+                    className="w-full rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink disabled:opacity-50 focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  >
+                    <option value="">Unidade</option>
+                    {draftProd?.packagings.map((pk) => (
+                      <option key={pk.id} value={pk.id}>{pk.nome} (×{Number(pk.fatorConversao)})</option>
+                    ))}
+                  </select>
+                </div>
 
-              {/* Quantidade */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-semibold text-faint">Qtd</label>
+                {/* Quantidade */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-semibold text-faint">Qtd</label>
+                  <input
+                    type="number"
+                    min={0.001}
+                    step={0.001}
+                    value={draft.quantidade}
+                    onChange={(e) => setDraft({ ...draft, quantidade: Number(e.target.value) })}
+                    className="w-full rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  />
+                </div>
+
+                {/* Custo total */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-semibold text-faint">Custo total (R$)</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={draft.custoDisplay}
+                    onChange={(e) => setDraft({ ...draft, ...parseCusto(e.target.value) })}
+                    onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addDraft())}
+                    placeholder="0,00"
+                    className="w-full rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  />
+                </div>
+
+                {/* Adicionar — ao lado do custo */}
+                <div className="flex items-end">
+                  <button
+                    type="button"
+                    onClick={addDraft}
+                    disabled={!draft.productId || draft.quantidade <= 0}
+                    title="Adicionar à lista"
+                    className="flex h-[42px] w-full items-center justify-center gap-2 rounded-[var(--radius)] bg-brand px-4 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-40 sm:w-auto"
+                  >
+                    <Plus size={16} /> <span className="sm:hidden">Adicionar à lista</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Lista de itens adicionados */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-semibold uppercase tracking-wide text-faint">Itens</p>
+          {items.length > 0 && (
+            <span className="text-xs tabular-nums text-faint">
+              {items.length} {items.length === 1 ? "item" : "itens"}
+            </span>
+          )}
+        </div>
+
+        {items.length === 0 ? (
+          <p className="rounded-[var(--radius-lg)] border border-dashed border-line px-4 py-6 text-center text-sm text-faint">
+            Nenhum item ainda. Adicione um produto acima.
+          </p>
+        ) : (
+          items.map((item, idx) => {
+            const prod = products.find((p) => p.id === item.productId);
+            const pk = prod?.packagings.find((p) => p.id === item.packagingId);
+            const desc = `${prod?.nome ?? "Produto"} · ${prod?.sku ?? ""}${pk ? ` · ${pk.nome} (×${Number(pk.fatorConversao)})` : " · Unidade"}`;
+            return (
+              <div
+                key={idx}
+                className="flex items-center gap-2.5 rounded-[var(--radius-lg)] border border-line bg-surface px-3 py-2"
+              >
+                {/* Imagem do produto */}
+                <span className="grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-[var(--radius)] border border-line bg-surface-2">
+                  {prod?.imagemUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={prod.imagemUrl} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <Package size={16} className="text-faint" />
+                  )}
+                </span>
+
+                {/* Nome + detalhe (trunca, hover mostra tudo) */}
+                <div className="min-w-0 flex-1" title={desc}>
+                  <p className="truncate text-sm font-medium text-ink">{prod?.nome ?? "Produto"}</p>
+                  <p className="truncate font-mono text-[11px] text-faint">
+                    {prod?.sku}
+                    {pk ? ` · ${pk.nome}` : " · Unidade"}
+                  </p>
+                </div>
+
+                {/* Qtd */}
                 <input
                   type="number"
                   min={0.001}
                   step={0.001}
                   value={item.quantidade}
                   onChange={(e) => updateItem(idx, { quantidade: Number(e.target.value) })}
-                  className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  title="Quantidade"
+                  className="w-16 shrink-0 rounded-[var(--radius)] border border-line bg-surface px-2 py-1.5 text-right text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 />
-              </div>
 
-              {/* Custo total */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-semibold text-faint">Custo total (R$)</label>
+                {/* Custo total */}
                 <input
                   type="text"
                   inputMode="numeric"
                   value={item.custoDisplay}
-                  onChange={(e) => {
-                    const digits = e.target.value.replace(/\D/g, "");
-                    const cents = parseInt(digits || "0", 10);
-                    const num = cents / 100;
-                    updateItem(idx, {
-                      custoDisplay: digits
-                        ? num.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-                        : "",
-                      custoTotal: num,
-                    });
-                  }}
+                  onChange={(e) => updateItem(idx, parseCusto(e.target.value))}
                   placeholder="0,00"
-                  className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  title="Custo total (R$)"
+                  className="w-20 shrink-0 rounded-[var(--radius)] border border-line bg-surface px-2 py-1.5 text-right text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 />
+
+                <button
+                  type="button"
+                  onClick={() => removeItem(idx)}
+                  aria-label="Remover item"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-danger transition-colors hover:bg-danger-soft"
+                >
+                  <Trash2 size={15} />
+                </button>
               </div>
-
-              <button
-                type="button"
-                onClick={() => removeItem(idx)}
-                disabled={items.length === 1}
-                className="mt-5 grid h-9 w-9 shrink-0 place-items-center rounded-lg text-danger transition-colors hover:bg-danger-soft disabled:opacity-30"
-              >
-                <Trash2 size={15} />
-              </button>
-            </div>
-          );
-        })}
-
-        <button
-          type="button"
-          onClick={addItem}
-          className="flex items-center gap-2 self-start rounded-full border border-dashed border-line px-4 py-2 text-sm font-medium text-muted transition-colors hover:border-brand hover:text-brand"
-        >
-          <Plus size={15} /> Adicionar item
-        </button>
+            );
+          })
+        )}
       </div>
 
       {error && (
@@ -302,13 +413,14 @@ export function NovaEntradaForm({
           {error}
         </p>
       )}
+     </div>
 
-      {/* Footer */}
-      <div className="sticky bottom-0 flex justify-end gap-3 border-t border-line bg-canvas pb-2 pt-4">
+      {/* Footer — fixo abaixo */}
+      <div className="sticky bottom-0 z-10 mt-4 flex justify-end gap-3 rounded-[var(--radius-lg)] border border-line bg-surface-2 px-4 py-3">
         <button
           type="button"
-          onClick={() => router.back()}
-          className="rounded-full border border-line px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+          onClick={() => (embedded ? onDone?.() : router.back())}
+          className="rounded-full border border-line-strong px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-surface"
         >
           Cancelar
         </button>

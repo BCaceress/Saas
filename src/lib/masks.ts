@@ -11,6 +11,13 @@ export function maskCnpj(value: string): string {
   return out;
 }
 
+/** Aplica máscara de CEP: 00000-000. */
+export function maskCep(value: string): string {
+  const d = onlyDigits(value).slice(0, 8);
+  if (d.length > 5) return `${d.slice(0, 5)}-${d.slice(5)}`;
+  return d;
+}
+
 /**
  * Máscara de telefone BR: (00) 0000-0000 (fixo) ou (00) 00000-0000 (celular).
  * Aceita até 11 dígitos.

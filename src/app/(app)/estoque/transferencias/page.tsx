@@ -5,16 +5,26 @@ import { TransferenciaForm } from "./_client";
 
 export default async function TransferenciasPage() {
   const ctx = await requireActiveTenant();
-  const [sites, products] = await withTenant(ctx, async () => {
-    const [ss, ps] = await Promise.all([
+  const { sites, products, saldos } = await withTenant(ctx, async () => {
+    const [ss, ps, st] = await Promise.all([
       loadSitesTransferencia(),
       db.product.findMany({
         where: { ativo: true, tipo: { in: ["SIMPLES", "INSUMO"] } },
         orderBy: { nome: "asc" },
         select: { id: true, nome: true, sku: true },
       }),
+      // Saldos fechados > 0 por produto/site — filtra a lista pela origem no client.
+      db.stock.findMany({
+        where: { estoqueFechado: { gt: 0 } },
+        select: { productId: true, siteId: true, estoqueFechado: true },
+      }),
     ]);
-    return [ss, ps] as const;
+    const saldos = st.map((s) => ({
+      productId: s.productId,
+      siteId: s.siteId ?? "",
+      saldo: Number(s.estoqueFechado),
+    }));
+    return { sites: ss, products: ps, saldos };
   });
 
   if (sites.length < 2) {
@@ -32,7 +42,7 @@ export default async function TransferenciasPage() {
         <h2 className="text-base font-semibold text-ink">Transferência entre sites</h2>
         <p className="text-sm text-muted">Move unidades fechadas de um site para outro em uma operação atômica.</p>
       </div>
-      <TransferenciaForm sites={sites} products={products} />
+      <TransferenciaForm sites={sites} products={products} saldos={saldos} />
     </div>
   );
 }

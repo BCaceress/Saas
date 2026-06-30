@@ -19,6 +19,8 @@ const itemSchema = z.object({
   variantId: z.string().optional().nullable(),
   quantidade: z.number().positive(),
   desconto: z.number().nonnegative().optional(),
+  /** PERSONALIZADO: componentes escolhidos no PDV (guiam preço e baixa). */
+  selecoes: z.array(z.string()).optional().default([]),
 });
 
 const pagamentoSchema = z.object({

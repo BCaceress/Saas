@@ -94,6 +94,7 @@ export default async function EditarProdutoPage({
         restricaoIdade: p.restricaoIdade,
         ativo: p.ativo,
         tipoReceita: inferredType as RecipeType,
+        copoMl: dec(p.copoMl),
         modoPreparo: p.modoPreparo,
         vendeOnline: p.vendeOnline,
         pesoGramas: p.pesoGramas,

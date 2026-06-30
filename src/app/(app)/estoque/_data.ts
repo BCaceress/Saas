@@ -23,6 +23,7 @@ export type SaldoRow = {
   abaixoMinimo: boolean;
   percentAberta: number | null;
   locationNome: string | null;
+  temFornecedor: boolean;
 };
 
 export type MovimentacaoRow = {
@@ -53,7 +54,9 @@ export type EntradaRow = {
   tipo: string;
   supplierNome: string | null;
   numeroNota: string | null;
+  numeroPedido: string | null;
   data: Date;
+  registradoPor: string | null;
   totalItems: number;
   items: EntradaItemRow[];
 };
@@ -77,7 +80,7 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
   const stocks = await db.stock.findMany({
     where,
     include: {
-      product: { select: { id: true, sku: true, ean: true, nome: true, tipo: true, unidadeBase: true, fracionavel: true, conteudoPorUnidade: true, custoMedio: true } },
+      product: { select: { id: true, sku: true, ean: true, nome: true, tipo: true, unidadeBase: true, fracionavel: true, conteudoPorUnidade: true, custoMedio: true, suppliers: { select: { id: true }, take: 1 } } },
       location: { select: { nome: true } },
     },
     orderBy: { product: { nome: "asc" } },
@@ -105,6 +108,7 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
       abaixoMinimo: ef < n(s.estoqueMinimo),
       percentAberta: pct,
       locationNome: s.location?.nome ?? null,
+      temFornecedor: s.product.suppliers.length > 0,
     };
   });
 }
@@ -153,6 +157,7 @@ export async function loadEntradas(siteId: string | null): Promise<EntradaRow[]>
     where: siteId ? { siteId } : {},
     include: {
       supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+      purchaseOrder: { select: { numero: true } },
       items: { select: { id: true, productId: true, packagingId: true, quantidade: true, custoTotal: true } },
     },
     orderBy: { createdAt: "desc" },
@@ -161,25 +166,33 @@ export async function loadEntradas(siteId: string | null): Promise<EntradaRow[]>
 
   const allProductIds = [...new Set(purchases.flatMap((p) => p.items.map((i) => i.productId)))];
   const allPackagingIds = [...new Set(purchases.flatMap((p) => p.items.flatMap((i) => i.packagingId ? [i.packagingId] : [])))];
+  const allUserIds = [...new Set(purchases.flatMap((p) => p.createdBy ? [p.createdBy] : []))];
 
-  const [products, packagings] = await Promise.all([
+  const [products, packagings, users] = await Promise.all([
     allProductIds.length > 0
       ? db.product.findMany({ where: { id: { in: allProductIds } }, select: { id: true, nome: true, sku: true, tipo: true } })
       : Promise.resolve([]),
     allPackagingIds.length > 0
       ? db.productPackaging.findMany({ where: { id: { in: allPackagingIds } }, select: { id: true, nome: true, fatorConversao: true } })
       : Promise.resolve([]),
+    // User mora nas tabelas de auth (não tenant-scoped): usa basePrisma.
+    allUserIds.length > 0
+      ? basePrisma.user.findMany({ where: { id: { in: allUserIds } }, select: { id: true, name: true, email: true } })
+      : Promise.resolve([]),
   ]);
 
   const prodMap = new Map(products.map((p) => [p.id, p]));
   const pkgMap = new Map(packagings.map((pk) => [pk.id, pk]));
+  const userMap = new Map(users.map((u) => [u.id, u.name ?? u.email ?? null]));
 
   return purchases.map((p) => ({
     id: p.id,
     tipo: p.tipo,
     supplierNome: p.supplier ? (p.supplier.nomeFantasia ?? p.supplier.razaoSocial) : null,
     numeroNota: p.numeroNota,
+    numeroPedido: p.purchaseOrder?.numero ?? null,
     data: p.data,
+    registradoPor: p.createdBy ? (userMap.get(p.createdBy) ?? null) : null,
     totalItems: p.items.length,
     items: p.items.map((item) => ({
       id: item.id,
@@ -192,6 +205,245 @@ export async function loadEntradas(siteId: string | null): Promise<EntradaRow[]>
       custoTotal: Number(item.custoTotal),
     })),
   }));
+}
+
+// ── Pedidos de compra (PurchaseOrder) ─────────────────────────
+
+export type PedidoCompraItemView = {
+  productId: string;
+  nome: string;
+  sku: string;
+  packagingNome: string | null;
+  qtdPedida: number;
+  qtdRecebida: number;
+  custoUnitario: number;
+};
+
+export type PedidoCompraView = {
+  id: string;
+  numero: string;
+  status: string;
+  supplierId: string;
+  supplierNome: string;
+  siteId: string;
+  siteNome: string;
+  previsaoEntrega: Date | null;
+  valorTotal: number;
+  observacao: string | null;
+  financeiroGerado: boolean;
+  createdAt: Date;
+  enviadoEm: Date | null;
+  totalItems: number;
+  items: PedidoCompraItemView[];
+};
+
+export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
+  const pedidos = await db.purchaseOrder.findMany({
+    include: {
+      supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+      site: { select: { nome: true } },
+      items: true,
+    },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+
+  const productIds = [...new Set(pedidos.flatMap((p) => p.items.map((i) => i.productId)))];
+  const packagingIds = [...new Set(pedidos.flatMap((p) => p.items.flatMap((i) => (i.packagingId ? [i.packagingId] : []))))];
+
+  const [products, packagings] = await Promise.all([
+    mapProdutos(productIds),
+    packagingIds.length > 0
+      ? db.productPackaging.findMany({ where: { id: { in: packagingIds } }, select: { id: true, nome: true } })
+      : Promise.resolve([]),
+  ]);
+  const pkgMap = new Map(packagings.map((pk) => [pk.id, pk.nome]));
+
+  return pedidos.map((p) => ({
+    id: p.id,
+    numero: p.numero,
+    status: p.status,
+    supplierId: p.supplierId,
+    supplierNome: p.supplier ? (p.supplier.nomeFantasia ?? p.supplier.razaoSocial) : "—",
+    siteId: p.siteId,
+    siteNome: p.site.nome,
+    previsaoEntrega: p.previsaoEntrega,
+    valorTotal: n(p.valorTotal),
+    observacao: p.observacao,
+    financeiroGerado: p.financeiroGerado,
+    createdAt: p.createdAt,
+    enviadoEm: p.enviadoEm,
+    totalItems: p.items.length,
+    items: p.items.map((i) => ({
+      productId: i.productId,
+      nome: products.get(i.productId)?.nome ?? i.productId,
+      sku: products.get(i.productId)?.sku ?? "",
+      packagingNome: i.packagingId ? (pkgMap.get(i.packagingId) ?? null) : null,
+      qtdPedida: n(i.qtdPedida),
+      qtdRecebida: n(i.qtdRecebida),
+      custoUnitario: n(i.custoUnitario),
+    })),
+  }));
+}
+
+/** Pedidos abertos para conferência/recebimento, opcionalmente do site ativo. */
+export async function loadPedidosAReceber(siteId: string | null): Promise<PedidoCompraView[]> {
+  const all = await loadPedidosCompra();
+  return all.filter(
+    (p) =>
+      ["ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"].includes(p.status) &&
+      (!siteId || p.siteId === siteId),
+  );
+}
+
+export async function loadComprasFormOptions() {
+  const [suppliers, products, sites] = await Promise.all([
+    db.supplier.findMany({ where: { ativo: true }, orderBy: { razaoSocial: "asc" }, select: { id: true, razaoSocial: true, nomeFantasia: true } }),
+    db.product.findMany({
+      where: { ativo: true, tipo: { in: ["SIMPLES", "INSUMO"] } },
+      orderBy: { nome: "asc" },
+      select: {
+        id: true,
+        nome: true,
+        sku: true,
+        custoMedio: true,
+        packagings: { select: { id: true, nome: true, fatorConversao: true, isCompraDefault: true } },
+        suppliers: { select: { supplierId: true } },
+      },
+    }),
+    db.site.findMany({ where: { ativo: true }, orderBy: { nome: "asc" }, select: { id: true, nome: true, tipo: true } }),
+  ]);
+
+  return {
+    suppliers,
+    sites,
+    products: products.map((p) => ({
+      id: p.id,
+      nome: p.nome,
+      sku: p.sku,
+      custoMedio: p.custoMedio ? n(p.custoMedio) : null,
+      supplierIds: p.suppliers.map((s) => s.supplierId),
+      packagings: p.packagings.map((pk) => ({
+        id: pk.id,
+        nome: pk.nome,
+        fatorConversao: Number(pk.fatorConversao),
+        isCompraDefault: pk.isCompraDefault,
+      })),
+    })),
+  };
+}
+
+// ── Extrato de entradas (feed multi-origem, read-only) ────────
+// Tudo que aumentou o estoque, agrupado por documento/origem:
+// compra (fornecedor/manual), transferência recebida, ajuste (inventário/
+// manual), devolução de cliente.
+
+export type EntradaEvento = {
+  id: string;
+  origem: "COMPRA" | "MANUAL" | "TRANSFERENCIA" | "AJUSTE" | "DEVOLUCAO_CLIENTE";
+  titulo: string;
+  subtitulo: string | null;
+  qtdItens: number | null; // documentos agrupados (compra, transferência)
+  detalhe: string | null; // linha única (ajuste, devolução): "+2 Brahma"
+  valor: number | null;
+  data: Date;
+  registradoPor: string | null;
+};
+
+export async function loadEntradasExtrato(siteId: string | null): Promise<EntradaEvento[]> {
+  const fmtN = (v: number) => `${v > 0 ? "+" : ""}${v.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}`;
+
+  // 1. Compras (Purchase) — já agrupadas por documento.
+  const purchases = await loadEntradas(siteId);
+  const eventos: EntradaEvento[] = purchases.map((p) => ({
+    id: `purchase:${p.id}`,
+    origem: p.tipo === "FORNECEDOR" ? "COMPRA" : "MANUAL",
+    titulo: p.tipo === "FORNECEDOR" ? (p.supplierNome ?? "Fornecedor") : "Entrada manual",
+    subtitulo: p.numeroPedido ? `Pedido ${p.numeroPedido}` : p.numeroNota ? `NF ${p.numeroNota}` : null,
+    qtdItens: p.totalItems,
+    detalhe: null,
+    valor: p.items.reduce((s, i) => s + i.custoTotal, 0),
+    data: p.data,
+    registradoPor: p.registradoPor,
+  }));
+
+  // 2. Movimentos de entrada que não são compra (ENTRADA já coberta acima).
+  const movs = await basePrisma.stockMovement.findMany({
+    where: {
+      ...(siteId ? { siteId } : {}),
+      tipo: { in: ["AJUSTE", "TRANSFERENCIA", "DEVOLUCAO_CLIENTE"] },
+      OR: [{ deltaFechado: { gt: 0 } }, { deltaAberto: { gt: 0 } }],
+    },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+  });
+
+  const prodMap = await mapProdutos([...new Set(movs.map((m) => m.productId))]);
+
+  const transferIds = [...new Set(movs.flatMap((m) => (m.tipo === "TRANSFERENCIA" && m.transferId ? [m.transferId] : [])))];
+  const transfers = transferIds.length
+    ? await db.transfer.findMany({
+        where: { id: { in: transferIds } },
+        include: { origem: { select: { nome: true } }, destino: { select: { nome: true } } },
+      })
+    : [];
+  const transferMap = new Map(transfers.map((t) => [t.id, t]));
+
+  // Transferências recebidas: agrupa por transferId (1 evento, N itens).
+  const transferAgg = new Map<string, { ids: Set<string>; data: Date }>();
+
+  for (const m of movs) {
+    const nome = prodMap.get(m.productId)?.nome ?? m.productId;
+    const qtd = Number(m.deltaFechado) || Number(m.deltaAberto);
+
+    if (m.tipo === "TRANSFERENCIA" && m.transferId) {
+      const a = transferAgg.get(m.transferId) ?? { ids: new Set<string>(), data: m.createdAt };
+      a.ids.add(m.productId);
+      transferAgg.set(m.transferId, a);
+    } else if (m.tipo === "AJUSTE") {
+      const inv = m.observacao?.toLowerCase().includes("inventário");
+      eventos.push({
+        id: `mov:${m.id}`,
+        origem: "AJUSTE",
+        titulo: inv ? "Ajuste de inventário" : "Ajuste manual",
+        subtitulo: null,
+        qtdItens: null,
+        detalhe: `${fmtN(qtd)} ${nome}`,
+        valor: null,
+        data: m.createdAt,
+        registradoPor: null,
+      });
+    } else if ((m.tipo as string) === "DEVOLUCAO_CLIENTE") {
+      eventos.push({
+        id: `mov:${m.id}`,
+        origem: "DEVOLUCAO_CLIENTE",
+        titulo: "Devolução de cliente",
+        subtitulo: null,
+        qtdItens: null,
+        detalhe: `${fmtN(qtd)} ${nome}`,
+        valor: null,
+        data: m.createdAt,
+        registradoPor: null,
+      });
+    }
+  }
+
+  for (const [tid, a] of transferAgg) {
+    const t = transferMap.get(tid);
+    eventos.push({
+      id: `transfer:${tid}`,
+      origem: "TRANSFERENCIA",
+      titulo: "Transferência recebida",
+      subtitulo: t ? `${t.origem.nome} → ${t.destino.nome}` : null,
+      qtdItens: a.ids.size,
+      detalhe: null,
+      valor: null,
+      data: a.data,
+      registradoPor: null,
+    });
+  }
+
+  return eventos.sort((a, b) => b.data.getTime() - a.data.getTime()).slice(0, 100);
 }
 
 // ── Form options for entrada ──────────────────────────────────
@@ -275,4 +527,210 @@ export async function loadPersonalizados() {
 
 export async function loadSitesTransferencia() {
   return db.site.findMany({ where: { ativo: true }, orderBy: { nome: "asc" } });
+}
+
+// ── Distribuição CD→loja: requisições, expedição, recebimento ──
+
+export type RequisicaoItemView = {
+  productId: string;
+  nome: string;
+  sku: string;
+  qtdSolicitada: number;
+  qtdAtendida: number | null;
+  saldoCd: number; // saldo fechado no CD (origem) — guia a expedição
+};
+
+export type RequisicaoView = {
+  id: string;
+  status: string;
+  origemSiteId: string;
+  origemNome: string;
+  destinoSiteId: string;
+  destinoNome: string;
+  observacao: string | null;
+  createdAt: Date;
+  items: RequisicaoItemView[];
+};
+
+/** Helper: mapa productId -> {nome, sku} para um conjunto de ids. */
+async function mapProdutos(productIds: string[]) {
+  if (productIds.length === 0) return new Map<string, { nome: string; sku: string }>();
+  const products = await db.product.findMany({
+    where: { id: { in: productIds } },
+    select: { id: true, nome: true, sku: true },
+  });
+  return new Map(products.map((p) => [p.id, { nome: p.nome, sku: p.sku }]));
+}
+
+/** Requisições recentes (abertas a atender + atendidas), com saldo no CD. */
+export async function loadRequisicoes(): Promise<RequisicaoView[]> {
+  const reqs = await db.requisicao.findMany({
+    where: { status: { in: ["ABERTA", "ATENDIDA"] } },
+    include: {
+      origem: { select: { id: true, nome: true } },
+      destino: { select: { id: true, nome: true } },
+      items: true,
+    },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+
+  const productIds = [...new Set(reqs.flatMap((r) => r.items.map((i) => i.productId)))];
+  const prodMap = await mapProdutos(productIds);
+
+  const stocks = productIds.length
+    ? await db.stock.findMany({
+        where: { productId: { in: productIds } },
+        select: { productId: true, siteId: true, estoqueFechado: true },
+      })
+    : [];
+  const saldoMap = new Map(stocks.map((s) => [`${s.productId}:${s.siteId}`, n(s.estoqueFechado)]));
+
+  return reqs.map((r) => ({
+    id: r.id,
+    status: r.status,
+    origemSiteId: r.origemSiteId,
+    origemNome: r.origem.nome,
+    destinoSiteId: r.destinoSiteId,
+    destinoNome: r.destino.nome,
+    observacao: r.observacao,
+    createdAt: r.createdAt,
+    items: r.items.map((i) => ({
+      productId: i.productId,
+      nome: prodMap.get(i.productId)?.nome ?? i.productId,
+      sku: prodMap.get(i.productId)?.sku ?? "",
+      qtdSolicitada: n(i.qtdSolicitada),
+      qtdAtendida: i.qtdAtendida != null ? n(i.qtdAtendida) : null,
+      saldoCd: saldoMap.get(`${i.productId}:${r.origemSiteId}`) ?? 0,
+    })),
+  }));
+}
+
+export type TransferView = {
+  id: string;
+  origemSiteId: string;
+  origemNome: string;
+  destinoSiteId: string;
+  destinoNome: string;
+  expedidoEm: Date | null;
+  observacao: string | null;
+  items: { productId: string; nome: string; sku: string; qtdExpedida: number }[];
+};
+
+/** Transfers EXPEDIDO filtrados por origem (CD: em trânsito) ou destino (loja: a receber). */
+async function loadTransfersExpedidos(
+  filter: { origemSiteId?: string; destinoSiteId?: string }
+): Promise<TransferView[]> {
+  const transfers = await db.transfer.findMany({
+    where: {
+      status: "EXPEDIDO",
+      ...(filter.origemSiteId ? { origemSiteId: filter.origemSiteId } : {}),
+      ...(filter.destinoSiteId ? { destinoSiteId: filter.destinoSiteId } : {}),
+    },
+    include: {
+      origem: { select: { id: true, nome: true } },
+      destino: { select: { id: true, nome: true } },
+      items: true,
+    },
+    orderBy: { expedidoEm: "desc" },
+  });
+
+  const productIds = [...new Set(transfers.flatMap((t) => t.items.map((i) => i.productId)))];
+  const prodMap = await mapProdutos(productIds);
+
+  return transfers.map((t) => ({
+    id: t.id,
+    origemSiteId: t.origemSiteId,
+    origemNome: t.origem.nome,
+    destinoSiteId: t.destinoSiteId,
+    destinoNome: t.destino.nome,
+    expedidoEm: t.expedidoEm,
+    observacao: t.observacao,
+    items: t.items.map((i) => ({
+      productId: i.productId,
+      nome: prodMap.get(i.productId)?.nome ?? i.productId,
+      sku: prodMap.get(i.productId)?.sku ?? "",
+      qtdExpedida: n(i.qtdExpedida ?? i.quantidade),
+    })),
+  }));
+}
+
+/** Loja: transfers em trânsito com destino neste site (a conferir/receber). */
+export function loadTransferenciasAReceber(siteId: string | null): Promise<TransferView[]> {
+  return loadTransfersExpedidos(siteId ? { destinoSiteId: siteId } : {});
+}
+
+/** CD: transfers que saíram deste site e ainda não foram recebidos (em trânsito). */
+export function loadEmTransito(siteId: string | null): Promise<TransferView[]> {
+  return loadTransfersExpedidos(siteId ? { origemSiteId: siteId } : {});
+}
+
+// ── Inventário / contagem ─────────────────────────────────────
+
+export type InventarioItemView = {
+  productId: string;
+  nome: string;
+  sku: string;
+  qtdSistema: number;
+  qtdContada: number | null;
+};
+
+export type InventarioView = {
+  id: string;
+  status: string;
+  siteId: string;
+  siteNome: string;
+  observacao: string | null;
+  createdAt: Date;
+  fechadoEm: Date | null;
+  items: InventarioItemView[];
+};
+
+export async function loadInventarios(siteId: string | null): Promise<InventarioView[]> {
+  const invs = await db.inventory.findMany({
+    where: siteId ? { siteId } : {},
+    include: {
+      site: { select: { nome: true } },
+      items: true,
+    },
+    orderBy: { createdAt: "desc" },
+    take: 30,
+  });
+
+  const productIds = [...new Set(invs.flatMap((i) => i.items.map((it) => it.productId)))];
+  const prodMap = await mapProdutos(productIds);
+
+  return invs.map((inv) => ({
+    id: inv.id,
+    status: inv.status,
+    siteId: inv.siteId,
+    siteNome: inv.site.nome,
+    observacao: inv.observacao,
+    createdAt: inv.createdAt,
+    fechadoEm: inv.fechadoEm,
+    items: inv.items.map((it) => ({
+      productId: it.productId,
+      nome: prodMap.get(it.productId)?.nome ?? it.productId,
+      sku: prodMap.get(it.productId)?.sku ?? "",
+      qtdSistema: n(it.qtdSistema),
+      qtdContada: it.qtdContada != null ? n(it.qtdContada) : null,
+    })),
+  }));
+}
+
+/** Opções para o formulário de requisição (sites + produtos estocáveis). */
+export async function loadRequisicaoFormOptions() {
+  const [sites, products] = await Promise.all([
+    db.site.findMany({
+      where: { ativo: true },
+      orderBy: { nome: "asc" },
+      select: { id: true, nome: true, tipo: true },
+    }),
+    db.product.findMany({
+      where: { ativo: true, tipo: { in: ["SIMPLES", "INSUMO"] } },
+      orderBy: { nome: "asc" },
+      select: { id: true, nome: true, sku: true },
+    }),
+  ]);
+  return { sites, products };
 }

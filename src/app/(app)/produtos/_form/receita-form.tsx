@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
-  AlertCircle,
   Check,
   CornerDownLeft,
   CookingPot,
@@ -111,10 +110,11 @@ const COPY: Record<
     novo: "Novo drink",
     ficha: "Ficha técnica",
     fichaVazia: "Organize os componentes em grupos. Cada grupo pode ter uma ou mais opções.",
-    buscaPlaceholder: "Buscar bebida, insumo ou guarnição…",
+    buscaPlaceholder: "Buscar bebida ou insumo…",
     disponivel: "doses montáveis",
-    preparoLabel: "Montagem (opcional)",
-    preparoPlaceholder: "Ex.: bater com gelo, coar, decorar com limão.",
+    preparoLabel: "Montagem",
+    preparoPlaceholder:
+      "Colocar 4 cubos de gelo\nAdicionar 20ml de vodka\nCompletar com 200ml de energético",
   },
   PRATO: {
     novo: "Novo prato",
@@ -131,7 +131,7 @@ const COPY: Record<
     fichaVazia: "Organize os componentes em grupos.",
     buscaPlaceholder: "Buscar produto ou insumo…",
     disponivel: "preparáveis",
-    preparoLabel: "Modo de preparo (opcional)",
+    preparoLabel: "Modo de preparo",
     preparoPlaceholder: "Instruções de preparo, se houver.",
   },
 };
@@ -192,7 +192,6 @@ export function ReceitaForm({
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [error, setError] = useState<string>();
   const [pdvOpen, setPdvOpen] = useState(false);
   const nomeRef = useRef<HTMLInputElement>(null);
   const imgFileRef = useRef<HTMLInputElement>(null);
@@ -203,7 +202,10 @@ export function ReceitaForm({
   const [nome, setNome] = useState(receita?.nome ?? "");
   const [copoMl, setCopoMl] = useState<string>(() => {
     const tipo = receita?.tipoReceita ?? tipoInicial;
-    if (tipo === "DRINK" && receita?.variants?.length) {
+    if (tipo !== "DRINK") return "";
+    if (receita?.copoMl) return receita.copoMl.toString();
+    // Legado: deriva do volume da variação padrão, quando houver
+    if (receita?.variants?.length) {
       const defaultVar = receita.variants.find((v) => v.isDefault) ?? receita.variants[0];
       return defaultVar?.volumeMl?.toString() ?? "";
     }
@@ -496,20 +498,21 @@ export function ReceitaForm({
   // ── Salvar ────────────────────────────────────────────────
 
   function salvar() {
-    setError(undefined);
+    const fail = (msg: string) => {
+      toast.error("Não foi possível salvar", msg);
+    };
     if (nome.trim().length < 2) {
-      setError("Informe o nome da receita.");
       nomeRef.current?.focus();
-      return;
+      return fail("Informe o nome da receita.");
     }
-    if (!subcategoryId) return setError("Escolha a subcategoria.");
+    if (!subcategoryId) return fail("Escolha a subcategoria.");
     if (tipoReceita === "DRINK" && !parseNum(copoMl))
-      return setError("Escolha o tamanho do copo antes de salvar.");
+      return fail("Escolha o tamanho do copo antes de salvar.");
     if (groups.length === 0)
-      return setError("Adicione ao menos um grupo à ficha técnica.");
+      return fail("Adicione ao menos um grupo à ficha técnica.");
     for (const g of groups) {
-      if (!g.nome.trim()) return setError("Todo grupo precisa de um nome.");
-      if (g.items.length === 0) return setError(`O grupo "${g.nome || "sem nome"}" está vazio.`);
+      if (!g.nome.trim()) return fail("Todo grupo precisa de um nome.");
+      if (g.items.length === 0) return fail(`O grupo "${g.nome || "sem nome"}" está vazio.`);
     }
     const copoNum = parseNum(copoMl);
     if (tipoReceita === "DRINK" && copoNum > 0) {
@@ -517,7 +520,7 @@ export function ReceitaForm({
         for (const item of g.items) {
           if (item.unidade === "ML" && parseQtd(item.quantidade) > copoNum) {
             const nome = byId.get(item.componentProductId)?.nome ?? "item";
-            return setError(`"${nome}" tem ${item.quantidade}ml mas o copo é de ${copoMl}ml.`);
+            return fail(`"${nome}" tem ${item.quantidade}ml mas o copo é de ${copoMl}ml.`);
           }
         }
       }
@@ -528,7 +531,7 @@ export function ReceitaForm({
       try {
         salesChannels = channelsToInput(channels);
       } catch (e) {
-        return setError(e instanceof Error ? e.message : "Canal online sem preço.");
+        return fail(e instanceof Error ? e.message : "Canal online sem preço.");
       }
     }
 
@@ -539,6 +542,7 @@ export function ReceitaForm({
       precoVenda: precoNum,
       restricaoIdade: idadeAuto,
       tipoReceita,
+      copoMl: tipoReceita === "DRINK" ? parseNum(copoMl) || null : null,
       modoPreparo: modoPreparo || undefined,
       vendeOnline: tipoReceita !== "DRINK" && vendeOnline,
       pesoGramas: pesoGramas ? Number(pesoGramas) : undefined,
@@ -579,7 +583,10 @@ export function ReceitaForm({
         router.push("/produtos");
         router.refresh();
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Falha ao salvar.");
+        toast.error(
+          "Não foi possível salvar",
+          e instanceof Error ? e.message : "Falha ao salvar.",
+        );
       }
     });
   }
@@ -638,7 +645,17 @@ export function ReceitaForm({
             </div>
 
             {/* Essenciais — nome + subcategoria + SKU + preço */}
-            <SectionCard title="Essenciais">
+            <SectionCard
+              title="Essenciais"
+              badge={
+                idadeAuto ? (
+                  <span className="ml-auto flex items-center gap-1 rounded-full border border-warn/30 bg-warn-soft px-2 py-0.5 text-[10px] font-semibold text-warn">
+                    <ShieldCheck size={11} className="shrink-0" />
+                    Venda restrita +18
+                  </span>
+                ) : undefined
+              }
+            >
               <Field label="Nome da receita" htmlFor="nome">
                 <Input
                   id="nome"
@@ -699,12 +716,6 @@ export function ReceitaForm({
                   </div>
                 </Field>
               </div>
-              {idadeAuto && (
-                <div className="flex items-center gap-2 rounded-sm border border-warn/30 bg-warn-soft px-3 py-2">
-                  <ShieldCheck size={14} className="shrink-0 text-warn" />
-                  <span className="text-xs text-warn">Venda restrita a maiores de 18 anos</span>
-                </div>
-              )}
             </SectionCard>
 
             {/* Imagem */}
@@ -728,7 +739,7 @@ export function ReceitaForm({
                   )}
                 </div>
                 <div className="flex min-w-0 flex-1 flex-col gap-2">
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <Button
                       type="button"
                       variant="secondary"
@@ -749,16 +760,16 @@ export function ReceitaForm({
                         <Trash2 size={15} /> Remover
                       </Button>
                     )}
+                    <span className="text-xs text-muted">JPG, PNG ou WebP, até 2 MB.</span>
                   </div>
-                  <p className="text-xs text-muted">JPG, PNG ou WebP, até 2 MB.</p>
+                  <Input
+                    value={imagemUrl}
+                    onChange={(e) => setImagemUrl(e.target.value)}
+                    placeholder="Ou cole a URL da imagem"
+                    className="text-[12px]"
+                  />
                 </div>
               </div>
-              <Input
-                value={imagemUrl}
-                onChange={(e) => setImagemUrl(e.target.value)}
-                placeholder="Ou cole a URL da imagem"
-                className="mt-2 text-[12px]"
-              />
             </SectionCard>
 
             {/* Montagem/Preparo */}
@@ -918,16 +929,18 @@ export function ReceitaForm({
 
                         {/* Busca dentro do grupo */}
                         <div className="relative px-3 pt-2.5">
-                          <Search
-                            size={14}
-                            className="pointer-events-none absolute left-6 top-1/2 -translate-y-1/2 text-faint"
-                          />
-                          <Input
-                            value={g.busca}
-                            onChange={(e) => updateGroup(g.key, { busca: e.target.value })}
-                            placeholder={copy.buscaPlaceholder}
-                            className="pl-8 text-[13px]"
-                          />
+                          <div className="relative">
+                            <Search
+                              size={14}
+                              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint"
+                            />
+                            <Input
+                              value={g.busca}
+                              onChange={(e) => updateGroup(g.key, { busca: e.target.value })}
+                              placeholder={copy.buscaPlaceholder}
+                              className="pl-8 text-[13px]"
+                            />
+                          </div>
                           {g.busca.trim() && (
                             <div className="absolute z-40 mt-1 max-h-60 w-[calc(100%-1.5rem)] overflow-y-auto rounded-(--radius) border border-line bg-surface p-1 shadow-(--shadow-2)">
                               {resultados.length === 0 ? (
@@ -1035,7 +1048,7 @@ export function ReceitaForm({
                                               })
                                             }
                                             containerClassName="w-auto"
-                                            className="h-7 px-1.5 text-[12px]"
+                                            className="h-7 pl-2 pr-7 text-[12px]"
                                           >
                                             <option value="UN">un</option>
                                             <option value="ML">ml</option>
@@ -1168,12 +1181,6 @@ export function ReceitaForm({
           </div>
         </div>
 
-        {error && (
-          <p className="mt-4 flex items-center gap-2 rounded-sm bg-danger-soft px-3 py-2.5 text-sm text-danger">
-            <AlertCircle size={15} className="shrink-0" />
-            {error}
-          </p>
-        )}
       </div>
 
       {/* Footer de ações */}

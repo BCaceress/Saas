@@ -1188,25 +1188,22 @@ export function ProductForm({
                       </Select>
                     </Field>
                   )}
-                  <Field
-                    label="Estoque inicial"
-                    htmlFor="ini"
-                    hint={
-                      mode === "edit"
-                        ? "Ajuste via movimentação."
-                        : pkHintText(estoqueInicial)
-                    }
-                  >
-                    <Input
-                      id="ini"
-                      value={estoqueInicial}
-                      onChange={(e) => setInicial(e.target.value)}
-                      placeholder="0"
-                      inputMode="numeric"
-                      disabled={mode === "edit"}
-                      className="font-mono"
-                    />
-                  </Field>
+                  {mode !== "edit" && (
+                    <Field
+                      label="Estoque inicial"
+                      htmlFor="ini"
+                      hint={pkHintText(estoqueInicial)}
+                    >
+                      <Input
+                        id="ini"
+                        value={estoqueInicial}
+                        onChange={(e) => setInicial(e.target.value)}
+                        placeholder="0"
+                        inputMode="numeric"
+                        className="font-mono"
+                      />
+                    </Field>
+                  )}
                 </div>
               </SectionBlock>
 
@@ -1645,17 +1642,18 @@ export function ProductForm({
 
               {controleEstoque && (
                 <>
-                  <Field label="Estoque inicial" htmlFor="ini">
-                    <Input
-                      id="ini"
-                      value={estoqueInicial}
-                      onChange={(e) => setInicial(e.target.value)}
-                      placeholder="0"
-                      inputMode="numeric"
-                      disabled={mode === "edit"}
-                      className="font-mono"
-                    />
-                  </Field>
+                  {mode !== "edit" && (
+                    <Field label="Estoque inicial" htmlFor="ini">
+                      <Input
+                        id="ini"
+                        value={estoqueInicial}
+                        onChange={(e) => setInicial(e.target.value)}
+                        placeholder="0"
+                        inputMode="numeric"
+                        className="font-mono"
+                      />
+                    </Field>
+                  )}
                   <div className="grid grid-cols-2 gap-3">
                     <Field label="Mínimo" htmlFor="min">
                       <Input

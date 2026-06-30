@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(curl -s http://localhost:3000/vendas/caixa)"
+      "Bash(curl -s http://localhost:3000/vendas/caixa)",
+      "PowerShell(npm run db:push 2>&1)",
+      "PowerShell(npx tsc --noEmit 2>&1)",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Select-Object ProcessId, @{n='Cmd';e={$_.CommandLine.Substring\\(0,[Math]::Min\\(90,$_.CommandLine.Length\\)\\)}} | Format-Table -AutoSize)",
+      "PowerShell('18168','21204','13588','23048' | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; \"stopped $_\" } catch { \"skip $_\" } })",
+      "PowerShell(Start-Process npm -ArgumentList 'run','dev' -WorkingDirectory 'D:\\\\Saas' -WindowStyle Hidden)",
+      "PowerShell(\"dev server starting\")"
     ]
   }
 }

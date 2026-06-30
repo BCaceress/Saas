@@ -9,8 +9,11 @@ import {
   Loader2,
   Store,
   Warehouse,
+  Search,
 } from "lucide-react";
 import { createSite, updateSite, toggleSiteAtivo } from "../../estoque/actions";
+import { Sheet } from "@/components/ui/sheet";
+import { maskCep } from "@/lib/masks";
 import { cn } from "@/lib/utils";
 
 type Site = {
@@ -49,6 +52,32 @@ export function SitesManager({
   const [estado, setEstado] = useState("");
   const [estoquePropio, setEstoquePropio] = useState(true);
   const [cdAbastecedorId, setCdAbastecedorId] = useState("");
+  const [cepLoading, setCepLoading] = useState(false);
+
+  async function buscarCep() {
+    const digits = cep.replace(/\D/g, "");
+    if (digits.length !== 8) {
+      setError("CEP precisa de 8 dígitos.");
+      return;
+    }
+    setError(null);
+    setCepLoading(true);
+    try {
+      const res = await fetch(`/api/cep/${digits}`);
+      const d = await res.json();
+      if (res.ok) {
+        if (d.rua) setRua(d.rua);
+        if (d.cidade) setCidade(d.cidade);
+        if (d.estado) setEstado(d.estado);
+      } else {
+        setError(d.error ?? "Não foi possível buscar o CEP.");
+      }
+    } catch {
+      setError("Falha ao consultar o CEP. Verifique a conexão.");
+    } finally {
+      setCepLoading(false);
+    }
+  }
 
   function openAdd() {
     setEditing(null);
@@ -162,53 +191,68 @@ export function SitesManager({
         </button>
       </div>
 
-      {/* Form */}
-      {showForm && (
-        <div className="flex flex-col gap-4 rounded-[var(--radius-lg)] border border-brand bg-brand-soft p-5">
-          <p className="text-sm font-semibold text-ink">
-            {editing ? "Editar estabelecimento" : "Novo estabelecimento"}
-          </p>
+      {/* Sidepanel — adicionar / editar */}
+      <Sheet
+        open={showForm}
+        onClose={cancel}
+        title={editing ? "Editar estabelecimento" : "Novo estabelecimento"}
+        description="Lojas, pontos autônomos e centros de distribuição."
+        footer={
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={cancel}
+              className="cursor-pointer rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={save}
+              disabled={pending}
+              className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-60"
+            >
+              {pending && <Loader2 size={13} className="animate-spin" />}
+              {editing ? "Salvar" : "Criar"}
+            </button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {/* Nome */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wide text-faint">
+              Nome
+            </label>
+            <input
+              autoFocus
+              value={nome}
+              onChange={(e) => setNome(e.target.value)}
+              placeholder="Ex: Loja Centro, CD Principal"
+              className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            />
+          </div>
 
-          {/* Nome + Tipo */}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wide text-faint">
-                Nome
-              </label>
-              <input
-                autoFocus
-                value={nome}
-                onChange={(e) => setNome(e.target.value)}
-                placeholder="Ex: Loja Centro, CD Principal"
-                className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wide text-faint">
-                Tipo
-              </label>
-              <div className="flex gap-2">
-                {(["LOJA", "CD"] as const).map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => setTipo(t)}
-                    className={cn(
-                      "flex cursor-pointer flex-1 items-center justify-center gap-2 rounded-[var(--radius)] border px-3 py-2.5 text-sm font-medium transition-colors",
-                      tipo === t
-                        ? "border-brand bg-surface text-brand"
-                        : "border-line text-muted hover:bg-surface",
-                    )}
-                  >
-                    {t === "LOJA" ? (
-                      <Store size={15} />
-                    ) : (
-                      <Warehouse size={15} />
-                    )}
-                    {t === "LOJA" ? "Loja / Ponto" : "CD"}
-                  </button>
-                ))}
-              </div>
+          {/* Tipo */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wide text-faint">
+              Tipo
+            </label>
+            <div className="flex gap-2">
+              {(["LOJA", "CD"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTipo(t)}
+                  className={cn(
+                    "flex cursor-pointer flex-1 items-center justify-center gap-2 rounded-[var(--radius)] border px-3 py-2.5 text-sm font-medium transition-colors",
+                    tipo === t
+                      ? "border-brand bg-brand-soft text-brand"
+                      : "border-line text-muted hover:bg-surface-2",
+                  )}
+                >
+                  {t === "LOJA" ? <Store size={15} /> : <Warehouse size={15} />}
+                  {t === "LOJA" ? "Loja / Ponto" : "CD"}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -217,14 +261,34 @@ export function SitesManager({
             <legend className="text-xs font-semibold uppercase tracking-wide text-faint">
               Endereço (opcional)
             </legend>
-            <input
-              value={cep}
-              onChange={(e) => setCep(e.target.value)}
-              placeholder="CEP"
-              maxLength="9"
-              className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-            />
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-medium text-faint">CEP</label>
+              <div className="flex gap-2">
+                <input
+                  value={cep}
+                  onChange={(e) => setCep(maskCep(e.target.value))}
+                  onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), buscarCep())}
+                  placeholder="00000-000"
+                  inputMode="numeric"
+                  maxLength={9}
+                  className="flex-1 rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                />
+                <button
+                  type="button"
+                  onClick={buscarCep}
+                  disabled={cepLoading}
+                  className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-[var(--radius)] border border-line px-3 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-60"
+                >
+                  {cepLoading ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : (
+                    <Search size={15} />
+                  )}
+                  Buscar
+                </button>
+              </div>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
               <input
                 value={rua}
                 onChange={(e) => setRua(e.target.value)}
@@ -235,10 +299,10 @@ export function SitesManager({
                 value={numero}
                 onChange={(e) => setNumero(e.target.value)}
                 placeholder="Número"
-                className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:w-28"
               />
             </div>
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
               <input
                 value={cidade}
                 onChange={(e) => setCidade(e.target.value)}
@@ -248,9 +312,9 @@ export function SitesManager({
               <input
                 value={estado}
                 onChange={(e) => setEstado(e.target.value.toUpperCase())}
-                placeholder="Estado (UF)"
-                maxLength="2"
-                className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                placeholder="UF"
+                maxLength={2}
+                className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:w-20"
               />
             </div>
           </fieldset>
@@ -295,24 +359,8 @@ export function SitesManager({
           )}
 
           {error && <p className="text-sm text-danger">{error}</p>}
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={cancel}
-              className="cursor-pointer rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface"
-            >
-              Cancelar
-            </button>
-            <button
-              onClick={save}
-              disabled={pending}
-              className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-60"
-            >
-              {pending && <Loader2 size={13} className="animate-spin" />}
-              {editing ? "Salvar" : "Criar"}
-            </button>
-          </div>
         </div>
-      )}
+      </Sheet>
 
       {/* List */}
       {sites.length === 0 ? (

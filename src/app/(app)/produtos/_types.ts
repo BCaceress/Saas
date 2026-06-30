@@ -169,6 +169,7 @@ export type ReceitaData = {
   restricaoIdade: boolean;
   ativo: boolean;
   tipoReceita: RecipeType;
+  copoMl: number | null;
   modoPreparo: string | null;
   vendeOnline: boolean;
   pesoGramas: number | null;

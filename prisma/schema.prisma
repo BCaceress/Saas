@@ -90,6 +90,10 @@ model Tenant {
   moduloComodato Boolean @default(false)
   moduloRota     Boolean @default(false)
 
+  // Distribuição CD→loja: se true, recebimento exige contagem na loja (gera
+  // estoque em trânsito); se false, expedição auto-confirma o recebimento.
+  recebimentoExigeContagem Boolean @default(false)
+
   onboardingDone Boolean @default(false)
 
   createdAt DateTime @default(now())
@@ -236,11 +240,41 @@ enum MovementType {
   ABERTURA
   PRODUCAO
   PERDA
+  DEVOLUCAO_CLIENTE // cliente devolve → entra no estoque (+)
+  DEVOLUCAO_FORNECEDOR // devolvido ao fornecedor → sai do estoque (−)
 }
 
 enum PurchaseType {
   MANUAL
   FORNECEDOR
+}
+
+enum PurchaseOrderStatus {
+  RASCUNHO         // em elaboração 🟡
+  ENVIADO          // enviado ao fornecedor 🔵
+  AGUARDANDO       // aguardando entrega 🟠
+  RECEBIDO_PARCIAL // recebido em parte 🟢
+  RECEBIDO         // recebido por completo ✅
+  CANCELADO        // 🔴
+}
+
+enum RequisicaoStatus {
+  ABERTA // loja pediu, aguardando o CD separar
+  ATENDIDA // CD separou/expediu (gerou Transfer)
+  CANCELADA
+}
+
+enum TransferStatus {
+  SEPARANDO // criado, ainda não baixou do CD
+  EXPEDIDO // baixou do CD, em trânsito (aguarda recebimento na loja)
+  RECEBIDO // somou na loja (conferido ou auto-confirmado)
+  CANCELADA
+}
+
+enum InventoryStatus {
+  ABERTO // contagem em andamento
+  FECHADO // contado e ajustado
+  CANCELADO
 }
 
 enum SelectionType {
@@ -392,9 +426,10 @@ model Supplier {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  tenant    Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  products  ProductSupplier[]
-  purchases Purchase[]
+  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products       ProductSupplier[]
+  purchases      Purchase[]
+  purchaseOrders PurchaseOrder[]
 
   @@unique([tenantId, cnpj])
   @@index([tenantId])
@@ -441,6 +476,7 @@ model Product {
   ativo           Boolean @default(true)
 
   tipoReceita RecipeType?
+  copoMl      Decimal?    @db.Decimal(10, 2) // tamanho do copo (drink) — tamanho único
   modoPreparo String?
 
   vendeOnline     Boolean  @default(false)
@@ -647,9 +683,13 @@ model Site {
   stocks             Stock[]
   storageLocations   StorageLocation[]
   purchases          Purchase[]
+  purchaseOrders     PurchaseOrder[]
   productions        Production[]
   transfersOut       Transfer[]          @relation("TransferOrigem")
   transfersIn        Transfer[]          @relation("TransferDestino")
+  requisicoesOrigem  Requisicao[]        @relation("RequisicaoOrigem")
+  requisicoesDestino Requisicao[]        @relation("RequisicaoDestino")
+  inventories        Inventory[]
   sales              Sale[]
   cashSessions       CashSession[]
   paymentMethods     SitePaymentMethod[]
@@ -693,23 +733,76 @@ model StockMovement {
 }
 
 model Purchase {
-  id         String       @id @default(cuid())
-  tenantId   String
-  siteId     String
-  tipo       PurchaseType @default(MANUAL)
-  supplierId String?
-  numeroNota String?
-  data       DateTime     @default(now())
-  observacao String?
-  createdAt  DateTime     @default(now())
+  id              String       @id @default(cuid())
+  tenantId        String
+  siteId          String
+  tipo            PurchaseType @default(MANUAL)
+  supplierId      String?
+  purchaseOrderId String? // entrada gerada pela conferência de um pedido de compra
+  numeroNota      String?
+  data            DateTime     @default(now())
+  observacao      String?
+  createdAt       DateTime     @default(now())
+  createdBy       String?
 
-  site     Site           @relation(fields: [siteId], references: [id])
-  supplier Supplier?      @relation(fields: [supplierId], references: [id])
-  items    PurchaseItem[]
+  site          Site           @relation(fields: [siteId], references: [id])
+  supplier      Supplier?      @relation(fields: [supplierId], references: [id])
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  items         PurchaseItem[]
 
   @@index([tenantId])
   @@index([siteId])
   @@index([supplierId])
+  @@index([purchaseOrderId])
+}
+
+// Pedido de compra ao fornecedor (PC-00125). Ciclo: rascunho → enviado →
+// aguardando → recebido (parcial/total). A conferência no recebimento gera
+// a(s) Purchase(s) de entrada que somam no estoque e atualiza qtdRecebida.
+model PurchaseOrder {
+  id               String              @id @default(cuid())
+  tenantId         String
+  siteId           String // destino: onde a mercadoria entra
+  supplierId       String
+  numero           String // PC-00125 (sequencial por tenant)
+  status           PurchaseOrderStatus @default(RASCUNHO)
+  previsaoEntrega  DateTime?
+  valorTotal       Decimal             @default(0) @db.Decimal(12, 2) // soma cacheada dos itens
+  observacao       String?
+  financeiroGerado Boolean             @default(false) // gancho Contas a Pagar (stub)
+  enviadoEm        DateTime?
+  recebidoEm       DateTime?
+  canceladoEm      DateTime?
+  createdAt        DateTime            @default(now())
+  createdBy        String?
+
+  site     Site                @relation(fields: [siteId], references: [id])
+  supplier Supplier            @relation(fields: [supplierId], references: [id])
+  items    PurchaseOrderItem[]
+  entradas Purchase[]
+
+  @@unique([tenantId, numero])
+  @@index([tenantId])
+  @@index([siteId])
+  @@index([supplierId])
+  @@index([status])
+}
+
+model PurchaseOrderItem {
+  id              String  @id @default(cuid())
+  tenantId        String
+  purchaseOrderId String
+  productId       String
+  packagingId     String? // unidade de compra (caixa, fardo…)
+  qtdPedida       Decimal @db.Decimal(12, 3)
+  custoUnitario   Decimal @default(0) @db.Decimal(12, 2) // custo por unidade de compra
+  qtdRecebida     Decimal @default(0) @db.Decimal(12, 3) // acumulado conferido
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([purchaseOrderId])
+  @@index([productId])
 }
 
 model PurchaseItem {
@@ -729,34 +822,118 @@ model PurchaseItem {
 }
 
 model Transfer {
-  id            String   @id @default(cuid())
+  id            String         @id @default(cuid())
   tenantId      String
   origemSiteId  String
   destinoSiteId String
-  data          DateTime @default(now())
+  status        TransferStatus @default(RECEBIDO) // default RECEBIDO p/ não quebrar linhas atômicas antigas
+  requisicaoId  String?        @unique
+  data          DateTime       @default(now())
+  expedidoEm    DateTime?
+  recebidoEm    DateTime?
+  temDivergencia Boolean       @default(false)
   observacao    String?
-  createdAt     DateTime @default(now())
+  createdAt     DateTime       @default(now())
+  createdBy     String?
 
-  origem  Site           @relation("TransferOrigem", fields: [origemSiteId], references: [id])
-  destino Site           @relation("TransferDestino", fields: [destinoSiteId], references: [id])
-  items   TransferItem[]
+  origem     Site        @relation("TransferOrigem", fields: [origemSiteId], references: [id])
+  destino    Site        @relation("TransferDestino", fields: [destinoSiteId], references: [id])
+  requisicao Requisicao? @relation(fields: [requisicaoId], references: [id])
+  items      TransferItem[]
 
   @@index([tenantId])
   @@index([origemSiteId])
   @@index([destinoSiteId])
+  @@index([status])
 }
 
 model TransferItem {
-  id         String  @id @default(cuid())
-  tenantId   String
-  transferId String
-  productId  String
-  quantidade Decimal @db.Decimal(12, 3)
+  id          String   @id @default(cuid())
+  tenantId    String
+  transferId  String
+  productId   String
+  quantidade  Decimal  @db.Decimal(12, 3) // qtd solicitada/planejada na transferência
+  qtdExpedida Decimal? @db.Decimal(12, 3) // baixado do CD na expedição
+  qtdRecebida Decimal? @db.Decimal(12, 3) // contado na loja no recebimento
 
   transfer Transfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
   @@index([transferId])
+  @@index([productId])
+}
+
+// Requisição interna: loja (destino) pede ao CD (origem). Sem aprovação —
+// cai direto pro CD separar/expedir, o que gera o Transfer ligado.
+model Requisicao {
+  id            String           @id @default(cuid())
+  tenantId      String
+  origemSiteId  String // CD que atende
+  destinoSiteId String // loja que pede
+  status        RequisicaoStatus @default(ABERTA)
+  observacao    String?
+  createdAt     DateTime         @default(now())
+  createdBy     String?
+  atendidaEm    DateTime?
+
+  origem  Site             @relation("RequisicaoOrigem", fields: [origemSiteId], references: [id])
+  destino Site             @relation("RequisicaoDestino", fields: [destinoSiteId], references: [id])
+  items   RequisicaoItem[]
+  transfer Transfer?
+
+  @@index([tenantId])
+  @@index([origemSiteId])
+  @@index([destinoSiteId])
+  @@index([status])
+}
+
+model RequisicaoItem {
+  id            String   @id @default(cuid())
+  tenantId      String
+  requisicaoId  String
+  productId     String
+  qtdSolicitada Decimal  @db.Decimal(12, 3)
+  qtdAtendida   Decimal? @db.Decimal(12, 3) // CD pode separar menos se faltar saldo
+
+  requisicao Requisicao @relation(fields: [requisicaoId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([requisicaoId])
+  @@index([productId])
+}
+
+// Inventário (contagem). Na abertura tira snapshot do saldo por produto no site;
+// no fechamento, a divergência (contado − saldo atual) gera um AJUSTE no razão.
+model Inventory {
+  id         String          @id @default(cuid())
+  tenantId   String
+  siteId     String
+  status     InventoryStatus @default(ABERTO)
+  observacao String?
+  createdAt  DateTime        @default(now())
+  createdBy  String?
+  fechadoEm  DateTime?
+
+  site  Site            @relation(fields: [siteId], references: [id])
+  items InventoryItem[]
+
+  @@index([tenantId])
+  @@index([siteId])
+  @@index([status])
+}
+
+model InventoryItem {
+  id          String   @id @default(cuid())
+  tenantId    String
+  inventoryId String
+  productId   String
+  qtdSistema  Decimal  @db.Decimal(12, 3) // snapshot na abertura
+  qtdContada  Decimal? @db.Decimal(12, 3) // contagem física
+
+  inventory Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([inventoryId])
   @@index([productId])
 }
 
@@ -826,6 +1003,9 @@ model SaleItem {
   precoUnitario Decimal @db.Decimal(10, 2)
   desconto      Decimal @default(0) @db.Decimal(10, 2)
   total         Decimal @db.Decimal(12, 2)
+
+  // PERSONALIZADO: componentes escolhidos no PDV — guiam a baixa de estoque.
+  selectedComponentIds String[] @default([])
 
   sale Sale @relation(fields: [saleId], references: [id], onDelete: Cascade)
 

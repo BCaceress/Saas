@@ -7,9 +7,18 @@ import { registrarTransferenciaAction } from "../actions";
 
 type Site = { id: string; nome: string; tipo: string };
 type Product = { id: string; nome: string; sku: string };
+type Saldo = { productId: string; siteId: string; saldo: number };
 type Item = { productId: string; quantidade: number };
 
-export function TransferenciaForm({ sites, products }: { sites: Site[]; products: Product[] }) {
+export function TransferenciaForm({
+  sites,
+  products,
+  saldos,
+}: {
+  sites: Site[];
+  products: Product[];
+  saldos: Saldo[];
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -18,6 +27,13 @@ export function TransferenciaForm({ sites, products }: { sites: Site[]; products
   const [destinoId, setDestinoId] = useState(sites[1]?.id ?? "");
   const [observacao, setObservacao] = useState("");
   const [items, setItems] = useState<Item[]>([{ productId: "", quantidade: 1 }]);
+
+  // Saldo do produto na origem selecionada (0 se não houver).
+  const saldoNaOrigem = (productId: string) =>
+    saldos.find((s) => s.productId === productId && s.siteId === origemId)?.saldo ?? 0;
+
+  // Só produtos com saldo > 0 na origem aparecem na lista.
+  const disponiveis = products.filter((p) => saldoNaOrigem(p.id) > 0);
 
   function addItem() {
     setItems((p) => [...p, { productId: "", quantidade: 1 }]);
@@ -36,6 +52,12 @@ export function TransferenciaForm({ sites, products }: { sites: Site[]; products
     const valid = items.filter((i) => i.productId && i.quantidade > 0);
     if (valid.length === 0) { setError("Adicione ao menos um item."); return; }
     if (origemId === destinoId) { setError("Origem e destino devem ser diferentes."); return; }
+    const semSaldo = valid.find((i) => i.quantidade > saldoNaOrigem(i.productId));
+    if (semSaldo) {
+      const p = products.find((pp) => pp.id === semSaldo.productId);
+      setError(`Quantidade acima do saldo de "${p?.nome ?? "produto"}" na origem (disp.: ${saldoNaOrigem(semSaldo.productId)}).`);
+      return;
+    }
 
     startTransition(async () => {
       try {
@@ -60,7 +82,10 @@ export function TransferenciaForm({ sites, products }: { sites: Site[]; products
           <label className="text-xs font-semibold uppercase tracking-wide text-faint">Origem</label>
           <select
             value={origemId}
-            onChange={(e) => setOrigemId(e.target.value)}
+            onChange={(e) => {
+              setOrigemId(e.target.value);
+              setItems([{ productId: "", quantidade: 1 }]); // origem mudou: limpa itens
+            }}
             className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             {sites.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
@@ -82,6 +107,11 @@ export function TransferenciaForm({ sites, products }: { sites: Site[]; products
       {/* Items */}
       <div className="flex flex-col gap-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-faint">Itens a transferir</p>
+        {disponiveis.length === 0 && (
+          <p className="rounded-[var(--radius)] bg-surface-2 px-4 py-3 text-sm text-muted">
+            Nenhum produto com saldo na origem selecionada.
+          </p>
+        )}
         {items.map((item, idx) => (
           <div key={idx} className="flex items-end gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4">
             <div className="flex flex-1 flex-col gap-1">
@@ -92,8 +122,10 @@ export function TransferenciaForm({ sites, products }: { sites: Site[]; products
                 className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
               >
                 <option value="">Selecione...</option>
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>{p.nome} ({p.sku})</option>
+                {disponiveis.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.nome} ({p.sku}) · {saldoNaOrigem(p.id)} disp.
+                  </option>
                 ))}
               </select>
             </div>
@@ -103,6 +135,7 @@ export function TransferenciaForm({ sites, products }: { sites: Site[]; products
                 type="number"
                 min={1}
                 step={1}
+                max={item.productId ? saldoNaOrigem(item.productId) : undefined}
                 value={item.quantidade}
                 onChange={(e) => updateItem(idx, { quantidade: Number(e.target.value) })}
                 className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"

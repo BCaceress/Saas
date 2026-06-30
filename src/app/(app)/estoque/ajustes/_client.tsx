@@ -12,10 +12,12 @@ export function AjustesForm({
   sites,
   defaultSiteId,
   products,
+  onDone,
 }: {
   sites: Site[];
   defaultSiteId: string | null;
   products: Product[];
+  onDone?: () => void;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +51,7 @@ export function AjustesForm({
         setDeltaFechado(0);
         setDeltaAberto(0);
         setObservacao("");
+        onDone?.();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao registrar.");
       }

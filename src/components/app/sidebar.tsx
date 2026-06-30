@@ -158,10 +158,10 @@ export function Sidebar({
           />
         ) : (
           <Image
-            src="/images/logoTextoVertical.png"
+            src="/svg/logoTextoHorizontal.svg"
             alt="NoHub Market"
-            width={220}
-            height={60}
+            width={160}
+            height={40}
             loading="eager"
             className="h-auto w-auto object-contain"
           />

@@ -11,6 +11,8 @@ const TIPO_LABEL: Record<string, string> = {
   ABERTURA: "Abertura",
   PRODUCAO: "Produção",
   PERDA: "Perda",
+  DEVOLUCAO_CLIENTE: "Devolução cliente",
+  DEVOLUCAO_FORNECEDOR: "Devolução fornecedor",
 };
 
 const TIPO_COLOR: Record<string, string> = {
@@ -21,6 +23,8 @@ const TIPO_COLOR: Record<string, string> = {
   ABERTURA: "bg-warn-soft text-warn",
   PRODUCAO: "bg-warn-soft text-warn",
   PERDA: "bg-danger-soft text-danger",
+  DEVOLUCAO_CLIENTE: "bg-ok-soft text-ok",
+  DEVOLUCAO_FORNECEDOR: "bg-danger-soft text-danger",
 };
 
 const fmt = (v: number, prefix = "") =>
