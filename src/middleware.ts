@@ -35,9 +35,9 @@ export default auth((req) => {
     return NextResponse.redirect(loginUrl);
   }
 
-  // Raiz do subdomínio → home do app.
+  // Raiz do subdomínio → home do app (dashboard).
   if (pathname === "/") {
-    return NextResponse.redirect(new URL("/produtos", req.url));
+    return NextResponse.redirect(new URL("/inicio", req.url));
   }
 
   return NextResponse.next();

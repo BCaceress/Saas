@@ -1081,3 +1081,31 @@ model SitePaymentMethod {
   @@unique([siteId, metodo])
   @@index([tenantId])
 }
+
+// ============================================================
+// ANALYTICS (Fase 7)
+// StockSnapshot: foto diária do saldo/valor por (produto × site). Capturado por
+// job diário (idempotente por dia). Necessário PROSPECTIVAMENTE — giro e valor
+// histórico de estoque não se reconstroem barato a partir do razão.
+// productId/siteId são escalares (alto volume; alinhado a StockMovement).
+// ============================================================
+
+model StockSnapshot {
+  id        String   @id @default(cuid())
+  tenantId  String
+  siteId    String
+  productId String
+  data      DateTime @db.Date
+
+  saldoFechado Decimal  @db.Decimal(12, 3)
+  saldoAberto  Decimal  @db.Decimal(12, 3)
+  custoMedio   Decimal? @db.Decimal(10, 2)
+  valorEstoque Decimal? @db.Decimal(14, 2) // (fechado + aberto convertido) × custoMedio
+
+  createdAt DateTime @default(now())
+
+  @@unique([siteId, productId, data])
+  @@index([tenantId])
+  @@index([siteId, data])
+  @@index([data])
+}

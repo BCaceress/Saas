@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Home,
   Boxes,
   Warehouse,
   ShoppingCart,
@@ -54,6 +55,13 @@ export function Sidebar({
     {
       title: "Principal",
       items: [
+        {
+          href: "/inicio",
+          label: "Início",
+          icon: <Home size={19} />,
+          enabled: true,
+          show: true,
+        },
         {
           href: "/produtos",
           label: "Produtos",
@@ -112,7 +120,7 @@ export function Sidebar({
           href: "/relatorios",
           label: "Relatórios",
           icon: <BarChart3 size={19} />,
-          enabled: false,
+          enabled: true,
           show: true,
         },
         {
