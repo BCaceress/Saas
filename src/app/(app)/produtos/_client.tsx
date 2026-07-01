@@ -6,16 +6,17 @@ import { useRouter } from "next/navigation";
 import {
   Plus, Tag, FolderTree, Warehouse, Truck, Upload, Search, Settings2,
   Pencil, PackageOpen, Wine, ChevronDown, Boxes, Sparkles,
-  MoreVertical, Percent, EyeOff, Eye, X, ShoppingCart, Building2,
+  MoreVertical, Percent, EyeOff, Eye, X,
   Barcode, Hash,
 } from "lucide-react";
 import { cn, brl, margem } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { Input, Select } from "@/components/ui/input";
-import { Sheet } from "@/components/ui/sheet";
 import { PageHeader } from "@/components/app/page-header";
-import { StockGauge } from "@/components/stock-gauge";
+import {
+  ProductSidePanel, stockLevel, TIPO_LABEL, TIPO_ICON, STOCK_COLOR, STOCK_TITLE, STOCK_TEXT,
+} from "@/components/app/product-side-panel";
 import { BrandSheet, CategorySheet, StorageSheet, SupplierSheet } from "./_sheets/sidepanels";
 import { CsvSheet } from "./_sheets/csv-sheet";
 import { archiveProduct } from "./actions";
@@ -25,31 +26,6 @@ import type {
 } from "./_types";
 
 type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv";
-
-const TIPO_LABEL: Record<string, string> = {
-  SIMPLES: "Simples", INSUMO: "Insumo", COMBO: "Combo", PERSONALIZADO: "Receita",
-};
-
-const TIPO_ICON: Record<string, React.ReactNode> = {
-  SIMPLES: <Wine size={13} />,
-  INSUMO: <PackageOpen size={13} />,
-  COMBO: <Boxes size={13} />,
-  PERSONALIZADO: <Sparkles size={13} />,
-};
-
-function stockLevel(p: ProductRow): "ok" | "warn" | "danger" {
-  if (p.disponibilidadeDerivada !== null) {
-    return p.disponibilidadeDerivada > 0 ? "ok" : "danger";
-  }
-  const { fechado, minimo, ideal } = p.estoque;
-  if (fechado <= minimo) return "danger";
-  if (ideal > 0 && fechado < ideal) return "warn";
-  return "ok";
-}
-
-const STOCK_COLOR = { ok: "bg-ok", warn: "bg-warn", danger: "bg-danger" } as const;
-const STOCK_TITLE = { ok: "Disponível", warn: "Estoque baixo", danger: "Sem estoque" } as const;
-const STOCK_TEXT  = { ok: "text-ok", warn: "text-warn", danger: "text-danger" } as const;
 
 export function ProdutosClient(props: {
   rows: ProductRow[];
@@ -311,6 +287,7 @@ export function ProdutosClient(props: {
 
       {selectedProduct && (
         <ProductSidePanel
+          key={selectedProduct.id}
           product={selectedProduct}
           onClose={() => setSelectedProduct(null)}
           onEdit={() => router.push(`/produtos/${selectedProduct.id}/editar`)}
@@ -463,171 +440,6 @@ function ImageViewer({ url, onClose }: { url: string; onClose: () => void }) {
       >
         <X size={18} />
       </button>
-    </div>
-  );
-}
-
-// ── Painel lateral de detalhes do produto ─────────────────────────────────────
-
-function ProductSidePanel({
-  product, onClose, onEdit,
-}: {
-  product: ProductRow;
-  onClose: () => void;
-  onEdit: () => void;
-}) {
-  const level = stockLevel(product);
-  const totalEstoque = product.estoque.fechado + product.estoque.aberto;
-
-  const barcodeCodes = [
-    product.ean ? { label: "Unid.", code: product.ean } : null,
-    ...product.packagings.filter((pk) => !!pk.ean).map((pk) => ({
-      label: `${pk.nome} ${pk.fatorConversao}x`,
-      code: pk.ean!,
-    })),
-  ].filter(Boolean) as { label: string; code: string }[];
-
-  return (
-    <Sheet
-      open
-      onClose={onClose}
-      title={product.nome}
-      description={`${TIPO_LABEL[product.tipo]} · ${product.subcategoriaNome}`}
-      width="md"
-      footer={
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={onClose} className="flex-1">Fechar</Button>
-          <Button onClick={onEdit} className="flex-1 gap-1.5"><Pencil size={14} /> Editar</Button>
-        </div>
-      }
-    >
-      <div className="space-y-5">
-        {/* Identificação */}
-        <div className="grid grid-cols-2 gap-3">
-          <InfoCard label="SKU">
-            <span className="font-mono text-[13px] font-medium text-ink">{product.sku}</span>
-          </InfoCard>
-          <InfoCard label="Tipo">
-            <span className="inline-flex items-center gap-1.5 text-[13px] text-ink-2">
-              <span className="text-faint">{TIPO_ICON[product.tipo]}</span>
-              {TIPO_LABEL[product.tipo]}
-            </span>
-          </InfoCard>
-          {product.marca && (
-            <InfoCard label="Marca">
-              <span className="text-[13px] text-ink-2">{product.marca}</span>
-            </InfoCard>
-          )}
-          <InfoCard label="Subcategoria">
-            <span className="text-[13px] text-ink-2">{product.subcategoriaNome}</span>
-          </InfoCard>
-        </div>
-
-        {/* Estoque */}
-        <div className="rounded-[var(--radius-lg)] border border-line p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-[12px] font-semibold uppercase tracking-wider text-faint">Estoque</h3>
-            <span className={cn("inline-flex items-center gap-1.5 text-[11px] font-medium",
-              level === "ok" ? "text-ok" : level === "warn" ? "text-warn" : "text-danger"
-            )}>
-              <span className={cn("h-2 w-2 rounded-full", STOCK_COLOR[level])} />
-              {STOCK_TITLE[level]}
-            </span>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="text-[11px] text-faint">Total em estoque</div>
-              <div className="font-mono text-lg font-semibold text-ink tnum">{totalEstoque}</div>
-              <div className="text-[11px] text-muted">{product.unidadeBase}</div>
-            </div>
-            <div>
-              <div className="text-[11px] text-faint">Total vendido</div>
-              <div className="flex items-end gap-1.5">
-                <ShoppingCart size={14} className="mb-0.5 text-muted" />
-                <span className="font-mono text-lg font-semibold text-ink tnum">{product.totalVendido}</span>
-              </div>
-              <div className="text-[11px] text-muted">{product.unidadeBase}</div>
-            </div>
-          </div>
-          {product.tipo !== "INSUMO" && (
-            <div className="mt-3 border-t border-line pt-3">
-              <StockGauge
-                fechado={product.estoque.fechado}
-                aberto={product.estoque.aberto}
-                minimo={product.estoque.minimo}
-                ideal={product.estoque.ideal}
-                conteudoPorUnidade={product.conteudoPorUnidade}
-                fracionavel={product.fracionavel}
-                unidade={product.unidadeBase}
-              />
-            </div>
-          )}
-        </div>
-
-        {/* Preços */}
-        {product.tipo !== "INSUMO" && (
-          <div className="rounded-[var(--radius-lg)] border border-line p-4">
-            <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wider text-faint">Preços</h3>
-            <div className="grid grid-cols-3 gap-3">
-              <InfoCard label="Venda">
-                <span className="font-mono text-[14px] font-semibold text-ink tnum">{brl(product.precoVenda)}</span>
-              </InfoCard>
-              <InfoCard label="Custo">
-                <span className="font-mono text-[13px] text-ink-2 tnum">{brl(product.custo)}</span>
-              </InfoCard>
-              <InfoCard label="Margem">
-                <span className="font-mono text-[13px] font-medium text-ok tnum">
-                  {margem(product.precoVenda, product.custo) ?? "—"}%
-                </span>
-              </InfoCard>
-            </div>
-          </div>
-        )}
-
-        {/* Fornecedores */}
-        {product.fornecedores.length > 0 && (
-          <div className="rounded-[var(--radius-lg)] border border-line p-4">
-            <h3 className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-faint">Fornecedores</h3>
-            <div className="space-y-1.5">
-              {product.fornecedores.map((f) => (
-                <div key={f.id} className="flex items-center gap-2 text-[13px]">
-                  <Building2 size={13} className="shrink-0 text-faint" />
-                  <span className="text-ink-2">{f.nome}</span>
-                  {f.isPrincipal && (
-                    <span className="ml-auto text-[10px] font-medium text-brand-strong">principal</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Códigos de barra */}
-        {barcodeCodes.length > 0 && (
-          <div className="rounded-[var(--radius-lg)] border border-line p-4">
-            <h3 className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wider text-faint">
-              <Barcode size={12} /> Códigos de barra
-            </h3>
-            <div className="space-y-1.5">
-              {barcodeCodes.map((item) => (
-                <div key={item.code} className="flex items-center gap-3 text-[12px]">
-                  <span className="w-24 shrink-0 text-faint">{item.label}</span>
-                  <span className="font-mono text-ink">{item.code}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </Sheet>
-  );
-}
-
-function InfoCard({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-faint">{label}</div>
-      <div className="mt-0.5">{children}</div>
     </div>
   );
 }

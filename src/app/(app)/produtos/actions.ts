@@ -10,6 +10,8 @@ import { getOrCreateDefaultSite } from "@/lib/sites";
 import { generateSku } from "@/lib/sku";
 import { getCosmosByEan, CosmosError } from "@/lib/cosmos";
 import { completeJson, llmConfigured } from "@/lib/llm";
+import { PRODUCT_INCLUDE, toProductRow, loadProductInsights, type ProductInsights } from "./_data";
+import type { ProductRow } from "./_types";
 import type { StorageType } from "@/generated/prisma";
 
 /**
@@ -31,6 +33,52 @@ const okStorage = () => {
   revalidatePath("/produtos");
   revalidatePath("/configuracoes/sites");
 };
+
+// ── Busca global (navbar) ──────────────────────────────────
+/** Busca parcial por nome, SKU ou código de barras — usada pela busca global do navbar. */
+export async function searchProducts(queryRaw: string): Promise<ProductRow[]> {
+  const term = queryRaw.trim();
+  if (term.length < 3) return [];
+
+  return tx(async () => {
+    const products = await db.product.findMany({
+      where: {
+        ativo: true,
+        OR: [
+          { nome: { contains: term, mode: "insensitive" } },
+          { sku: { contains: term, mode: "insensitive" } },
+          { ean: { contains: term, mode: "insensitive" } },
+        ],
+      },
+      orderBy: { nome: "asc" },
+      take: 8,
+      include: PRODUCT_INCLUDE,
+    });
+
+    const ids = products.map((p) => p.id);
+    const salesStats = ids.length
+      ? await db.saleItem.groupBy({
+          by: ["productId"],
+          where: { productId: { in: ids } },
+          _sum: { quantidade: true },
+        })
+      : [];
+    const vendidoMap = Object.fromEntries(
+      salesStats.map((s) => [s.productId, Number(s._sum.quantidade ?? 0)])
+    );
+
+    return products.map((p) => toProductRow(p, vendidoMap[p.id] ?? 0));
+  });
+}
+
+/** Alertas do sidepanel — buscado sob demanda ao abrir o produto. */
+export async function getProductInsights(
+  productId: string,
+  tipo: "SIMPLES" | "INSUMO" | "COMBO" | "PERSONALIZADO",
+  precoVendaAtual: number | null
+): Promise<ProductInsights> {
+  return tx(() => loadProductInsights(productId, tipo, precoVendaAtual));
+}
 
 // ── Marcas ─────────────────────────────────────────────────
 export async function createBrand(nomeRaw: string) {

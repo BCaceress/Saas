@@ -44,6 +44,17 @@ export type ProductRow = {
   packagings: ProductPackagingItem[];
   fornecedores: { id: string; nome: string; isPrincipal: boolean }[];
   totalVendido: number;
+  /** Saldo por loja/local de armazenagem (§3: cada Stock é um site × produto). */
+  locais: ProductLocationStock[];
+};
+
+export type ProductLocationStock = {
+  siteId: string;
+  siteNome: string;
+  locationNome: string | null;
+  locationTipo: StorageType | null;
+  fechado: number;
+  aberto: number;
 };
 
 /** Embalagem de compra de um produto (ex.: fardo de 6 unidades com EAN próprio). */

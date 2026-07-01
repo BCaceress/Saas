@@ -35,7 +35,7 @@ async function destinationForUser(email: string): Promise<string> {
   });
   const tenant = user?.memberships[0]?.tenant;
   if (!tenant) return tenantUrl("app", "/"); // fallback improvável
-  return tenantUrl(tenant.subdomain, tenant.onboardingDone ? "/produtos" : "/onboarding");
+  return tenantUrl(tenant.subdomain, tenant.onboardingDone ? "/inicio" : "/onboarding");
 }
 
 export async function signupAction(

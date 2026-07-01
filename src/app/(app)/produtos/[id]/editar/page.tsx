@@ -178,6 +178,7 @@ export default async function EditarProdutoPage({
         isPrincipal: ps.isPrincipal,
       })),
       totalVendido: 0,
+      locais: [],
     };
     return { kind: "product" as const, row, opts };
   });

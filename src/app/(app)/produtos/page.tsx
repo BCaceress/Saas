@@ -1,7 +1,7 @@
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
-import { derive, type DeriveComponent } from "@/lib/derive";
+import { PRODUCT_INCLUDE, toProductRow } from "./_data";
 import { ProdutosClient } from "./_client";
 import type {
   ProductRow,
@@ -14,9 +14,6 @@ import type {
 
 export const metadata = { title: "Produtos — NoHub Market" };
 
-const dec = (v: { toNumber: () => number } | null | undefined) =>
-  v == null ? null : v.toNumber();
-
 export default async function ProdutosPage() {
   const ctx = await requireActiveTenant();
 
@@ -25,17 +22,7 @@ export default async function ProdutosPage() {
       await Promise.all([
         db.product.findMany({
           orderBy: { nome: "asc" },
-          include: {
-            brand: true,
-            subcategory: { include: { category: true } },
-            stocks: true,
-            packagings: { orderBy: { nome: "asc" } },
-            suppliers: {
-              include: { supplier: { select: { razaoSocial: true, nomeFantasia: true } } },
-              orderBy: { isPrincipal: "desc" },
-            },
-            components: { include: { component: { include: { stocks: true } } } },
-          },
+          include: PRODUCT_INCLUDE,
         }),
         db.category.findMany({
           orderBy: { nome: "asc" },
@@ -59,74 +46,7 @@ export default async function ProdutosPage() {
       salesStats.map((s) => [s.productId, Number(s._sum.quantidade ?? 0)])
     );
 
-    const rows: ProductRow[] = products.map((p) => {
-      const principal = p.suppliers.find((s) => s.isPrincipal);
-
-      // COMBO/receita não guardam estoque/custo: derivam dos componentes (§6).
-      const composto = p.tipo === "COMBO" || p.tipo === "PERSONALIZADO";
-      let custoDerivado: number | null = null;
-      let disponibilidadeDerivada: number | null = null;
-      if (composto) {
-        const comps: DeriveComponent[] = p.components.map((c) => ({
-          quantidade: dec(c.quantidade) ?? 0,
-          unidade: c.unidade,
-          custo: dec(c.component.custo),
-          precoVenda: dec(c.component.precoVenda),
-          conteudoPorUnidade: dec(c.component.conteudoPorUnidade),
-          estoqueFechado: c.component.stocks.reduce((s, st) => s + Number(st.estoqueFechado), 0),
-          estoqueAberto: c.component.stocks.reduce((s, st) => s + Number(st.estoqueAberto), 0),
-        }));
-        const d = derive(comps);
-        custoDerivado = d.custoTotal;
-        disponibilidadeDerivada = d.disponibilidade;
-      }
-
-      return {
-        id: p.id,
-        tipo: p.tipo,
-        nome: p.nome,
-        sku: p.sku,
-        ean: p.ean,
-        imagemUrl: p.imagemUrl,
-        marca: p.brand?.nome ?? null,
-        brandId: p.brandId,
-        subcategoriaNome: p.subcategory?.nome ?? "",
-        subcategoryId: p.subcategoryId ?? "",
-        categoriaNome: p.subcategory?.category.nome ?? "",
-        precoVenda: dec(p.precoVenda),
-        custo: composto ? custoDerivado : dec(p.custo),
-        ativo: p.ativo,
-        restricaoIdade: p.restricaoIdade,
-        unidadeBase: p.unidadeBase,
-        fracionavel: p.fracionavel,
-        conteudoPorUnidade: dec(p.conteudoPorUnidade),
-        vendeOnline: p.vendeOnline,
-        fiscalProfileId: p.fiscalProfileId,
-        estoque: {
-          fechado: p.stocks.reduce((s, st) => s + Number(st.estoqueFechado), 0),
-          aberto: p.stocks.reduce((s, st) => s + Number(st.estoqueAberto), 0),
-          minimo: dec(p.stocks[0]?.estoqueMinimo) ?? 0,
-          ideal: dec(p.stocks[0]?.estoqueIdeal) ?? 0,
-          locationId: p.stocks[0]?.locationId ?? null,
-        },
-        fornecedorPrincipalId: principal?.supplierId ?? null,
-        custoFornecedor: dec(principal?.custoFornecedor),
-        disponibilidadeDerivada,
-        salesChannels: [],
-        packagings: p.packagings.map((pk) => ({
-          id: pk.id,
-          nome: pk.nome,
-          ean: pk.ean,
-          fatorConversao: dec(pk.fatorConversao) ?? 1,
-        })),
-        fornecedores: p.suppliers.map((ps) => ({
-          id: ps.supplierId,
-          nome: ps.supplier.nomeFantasia ?? ps.supplier.razaoSocial,
-          isPrincipal: ps.isPrincipal,
-        })),
-        totalVendido: vendidoMap[p.id] ?? 0,
-      };
-    });
+    const rows: ProductRow[] = products.map((p) => toProductRow(p, vendidoMap[p.id] ?? 0));
 
     const categoryTree: CategoryNode[] = categories.map((c) => ({
       id: c.id,

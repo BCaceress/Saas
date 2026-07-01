@@ -23,5 +23,5 @@ export default async function PosLoginPage() {
   }
 
   const { subdomain, onboardingDone } = membership.tenant;
-  redirect(tenantUrl(subdomain, onboardingDone ? "/produtos" : "/onboarding"));
+  redirect(tenantUrl(subdomain, onboardingDone ? "/inicio" : "/onboarding"));
 }
