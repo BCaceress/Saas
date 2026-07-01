@@ -7,8 +7,13 @@ import { ChartCard, ChartEmpty } from "@/components/charts/chart-card";
 import { BarList } from "@/components/charts/bar-list";
 import { comprasPorFornecedor, comprasPorProduto, type Range } from "../_data";
 import { TabelaCompras } from "./tabela";
+import { RelatorioShell } from "../_report-shell";
 
-export default async function RelatorioCompras({ searchParams }: { searchParams: Promise<Record<string, string>> }) {
+export default async function RelatorioCompras({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string>>;
+}) {
   const ctx = await requireActiveTenant();
   const periodo = resolvePeriodo(await searchParams);
   const range: Range = { inicio: periodo.inicio, fim: periodo.fim };
@@ -26,20 +31,42 @@ export default async function RelatorioCompras({ searchParams }: { searchParams:
   const numNotas = d.porFornecedor.reduce((s, f) => s + f.numNotas, 0);
 
   return (
-    <div className="space-y-6">
+    <RelatorioShell titulo="Compras do período" exportTipo="compras">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="Total comprado" value={brl(total)} hint={periodo.label.toLowerCase()} goodWhen="down" destaque />
+        <KpiCard
+          label="Total comprado"
+          value={brl(total)}
+          hint={periodo.label.toLowerCase()}
+          goodWhen="down"
+          destaque
+        />
         <KpiCard label="Notas / entradas" value={String(numNotas)} />
         <KpiCard label="Fornecedores" value={String(d.porFornecedor.length)} />
       </div>
 
       <ChartCard title="Por fornecedor" subtitle="Quanto foi comprado de cada um">
-        {d.porFornecedor.length === 0 ? <ChartEmpty /> : <BarList items={d.porFornecedor.slice(0, 10).map((f) => ({ label: f.supplierNome, value: f.total, sub: `${f.numNotas} nota(s)`, display: brl(f.total) }))} />}
+        {d.porFornecedor.length === 0 ? (
+          <ChartEmpty />
+        ) : (
+          <BarList
+            items={d.porFornecedor
+              .slice(0, 10)
+              .map((f) => ({
+                label: f.supplierNome,
+                value: f.total,
+                sub: `${f.numNotas} nota(s)`,
+                display: brl(f.total),
+              }))}
+          />
+        )}
       </ChartCard>
 
-      <ChartCard title="Por produto" subtitle={`${d.porProduto.length} itens · custo unitário médio no período`}>
+      <ChartCard
+        title="Por produto"
+        subtitle={`${d.porProduto.length} itens · custo unitário médio no período`}
+      >
         {d.porProduto.length === 0 ? <ChartEmpty /> : <TabelaCompras linhas={d.porProduto} />}
       </ChartCard>
-    </div>
+    </RelatorioShell>
   );
 }

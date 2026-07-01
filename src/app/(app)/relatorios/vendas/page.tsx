@@ -15,8 +15,13 @@ import {
   type Range,
 } from "../_data";
 import { TabelaVendas } from "./tabela";
+import { RelatorioShell } from "../_report-shell";
 
-export default async function RelatorioVendas({ searchParams }: { searchParams: Promise<Record<string, string>> }) {
+export default async function RelatorioVendas({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string>>;
+}) {
   const ctx = await requireActiveTenant();
   const periodo = resolvePeriodo(await searchParams);
   const range: Range = { inicio: periodo.inicio, fim: periodo.fim };
@@ -38,30 +43,61 @@ export default async function RelatorioVendas({ searchParams }: { searchParams: 
   const vazio = d.resumo.numVendas === 0;
 
   return (
-    <div className="space-y-6">
+    <RelatorioShell titulo="Receita" exportTipo="vendas">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="Faturamento" value={brl(d.resumo.faturamento)} delta={variacao(d.resumo.faturamento, d.resumoPrev.faturamento)} destaque />
-        <KpiCard label="Nº de vendas" value={String(d.resumo.numVendas)} delta={variacao(d.resumo.numVendas, d.resumoPrev.numVendas)} />
-        <KpiCard label="Ticket médio" value={brl(d.resumo.ticket)} delta={variacao(d.resumo.ticket, d.resumoPrev.ticket)} />
+        <KpiCard
+          label="Faturamento"
+          value={brl(d.resumo.faturamento)}
+          delta={variacao(d.resumo.faturamento, d.resumoPrev.faturamento)}
+          destaque
+        />
+        <KpiCard
+          label="Nº de vendas"
+          value={String(d.resumo.numVendas)}
+          delta={variacao(d.resumo.numVendas, d.resumoPrev.numVendas)}
+        />
+        <KpiCard
+          label="Ticket médio"
+          value={brl(d.resumo.ticket)}
+          delta={variacao(d.resumo.ticket, d.resumoPrev.ticket)}
+        />
         <KpiCard label="CMV" value={brl(d.resumo.cmv)} hint="custo da venda" goodWhen="down" />
       </div>
 
       <ChartCard title="Faturamento por dia" subtitle={periodo.label}>
-        {vazio ? <ChartEmpty /> : <LineChart pontos={d.tendencia.map((p) => ({ data: fmtData(new Date(p.data)), valor: p.valor }))} />}
+        {vazio ? (
+          <ChartEmpty />
+        ) : (
+          <LineChart
+            pontos={d.tendencia.map((p) => ({ data: fmtData(new Date(p.data)), valor: p.valor }))}
+          />
+        )}
       </ChartCard>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <ChartCard title="Por hora do dia" subtitle="Quando vende mais">
-          {vazio ? <ChartEmpty /> : <LineChart pontos={d.porHora.map((p) => ({ data: p.data, valor: p.valor }))} altura={160} />}
+          {vazio ? (
+            <ChartEmpty />
+          ) : (
+            <LineChart pontos={d.porHora.map((p) => ({ data: p.data, valor: p.valor }))} altura={160} />
+          )}
         </ChartCard>
         <ChartCard title="Por categoria" subtitle="Composição do faturamento">
-          {d.categorias.length === 0 ? <ChartEmpty /> : <DonutChart fatias={d.categorias.slice(0, 6).map((c) => ({ label: c.categoria, value: c.receita, display: brl(c.receita) }))} />}
+          {d.categorias.length === 0 ? (
+            <ChartEmpty />
+          ) : (
+            <DonutChart
+              fatias={d.categorias
+                .slice(0, 6)
+                .map((c) => ({ label: c.categoria, value: c.receita, display: brl(c.receita) }))}
+            />
+          )}
         </ChartCard>
       </div>
 
       <ChartCard title="Produtos vendidos" subtitle={`${d.ranking.length} itens no período`}>
         {d.ranking.length === 0 ? <ChartEmpty /> : <TabelaVendas linhas={d.ranking} />}
       </ChartCard>
-    </div>
+    </RelatorioShell>
   );
 }

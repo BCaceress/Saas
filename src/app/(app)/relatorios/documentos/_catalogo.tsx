@@ -88,10 +88,10 @@ export function CatalogoDocumentos() {
                     key={m.id}
                     type="button"
                     onClick={() => abrir(m)}
-                    className="group flex h-full flex-col gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4 text-left transition-colors hover:border-brand/40 hover:bg-surface-2"
+                    className="group flex h-full cursor-pointer flex-col gap-3 rounded-lg border border-line bg-surface p-4 text-left transition-colors hover:border-brand/40 hover:bg-surface-2"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="grid h-10 w-10 place-items-center rounded-[var(--radius-sm)] bg-brand-softer text-brand">
+                      <span className="grid h-10 w-10 place-items-center rounded-sm bg-brand-softer text-brand">
                         <Icon size={19} />
                       </span>
                       <span className="flex items-center gap-1 rounded-full border border-line px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide text-muted">
@@ -154,7 +154,7 @@ export function CatalogoDocumentos() {
                     type="date"
                     value={de}
                     onChange={(e) => setDe(e.target.value)}
-                    className="h-10 w-full rounded-[var(--radius)] border border-line bg-surface px-3 text-sm text-ink"
+                    className="h-10 w-full rounded-(--radius) border border-line bg-surface px-3 text-sm text-ink"
                   />
                 </div>
                 <div>
@@ -163,7 +163,7 @@ export function CatalogoDocumentos() {
                     type="date"
                     value={ate}
                     onChange={(e) => setAte(e.target.value)}
-                    className="h-10 w-full rounded-[var(--radius)] border border-line bg-surface px-3 text-sm text-ink"
+                    className="h-10 w-full rounded-(--radius) border border-line bg-surface px-3 text-sm text-ink"
                   />
                 </div>
               </div>

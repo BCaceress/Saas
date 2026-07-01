@@ -7,8 +7,13 @@ import { ChartCard, ChartEmpty } from "@/components/charts/chart-card";
 import { BarList } from "@/components/charts/bar-list";
 import { consumoInsumos, rentabilidadeDrinks, type Range } from "../_data";
 import { TabelaProducao } from "./tabela";
+import { RelatorioShell } from "../_report-shell";
 
-export default async function RelatorioProducao({ searchParams }: { searchParams: Promise<Record<string, string>> }) {
+export default async function RelatorioProducao({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string>>;
+}) {
   const ctx = await requireActiveTenant();
   const periodo = resolvePeriodo(await searchParams);
   const range: Range = { inicio: periodo.inicio, fim: periodo.fim };
@@ -27,9 +32,14 @@ export default async function RelatorioProducao({ searchParams }: { searchParams
   const margemDrinks = d.drinks.reduce((s, i) => s + i.margem, 0);
 
   return (
-    <div className="space-y-6">
+    <RelatorioShell titulo="Produção e drinks" exportTipo="producao">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="Margem dos drinks" value={brl(margemDrinks)} hint="receita − insumos" destaque />
+        <KpiCard
+          label="Margem dos drinks"
+          value={brl(margemDrinks)}
+          hint="receita − insumos"
+          destaque
+        />
         <KpiCard label="Receita de drinks" value={brl(receitaDrinks)} />
         <KpiCard label="Custo de insumos" value={brl(custoInsumos)} goodWhen="down" />
         <KpiCard label="Insumos consumidos" value={String(d.insumos.length)} />
@@ -44,8 +54,17 @@ export default async function RelatorioProducao({ searchParams }: { searchParams
       </ChartCard>
 
       <ChartCard title="Consumo de insumos" subtitle="Custo consumido na produção">
-        {d.insumos.length === 0 ? <ChartEmpty /> : <BarList tone="accent" items={d.insumos.slice(0, 10).map((i) => ({ label: i.nome, value: i.custo, sub: i.sku, display: brl(i.custo) }))} />}
+        {d.insumos.length === 0 ? (
+          <ChartEmpty />
+        ) : (
+          <BarList
+            tone="accent"
+            items={d.insumos
+              .slice(0, 10)
+              .map((i) => ({ label: i.nome, value: i.custo, sub: i.sku, display: brl(i.custo) }))}
+          />
+        )}
       </ChartCard>
-    </div>
+    </RelatorioShell>
   );
 }
