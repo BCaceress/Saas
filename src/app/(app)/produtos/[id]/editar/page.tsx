@@ -35,7 +35,7 @@ export default async function EditarProdutoPage({
         },
         variants: { orderBy: { fatorEscala: "asc" } },
         salesChannels: true,
-        suppliers: { where: { isPrincipal: true }, take: 1 },
+        suppliers: { include: { supplier: true } },
         packagings: { orderBy: { isCompraDefault: "desc" } },
       },
     });
@@ -133,7 +133,7 @@ export default async function EditarProdutoPage({
       return { kind: "receita" as const, receita, opts, candidates };
     }
 
-    const principal = p.suppliers[0];
+    const principal = p.suppliers.find((s) => s.isPrincipal) ?? p.suppliers[0];
     const row: ProductRow = {
       id: p.id,
       tipo: p.tipo,
@@ -172,6 +172,12 @@ export default async function EditarProdutoPage({
         ean: pk.ean,
         fatorConversao: dec(pk.fatorConversao) ?? 1,
       })),
+      fornecedores: p.suppliers.map((ps) => ({
+        id: ps.supplierId,
+        nome: ps.supplier.nomeFantasia ?? ps.supplier.razaoSocial,
+        isPrincipal: ps.isPrincipal,
+      })),
+      totalVendido: 0,
     };
     return { kind: "product" as const, row, opts };
   });
