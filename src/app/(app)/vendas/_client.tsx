@@ -24,6 +24,8 @@ import {
   Sparkles,
   Check,
   ImageOff,
+  ChevronDown,
+  Circle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/misc";
@@ -36,7 +38,7 @@ import {
   movimentarCaixaAction,
   fecharCaixaAction,
 } from "./caixa/actions";
-import type { ProdutoVenda } from "./_data";
+import type { ComponentGroupVenda, ProdutoVenda } from "./_data";
 import type { FechamentoReport } from "@/lib/caixa";
 import type { PaymentMethod } from "@/generated/prisma";
 
@@ -753,6 +755,12 @@ function ProdutoCard({
 
 // ── Modal de produto personalizado (drink/prato/outro) ───────────
 
+function regraGrupo(g: ComponentGroupVenda): string {
+  if (g.tipoSelecao === "UNICA") return "Escolha 1 opção";
+  if (g.maxSelecoes != null) return `Escolha até ${g.maxSelecoes}`;
+  return "Escolha quantas quiser";
+}
+
 function PersonalizadoModal({
   produto,
   onClose,
@@ -769,29 +777,32 @@ function PersonalizadoModal({
   ) => void;
 }) {
   const [selectedVariant, setSelectedVariant] = useState<string | null>(null);
-  const [selections, setSelections] = useState<
-    Record<string, string | string[]>
-  >({});
+  const [selections, setSelections] = useState<Record<string, string[]>>({});
   const [qty, setQty] = useState(1);
+  const [closedGroups, setClosedGroups] = useState<Set<string>>(new Set());
+  const groupRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   useEffect(() => {
     if (!produto) return;
     setSelectedVariant(produto.variants[0]?.id ?? null);
     setQty(1);
-    // Pre-seleciona items padrão de cada grupo
+    setClosedGroups(new Set());
+    // Pré-seleciona apenas os grupos obrigatórios — extras/opcionais
+    // começam vazios para não surpreender o operador com acréscimo.
     if (produto.groups) {
-      const sels: Record<string, string | string[]> = {};
+      const sels: Record<string, string[]> = {};
       for (const g of produto.groups) {
+        if (!g.obrigatoria) {
+          sels[g.id] = [];
+          continue;
+        }
         const disp = g.items.filter((i) => i.disponivel);
         const defaultItem = disp.find((i) => i.isDefault) ?? disp[0];
-        if (defaultItem) {
-          sels[g.id] =
-            g.tipoSelecao === "MULTIPLA"
-              ? [defaultItem.componentProductId]
-              : defaultItem.componentProductId;
-        }
+        sels[g.id] = defaultItem ? [defaultItem.componentProductId] : [];
       }
       setSelections(sels);
+    } else {
+      setSelections({});
     }
   }, [produto]);
 
@@ -815,21 +826,57 @@ function PersonalizadoModal({
   let acrescimoTotal = 0;
   if (produto.groups) {
     for (const g of produto.groups) {
-      const selectedIds = selections[g.id];
-      if (selectedIds) {
-        const ids = Array.isArray(selectedIds) ? selectedIds : [selectedIds];
-        for (const id of ids) {
-          const item = g.items.find((i) => i.componentProductId === id);
-          if (item?.acrescimoPreco) {
-            acrescimoTotal += item.acrescimoPreco;
-          }
-        }
+      for (const id of selections[g.id] ?? []) {
+        const item = g.items.find((i) => i.componentProductId === id);
+        if (item?.acrescimoPreco) acrescimoTotal += item.acrescimoPreco;
       }
     }
   }
 
   const preco = precoBase + acrescimoTotal;
   const total = preco * qty;
+
+  function toggleSelection(g: ComponentGroupVenda, itemId: string) {
+    const current = selections[g.id] ?? [];
+    let nextForGroup: string[];
+    if (g.tipoSelecao === "UNICA") {
+      nextForGroup = current[0] === itemId ? [] : [itemId];
+    } else {
+      const has = current.includes(itemId);
+      if (has) {
+        nextForGroup = current.filter((id) => id !== itemId);
+      } else if (g.maxSelecoes != null && current.length >= g.maxSelecoes) {
+        nextForGroup = current;
+      } else {
+        nextForGroup = [...current, itemId];
+      }
+    }
+    setSelections((prev) => ({ ...prev, [g.id]: nextForGroup }));
+  }
+
+  function toggleGrupoAberto(id: string) {
+    setClosedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function focarGrupo(id: string) {
+    setClosedGroups((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    requestAnimationFrame(() => {
+      groupRefs.current[id]?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
+    });
+  }
 
   return (
     <div
@@ -841,277 +888,437 @@ function PersonalizadoModal({
       <div className="absolute inset-0 bg-ink/40 backdrop-blur-[3px]" />
 
       <div
-        className="relative z-10 flex w-full max-h-[92dvh] flex-col overflow-hidden rounded-t-[var(--radius-xl)] border border-line bg-surface shadow-[var(--shadow-2)] sm:max-w-[480px] sm:rounded-[var(--radius-xl)]"
+        className="relative z-10 flex w-full max-h-[94dvh] flex-col overflow-hidden rounded-t-[var(--radius-xl)] border border-line bg-surface text-ink shadow-[var(--shadow-2)] sm:max-h-[88dvh] sm:max-w-[980px] sm:rounded-[var(--radius-xl)]"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Hero: imagem ou cabeçalho */}
-        {produto.imagemUrl ? (
-          <div className="relative h-44 shrink-0 overflow-hidden">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={produto.imagemUrl}
-              alt=""
-              className="h-full w-full object-cover"
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-ink/70 via-ink/20 to-transparent" />
-            <div className="absolute inset-x-0 bottom-0 flex items-end gap-2.5 px-4 pb-4">
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/15 text-white backdrop-blur-sm">
-                <Sparkles size={16} />
-              </span>
-              <div className="min-w-0">
-                <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-white/60">
-                  Personalizado
-                </p>
-                <h2 className="truncate text-lg font-bold leading-tight text-white">
-                  {produto.nome}
-                </h2>
-              </div>
-            </div>
-            <button
-              type="button"
-              aria-label="Fechar"
-              onClick={onClose}
-              className="absolute right-3 top-3 grid h-8 w-8 cursor-pointer place-items-center rounded-full bg-ink/30 text-white/80 backdrop-blur-sm transition-colors hover:bg-ink/50"
-            >
-              <X size={15} />
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-3 border-b border-line bg-surface-2 px-4 py-3.5">
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-soft text-brand">
-              <Sparkles size={16} />
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-muted">
-                Personalizado
-              </p>
-              <h2 className="truncate text-[15px] font-semibold text-ink">
-                {produto.nome}
-              </h2>
-            </div>
-            <button
-              type="button"
-              aria-label="Fechar"
-              onClick={onClose}
-              className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-surface hover:text-ink-2"
-            >
-              <X size={15} />
-            </button>
-          </div>
-        )}
-
-        {/* Preço base + acréscimos */}
-        <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
-          <span className="text-xs text-muted">
-            {temVariants ? "A partir de" : "Preço"}
-          </span>
-          <span className="font-mono text-sm font-semibold text-accent">
-            {brl(preco)}
-          </span>
-        </div>
-
-        {/* Variantes (tamanhos P/M/G) */}
-        {temVariants && (
-          <div className="border-b border-line">
-            <div className="bg-canvas px-4 py-2">
-              <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.15em] text-muted">
-                Tamanho
-              </span>
-            </div>
-            <div className="divide-y divide-line">
-              {produto.variants.map((v) => {
-                const sel = selectedVariant === v.id;
-                return (
-                  <button
-                    key={v.id}
-                    type="button"
-                    onClick={() => setSelectedVariant(v.id)}
-                    className={cn(
-                      "flex w-full cursor-pointer items-center gap-3 py-3 pr-4 text-left transition-colors",
-                      sel
-                        ? "border-l-[3px] border-brand bg-brand-soft pl-[13px]"
-                        : "border-l-[3px] border-transparent pl-[13px] hover:bg-surface-2",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-all",
-                        sel
-                          ? "border-brand bg-brand"
-                          : "border-line-strong bg-surface",
-                      )}
-                    >
-                      {sel && (
-                        <Check size={10} strokeWidth={3} className="text-white" />
-                      )}
+        <div className="flex flex-1 flex-col overflow-y-auto sm:flex-row sm:overflow-hidden">
+          {/* ── Coluna esquerda: grupos disponíveis ── */}
+          <div className="flex-1 space-y-3 px-4 py-4 sm:overflow-y-auto sm:border-r sm:border-line">
+            {temVariants && (
+              <div className="rounded-[var(--radius-lg)] border border-line bg-surface overflow-hidden">
+                <div className="px-4 py-3.5">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold text-ink">Tamanho</h3>
+                    <span className="shrink-0 rounded-full bg-brand-soft px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wide text-brand">
+                      Obrigatório
                     </span>
-                    <span
-                      className={cn(
-                        "flex-1 text-[13px]",
-                        sel ? "font-semibold text-ink" : "font-normal text-ink-2",
-                      )}
-                    >
-                      {v.nome}
-                      {v.volumeMl ? (
-                        <span className="ml-1.5 font-mono text-[11px] text-muted">
-                          {v.volumeMl}ml
-                        </span>
-                      ) : null}
-                    </span>
-                    <span
-                      className={cn(
-                        "shrink-0 font-mono text-[13px] font-semibold",
-                        sel ? "text-brand" : "text-muted",
-                      )}
-                    >
-                      {brl(v.preco)}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Grupos (ficha técnica) — selecionáveis */}
-        {produto.groups && produto.groups.length > 0 && (
-          <div className="flex-1 overflow-y-auto border-b border-line">
-            {produto.groups.map((g) => (
-              <div key={g.id} className="border-b border-line last:border-0">
-                <div className="bg-canvas px-4 py-2">
-                  <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.15em] text-muted">
-                    {g.nome}
-                  </span>
+                  </div>
+                  <p className="text-xs text-muted">Escolha 1 opção</p>
                 </div>
-                <div className="divide-y divide-line">
-                  {[...g.items]
-                    .sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0))
-                    .map((item) => {
-                    const isSelected = selections[g.id] === item.componentProductId;
+                <div className="flex flex-col gap-2 px-4 pb-4">
+                  {produto.variants.map((v) => {
+                    const sel = selectedVariant === v.id;
                     return (
-                      <button
-                        key={item.componentProductId}
-                        type="button"
-                        onClick={() =>
-                          setSelections((prev) => ({
-                            ...prev,
-                            [g.id]: item.componentProductId,
-                          }))
+                      <OpcaoCard
+                        key={v.id}
+                        selecionado={sel}
+                        onClick={() => setSelectedVariant(v.id)}
+                        nome={
+                          v.volumeMl ? `${v.nome} · ${v.volumeMl}ml` : v.nome
                         }
-                        className={cn(
-                          "flex w-full cursor-pointer items-center gap-3 py-3 px-4 text-left transition-colors",
-                          isSelected
-                            ? "border-l-[3px] border-brand bg-brand-soft pl-[13px]"
-                            : "border-l-[3px] border-transparent pl-[13px] hover:bg-surface-2",
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-all",
-                            isSelected
-                              ? "border-brand bg-brand"
-                              : "border-line-strong bg-surface",
-                          )}
-                        >
-                          {isSelected && (
-                            <Check size={10} strokeWidth={3} className="text-white" />
-                          )}
-                        </span>
-                        <span
-                          className={cn(
-                            "flex-1 truncate text-[13px]",
-                            isSelected ? "font-semibold text-ink" : "font-normal text-ink-2",
-                          )}
-                        >
-                          {item.nome}
-                        </span>
-                        {item.acrescimoPreco ? (
+                        priceNode={
                           <span
                             className={cn(
-                              "shrink-0 font-mono text-[12px] font-semibold",
-                              isSelected ? "text-accent" : "text-muted",
+                              "font-mono text-[12px] font-semibold",
+                              sel ? "text-brand" : "text-muted",
                             )}
                           >
-                            +{brl(item.acrescimoPreco)}
+                            {brl(v.preco)}
                           </span>
-                        ) : (
-                          <span className="shrink-0 rounded-full bg-ok-soft px-2 py-0.5 font-mono text-[10px] font-semibold text-ok">
-                            incluso
-                          </span>
-                        )}
+                        }
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {(produto.groups ?? []).map((g) => {
+              const aberto = !closedGroups.has(g.id);
+              const ids = selections[g.id] ?? [];
+              const itensDisp = g.items.filter((i) => i.disponivel);
+              const satisfeito = ids.length > 0;
+              const itensSelecionados = g.items.filter((i) =>
+                ids.includes(i.componentProductId),
+              );
+              return (
+                <div
+                  key={g.id}
+                  ref={(el) => {
+                    groupRefs.current[g.id] = el;
+                  }}
+                  className="rounded-[var(--radius-lg)] border border-line bg-surface overflow-hidden"
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleGrupoAberto(g.id)}
+                    className="flex w-full cursor-pointer items-center gap-2.5 px-4 py-3.5 text-left"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="truncate text-sm font-semibold text-ink">
+                          {g.nome}
+                        </h3>
+                        <span
+                          className={cn(
+                            "shrink-0 rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wide",
+                            g.obrigatoria
+                              ? "bg-brand-soft text-brand"
+                              : "bg-surface-2 text-muted",
+                          )}
+                        >
+                          {g.obrigatoria ? "Obrigatório" : "Opcional"}
+                        </span>
+                      </div>
+                      <p className="truncate text-xs text-muted">
+                        {aberto || !satisfeito
+                          ? regraGrupo(g)
+                          : itensSelecionados.map((i) => i.nome).join(" + ")}
+                      </p>
+                    </div>
+                    {satisfeito && (
+                      <Check size={16} className="shrink-0 text-ok" />
+                    )}
+                    <ChevronDown
+                      size={16}
+                      className={cn(
+                        "shrink-0 text-muted transition-transform duration-200",
+                        aberto && "rotate-180",
+                      )}
+                    />
+                  </button>
+
+                  {aberto && (
+                    <div className="flex flex-col gap-2 px-4 pb-4">
+                      {[...itensDisp]
+                        .sort(
+                          (a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0),
+                        )
+                        .map((item) => {
+                          const selecionado = ids.includes(
+                            item.componentProductId,
+                          );
+                          const noLimite =
+                            !selecionado &&
+                            g.maxSelecoes != null &&
+                            ids.length >= g.maxSelecoes;
+                          return (
+                            <OpcaoCard
+                              key={item.componentProductId}
+                              selecionado={selecionado}
+                              disabled={noLimite}
+                              onClick={() =>
+                                toggleSelection(g, item.componentProductId)
+                              }
+                              nome={item.nome}
+                              imagemUrl={item.imagemUrl}
+                              priceNode={
+                                item.acrescimoPreco ? (
+                                  <span className="font-mono text-[12px] font-semibold text-brand">
+                                    +{brl(item.acrescimoPreco)}
+                                  </span>
+                                ) : null
+                              }
+                            />
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {!temVariants && !(produto.groups && produto.groups.length > 0) && (
+              <div className="flex flex-col items-center gap-2 px-6 py-8 text-center">
+                <span className="grid h-10 w-10 place-items-center rounded-full bg-surface-2 text-faint">
+                  <ImageOff size={18} />
+                </span>
+                <p className="text-sm text-muted">
+                  Adicione ao carrinho para personalizar no balcão.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* ── Coluna direita: imagem + info + "Sua escolha" + rodapé ── */}
+          <aside className="flex shrink-0 flex-col sm:w-[400px]">
+            <div className="sm:flex-1 sm:overflow-y-auto">
+              {produto.imagemUrl ? (
+                <div className="relative h-40 shrink-0 overflow-hidden sm:h-52">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={produto.imagemUrl}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+                  <div className="absolute inset-x-0 bottom-0 flex items-end gap-2.5 px-4 pb-3.5">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/15 text-white backdrop-blur-sm">
+                      <Sparkles size={16} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-white/60">
+                        Personalizado
+                      </p>
+                      <h2 className="truncate text-lg font-bold leading-tight text-white">
+                        {produto.nome}
+                      </h2>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Fechar"
+                    onClick={onClose}
+                    className="absolute right-3 top-3 grid h-8 w-8 cursor-pointer place-items-center rounded-full bg-black/30 text-white/80 backdrop-blur-sm transition-colors hover:bg-black/50"
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 border-b border-line bg-surface-2 px-4 py-3.5">
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-soft text-brand">
+                    <Sparkles size={16} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-muted">
+                      Personalizado
+                    </p>
+                    <h2 className="truncate text-[15px] font-semibold text-ink">
+                      {produto.nome}
+                    </h2>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Fechar"
+                    onClick={onClose}
+                    className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-surface hover:text-ink-2"
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              )}
+
+              <div className="px-4 py-3.5">
+                <p className="text-[13px] leading-snug text-muted">
+                  {produto.modoPreparo || "Monte do seu jeito."}
+                </p>
+              </div>
+
+              {/* Card "Sua escolha" */}
+              <div className="mx-4 mb-4 rounded-[var(--radius-lg)] border border-line bg-surface-2 p-3.5">
+                <p className="mb-2.5 font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-muted">
+                  Sua escolha
+                </p>
+                <div className="flex flex-col gap-2.5">
+                  {temVariants && (
+                    <ResumoLinha
+                      nome="Tamanho"
+                      valor={variant?.nome ?? null}
+                      badge={null}
+                      satisfeito={!!variant}
+                    />
+                  )}
+                  {(produto.groups ?? []).map((g) => {
+                    const ids = selections[g.id] ?? [];
+                    const itens = g.items.filter((i) =>
+                      ids.includes(i.componentProductId),
+                    );
+                    const acrescimo = itens.reduce(
+                      (s, i) => s + (i.acrescimoPreco ?? 0),
+                      0,
+                    );
+                    const satisfeito = itens.length > 0;
+                    return (
+                      <button
+                        key={g.id}
+                        type="button"
+                        onClick={() => focarGrupo(g.id)}
+                        className="text-left transition-opacity hover:opacity-80"
+                      >
+                        <ResumoLinha
+                          nome={g.nome}
+                          valor={
+                            satisfeito
+                              ? itens.map((i) => i.nome).join(" + ")
+                              : g.obrigatoria
+                                ? "Falta selecionar"
+                                : "Não selecionado"
+                          }
+                          badge={acrescimo > 0 ? `+${brl(acrescimo)}` : null}
+                          satisfeito={satisfeito}
+                        />
                       </button>
                     );
                   })}
                 </div>
               </div>
-            ))}
-          </div>
-        )}
-
-        {/* Sem imagem + sem variantes: estado vazio de escolhas */}
-        {!temVariants && !produto.imagemUrl && (
-          <div className="flex flex-col items-center gap-2 px-6 py-8 text-center">
-            <span className="grid h-10 w-10 place-items-center rounded-full bg-surface-2 text-faint">
-              <ImageOff size={18} />
-            </span>
-            <p className="text-sm text-muted">
-              Adicione ao carrinho para personalizar no balcão.
-            </p>
-          </div>
-        )}
-
-        {/* Footer: qty + total + CTA */}
-        <div className="shrink-0 border-t border-line bg-surface px-4 pb-6 pt-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                aria-label="Diminuir quantidade"
-                onClick={() => setQty((q) => Math.max(1, q - 1))}
-                disabled={qty <= 1}
-                className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-line-strong bg-surface text-ink-2 transition-colors hover:bg-surface-2 disabled:opacity-40"
-              >
-                <Minus size={14} />
-              </button>
-              <span className="w-7 text-center font-mono text-sm font-bold text-ink">
-                {qty}
-              </span>
-              <button
-                type="button"
-                aria-label="Aumentar quantidade"
-                onClick={() => setQty((q) => q + 1)}
-                className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-line-strong bg-surface text-ink-2 transition-colors hover:bg-surface-2"
-              >
-                <Plus size={14} />
-              </button>
             </div>
 
-            <div className="text-right">
-              <p className="font-mono text-[9px] font-semibold uppercase tracking-[0.15em] text-muted">
-                Total
-              </p>
-              <p className="font-mono text-xl font-bold tabular-nums text-ink">
-                {brl(total)}
-              </p>
-            </div>
-          </div>
+            {/* Rodapé: quantidade + resumo financeiro + CTA (só do lado direito) */}
+            <div className="shrink-0 border-t border-line bg-surface px-4 pb-[max(env(safe-area-inset-bottom),1rem)] pt-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label="Diminuir quantidade"
+                    onClick={() => setQty((q) => Math.max(1, q - 1))}
+                    disabled={qty <= 1}
+                    className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-line-strong bg-surface text-ink-2 transition-colors hover:bg-surface-2 disabled:opacity-40"
+                  >
+                    <Minus size={14} />
+                  </button>
+                  <span className="w-7 text-center font-mono text-sm font-bold text-ink">
+                    {qty}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Aumentar quantidade"
+                    onClick={() => setQty((q) => q + 1)}
+                    className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-line-strong bg-surface text-ink-2 transition-colors hover:bg-surface-2"
+                  >
+                    <Plus size={14} />
+                  </button>
+                </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              const selecoes = Object.values(selections).flatMap((v) =>
-                Array.isArray(v) ? v : [v],
-              );
-              onAdd(produto, selectedVariant, qty, selecoes, preco);
-            }}
-            className="mt-3 flex w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] bg-brand px-5 py-3 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-          >
-            <ShoppingCart size={16} />
-            Adicionar ao carrinho
-          </button>
+                <div className="text-right">
+                  {acrescimoTotal > 0 && (
+                    <p className="font-mono text-[11px] text-muted">
+                      {brl(precoBase)}{" "}
+                      <span className="text-brand">
+                        +{brl(acrescimoTotal)}
+                      </span>
+                    </p>
+                  )}
+                  <p className="font-mono text-[9px] font-semibold uppercase tracking-[0.15em] text-muted">
+                    Total
+                  </p>
+                  <p className="font-mono text-2xl font-bold tabular-nums text-ink transition-all duration-200">
+                    {brl(total)}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const selecoes = Object.values(selections).flat();
+                  onAdd(produto, selectedVariant, qty, selecoes, preco);
+                }}
+                className="mt-3 flex w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] bg-brand px-5 py-3 text-sm font-semibold text-on-brand transition-all duration-150 hover:bg-brand-strong active:scale-[0.99]"
+              >
+                <ShoppingCart size={16} />
+                Adicionar ao pedido
+              </button>
+            </div>
+          </aside>
         </div>
       </div>
     </div>
+  );
+}
+
+function ResumoLinha({
+  nome,
+  valor,
+  badge,
+  satisfeito,
+}: {
+  nome: string;
+  valor: string | null;
+  badge: string | null;
+  satisfeito: boolean;
+}) {
+  return (
+    <div className="flex items-start gap-2.5">
+      <span
+        className={cn(
+          "mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full transition-colors",
+          satisfeito ? "bg-ok-soft text-ok" : "bg-surface-2 text-faint",
+        )}
+      >
+        {satisfeito ? (
+          <Check size={11} strokeWidth={3} />
+        ) : (
+          <Circle size={9} />
+        )}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[11px] text-muted">{nome}</p>
+        <p
+          className={cn(
+            "truncate text-[13px]",
+            satisfeito ? "font-medium text-ink" : "text-muted",
+          )}
+        >
+          {valor ?? "—"}
+        </p>
+      </div>
+      {badge && (
+        <span className="mt-0.5 shrink-0 font-mono text-[11px] font-semibold text-brand">
+          {badge}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function OpcaoCard({
+  selecionado,
+  disabled,
+  onClick,
+  nome,
+  imagemUrl,
+  priceNode,
+}: {
+  selecionado: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  nome: string;
+  imagemUrl?: string | null;
+  priceNode?: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "flex w-full cursor-pointer items-center gap-3 rounded-[var(--radius)] border px-3 py-2.5 text-left transition-all duration-150",
+        selecionado
+          ? "border-brand bg-brand-soft"
+          : "border-line bg-surface hover:border-line-strong hover:bg-surface-2",
+        disabled &&
+          "cursor-not-allowed opacity-40 hover:border-line hover:bg-surface",
+      )}
+    >
+      <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-[var(--radius-sm)] bg-surface-2 text-faint">
+        {imagemUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={imagemUrl} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <ImageOff size={16} />
+        )}
+      </span>
+      <span
+        className={cn(
+          "min-w-0 flex-1 text-[13px] leading-snug",
+          selecionado ? "font-semibold text-ink" : "font-normal text-ink-2",
+        )}
+      >
+        {nome}
+      </span>
+      {priceNode}
+      <span
+        className={cn(
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-all",
+          selecionado ? "border-brand bg-brand" : "border-line-strong",
+        )}
+      >
+        {selecionado && (
+          <Check size={10} strokeWidth={3} className="text-on-brand" />
+        )}
+      </span>
+    </button>
   );
 }
 
