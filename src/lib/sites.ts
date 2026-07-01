@@ -5,12 +5,23 @@ import type { Prisma } from "@/generated/prisma";
 
 export type SiteRow = { id: string; nome: string; tipo: string; ativo: boolean };
 
-/** Retorna o site ativo (do cookie) ou o primeiro site do tenant. */
+/** Retorna o site ativo (do cookie) ou o primeiro site ativo do tenant. */
 export async function getActiveSiteId(): Promise<string | null> {
   const store = await cookies();
   const cookie = store.get("nohub-site");
-  if (cookie?.value) return cookie.value;
-  const site = await db.site.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
+  if (cookie?.value) {
+    // Valida que o cookie ainda aponta para um site ativo
+    const site = await db.site.findFirst({
+      where: { id: cookie.value, ativo: true },
+      select: { id: true },
+    });
+    if (site) return site.id;
+  }
+  const site = await db.site.findFirst({
+    where: { ativo: true },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
   return site?.id ?? null;
 }
 

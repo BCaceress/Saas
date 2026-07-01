@@ -41,8 +41,9 @@ export type ProductRow = {
   /** COMBO/receita: disponibilidade derivada dos componentes (null = usa estoque próprio). */
   disponibilidadeDerivada: number | null;
   salesChannels: SalesChannelItem[];
-  /** Embalagens de compra (fardo, caixa…) com código de barras próprio. */
-  packagings?: ProductPackagingItem[];
+  packagings: ProductPackagingItem[];
+  fornecedores: { id: string; nome: string; isPrincipal: boolean }[];
+  totalVendido: number;
 };
 
 /** Embalagem de compra de um produto (ex.: fardo de 6 unidades com EAN próprio). */

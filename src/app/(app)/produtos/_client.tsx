@@ -1,25 +1,27 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
   Plus, Tag, FolderTree, Warehouse, Truck, Upload, Search, Settings2,
   Pencil, PackageOpen, Wine, ChevronDown, Boxes, Sparkles,
-  MoreVertical, Percent, EyeOff, Eye, CircleDashed,
+  MoreVertical, Percent, EyeOff, Eye, X, ShoppingCart, Building2,
+  Barcode, Hash,
 } from "lucide-react";
 import { cn, brl, margem } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { Input, Select } from "@/components/ui/input";
-import { Badge } from "@/components/ui/misc";
+import { Sheet } from "@/components/ui/sheet";
 import { PageHeader } from "@/components/app/page-header";
-import { SkuTag } from "@/components/sku-tag";
 import { StockGauge } from "@/components/stock-gauge";
 import { BrandSheet, CategorySheet, StorageSheet, SupplierSheet } from "./_sheets/sidepanels";
 import { CsvSheet } from "./_sheets/csv-sheet";
 import { archiveProduct } from "./actions";
 import type {
   ProductRow, CategoryNode, BrandOpt, SubcategoryOpt, StorageOpt, SupplierRow,
+  ProductPackagingItem,
 } from "./_types";
 
 type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv";
@@ -27,6 +29,27 @@ type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv";
 const TIPO_LABEL: Record<string, string> = {
   SIMPLES: "Simples", INSUMO: "Insumo", COMBO: "Combo", PERSONALIZADO: "Receita",
 };
+
+const TIPO_ICON: Record<string, React.ReactNode> = {
+  SIMPLES: <Wine size={13} />,
+  INSUMO: <PackageOpen size={13} />,
+  COMBO: <Boxes size={13} />,
+  PERSONALIZADO: <Sparkles size={13} />,
+};
+
+function stockLevel(p: ProductRow): "ok" | "warn" | "danger" {
+  if (p.disponibilidadeDerivada !== null) {
+    return p.disponibilidadeDerivada > 0 ? "ok" : "danger";
+  }
+  const { fechado, minimo, ideal } = p.estoque;
+  if (fechado <= minimo) return "danger";
+  if (ideal > 0 && fechado < ideal) return "warn";
+  return "ok";
+}
+
+const STOCK_COLOR = { ok: "bg-ok", warn: "bg-warn", danger: "bg-danger" } as const;
+const STOCK_TITLE = { ok: "Disponível", warn: "Estoque baixo", danger: "Sem estoque" } as const;
+const STOCK_TEXT  = { ok: "text-ok", warn: "text-warn", danger: "text-danger" } as const;
 
 export function ProdutosClient(props: {
   rows: ProductRow[];
@@ -41,6 +64,8 @@ export function ProdutosClient(props: {
   const [, start] = useTransition();
 
   const [sheet, setSheet] = useState<SheetKind>(null);
+  const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
 
   const [q, setQ] = useState("");
   const [fTipo, setFTipo] = useState("");
@@ -63,7 +88,6 @@ export function ProdutosClient(props: {
 
   function novo(tipo: "simples" | "insumo" | "combo" | "personalizado") { router.push(`/produtos/novo/${tipo}`); }
   function editar(p: ProductRow) { router.push(`/produtos/${p.id}/editar`); }
-  function promocao(p: ProductRow) { router.push(`/produtos/${p.id}/editar`); }
   function toggleInativo(p: ProductRow) {
     start(async () => { await archiveProduct(p.id, !p.ativo); router.refresh(); });
   }
@@ -77,7 +101,6 @@ export function ProdutosClient(props: {
         innerClassName="max-w-none"
         actions={
           <>
-            {/* Cadastros auxiliares — agrupados num só menu para reduzir ruído */}
             <Menu
               align="end"
               trigger={
@@ -95,9 +118,10 @@ export function ProdutosClient(props: {
               <MenuItem icon={<Upload size={15} />} onClick={() => setSheet("csv")}>Importar CSV</MenuItem>
             </Menu>
 
-            {/* Ação primária — botão dividido: criar simples direto + escolher tipo */}
             <div className="inline-flex shadow-[var(--shadow-1)] rounded-full">
-              <Button size="sm" onClick={() => novo("simples")} className="gap-1.5 rounded-r-none shadow-none"><Plus size={15} /> Novo produto</Button>
+              <Button size="sm" onClick={() => novo("simples")} className="gap-1.5 rounded-r-none shadow-none">
+                <Plus size={15} /> Novo produto
+              </Button>
               <Menu
                 align="end"
                 trigger={
@@ -117,204 +141,555 @@ export function ProdutosClient(props: {
       />
 
       <div className="w-full rounded-[var(--radius-lg)] bg-surface p-3 shadow-[var(--shadow-float)] sm:p-4">
-      {temProdutos && (
-        <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius)] border border-line bg-surface-2 p-2">
-          <div className="relative min-w-56 flex-1">
-            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-faint" />
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar nome, SKU ou código de barras" className="h-9 rounded-full border-line bg-surface pl-9" />
+        {temProdutos && (
+          <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius)] border border-line bg-surface-2 p-2">
+            <div className="relative min-w-56 flex-1">
+              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-faint" />
+              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar nome, SKU ou código de barras" className="h-9 rounded-full border-line bg-surface pl-9" />
+            </div>
+            <Select value={fTipo} onChange={(e) => setFTipo(e.target.value)} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
+              <option value="">Todos os tipos</option>
+              <option value="SIMPLES">Simples</option>
+              <option value="COMBO">Combo</option>
+              <option value="PERSONALIZADO">Receita</option>
+              <option value="INSUMO">Insumo</option>
+            </Select>
+            <Select value={fSub} onChange={(e) => setFSub(e.target.value)} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
+              <option value="">Toda subcategoria</option>
+              {subOpts.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
+            </Select>
+            <Select value={fMarca} onChange={(e) => setFMarca(e.target.value)} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
+              <option value="">Toda marca</option>
+              {brandOpts.map((b) => <option key={b.id} value={b.id}>{b.nome}</option>)}
+            </Select>
+            <Select value={fStatus} onChange={(e) => setFStatus(e.target.value)} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
+              <option value="ativos">Ativos</option>
+              <option value="arquivados">Arquivados</option>
+              <option value="todos">Todos</option>
+            </Select>
           </div>
-          <Select value={fTipo} onChange={(e) => setFTipo(e.target.value)} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
-            <option value="">Todos os tipos</option>
-            <option value="SIMPLES">Simples</option>
-            <option value="COMBO">Combo</option>
-            <option value="PERSONALIZADO">Receita</option>
-            <option value="INSUMO">Insumo</option>
-          </Select>
-          <Select value={fSub} onChange={(e) => setFSub(e.target.value)} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
-            <option value="">Toda subcategoria</option>
-            {subOpts.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
-          </Select>
-          <Select value={fMarca} onChange={(e) => setFMarca(e.target.value)} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
-            <option value="">Toda marca</option>
-            {brandOpts.map((b) => <option key={b.id} value={b.id}>{b.nome}</option>)}
-          </Select>
-          <Select value={fStatus} onChange={(e) => setFStatus(e.target.value)} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
-            <option value="ativos">Ativos</option>
-            <option value="arquivados">Arquivados</option>
-            <option value="todos">Todos</option>
-          </Select>
-        </div>
-      )}
+        )}
 
-      {!temProdutos ? (
-        <EmptyState onNew={() => novo("simples")} onCsv={() => setSheet("csv")} />
-      ) : filtered.length === 0 ? (
-        <p className="mt-12 text-center text-sm text-muted">Nenhum produto bate com o filtro.</p>
-      ) : (
-        <div className="mt-4 overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
-          <table className="w-full text-left">
-            <thead className="border-b border-line bg-surface-2 text-[11px] font-semibold uppercase tracking-wider text-faint">
-              <tr>
-                <th className="px-5 py-3">Produto</th>
-                <th className="hidden px-4 py-3 lg:table-cell">Categoria</th>
-                <th className="px-4 py-3">Preço</th>
-                <th className="hidden px-4 py-3 xl:table-cell">Estoque</th>
-                <th className="hidden px-4 py-3 sm:table-cell">Status</th>
-                <th className="w-12 px-3 py-3" />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {filtered.map((p) => (
-                <tr
-                  key={p.id}
-                  className={cn(
-                    "group relative transition-colors hover:bg-brand-soft/30",
-                    !p.ativo && "opacity-50",
-                  )}
-                >
-                  {/* Produto */}
-                  <td className="px-5 py-3.5">
-                    <div className="flex items-center gap-3">
-                      <Thumb url={p.imagemUrl} tipo={p.tipo} />
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="truncate text-[13px] font-semibold text-ink leading-snug">{p.nome}</span>
-                          {p.restricaoIdade && <Badge tone="danger">+18</Badge>}
-                        </div>
-                        <div className="mt-1 flex items-center gap-2">
-                          <SkuTag sku={p.sku} />
-                          {p.marca && <span className="text-[11px] text-faint">{p.marca}</span>}
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-
-                  {/* Categoria */}
-                  <td className="hidden px-4 py-3.5 lg:table-cell">
-                    <div className="text-[13px] text-ink-2">{p.subcategoriaNome}</div>
-                    <div className="mt-0.5 text-[11px] text-faint">{TIPO_LABEL[p.tipo]}</div>
-                  </td>
-
-                  {/* Preço */}
-                  <td className="px-4 py-3.5">
-                    {p.tipo === "INSUMO" ? (
-                      <span className="text-[11px] text-faint">uso interno</span>
-                    ) : (
-                      <>
-                        <span className="font-mono text-[13px] font-medium text-ink tnum">{brl(p.precoVenda)}</span>
-                        {margem(p.precoVenda, p.custo) !== null && (
-                          <div className="mt-0.5 text-[11px] font-medium text-ok">{margem(p.precoVenda, p.custo)}% margem</div>
-                        )}
-                      </>
-                    )}
-                  </td>
-
-                  {/* Estoque */}
-                  <td className="hidden px-4 py-3.5 xl:table-cell">
-                    {p.disponibilidadeDerivada !== null ? (
-                      <span
-                        className={cn(
-                          "inline-flex items-center gap-1.5 font-mono text-[13px] font-medium tnum",
-                          p.disponibilidadeDerivada > 0 ? "text-ink-2" : "text-danger",
-                        )}
-                        title="Montáveis com o estoque dos componentes"
-                      >
-                        <Boxes size={14} className="text-faint" />
-                        {p.disponibilidadeDerivada}
-                        <span className="text-[11px] font-normal text-faint">montáveis</span>
-                      </span>
-                    ) : p.tipo === "INSUMO" && p.estoque.minimo === 0 && p.estoque.ideal === 0 ? (
-                      <span
-                        className="inline-flex items-center gap-1.5 text-[11px] text-faint"
-                        title="Estoque não controlado"
-                      >
-                        <CircleDashed size={13} />
-                        Sem controle
-                      </span>
-                    ) : (
-                      <StockGauge
-                        fechado={p.estoque.fechado}
-                        aberto={p.estoque.aberto}
-                        minimo={p.estoque.minimo}
-                        ideal={p.estoque.ideal}
-                        conteudoPorUnidade={p.conteudoPorUnidade}
-                        fracionavel={p.fracionavel}
-                        unidade={p.unidadeBase}
-                      />
-                    )}
-                  </td>
-
-                  {/* Status */}
-                  <td className="hidden px-4 py-3.5 sm:table-cell">
-                    {p.ativo ? (
-                      <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ok">
-                        <span className="h-1.5 w-1.5 rounded-full bg-ok" />
-                        Ativo
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-muted">
-                        <span className="h-1.5 w-1.5 rounded-full bg-muted" />
-                        Inativo
-                      </span>
-                    )}
-                  </td>
-
-                  {/* Ações */}
-                  <td className="px-3 py-3.5">
-                    <div className="flex items-center justify-end">
-                      <Menu
-                        align="end"
-                        trigger={
-                          <button
-                            className="cursor-pointer rounded-[var(--radius-sm)] p-1.5 text-faint transition-colors hover:bg-surface-2 hover:text-ink"
-                            aria-label="Mais ações"
-                          >
-                            <MoreVertical size={16} />
-                          </button>
-                        }
-                      >
-                        <MenuItem icon={<Percent size={15} />} onClick={() => promocao(p)}>
-                          Promoção
-                        </MenuItem>
-                        <MenuItem icon={<Pencil size={15} />} onClick={() => editar(p)}>
-                          Editar
-                        </MenuItem>
-                        <div className="my-1 h-px bg-line" role="separator" />
-                        <MenuItem
-                          icon={p.ativo ? <EyeOff size={15} /> : <Eye size={15} />}
-                          onClick={() => toggleInativo(p)}
-                        >
-                          {p.ativo ? "Inativar" : "Ativar"}
-                        </MenuItem>
-                      </Menu>
-                    </div>
-                  </td>
+        {!temProdutos ? (
+          <EmptyState onNew={() => novo("simples")} onCsv={() => setSheet("csv")} />
+        ) : filtered.length === 0 ? (
+          <p className="mt-12 text-center text-sm text-muted">Nenhum produto bate com o filtro.</p>
+        ) : (
+          <div className="mt-4 rounded-[var(--radius-lg)] border border-line bg-surface">
+            <table className="w-full text-left">
+              <thead className="border-b border-line bg-surface-2 text-[11px] font-semibold uppercase tracking-wider text-faint">
+                <tr>
+                  <th className="px-4 py-2.5">Produto</th>
+                  <th className="hidden px-4 py-2.5 xl:table-cell">Marca</th>
+                  <th className="hidden px-4 py-2.5 lg:table-cell">Tipo</th>
+                  <th className="hidden px-4 py-2.5 lg:table-cell">Categoria</th>
+                  <th className="px-4 py-2.5">Preço</th>
+                  <th className="hidden px-4 py-2.5 md:table-cell">Fornecedor</th>
+                  <th className="px-4 py-2.5">Disp.</th>
+                  <th className="w-10 px-3 py-2.5" />
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {filtered.map((p) => {
+                  const level = stockLevel(p);
+                  const principal = p.fornecedores.find((f) => f.isPrincipal) ?? p.fornecedores[0];
+                  return (
+                    <tr
+                      key={p.id}
+                      onClick={() => setSelectedProduct(p)}
+                      className={cn(
+                        "group relative cursor-pointer transition-colors hover:bg-brand-soft/30",
+                        !p.ativo && "opacity-50",
+                      )}
+                    >
+                      {/* Produto */}
+                      <td className="px-4 py-2">
+                        <div className="flex items-center gap-3">
+                          <Thumb
+                            url={p.imagemUrl}
+                            tipo={p.tipo}
+                            onClickImage={p.imagemUrl ? () => setImageUrl(p.imagemUrl) : undefined}
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="truncate text-[13px] font-semibold text-ink leading-snug">{p.nome}</span>
+                              {p.restricaoIdade && (
+                                <span className="inline-flex items-center rounded-full border border-danger/30 bg-danger/10 px-1 py-px text-[9px] font-bold text-danger">+18</span>
+                              )}
+                            </div>
+                            <BarcodeCell sku={p.sku} ean={p.ean} packagings={p.packagings} />
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Marca */}
+                      <td className="hidden px-4 py-2 xl:table-cell">
+                        {p.marca ? (
+                          <span className="text-[12px] text-ink-2">{p.marca}</span>
+                        ) : (
+                          <span className="text-[11px] text-faint">—</span>
+                        )}
+                      </td>
+
+                      {/* Tipo */}
+                      <td className="hidden px-4 py-2 lg:table-cell">
+                        <span className="inline-flex items-center gap-1.5 text-[12px] text-ink-2">
+                          <span className="text-faint">{TIPO_ICON[p.tipo]}</span>
+                          {TIPO_LABEL[p.tipo]}
+                        </span>
+                      </td>
+
+                      {/* Categoria */}
+                      <td className="hidden px-4 py-2 lg:table-cell">
+                        <div className="text-[13px] font-medium text-ink-2">{p.subcategoriaNome}</div>
+                        <div className="mt-0.5 text-[11px] text-faint">{p.categoriaNome}</div>
+                      </td>
+
+                      {/* Preço */}
+                      <td className="px-4 py-2">
+                        <PriceCell tipo={p.tipo} precoVenda={p.precoVenda} custo={p.custo} />
+                      </td>
+
+                      {/* Fornecedor */}
+                      <td className="hidden px-4 py-2 md:table-cell">
+                        {principal ? (
+                          <span className="text-[12px] text-ink-2 leading-snug">{principal.nome}</span>
+                        ) : (
+                          <span className="text-[11px] text-faint">—</span>
+                        )}
+                      </td>
+
+                      {/* Disponibilidade */}
+                      <td className="px-4 py-2">
+                        <span className={cn("inline-flex items-center gap-1.5 text-[12px] font-medium", STOCK_TEXT[level])}>
+                          <span className={cn("h-2 w-2 shrink-0 rounded-full", STOCK_COLOR[level])} />
+                          {STOCK_TITLE[level]}
+                        </span>
+                      </td>
+
+                      {/* Ações */}
+                      <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end">
+                          <Menu
+                            align="end"
+                            trigger={
+                              <button
+                                className="cursor-pointer rounded-[var(--radius-sm)] p-1.5 text-faint transition-colors hover:bg-surface-2 hover:text-ink"
+                                aria-label="Mais ações"
+                              >
+                                <MoreVertical size={16} />
+                              </button>
+                            }
+                          >
+                            <MenuItem icon={<Percent size={15} />} onClick={() => editar(p)}>Promoção</MenuItem>
+                            <MenuItem icon={<Pencil size={15} />} onClick={() => editar(p)}>Editar</MenuItem>
+                            <div className="my-1 h-px bg-line" role="separator" />
+                            <MenuItem
+                              icon={p.ativo ? <EyeOff size={15} /> : <Eye size={15} />}
+                              onClick={() => toggleInativo(p)}
+                            >
+                              {p.ativo ? "Inativar" : "Ativar"}
+                            </MenuItem>
+                          </Menu>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {sheet === "brand" && <BrandSheet open onClose={() => setSheet(null)} brands={brandOpts} />}
+        {sheet === "category" && <CategorySheet open onClose={() => setSheet(null)} tree={categoryTree} />}
+        {sheet === "storage" && <StorageSheet open onClose={() => setSheet(null)} locations={storageOpts} />}
+        {sheet === "supplier" && <SupplierSheet open onClose={() => setSheet(null)} suppliers={supplierRows} />}
+        {sheet === "csv" && <CsvSheet open onClose={() => setSheet(null)} />}
+      </div>
+
+      {selectedProduct && (
+        <ProductSidePanel
+          product={selectedProduct}
+          onClose={() => setSelectedProduct(null)}
+          onEdit={() => router.push(`/produtos/${selectedProduct.id}/editar`)}
+        />
       )}
 
-      {sheet === "brand" && <BrandSheet open onClose={() => setSheet(null)} brands={brandOpts} />}
-      {sheet === "category" && <CategorySheet open onClose={() => setSheet(null)} tree={categoryTree} />}
-      {sheet === "storage" && <StorageSheet open onClose={() => setSheet(null)} locations={storageOpts} />}
-      {sheet === "supplier" && <SupplierSheet open onClose={() => setSheet(null)} suppliers={supplierRows} />}
-      {sheet === "csv" && <CsvSheet open onClose={() => setSheet(null)} />}
-      </div>
+      {imageUrl && <ImageViewer url={imageUrl} onClose={() => setImageUrl(null)} />}
     </>
   );
 }
 
-function Thumb({ url, tipo }: { url: string | null; tipo: string }) {
+// ── Thumb com hover e clique ──────────────────────────────────────────────────
+
+function Thumb({
+  url, tipo, onClickImage,
+}: {
+  url: string | null;
+  tipo: string;
+  onClickImage?: () => void;
+}) {
   if (url) {
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={url} alt="" className="h-10 w-10 shrink-0 rounded-[var(--radius-sm)] border border-line object-cover" />;
+    return (
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onClickImage?.(); }}
+        className="relative h-9 w-9 shrink-0 cursor-zoom-in overflow-hidden rounded-[var(--radius-sm)] border border-line group/img"
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={url} alt="" className="h-full w-full object-cover" />
+        <span className="absolute inset-0 grid place-items-center bg-ink/25 opacity-0 transition-opacity group-hover/img:opacity-100">
+          <Eye size={13} className="text-white drop-shadow" />
+        </span>
+      </button>
+    );
   }
   return (
-    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line bg-surface-2 text-faint">
-      {tipo === "INSUMO" ? <PackageOpen size={16} /> : <Wine size={16} />}
+    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line bg-surface-2 text-faint">
+      {tipo === "INSUMO" ? <PackageOpen size={15} /> : <Wine size={15} />}
     </span>
+  );
+}
+
+// ── Célula de códigos de barra com tooltip portal ────────────────────────────
+
+function BarcodeCell({
+  sku, ean, packagings,
+}: {
+  sku: string;
+  ean: string | null;
+  packagings: ProductPackagingItem[];
+}) {
+  const [show, setShow] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const ref = useRef<HTMLDivElement>(null);
+
+  const codes = [
+    ean ? { label: "Unid.", code: ean } : null,
+    ...packagings.filter((pk) => !!pk.ean).map((pk) => ({
+      label: `${pk.nome} ${pk.fatorConversao}x`,
+      code: pk.ean!,
+    })),
+  ].filter(Boolean) as { label: string; code: string }[];
+
+  const hasCodes = codes.length > 0;
+
+  function handleEnter() {
+    if (!hasCodes) return;
+    const rect = ref.current?.getBoundingClientRect();
+    if (rect) setPos({ top: rect.top + window.scrollY, left: rect.left + window.scrollX });
+    setShow(true);
+  }
+
+  return (
+    <>
+      <div
+        ref={ref}
+        className={cn("mt-0.5 flex items-center gap-3", hasCodes && "cursor-help")}
+        onMouseEnter={handleEnter}
+        onMouseLeave={() => setShow(false)}
+      >
+        <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-2">
+          <Hash size={10} className="shrink-0 text-muted" />
+          {sku}
+        </span>
+        {ean && (
+          <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-2">
+            <Barcode size={10} className="shrink-0 text-muted" />
+            {ean}
+          </span>
+        )}
+      </div>
+
+      {show && hasCodes && typeof document !== "undefined" && createPortal(
+        <div
+          className="fixed z-[100] min-w-[200px] rounded-lg border border-line bg-surface p-2.5 shadow-lg"
+          style={{ top: pos.top - 8, left: pos.left, transform: "translateY(-100%)" }}
+          onMouseEnter={() => setShow(true)}
+          onMouseLeave={() => setShow(false)}
+        >
+          <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
+            <Barcode size={11} /> Códigos de barra
+          </div>
+          <div className="space-y-1">
+            {codes.map((item) => (
+              <div key={item.code} className="flex items-center gap-3 text-[11px]">
+                <span className="w-20 shrink-0 text-faint">{item.label}</span>
+                <span className="font-mono text-ink">{item.code}</span>
+              </div>
+            ))}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+// ── Visualizador de imagem em tela cheia ────────────────────────────────────
+
+function ImageViewer({ url, onClose }: { url: string; onClose: () => void }) {
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", fn);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", fn);
+      document.body.style.overflow = "";
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center p-8"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="absolute inset-0 bg-ink/85 backdrop-blur-sm" aria-hidden />
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={url}
+        alt=""
+        className="relative max-h-full max-w-full rounded-[var(--radius-lg)] object-contain shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      />
+      <button
+        onClick={onClose}
+        className="absolute right-4 top-4 grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/25"
+        aria-label="Fechar"
+      >
+        <X size={18} />
+      </button>
+    </div>
+  );
+}
+
+// ── Painel lateral de detalhes do produto ─────────────────────────────────────
+
+function ProductSidePanel({
+  product, onClose, onEdit,
+}: {
+  product: ProductRow;
+  onClose: () => void;
+  onEdit: () => void;
+}) {
+  const level = stockLevel(product);
+  const totalEstoque = product.estoque.fechado + product.estoque.aberto;
+
+  const barcodeCodes = [
+    product.ean ? { label: "Unid.", code: product.ean } : null,
+    ...product.packagings.filter((pk) => !!pk.ean).map((pk) => ({
+      label: `${pk.nome} ${pk.fatorConversao}x`,
+      code: pk.ean!,
+    })),
+  ].filter(Boolean) as { label: string; code: string }[];
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title={product.nome}
+      description={`${TIPO_LABEL[product.tipo]} · ${product.subcategoriaNome}`}
+      width="md"
+      footer={
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={onClose} className="flex-1">Fechar</Button>
+          <Button onClick={onEdit} className="flex-1 gap-1.5"><Pencil size={14} /> Editar</Button>
+        </div>
+      }
+    >
+      <div className="space-y-5">
+        {/* Identificação */}
+        <div className="grid grid-cols-2 gap-3">
+          <InfoCard label="SKU">
+            <span className="font-mono text-[13px] font-medium text-ink">{product.sku}</span>
+          </InfoCard>
+          <InfoCard label="Tipo">
+            <span className="inline-flex items-center gap-1.5 text-[13px] text-ink-2">
+              <span className="text-faint">{TIPO_ICON[product.tipo]}</span>
+              {TIPO_LABEL[product.tipo]}
+            </span>
+          </InfoCard>
+          {product.marca && (
+            <InfoCard label="Marca">
+              <span className="text-[13px] text-ink-2">{product.marca}</span>
+            </InfoCard>
+          )}
+          <InfoCard label="Subcategoria">
+            <span className="text-[13px] text-ink-2">{product.subcategoriaNome}</span>
+          </InfoCard>
+        </div>
+
+        {/* Estoque */}
+        <div className="rounded-[var(--radius-lg)] border border-line p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-[12px] font-semibold uppercase tracking-wider text-faint">Estoque</h3>
+            <span className={cn("inline-flex items-center gap-1.5 text-[11px] font-medium",
+              level === "ok" ? "text-ok" : level === "warn" ? "text-warn" : "text-danger"
+            )}>
+              <span className={cn("h-2 w-2 rounded-full", STOCK_COLOR[level])} />
+              {STOCK_TITLE[level]}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-[11px] text-faint">Total em estoque</div>
+              <div className="font-mono text-lg font-semibold text-ink tnum">{totalEstoque}</div>
+              <div className="text-[11px] text-muted">{product.unidadeBase}</div>
+            </div>
+            <div>
+              <div className="text-[11px] text-faint">Total vendido</div>
+              <div className="flex items-end gap-1.5">
+                <ShoppingCart size={14} className="mb-0.5 text-muted" />
+                <span className="font-mono text-lg font-semibold text-ink tnum">{product.totalVendido}</span>
+              </div>
+              <div className="text-[11px] text-muted">{product.unidadeBase}</div>
+            </div>
+          </div>
+          {product.tipo !== "INSUMO" && (
+            <div className="mt-3 border-t border-line pt-3">
+              <StockGauge
+                fechado={product.estoque.fechado}
+                aberto={product.estoque.aberto}
+                minimo={product.estoque.minimo}
+                ideal={product.estoque.ideal}
+                conteudoPorUnidade={product.conteudoPorUnidade}
+                fracionavel={product.fracionavel}
+                unidade={product.unidadeBase}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Preços */}
+        {product.tipo !== "INSUMO" && (
+          <div className="rounded-[var(--radius-lg)] border border-line p-4">
+            <h3 className="mb-3 text-[12px] font-semibold uppercase tracking-wider text-faint">Preços</h3>
+            <div className="grid grid-cols-3 gap-3">
+              <InfoCard label="Venda">
+                <span className="font-mono text-[14px] font-semibold text-ink tnum">{brl(product.precoVenda)}</span>
+              </InfoCard>
+              <InfoCard label="Custo">
+                <span className="font-mono text-[13px] text-ink-2 tnum">{brl(product.custo)}</span>
+              </InfoCard>
+              <InfoCard label="Margem">
+                <span className="font-mono text-[13px] font-medium text-ok tnum">
+                  {margem(product.precoVenda, product.custo) ?? "—"}%
+                </span>
+              </InfoCard>
+            </div>
+          </div>
+        )}
+
+        {/* Fornecedores */}
+        {product.fornecedores.length > 0 && (
+          <div className="rounded-[var(--radius-lg)] border border-line p-4">
+            <h3 className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-faint">Fornecedores</h3>
+            <div className="space-y-1.5">
+              {product.fornecedores.map((f) => (
+                <div key={f.id} className="flex items-center gap-2 text-[13px]">
+                  <Building2 size={13} className="shrink-0 text-faint" />
+                  <span className="text-ink-2">{f.nome}</span>
+                  {f.isPrincipal && (
+                    <span className="ml-auto text-[10px] font-medium text-brand-strong">principal</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Códigos de barra */}
+        {barcodeCodes.length > 0 && (
+          <div className="rounded-[var(--radius-lg)] border border-line p-4">
+            <h3 className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wider text-faint">
+              <Barcode size={12} /> Códigos de barra
+            </h3>
+            <div className="space-y-1.5">
+              {barcodeCodes.map((item) => (
+                <div key={item.code} className="flex items-center gap-3 text-[12px]">
+                  <span className="w-24 shrink-0 text-faint">{item.label}</span>
+                  <span className="font-mono text-ink">{item.code}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </Sheet>
+  );
+}
+
+function InfoCard({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-faint">{label}</div>
+      <div className="mt-0.5">{children}</div>
+    </div>
+  );
+}
+
+// ── Célula de preço com tooltip (custo × venda) ──────────────────────────────
+
+function PriceCell({ tipo, precoVenda, custo }: { tipo: string; precoVenda: number | null; custo: number | null }) {
+  const [show, setShow] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const ref = useRef<HTMLDivElement>(null);
+
+  if (tipo === "INSUMO") return <span className="text-[11px] text-faint">uso interno</span>;
+
+  const hasBoth = precoVenda != null && custo != null;
+
+  function handleEnter() {
+    if (!hasBoth) return;
+    const rect = ref.current?.getBoundingClientRect();
+    if (rect) setPos({ top: rect.top + window.scrollY, left: rect.left + window.scrollX });
+    setShow(true);
+  }
+
+  return (
+    <>
+      <div
+        ref={ref}
+        className={cn(hasBoth && "cursor-help")}
+        onMouseEnter={handleEnter}
+        onMouseLeave={() => setShow(false)}
+      >
+        <span className="font-mono text-[13px] font-medium text-ink tnum">{brl(precoVenda)}</span>
+        {margem(precoVenda, custo) !== null && (
+          <div className="mt-0.5 text-[11px] font-medium text-ok">{margem(precoVenda, custo)}% margem</div>
+        )}
+      </div>
+
+      {show && hasBoth && typeof document !== "undefined" && createPortal(
+        <div
+          className="fixed z-[100] min-w-[180px] rounded-lg border border-line bg-surface p-2.5 shadow-lg"
+          style={{ top: pos.top - 8, left: pos.left, transform: "translateY(-100%)" }}
+          onMouseEnter={() => setShow(true)}
+          onMouseLeave={() => setShow(false)}
+        >
+          <div className="space-y-1.5 text-[12px]">
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-faint">Preço base</span>
+              <span className="font-mono font-medium text-ink tnum">{brl(custo)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-faint">Preço de venda</span>
+              <span className="font-mono font-medium text-ink tnum">{brl(precoVenda)}</span>
+            </div>
+            {margem(precoVenda, custo) !== null && (
+              <div className="border-t border-line pt-1.5 flex items-center justify-between gap-4">
+                <span className="text-faint">Margem</span>
+                <span className="font-mono font-medium text-ok tnum">{margem(precoVenda, custo)}%</span>
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
 

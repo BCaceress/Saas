@@ -21,7 +21,7 @@ export default async function ProdutosPage() {
   const ctx = await requireActiveTenant();
 
   const data = await runWithTenant(ctx.tenant.id, async () => {
-    const [products, categories, brands, locations, suppliers] =
+    const [products, categories, brands, locations, suppliers, salesStats] =
       await Promise.all([
         db.product.findMany({
           orderBy: { nome: "asc" },
@@ -29,7 +29,11 @@ export default async function ProdutosPage() {
             brand: true,
             subcategory: { include: { category: true } },
             stocks: true,
-            suppliers: { where: { isPrincipal: true }, take: 1 },
+            packagings: { orderBy: { nome: "asc" } },
+            suppliers: {
+              include: { supplier: { select: { razaoSocial: true, nomeFantasia: true } } },
+              orderBy: { isPrincipal: "desc" },
+            },
             components: { include: { component: { include: { stocks: true } } } },
           },
         }),
@@ -40,10 +44,14 @@ export default async function ProdutosPage() {
         db.brand.findMany({ orderBy: { nome: "asc" } }),
         db.storageLocation.findMany({ orderBy: { nome: "asc" } }),
         db.supplier.findMany({ orderBy: { razaoSocial: "asc" } }),
+        db.saleItem.groupBy({ by: ["productId"], _sum: { quantidade: true } }),
       ]);
+    const vendidoMap = Object.fromEntries(
+      salesStats.map((s) => [s.productId, Number(s._sum.quantidade ?? 0)])
+    );
 
     const rows: ProductRow[] = products.map((p) => {
-      const principal = p.suppliers[0];
+      const principal = p.suppliers.find((s) => s.isPrincipal);
 
       // COMBO/receita não guardam estoque/custo: derivam dos componentes (§6).
       const composto = p.tipo === "COMBO" || p.tipo === "PERSONALIZADO";
@@ -96,6 +104,18 @@ export default async function ProdutosPage() {
         custoFornecedor: dec(principal?.custoFornecedor),
         disponibilidadeDerivada,
         salesChannels: [],
+        packagings: p.packagings.map((pk) => ({
+          id: pk.id,
+          nome: pk.nome,
+          ean: pk.ean,
+          fatorConversao: dec(pk.fatorConversao) ?? 1,
+        })),
+        fornecedores: p.suppliers.map((ps) => ({
+          id: ps.supplierId,
+          nome: ps.supplier.nomeFantasia ?? ps.supplier.razaoSocial,
+          isPrincipal: ps.isPrincipal,
+        })),
+        totalVendido: vendidoMap[p.id] ?? 0,
       };
     });
 
