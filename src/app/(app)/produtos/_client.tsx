@@ -58,8 +58,9 @@ export function ProdutosClient(props: {
   brandOpts: BrandOpt[];
   storageOpts: StorageOpt[];
   supplierRows: SupplierRow[];
+  siteOpts: { id: string; nome: string }[];
 }) {
-  const { rows, categoryTree, subOpts, brandOpts, storageOpts, supplierRows } = props;
+  const { rows, categoryTree, subOpts, brandOpts, storageOpts, supplierRows, siteOpts } = props;
   const router = useRouter();
   const [, start] = useTransition();
 
@@ -303,7 +304,7 @@ export function ProdutosClient(props: {
 
         {sheet === "brand" && <BrandSheet open onClose={() => setSheet(null)} brands={brandOpts} />}
         {sheet === "category" && <CategorySheet open onClose={() => setSheet(null)} tree={categoryTree} />}
-        {sheet === "storage" && <StorageSheet open onClose={() => setSheet(null)} locations={storageOpts} />}
+        {sheet === "storage" && <StorageSheet open onClose={() => setSheet(null)} locations={storageOpts} sites={siteOpts} />}
         {sheet === "supplier" && <SupplierSheet open onClose={() => setSheet(null)} suppliers={supplierRows} />}
         {sheet === "csv" && <CsvSheet open onClose={() => setSheet(null)} />}
       </div>

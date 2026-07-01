@@ -3,7 +3,13 @@ import { cookies } from "next/headers";
 import { db } from "./prisma";
 import type { Prisma } from "@/generated/prisma";
 
-export type SiteRow = { id: string; nome: string; tipo: string; ativo: boolean };
+export type SiteRow = {
+  id: string;
+  nome: string;
+  tipo: string;
+  ativo: boolean;
+  controleIdade: boolean;
+};
 
 /** Retorna o site ativo (do cookie) ou o primeiro site ativo do tenant. */
 export async function getActiveSiteId(): Promise<string | null> {
@@ -30,7 +36,7 @@ export async function listSites(): Promise<SiteRow[]> {
   return db.site.findMany({
     where: { ativo: true },
     orderBy: { nome: "asc" },
-    select: { id: true, nome: true, tipo: true, ativo: true },
+    select: { id: true, nome: true, tipo: true, ativo: true, controleIdade: true },
   });
 }
 

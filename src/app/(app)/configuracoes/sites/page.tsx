@@ -6,9 +6,24 @@ import { DistribuicaoConfig } from "./_distribuicao-config";
 
 export default async function SitesPage() {
   const ctx = await requireActiveTenant();
-  const sites = await runWithTenant(ctx.tenant.id, async () => {
-    return await db.site.findMany({ orderBy: { createdAt: "asc" } });
+  const [sites, rawLocations] = await runWithTenant(ctx.tenant.id, async () => {
+    return Promise.all([
+      db.site.findMany({ orderBy: { createdAt: "asc" } }),
+      db.storageLocation.findMany({
+        orderBy: { nome: "asc" },
+        include: { _count: { select: { stocks: true } } },
+      }),
+    ]);
   });
+
+  const storageLocations = rawLocations.map((l) => ({
+    id: l.id,
+    nome: l.nome,
+    tipo: l.tipo as "AMBIENTE" | "REFRIGERADO" | "CONGELADO",
+    siteId: l.siteId,
+    ativo: l.ativo,
+    stockCount: l._count.stocks,
+  }));
 
   return (
     <div className="flex flex-col gap-5">
@@ -35,6 +50,7 @@ export default async function SitesPage() {
           estado: s.estado,
           estoquePropio: s.estoquePropio,
           cdAbastecedorId: s.cdAbastecedorId,
+          controleIdade: s.controleIdade,
         }))}
         allSites={sites.map((s) => ({
           id: s.id,
@@ -42,6 +58,7 @@ export default async function SitesPage() {
           tipo: s.tipo,
           ativo: s.ativo,
         }))}
+        locations={storageLocations}
       />
     </div>
   );

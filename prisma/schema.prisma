@@ -392,15 +392,16 @@ model FiscalProfile {
 model StorageLocation {
   id       String      @id @default(cuid())
   tenantId String
-  siteId   String?
+  siteId   String
   nome     String
   tipo     StorageType
+  ativo    Boolean     @default(true)
 
   tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  site   Site?   @relation(fields: [siteId], references: [id])
+  site   Site    @relation(fields: [siteId], references: [id])
   stocks Stock[]
 
-  @@unique([tenantId, nome])
+  @@unique([tenantId, siteId, nome])
   @@index([tenantId])
   @@index([siteId])
 }
@@ -673,6 +674,9 @@ model Site {
   // Estoque: próprio ou abastecido por CD
   estoquePropio      Boolean @default(true)
   cdAbastecedorId    String?
+
+  // Venda restrita p/ maiores de 18 (PDV): só se aplica a LOJA — CD não vende.
+  controleIdade Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -71,7 +71,14 @@ export type CategoryNode = {
   skuPrefix: string;
   subcategorias: { id: string; nome: string; skuPrefix: string; ativo: boolean }[];
 };
-export type StorageOpt = { id: string; nome: string; tipo: StorageType };
+export type StorageOpt = {
+  id: string;
+  nome: string;
+  tipo: StorageType;
+  ativo: boolean;
+  siteId: string | null;
+  siteNome: string | null;
+};
 export type SupplierRow = {
   id: string;
   cnpj: string | null;

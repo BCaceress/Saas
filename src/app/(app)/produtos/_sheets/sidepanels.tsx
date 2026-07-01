@@ -434,28 +434,42 @@ const STORAGE_LABEL: Record<StorageType, string> = {
   REFRIGERADO: "Refrigerado",
   CONGELADO: "Congelado",
 };
+const STORAGE_ICON_COLOR: Record<StorageType, string> = {
+  AMBIENTE: "text-brand",
+  REFRIGERADO: "text-ok",
+  CONGELADO: "text-blue-500",
+};
 
 export function StorageSheet({
   open,
   onClose,
   locations,
+  sites,
 }: {
   open: boolean;
   onClose: () => void;
   locations: StorageOpt[];
+  sites: { id: string; nome: string }[];
 }) {
   const refresh = useRefresh();
   const [nome, setNome] = useState("");
-  const [tipo, setTipo] = useState<StorageType>("REFRIGERADO");
+  const [tipo, setTipo] = useState<StorageType>("AMBIENTE");
+  const [siteId, setSiteId] = useState("");
   const [pending, start] = useTransition();
   const [error, setError] = useState<string>();
+  const effectiveSiteId = siteId || sites[0]?.id || "";
 
   function add() {
     setError(undefined);
+    if (!effectiveSiteId) {
+      setError("Cadastre um estabelecimento antes de criar locais.");
+      return;
+    }
     start(async () => {
       try {
-        await createStorageLocation({ nome, tipo });
+        await createStorageLocation({ nome, tipo, siteId: effectiveSiteId });
         setNome("");
+        setSiteId("");
         refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Falha.");
@@ -468,7 +482,7 @@ export function StorageSheet({
       open={open}
       onClose={onClose}
       title="Armazenagem"
-      description="Locais físicos. O tipo define a temperatura herdada pelo produto."
+      description="Locais físicos. Para gestão completa acesse Configurações → Sites."
     >
       <div className="flex flex-col gap-3">
         <Input
@@ -476,6 +490,15 @@ export function StorageSheet({
           onChange={(e) => setNome(e.target.value)}
           placeholder="Ex.: Geladeira 2"
         />
+        {sites.length > 1 && (
+          <Select value={effectiveSiteId} onChange={(e) => setSiteId(e.target.value)}>
+            {sites.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.nome}
+              </option>
+            ))}
+          </Select>
+        )}
         <Select
           value={tipo}
           onChange={(e) => setTipo(e.target.value as StorageType)}
@@ -506,11 +529,17 @@ export function StorageSheet({
         {locations.map((l) => (
           <li
             key={l.id}
-            className="flex items-center justify-between px-3 py-2.5 text-sm text-ink"
+            className="flex items-center justify-between gap-2 px-3 py-2.5 text-sm text-ink"
           >
-            {l.nome}
-            <Badge tone={l.tipo === "CONGELADO" ? "brand" : "neutral"}>
-              {STORAGE_ICON[l.tipo]} {STORAGE_LABEL[l.tipo]}
+            <span className="min-w-0 truncate">
+              {l.nome}
+              {sites.length > 1 && l.siteNome && (
+                <span className="ml-1.5 text-xs text-faint">— {l.siteNome}</span>
+              )}
+            </span>
+            <Badge tone="neutral">
+              <span className={STORAGE_ICON_COLOR[l.tipo]}>{STORAGE_ICON[l.tipo]}</span>
+              {STORAGE_LABEL[l.tipo]}
             </Badge>
           </li>
         ))}

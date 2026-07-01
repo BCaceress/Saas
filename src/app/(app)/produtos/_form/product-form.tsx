@@ -1182,7 +1182,7 @@ export function ProductForm({
                         <option value="">Sem local</option>
                         {storage.map((l) => (
                           <option key={l.id} value={l.id}>
-                            {l.nome}
+                            {l.nome}{l.siteNome ? ` — ${l.siteNome}` : ""}
                           </option>
                         ))}
                       </Select>

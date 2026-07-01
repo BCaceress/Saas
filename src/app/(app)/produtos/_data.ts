@@ -32,7 +32,11 @@ export async function loadProductFormOptions(): Promise<ProductFormOptions> {
       include: { subcategories: { where: { ativo: true }, orderBy: { nome: "asc" } } },
     }),
     db.brand.findMany({ orderBy: { nome: "asc" } }),
-    db.storageLocation.findMany({ orderBy: { nome: "asc" } }),
+    db.storageLocation.findMany({
+      where: { ativo: true },
+      orderBy: { nome: "asc" },
+      include: { site: { select: { nome: true } } },
+    }),
     db.supplier.findMany({ where: { ativo: true }, orderBy: { razaoSocial: "asc" } }),
     db.fiscalProfile.findMany({ orderBy: { nome: "asc" } }),
   ]);
@@ -53,7 +57,14 @@ export async function loadProductFormOptions(): Promise<ProductFormOptions> {
     brandOpts: brands.map((b) => ({ id: b.id, nome: b.nome })),
     categoryOpts: categories.map((c) => ({ id: c.id, nome: c.nome })),
     subOpts,
-    storageOpts: locations.map((l) => ({ id: l.id, nome: l.nome, tipo: l.tipo })),
+    storageOpts: locations.map((l) => ({
+      id: l.id,
+      nome: l.nome,
+      tipo: l.tipo,
+      ativo: l.ativo,
+      siteId: l.siteId,
+      siteNome: l.site?.nome ?? null,
+    })),
     supplierRows: suppliers.map((s) => ({
       id: s.id,
       cnpj: s.cnpj,

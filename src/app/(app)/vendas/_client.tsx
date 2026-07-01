@@ -91,7 +91,7 @@ export function PdvClient({
   metodosAtivos,
   caixa,
 }: {
-  sites: { id: string; nome: string }[];
+  sites: { id: string; nome: string; controleIdade?: boolean }[];
   defaultSiteId: string | null;
   produtos: ProdutoVenda[];
   metodosAtivos: PaymentMethod[];
@@ -125,6 +125,9 @@ export function PdvClient({
     [produtos],
   );
 
+  const siteControlaIdade =
+    sites.find((s) => s.id === siteId)?.controleIdade ?? false;
+
   const filtrados = useMemo(() => {
     const q = busca.trim().toLowerCase();
     return produtos
@@ -151,7 +154,7 @@ export function PdvClient({
   const recebidoNum =
     parseFloat(recebido.replace(/\./g, "").replace(",", ".")) || 0;
   const troco = metodoSel === "DINHEIRO" ? Math.max(0, recebidoNum - total) : 0;
-  const precisaIdade = cart.some((i) => i.restricaoIdade);
+  const precisaIdade = siteControlaIdade && cart.some((i) => i.restricaoIdade);
   const dinheiroOk = metodoSel !== "DINHEIRO" || recebidoNum >= total - 0.005;
   const podeFinalizar =
     caixaOk &&

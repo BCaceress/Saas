@@ -46,6 +46,7 @@ const siteSchema = z.object({
   estado: z.string().optional().nullable(),
   estoquePropio: z.boolean().default(true),
   cdAbastecedorId: z.string().optional().nullable(),
+  controleIdade: z.boolean().default(false),
 });
 
 export async function createSite(input: z.input<typeof siteSchema>) {
@@ -66,6 +67,7 @@ export async function createSite(input: z.input<typeof siteSchema>) {
         estado: d.estado,
         estoquePropio: d.estoquePropio,
         cdAbastecedorId: d.cdAbastecedorId,
+        controleIdade: d.tipo === "LOJA" && d.controleIdade,
       },
     });
     ok();
@@ -91,6 +93,7 @@ export async function updateSite(id: string, input: z.input<typeof siteSchema>) 
         estado: d.estado,
         estoquePropio: d.estoquePropio,
         cdAbastecedorId: d.cdAbastecedorId,
+        controleIdade: d.tipo === "LOJA" && d.controleIdade,
       },
     });
     ok();

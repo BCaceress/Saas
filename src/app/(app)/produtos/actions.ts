@@ -27,6 +27,11 @@ const ok = () => {
   revalidatePath("/produtos");
 };
 
+const okStorage = () => {
+  revalidatePath("/produtos");
+  revalidatePath("/configuracoes/sites");
+};
+
 // ── Marcas ─────────────────────────────────────────────────
 export async function createBrand(nomeRaw: string) {
   return tx(async (tid) => {
@@ -154,16 +159,60 @@ export async function setSubcategoryActive(id: string, ativo: boolean) {
 export async function createStorageLocation(input: {
   nome: string;
   tipo: StorageType;
-  siteId?: string | null;
+  siteId: string;
 }) {
   return tx(async (tid) => {
     const nome = input.nome.trim();
     if (nome.length < 2) throw new Error("Informe o nome do local.");
-    const loc = await db.storageLocation.create({
-      data: { tenantId: tid, nome, tipo: input.tipo, siteId: input.siteId ?? null },
+    if (!input.siteId) throw new Error("Selecione o estabelecimento.");
+    const dup = await db.storageLocation.findFirst({
+      where: { siteId: input.siteId, nome: { equals: nome, mode: "insensitive" } },
     });
-    ok();
+    if (dup) throw new Error(`Já existe um local com o nome "${nome}" neste estabelecimento.`);
+    const loc = await db.storageLocation.create({
+      data: { tenantId: tid, nome, tipo: input.tipo, siteId: input.siteId },
+    });
+    okStorage();
     return loc.id;
+  });
+}
+
+export async function updateStorageLocation(
+  id: string,
+  input: { nome: string; tipo: StorageType; siteId: string },
+) {
+  return tx(async () => {
+    const nome = input.nome.trim();
+    if (nome.length < 2) throw new Error("Informe o nome do local.");
+    if (!input.siteId) throw new Error("Selecione o estabelecimento.");
+    const dup = await db.storageLocation.findFirst({
+      where: { siteId: input.siteId, nome: { equals: nome, mode: "insensitive" }, id: { not: id } },
+    });
+    if (dup) throw new Error(`Já existe um local com o nome "${nome}" neste estabelecimento.`);
+    await db.storageLocation.update({
+      where: { id },
+      data: { nome, tipo: input.tipo, siteId: input.siteId },
+    });
+    okStorage();
+  });
+}
+
+export async function deleteStorageLocation(id: string) {
+  return tx(async () => {
+    const hasStock = await db.stock.findFirst({ where: { locationId: id } });
+    if (hasStock)
+      throw new Error(
+        "Não é possível excluir: há produtos vinculados a este local. Inative-o.",
+      );
+    await db.storageLocation.delete({ where: { id } });
+    okStorage();
+  });
+}
+
+export async function toggleStorageLocationAtivo(id: string, ativo: boolean) {
+  return tx(async () => {
+    await db.storageLocation.update({ where: { id }, data: { ativo } });
+    okStorage();
   });
 }
 

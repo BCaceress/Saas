@@ -310,12 +310,18 @@ export async function finalizarVenda(
   if (sale.status !== "ABERTA") throw new Error("Venda já finalizada ou cancelada.");
   if (sale.items.length === 0) throw new Error("Adicione itens antes de finalizar.");
 
-  // +18 (§4): se algum item exige idade, confirmação obrigatória
-  const restritos = await basePrisma.product.count({
-    where: { tenantId, restricaoIdade: true, id: { in: sale.items.map((i) => i.productId) } },
+  // +18 (§4): só exige confirmação se a loja tiver o controle de idade ativado
+  const site = await basePrisma.site.findFirst({
+    where: { id: sale.siteId, tenantId },
+    select: { controleIdade: true },
   });
-  if (restritos > 0 && !sale.maiorIdadeConfirmada) {
-    throw new Error("Confirme a maioridade do cliente para vender itens +18.");
+  if (site?.controleIdade) {
+    const restritos = await basePrisma.product.count({
+      where: { tenantId, restricaoIdade: true, id: { in: sale.items.map((i) => i.productId) } },
+    });
+    if (restritos > 0 && !sale.maiorIdadeConfirmada) {
+      throw new Error("Confirme a maioridade do cliente para vender itens +18.");
+    }
   }
 
   // pagamentos confirmados cobrem o total?

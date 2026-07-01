@@ -23,11 +23,13 @@ export function TotemClient({
   produtos,
   metodosAtivos,
   tenantNome,
+  controleIdade,
 }: {
   siteId: string | null;
   produtos: ProdutoVenda[];
   metodosAtivos: PaymentMethod[];
   tenantNome: string;
+  controleIdade: boolean;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -46,7 +48,7 @@ export function TotemClient({
   }, [busca, produtos]);
 
   const total = cart.reduce((s, i) => s + i.preco * i.quantidade, 0);
-  const precisaIdade = cart.some((i) => i.restricaoIdade);
+  const precisaIdade = controleIdade && cart.some((i) => i.restricaoIdade);
   const metodo: PaymentMethod = metodosAtivos.includes("PIX") ? "PIX" : metodosAtivos[0] ?? "PIX";
 
   function add(p: ProdutoVenda, variantId: string | null) {

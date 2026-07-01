@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { MapPin, CreditCard } from "lucide-react";
+import { MapPin, CreditCard, Truck, Scale } from "lucide-react";
 
 export default function ConfiguracoesPage() {
   return (
@@ -36,6 +36,34 @@ export default function ConfiguracoesPage() {
             <p className="font-semibold text-ink">Métodos de pagamento</p>
             <p className="mt-0.5 text-sm text-muted">
               Defina as formas de pagamento aceitas por loja.
+            </p>
+          </div>
+        </Link>
+        <Link
+          href="/configuracoes/fornecedores"
+          className="flex items-start gap-4 rounded-[var(--radius-lg)] border border-line bg-surface p-5 transition-colors hover:bg-surface-2"
+        >
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
+            <Truck size={18} />
+          </span>
+          <div>
+            <p className="font-semibold text-ink">Fornecedores</p>
+            <p className="mt-0.5 text-sm text-muted">
+              Cadastre e gerencie os fornecedores da operação.
+            </p>
+          </div>
+        </Link>
+        <Link
+          href="/configuracoes/classificacao-fiscal"
+          className="flex items-start gap-4 rounded-[var(--radius-lg)] border border-line bg-surface p-5 transition-colors hover:bg-surface-2"
+        >
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
+            <Scale size={18} />
+          </span>
+          <div>
+            <p className="font-semibold text-ink">Classificação fiscal</p>
+            <p className="mt-0.5 text-sm text-muted">
+              Perfis fiscais e vínculo por subcategoria.
             </p>
           </div>
         </Link>

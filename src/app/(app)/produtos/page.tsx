@@ -21,7 +21,7 @@ export default async function ProdutosPage() {
   const ctx = await requireActiveTenant();
 
   const data = await runWithTenant(ctx.tenant.id, async () => {
-    const [products, categories, brands, locations, suppliers, salesStats] =
+    const [products, categories, brands, locations, suppliers, sites, salesStats] =
       await Promise.all([
         db.product.findMany({
           orderBy: { nome: "asc" },
@@ -42,8 +42,17 @@ export default async function ProdutosPage() {
           include: { subcategories: { orderBy: { nome: "asc" } } },
         }),
         db.brand.findMany({ orderBy: { nome: "asc" } }),
-        db.storageLocation.findMany({ orderBy: { nome: "asc" } }),
+        db.storageLocation.findMany({
+          where: { ativo: true },
+          orderBy: { nome: "asc" },
+          include: { site: { select: { nome: true } } },
+        }),
         db.supplier.findMany({ orderBy: { razaoSocial: "asc" } }),
+        db.site.findMany({
+          where: { ativo: true },
+          orderBy: { nome: "asc" },
+          select: { id: true, nome: true },
+        }),
         db.saleItem.groupBy({ by: ["productId"], _sum: { quantidade: true } }),
       ]);
     const vendidoMap = Object.fromEntries(
@@ -150,7 +159,11 @@ export default async function ProdutosPage() {
       id: l.id,
       nome: l.nome,
       tipo: l.tipo,
+      ativo: l.ativo,
+      siteId: l.siteId,
+      siteNome: l.site?.nome ?? null,
     }));
+    const siteOpts = sites.map((s) => ({ id: s.id, nome: s.nome }));
     const supplierRows: SupplierRow[] = suppliers.map((s) => ({
       id: s.id,
       cnpj: s.cnpj,
@@ -169,7 +182,7 @@ export default async function ProdutosPage() {
       uf: s.uf,
       ativo: s.ativo,
     }));
-    return { rows, categoryTree, subOpts, brandOpts, storageOpts, supplierRows };
+    return { rows, categoryTree, subOpts, brandOpts, storageOpts, supplierRows, siteOpts };
   });
 
   return <ProdutosClient {...data} />;
