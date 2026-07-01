@@ -6,9 +6,14 @@ export const metadata = { title: "Entrar — NoHub Market" };
 export default function LoginPage() {
   return (
     <div>
-      <h1 className="font-display text-2xl font-bold text-ink">Entrar</h1>
-      <p className="mt-1 mb-7 text-sm text-muted">
-        Bom te ver de volta. Acesse o painel do seu mercado.
+      <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--auth-brand)]">
+        Bem-vindo de volta
+      </p>
+      <h1 className="font-display text-[26px] font-bold leading-tight text-[var(--auth-ink)]">
+        Entrar na sua conta
+      </h1>
+      <p className="mt-1.5 mb-7 text-sm text-[var(--auth-muted)]">
+        Acesse o painel do seu mercado pra continuar de onde parou.
       </p>
       <AuthForm mode="login" action={loginAction} googleAction={googleLoginAction} />
     </div>

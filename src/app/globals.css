@@ -262,3 +262,46 @@ body {
 .toast-in {
   animation: toast-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* ============================================================
+   Auth (login/cadastro) — superfície premium sempre escura,
+   independente do tema claro/escuro do resto do app. Escopo via
+   .auth-theme na raiz do layout de auth; não vaza pro resto do
+   design system (ver src/app/(auth)/layout.tsx).
+   ============================================================ */
+.auth-theme {
+  --auth-bg: #0b0d10;
+  --auth-surface: #15181d;
+  --auth-card: #1b2027;
+  --auth-field: rgba(255, 255, 255, 0.03);
+  --auth-line: rgba(255, 255, 255, 0.08);
+  --auth-line-strong: rgba(255, 255, 255, 0.14);
+  --auth-brand: #ff8a34;
+  --auth-brand-hover: #ff9b55;
+  --auth-brand-soft: rgba(255, 138, 52, 0.14);
+  --auth-glow: rgba(255, 138, 52, 0.35);
+  --auth-ink: #ffffff;
+  --auth-muted: #a4adba;
+  --auth-danger: #f87171;
+  --auth-danger-soft: rgba(248, 113, 113, 0.12);
+  --auth-ok: #4ade80;
+}
+
+@keyframes auth-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.auth-fade-up {
+  animation: auth-fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-fade-up {
+    animation: none;
+  }
+}
