@@ -22,18 +22,46 @@ export type SaldoRow = {
   custoMedio: number | null;
   abaixoMinimo: boolean;
   percentAberta: number | null;
+  abertaEm: string | null; // ISO — última vez que uma unidade foi aberta (deltaAberto>0)
+  // Consumo (un fechadas vendidas) por janela — base p/ cobertura e média.
+  consumoHoje: number;
+  consumo7: number;
+  consumo30: number;
+  ultimaMovTipo: string | null; // tipo da última movimentação
+  ultimaMovEm: string | null;   // ISO
+  ultimaCompraEm: string | null;
+  ultimaVendaEm: string | null;
+  // Próxima reposição (pedido de compra em aberto p/ este produto/site).
+  reposEstado: "prevista" | "pedido" | "nenhuma";
+  reposPrevisao: string | null; // ISO — previsão de entrega mais próxima
+  reposQtd: number | null;      // qtd pendente somada
   locationNome: string | null;
   temFornecedor: boolean;
+  categoria: string | null;
+  marca: string | null;
+  fornecedorNome: string | null;
+  precoVenda: number | null;
+  custo: number | null;
+  imagemUrl: string | null;
 };
 
 export type MovimentacaoRow = {
   id: string;
   tipo: string;
+  productId: string;
   productNome: string;
   productSku: string;
+  productEan: string | null;
   deltaFechado: number;
   deltaAberto: number;
+  saldoDepois: number | null; // saldo fechado após a movimentação (corrente ⇒ null se fora da janela)
   custoUnitario: number | null;
+  valorTotal: number | null;
+  origem: string; // rótulo curto: Compra, PDV, Produção, Ajuste…
+  documento: string | null; // PC-00002, nº nota, id transferência…
+  fornecedor: string | null;
+  responsavel: string | null;
+  local: string | null;
   observacao: string | null;
   createdAt: Date;
 };
@@ -80,11 +108,116 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
   const stocks = await db.stock.findMany({
     where,
     include: {
-      product: { select: { id: true, sku: true, ean: true, nome: true, tipo: true, unidadeBase: true, fracionavel: true, conteudoPorUnidade: true, custoMedio: true, suppliers: { select: { id: true }, take: 1 } } },
+      product: {
+        select: {
+          id: true, sku: true, ean: true, nome: true, tipo: true, unidadeBase: true,
+          fracionavel: true, conteudoPorUnidade: true, custoMedio: true,
+          precoVenda: true, custo: true, imagemUrl: true,
+          brand: { select: { nome: true } },
+          subcategory: { select: { nome: true } },
+          suppliers: {
+            select: { supplier: { select: { razaoSocial: true, nomeFantasia: true } } },
+            orderBy: { isPrincipal: "desc" },
+            take: 1,
+          },
+        },
+      },
       location: { select: { nome: true } },
     },
     orderBy: { product: { nome: "asc" } },
   });
+
+  // Data de abertura: última movimentação que abriu uma unidade (deltaAberto>0),
+  // só para os produtos que hoje têm saldo aberto.
+  const abertoIds = stocks.filter((s) => n(s.estoqueAberto) > 0).map((s) => s.productId);
+  const aberturaMap = new Map<string, Date>();
+  if (abertoIds.length > 0) {
+    const movs = await db.stockMovement.findMany({
+      where: {
+        productId: { in: abertoIds },
+        deltaAberto: { gt: 0 },
+        ...(siteId ? { siteId } : {}),
+      },
+      select: { productId: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
+    });
+    for (const m of movs) if (!aberturaMap.has(m.productId)) aberturaMap.set(m.productId, m.createdAt);
+  }
+
+  const productIds = stocks.map((s) => s.productId);
+  const now = Date.now();
+  const d30 = new Date(now - 30 * 864e5);
+  const d7 = new Date(now - 7 * 864e5);
+  const startToday = new Date();
+  startToday.setHours(0, 0, 0, 0);
+
+  // Consumo: saídas (vendas) por janela — un fechadas.
+  const consumoMap = new Map<string, { hoje: number; d7: number; d30: number }>();
+  // Última movimentação (qualquer) + última compra/venda.
+  const lastMap = new Map<string, { tipo: string; at: Date }>();
+  const lastCompra = new Map<string, Date>();
+  const lastVenda = new Map<string, Date>();
+  if (productIds.length > 0) {
+    const [vendas, movs] = await Promise.all([
+      db.stockMovement.findMany({
+        where: { productId: { in: productIds }, tipo: "SAIDA", createdAt: { gte: d30 }, ...(siteId ? { siteId } : {}) },
+        select: { productId: true, deltaFechado: true, deltaAberto: true, createdAt: true },
+      }),
+      db.stockMovement.findMany({
+        where: { productId: { in: productIds }, ...(siteId ? { siteId } : {}) },
+        select: { productId: true, tipo: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        take: 5000,
+      }),
+    ]);
+
+    for (const v of vendas) {
+      const q = Math.abs(n(v.deltaFechado)) || Math.abs(n(v.deltaAberto));
+      if (q <= 0) continue;
+      const c = consumoMap.get(v.productId) ?? { hoje: 0, d7: 0, d30: 0 };
+      c.d30 += q;
+      if (v.createdAt >= d7) c.d7 += q;
+      if (v.createdAt >= startToday) c.hoje += q;
+      consumoMap.set(v.productId, c);
+    }
+    for (const m of movs) {
+      if (!lastMap.has(m.productId)) lastMap.set(m.productId, { tipo: m.tipo, at: m.createdAt });
+      if (m.tipo === "ENTRADA" && !lastCompra.has(m.productId)) lastCompra.set(m.productId, m.createdAt);
+      if (m.tipo === "SAIDA" && !lastVenda.has(m.productId)) lastVenda.set(m.productId, m.createdAt);
+    }
+  }
+
+  // Próxima reposição: itens de pedidos de compra em aberto p/ o produto/site.
+  const reposMap = new Map<string, { previsao: Date | null; qtd: number }>();
+  if (productIds.length > 0) {
+    const poItems = await db.purchaseOrderItem.findMany({
+      where: {
+        productId: { in: productIds },
+        purchaseOrder: {
+          status: { in: ["ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"] },
+          ...(siteId ? { siteId } : {}),
+        },
+      },
+      select: {
+        productId: true,
+        qtdPedida: true,
+        qtdRecebida: true,
+        purchaseOrder: { select: { previsaoEntrega: true } },
+      },
+    });
+    for (const it of poItems) {
+      const pend = n(it.qtdPedida) - n(it.qtdRecebida);
+      if (pend <= 0) continue;
+      const prev = it.purchaseOrder.previsaoEntrega;
+      const cur = reposMap.get(it.productId);
+      if (!cur) {
+        reposMap.set(it.productId, { previsao: prev, qtd: pend });
+      } else {
+        cur.qtd += pend;
+        if (prev && (!cur.previsao || prev < cur.previsao)) cur.previsao = prev;
+      }
+    }
+  }
 
   return stocks.map((s) => {
     const ef = n(s.estoqueFechado);
@@ -107,8 +240,29 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
       custoMedio: s.product.custoMedio ? n(s.product.custoMedio) : null,
       abaixoMinimo: ef < n(s.estoqueMinimo),
       percentAberta: pct,
+      abertaEm: aberturaMap.get(s.productId)?.toISOString() ?? null,
+      consumoHoje: consumoMap.get(s.productId)?.hoje ?? 0,
+      consumo7: consumoMap.get(s.productId)?.d7 ?? 0,
+      consumo30: consumoMap.get(s.productId)?.d30 ?? 0,
+      ultimaMovTipo: lastMap.get(s.productId)?.tipo ?? null,
+      ultimaMovEm: lastMap.get(s.productId)?.at.toISOString() ?? null,
+      ultimaCompraEm: lastCompra.get(s.productId)?.toISOString() ?? null,
+      ultimaVendaEm: lastVenda.get(s.productId)?.toISOString() ?? null,
+      reposEstado: reposMap.has(s.productId)
+        ? (reposMap.get(s.productId)!.previsao ? "prevista" : "pedido")
+        : "nenhuma",
+      reposPrevisao: reposMap.get(s.productId)?.previsao?.toISOString() ?? null,
+      reposQtd: reposMap.get(s.productId)?.qtd ?? null,
       locationNome: s.location?.nome ?? null,
       temFornecedor: s.product.suppliers.length > 0,
+      categoria: s.product.subcategory?.nome ?? null,
+      marca: s.product.brand?.nome ?? null,
+      fornecedorNome: s.product.suppliers[0]
+        ? (s.product.suppliers[0].supplier.nomeFantasia ?? s.product.suppliers[0].supplier.razaoSocial)
+        : null,
+      precoVenda: s.product.precoVenda ? n(s.product.precoVenda) : null,
+      custo: s.product.custo ? n(s.product.custo) : null,
+      imagemUrl: s.product.imagemUrl,
     };
   });
 }
@@ -129,25 +283,159 @@ export async function loadMovimentacoes(
     take: filters.limit ?? 100,
   });
 
-  // Fetch products for names
   const productIds = [...new Set(movements.map((m) => m.productId))];
-  const products = await db.product.findMany({
-    where: { id: { in: productIds } },
-    select: { id: true, nome: true, sku: true },
-  });
-  const prodMap = new Map(products.map((p) => [p.id, p]));
+  const purchaseIds = [...new Set(movements.flatMap((m) => (m.purchaseId ? [m.purchaseId] : [])))];
+  const productionIds = [...new Set(movements.flatMap((m) => (m.productionId ? [m.productionId] : [])))];
+  const userIds = [...new Set(movements.flatMap((m) => (m.createdBy ? [m.createdBy] : [])))];
 
-  return movements.map((m) => ({
-    id: m.id,
-    tipo: m.tipo,
-    productNome: prodMap.get(m.productId)?.nome ?? m.productId,
-    productSku: prodMap.get(m.productId)?.sku ?? "",
-    deltaFechado: n(m.deltaFechado),
-    deltaAberto: n(m.deltaAberto),
-    custoUnitario: m.custoUnitario ? n(m.custoUnitario) : null,
-    observacao: m.observacao,
-    createdAt: m.createdAt,
-  }));
+  const [products, stocks, purchases, productions, users, sites] = await Promise.all([
+    productIds.length
+      ? db.product.findMany({ where: { id: { in: productIds } }, select: { id: true, nome: true, sku: true, ean: true } })
+      : Promise.resolve([]),
+    productIds.length
+      ? db.stock.findMany({
+          where: { productId: { in: productIds }, ...(siteId ? { siteId } : {}) },
+          select: { productId: true, estoqueFechado: true },
+        })
+      : Promise.resolve([]),
+    purchaseIds.length
+      ? db.purchase.findMany({
+          where: { id: { in: purchaseIds } },
+          select: {
+            id: true,
+            tipo: true,
+            numeroNota: true,
+            purchaseOrder: { select: { numero: true } },
+            supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+          },
+        })
+      : Promise.resolve([]),
+    productionIds.length
+      ? db.production.findMany({ where: { id: { in: productionIds } }, select: { id: true, productId: true } })
+      : Promise.resolve([]),
+    // User mora nas tabelas de auth (não tenant-scoped): usa basePrisma.
+    userIds.length
+      ? basePrisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true, email: true } })
+      : Promise.resolve([]),
+    db.site.findMany({ select: { id: true, nome: true } }),
+  ]);
+
+  // Produto finalizado de cada produção (p/ descrever "Produção · <drink>").
+  const prodOutputIds = [...new Set(productions.map((p) => p.productId))];
+  const prodOutputNames = prodOutputIds.length
+    ? await db.product.findMany({ where: { id: { in: prodOutputIds } }, select: { id: true, nome: true } })
+    : [];
+  const prodOutputMap = new Map(prodOutputNames.map((p) => [p.id, p.nome]));
+  const productionMap = new Map(productions.map((p) => [p.id, prodOutputMap.get(p.productId) ?? null]));
+
+  const prodMap = new Map(products.map((p) => [p.id, p]));
+  const balMap = new Map(stocks.map((s) => [s.productId, n(s.estoqueFechado)]));
+  const purchaseMap = new Map(purchases.map((p) => [p.id, p]));
+  const userMap = new Map(users.map((u) => [u.id, u.name ?? u.email ?? null]));
+  const siteMap = new Map(sites.map((s) => [s.id, s.nome]));
+
+  // Saldo corrente por produto = saldoDepois da movimentação mais recente.
+  // Caminhamos do topo (mais recente) subtraindo o delta p/ reconstruir cada linha.
+  const running = new Map<string, number>();
+
+  return movements.map((m) => {
+    const deltaFechado = n(m.deltaFechado);
+    const custoUnitario = m.custoUnitario ? n(m.custoUnitario) : null;
+
+    let saldoDepois: number | null;
+    if (running.has(m.productId)) {
+      saldoDepois = running.get(m.productId)!;
+    } else {
+      saldoDepois = balMap.has(m.productId) ? balMap.get(m.productId)! : null;
+    }
+    running.set(m.productId, (saldoDepois ?? 0) - deltaFechado);
+
+    const purchase = m.purchaseId ? purchaseMap.get(m.purchaseId) : null;
+    const producaoNome = m.productionId ? (productionMap.get(m.productionId) ?? null) : null;
+    const { origem, documento } = resolveOrigem(m.tipo, {
+      purchase,
+      transferId: m.transferId,
+      saleId: m.saleId,
+      producaoNome,
+      delta: deltaFechado,
+    });
+
+    return {
+      id: m.id,
+      tipo: m.tipo,
+      productId: m.productId,
+      productNome: prodMap.get(m.productId)?.nome ?? m.productId,
+      productSku: prodMap.get(m.productId)?.sku ?? "",
+      productEan: prodMap.get(m.productId)?.ean ?? null,
+      deltaFechado,
+      deltaAberto: n(m.deltaAberto),
+      saldoDepois,
+      custoUnitario,
+      valorTotal: custoUnitario != null ? custoUnitario * Math.abs(deltaFechado) : null,
+      origem,
+      documento,
+      fornecedor: purchase?.supplier ? (purchase.supplier.nomeFantasia ?? purchase.supplier.razaoSocial) : null,
+      responsavel: m.createdBy ? (userMap.get(m.createdBy) ?? null) : null,
+      local: siteMap.get(m.siteId) ?? null,
+      observacao: m.observacao,
+      createdAt: m.createdAt,
+    };
+  });
+}
+
+// Descreve a origem em linguagem do operador (não códigos). Os códigos
+// (nº pedido, NF, id) ficam em `documento`, exibidos só no painel de detalhes.
+function resolveOrigem(
+  tipo: string,
+  ctx: {
+    purchase?: {
+      tipo: string;
+      numeroNota: string | null;
+      purchaseOrder: { numero: string } | null;
+    } | null;
+    transferId: string | null;
+    saleId: string | null;
+    producaoNome: string | null;
+    delta: number;
+  },
+): { origem: string; documento: string | null } {
+  const { purchase, transferId, saleId, producaoNome } = ctx;
+  const purchaseDoc = purchase?.purchaseOrder?.numero
+    ? purchase.purchaseOrder.numero
+    : purchase?.numeroNota
+      ? `NF ${purchase.numeroNota}`
+      : null;
+
+  switch (tipo) {
+    case "ENTRADA":
+      if (purchase?.purchaseOrder?.numero) return { origem: "Entrada por pedido de compra", documento: purchaseDoc };
+      if (purchase) return { origem: "Entrada compra manual", documento: purchaseDoc };
+      return { origem: "Entrada manual", documento: null };
+    case "ABERTURA":
+      return { origem: "Estoque inicial", documento: null };
+    case "SAIDA":
+      return { origem: saleId ? "Saída por PDV" : "Saída manual", documento: saleId ? `Venda #${saleId.slice(-6)}` : null };
+    case "TRANSFERENCIA":
+      return {
+        origem: ctx.delta >= 0 ? "Transferência recebida" : "Transferência enviada",
+        documento: transferId ? `TR-${transferId.slice(-6)}` : null,
+      };
+    case "PRODUCAO":
+      return {
+        origem: producaoNome ? `Produção ${producaoNome}` : "Produção",
+        documento: null,
+      };
+    case "AJUSTE":
+      return { origem: "Ajuste manual", documento: null };
+    case "PERDA":
+      return { origem: "Perda / quebra", documento: null };
+    case "DEVOLUCAO_CLIENTE":
+      return { origem: "Devolução de cliente", documento: null };
+    case "DEVOLUCAO_FORNECEDOR":
+      return { origem: "Devolução ao fornecedor", documento: null };
+    default:
+      return { origem: "Sistema", documento: null };
+  }
 }
 
 // ── Entradas ─────────────────────────────────────────────────

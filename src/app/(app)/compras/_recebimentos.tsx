@@ -12,7 +12,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { receberTransferenciaAction, receberPedidoCompraAction } from "../actions";
+import { receberTransferenciaAction, receberPedidoCompraAction } from "../estoque/actions";
 
 // ── Tipos ─────────────────────────────────────────────────────
 

@@ -166,6 +166,20 @@
   border-color: var(--line);
 }
 
+/* Cursor de ponteiro em qualquer controle clicável habilitado */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+label[for],
+summary,
+a[href] {
+  cursor: pointer;
+}
+
+button:disabled,
+[role="button"][aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
 html {
   -webkit-text-size-adjust: 100%;
 }

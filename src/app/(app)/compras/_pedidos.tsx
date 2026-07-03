@@ -26,7 +26,7 @@ import {
   enviarPedidoCompraAction,
   marcarAguardandoPedidoAction,
   cancelarPedidoCompraAction,
-} from "../actions";
+} from "../estoque/actions";
 
 // ── Tipos ─────────────────────────────────────────────────────
 

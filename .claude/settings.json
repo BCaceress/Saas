@@ -7,7 +7,13 @@
       "PowerShell(Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Select-Object ProcessId, @{n='Cmd';e={$_.CommandLine.Substring\\(0,[Math]::Min\\(90,$_.CommandLine.Length\\)\\)}} | Format-Table -AutoSize)",
       "PowerShell('18168','21204','13588','23048' | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; \"stopped $_\" } catch { \"skip $_\" } })",
       "PowerShell(Start-Process npm -ArgumentList 'run','dev' -WorkingDirectory 'D:\\\\Saas' -WindowStyle Hidden)",
-      "PowerShell(\"dev server starting\")"
+      "PowerShell(\"dev server starting\")",
+      "PowerShell(npx tsc --noEmit)",
+      "PowerShell(if \\($?\\) { \"TYPECHECK OK\" } else { \"TYPECHECK FAILED\" })",
+      "Bash(git show *)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
     ]
   }
 }

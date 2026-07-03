@@ -5,26 +5,33 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   Store,
   ChevronDown,
+  Plus,
   PackagePlus,
   SlidersHorizontal,
   Undo2,
+  Beaker,
+  ClipboardList,
   Loader2,
-  ArrowRight,
+  ArrowRightLeft,
 } from "lucide-react";
 import { useState, useTransition, useEffect } from "react";
 import {
   setSiteAction,
   fetchAjustesFormDataAction,
   fetchEntradaFormDataAction,
+  fetchProducaoDataAction,
+  fetchInventarioDataAction,
 } from "./actions";
 import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
 import { AjustesForm } from "./ajustes/_client";
 import { DevolucaoForm } from "./devolucoes/_client";
 import { NovaEntradaForm } from "./entradas/nova/_client";
+import { ProducaoForm } from "./producao/_client";
+import { InventarioClient } from "./inventario/_client";
 
 type SiteRow = { id: string; nome: string; tipo: string; ativo: boolean };
-type PanelId = "entrada" | "ajuste" | "devolucao" | null;
+type PanelId = "entrada" | "ajuste" | "devolucao" | "producao" | "inventario" | null;
 
 // ── Lazy panel content ─────────────────────────────────────────
 
@@ -107,17 +114,60 @@ function DevolucaoPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
+function ProducaoPanel({ onClose }: { onClose: () => void }) {
+  const router = useRouter();
+  type Data = Awaited<ReturnType<typeof fetchProducaoDataAction>>;
+  const [data, setData] = useState<Data | null>(null);
+
+  useEffect(() => {
+    fetchProducaoDataAction().then(setData);
+  }, []);
+
+  if (!data) return <LoadingPanel />;
+
+  return (
+    <ProducaoForm
+      sites={data.sites}
+      defaultSiteId={data.siteId}
+      personalizados={data.personalizados}
+      onDone={() => {
+        onClose();
+        router.refresh();
+      }}
+    />
+  );
+}
+
+function InventarioPanel() {
+  type Data = Awaited<ReturnType<typeof fetchInventarioDataAction>>;
+  const [data, setData] = useState<Data | null>(null);
+
+  useEffect(() => {
+    fetchInventarioDataAction().then(setData);
+  }, []);
+
+  if (!data) return <LoadingPanel />;
+
+  return (
+    <InventarioClient
+      inventarios={data.inventarios}
+      sites={data.sites}
+      activeSiteId={data.activeSiteId}
+    />
+  );
+}
+
 // ── Main header ────────────────────────────────────────────────
 
-const CORE_TABS = [
-  { href: "/estoque/saldos", label: "Saldos" },
-  { href: "/estoque/compras", label: "Compras" },
-  { href: "/estoque/recebimentos", label: "Recebimentos" },
-  { href: "/estoque/entradas", label: "Entradas" },
-];
+const CORE_TABS: { href: string; label: string }[] = [];
 
-const PRODUCAO_TAB = { href: "/estoque/producao", label: "Produção" };
-const INVENTARIO_TAB = { href: "/estoque/inventario", label: "Inventário" };
+const ACOES: { id: Exclude<PanelId, null>; label: string; icon: React.ElementType; soon?: boolean }[] = [
+  { id: "entrada", label: "Entrada", icon: PackagePlus },
+  { id: "ajuste", label: "Ajuste", icon: SlidersHorizontal, soon: true },
+  { id: "devolucao", label: "Devolução", icon: Undo2, soon: true },
+  { id: "producao", label: "Produção", icon: Beaker, soon: true },
+  { id: "inventario", label: "Inventário", icon: ClipboardList },
+];
 
 export function EstoqueHeader({
   sites,
@@ -132,6 +182,7 @@ export function EstoqueHeader({
 }) {
   const pathname = usePathname();
   const [siteOpen, setSiteOpen] = useState(false);
+  const [registrarOpen, setRegistrarOpen] = useState(false);
   const [panel, setPanel] = useState<PanelId>(null);
   const [pending, startTransition] = useTransition();
 
@@ -146,8 +197,6 @@ export function EstoqueHeader({
           { href: "/estoque/requisicoes", label: "Requisições" },
         ]
       : []),
-    PRODUCAO_TAB,
-    INVENTARIO_TAB,
   ];
 
   function changeSite(id: string) {
@@ -169,39 +218,76 @@ export function EstoqueHeader({
         <div className="flex items-center gap-2.5 pb-3">
           <h1 className="mr-auto text-xl font-semibold text-ink">Estoque</h1>
 
-          {/* Quick action buttons */}
-          <button
-            type="button"
-            onClick={() => setPanel("entrada")}
-            className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+          {/* Movimentações — acesso ao razão */}
+          <Link
+            href="/estoque/movimentacoes"
+            className={cn(
+              "flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors",
+              pathname === "/estoque/movimentacoes"
+                ? "border-brand bg-brand-soft text-brand"
+                : "border-line bg-surface text-ink hover:bg-surface-2",
+            )}
           >
-            <PackagePlus size={15} />
-            <span className="hidden sm:inline">Entrada</span>
-          </button>
+            <ArrowRightLeft size={15} className="opacity-80" />
+            <span>Movimentações</span>
+          </Link>
 
-          <button
-            type="button"
-            onClick={() => setPanel("ajuste")}
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-          >
-            <SlidersHorizontal size={15} className="text-muted" />
-            <span className="hidden sm:inline">Ajustar</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setPanel("devolucao")}
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-          >
-            <Undo2 size={15} className="text-muted" />
-            <span className="hidden sm:inline">Devolução</span>
-          </button>
+          {/* Registrar — menu único de ações */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setSiteOpen(false);
+                setRegistrarOpen((v) => !v);
+              }}
+              className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+            >
+              <Plus size={15} />
+              <span>Registrar</span>
+              <ChevronDown size={13} className="opacity-80" />
+            </button>
+            {registrarOpen && (
+              <div className="absolute right-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-(--shadow-2)">
+                {ACOES.map((a) =>
+                  a.soon ? (
+                    <div
+                      key={a.id}
+                      aria-disabled
+                      className="flex w-full cursor-not-allowed items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-faint"
+                    >
+                      <a.icon size={15} className="shrink-0 text-faint" />
+                      {a.label}
+                      <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted">
+                        Em breve
+                      </span>
+                    </div>
+                  ) : (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => {
+                        setRegistrarOpen(false);
+                        setPanel(a.id);
+                      }}
+                      className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-ink transition-colors hover:bg-surface-2"
+                    >
+                      <a.icon size={15} className="shrink-0 text-muted" />
+                      {a.label}
+                    </button>
+                  ),
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Site selector */}
           {multiSite && activeSite && (
             <div className="relative ml-1">
               <button
-                onClick={() => setSiteOpen((v) => !v)}
+                onClick={() => {
+                  setRegistrarOpen(false);
+                  setSiteOpen((v) => !v);
+                }}
                 className="flex items-center gap-2 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
                 disabled={pending}
               >
@@ -233,38 +319,28 @@ export function EstoqueHeader({
           )}
         </div>
 
-        {/* Row 2 — tab bar */}
-        <nav className="flex items-center gap-1 overflow-x-auto border-b border-line">
-          {navTabs.map((tab) => {
-            const active = pathname === tab.href || pathname.startsWith(tab.href + "/");
-            return (
-              <Link
-                key={tab.href}
-                href={tab.href}
-                className={cn(
-                  "shrink-0 px-3.5 py-2.5 text-sm font-medium transition-colors",
-                  active
-                    ? "border-b-2 border-brand text-brand"
-                    : "text-muted hover:text-ink",
-                )}
-              >
-                {tab.label}
-              </Link>
-            );
-          })}
-
-          {/* Subtle razão link */}
-          <Link
-            href="/estoque/movimentacoes"
-            className={cn(
-              "ml-auto flex shrink-0 items-center gap-1 px-3.5 py-2.5 text-xs text-faint transition-colors hover:text-muted",
-              pathname === "/estoque/movimentacoes" && "text-muted",
-            )}
-          >
-            Razão
-            <ArrowRight size={11} />
-          </Link>
-        </nav>
+        {/* Row 2 — tab bar (só aparece quando há navegação secundária) */}
+        {navTabs.length > 0 && (
+          <nav className="flex items-center gap-1 overflow-x-auto border-b border-line">
+            {navTabs.map((tab) => {
+              const active = pathname === tab.href || pathname.startsWith(tab.href + "/");
+              return (
+                <Link
+                  key={tab.href}
+                  href={tab.href}
+                  className={cn(
+                    "shrink-0 px-3.5 py-2.5 text-sm font-medium transition-colors",
+                    active
+                      ? "border-b-2 border-brand text-brand"
+                      : "text-muted hover:text-ink",
+                  )}
+                >
+                  {tab.label}
+                </Link>
+              );
+            })}
+          </nav>
+        )}
       </div>
 
       {/* ── Sidepanels ── */}
@@ -296,6 +372,26 @@ export function EstoqueHeader({
         width="md"
       >
         {panel === "devolucao" && <DevolucaoPanel onClose={closePanel} />}
+      </Sheet>
+
+      <Sheet
+        open={panel === "producao"}
+        onClose={closePanel}
+        title="Registrar produção"
+        description="Consome insumos do estoque via ficha técnica."
+        width="xl"
+      >
+        {panel === "producao" && <ProducaoPanel onClose={closePanel} />}
+      </Sheet>
+
+      <Sheet
+        open={panel === "inventario"}
+        onClose={closePanel}
+        title="Inventário"
+        description="Conte o físico e ajuste o sistema pela diferença."
+        width="xl"
+      >
+        {panel === "inventario" && <InventarioPanel />}
       </Sheet>
     </>
   );

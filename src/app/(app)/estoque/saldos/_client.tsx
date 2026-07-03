@@ -1,11 +1,10 @@
 "use client";
 
-import { useMemo, useState, useEffect, type ComponentProps } from "react";
+import { useMemo, useState, useEffect, useId, type ComponentProps } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   AlertOctagon,
-  Barcode,
   Search,
   Boxes,
   Download,
@@ -13,6 +12,7 @@ import {
   ArrowUp,
   ArrowDown,
   ChevronsUpDown,
+  ChevronLeft,
   ChevronRight,
   History,
   ArrowLeftRight,
@@ -22,19 +22,24 @@ import {
   PackageX,
   PackageOpen,
   PackageCheck,
+  Package,
   Pencil,
   Wallet,
-  Warehouse,
+  MapPin,
   ClipboardList,
+  Info,
+  Filter,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
-import { StockGauge } from "@/components/stock-gauge";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import { NovaEntradaForm, type Item } from "../entradas/nova/_client";
 import type { SaldoRow } from "../_data";
 import { fetchHistoricoProductAction, registrarAjusteAction } from "../actions";
 
 const fmt = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
+const fmt1 = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
 const fmtMoney = (v: number) =>
   v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const fmtMoneyShort = (v: number) =>
@@ -47,6 +52,39 @@ const fmtDateTime = (iso: string) =>
     hour: "2-digit",
     minute: "2-digit",
   });
+const fmtDate = (iso: string) =>
+  new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+
+/** Tempo relativo curto: "agora", "há 15 min", "ontem", "há 3 dias". */
+function relTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return "agora";
+  if (min < 60) return `há ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `há ${h} h`;
+  const d = Math.floor(h / 24);
+  if (d === 1) return "ontem";
+  if (d < 30) return `há ${d} dias`;
+  const mo = Math.floor(d / 30);
+  return mo === 1 ? "há 1 mês" : `há ${mo} meses`;
+}
+
+/** Data de previsão em linguagem operacional: "hoje", "amanhã", "em 12/07". */
+function previsaoLabel(iso: string): string {
+  const d = new Date(iso); d.setHours(0, 0, 0, 0);
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  const dias = Math.round((d.getTime() - t.getTime()) / 864e5);
+  if (dias <= 0) return "hoje";
+  if (dias === 1) return "amanhã";
+  return `em ${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}`;
+}
+
+const MOV_SHORT: Record<string, string> = {
+  SAIDA: "Venda", ENTRADA: "Compra", AJUSTE: "Ajuste", TRANSFERENCIA: "Transferência",
+  ABERTURA: "Abertura", PRODUCAO: "Produção", PERDA: "Perda",
+  DEVOLUCAO_CLIENTE: "Devolução", DEVOLUCAO_FORNECEDOR: "Devolução",
+};
 
 const TIPO_LABEL: Record<string, string> = {
   SIMPLES: "Simples",
@@ -92,16 +130,52 @@ function getMovSub(m: HistoricoItem): string | null {
   return null;
 }
 
-type Filtro = "todos" | "com" | "sem" | "baixo" | "critico" | "revisar";
-type SortKey = "nome" | "fechado" | "min" | "custo" | "valor";
+type Filtro =
+  | "todos" | "com" | "sem" | "critico" | "baixo" | "repor" | "semlocal" | "pendencias";
+type SortKey = "nome" | "fechado" | "valor";
 type SortDir = "asc" | "desc";
 type FormOptions = Pick<ComponentProps<typeof NovaEntradaForm>, "products" | "suppliers" | "sites">;
 type HistoricoItem = Awaited<ReturnType<typeof fetchHistoricoProductAction>>[number];
 
-const semEstoque = (s: SaldoRow) => s.estoqueFechado === 0 && s.estoqueAberto === 0;
-const isCritico = (s: SaldoRow) =>
-  semEstoque(s) || (s.estoqueMinimo > 0 && s.estoqueFechado <= s.estoqueMinimo / 2);
+// ── Situação do estoque ───────────────────────────────────────
+// Considera fechado × mínimo × ideal (+ aberto p/ distinguir zerado real).
+
+type Status = "saudavel" | "atencao" | "baixo" | "critico" | "sem";
+
+function statusOf(s: SaldoRow): Status {
+  const f = s.estoqueFechado;
+  if (f <= 0 && s.estoqueAberto <= 0) return "sem";
+  const { estoqueMinimo: min, estoqueIdeal: ideal } = s;
+  if (min > 0 && f <= min / 2) return "critico";
+  if (min > 0 && f < min) return "baixo";
+  if (ideal > 0 && f < ideal) return "atencao";
+  return "saudavel";
+}
+
+const STATUS_META: Record<Status, { label: string; text: string; dot: string; bar: string; Icon: React.ElementType }> = {
+  saudavel: { label: "Abastecido",  text: "text-ok",     dot: "bg-ok",     bar: "bg-ok",     Icon: PackageCheck },
+  atencao:  { label: "Atenção",     text: "text-warn",   dot: "bg-warn",   bar: "bg-warn",   Icon: AlertTriangle },
+  baixo:    { label: "Baixo",       text: "text-brand",  dot: "bg-brand",  bar: "bg-brand",  Icon: AlertTriangle },
+  critico:  { label: "Crítico",     text: "text-danger", dot: "bg-danger", bar: "bg-danger", Icon: AlertOctagon },
+  sem:      { label: "Sem estoque", text: "text-faint",  dot: "bg-faint",  bar: "bg-danger", Icon: PackageX },
+};
+
+const semEstoque = (s: SaldoRow) => statusOf(s) === "sem";
+const abaixoMin = (s: SaldoRow) => s.estoqueFechado < s.estoqueMinimo;
+const precisaRepor = (s: SaldoRow) => s.estoqueIdeal > 0 && s.estoqueFechado < s.estoqueIdeal;
 const valorEstoque = (s: SaldoRow) => s.estoqueFechado * (s.custoMedio ?? 0);
+const disponivel = (s: SaldoRow) => s.estoqueFechado - s.estoqueAberto;
+
+/** Média diária de vendas (prioriza 7d, cai p/ 30d). 0 = sem giro. */
+const mediaDia = (s: SaldoRow) =>
+  s.consumo7 > 0 ? s.consumo7 / 7 : s.consumo30 > 0 ? s.consumo30 / 30 : 0;
+
+/** Dias de cobertura = saldo fechado ÷ média diária. null = sem giro. */
+function diasCobertura(s: SaldoRow): number | null {
+  const m = mediaDia(s);
+  if (m <= 0) return null;
+  return Math.max(0, Math.round(s.estoqueFechado / m));
+}
 
 /** Lacunas de cadastro que atrapalham operação (custo, fornecedor, localização). */
 function dataGaps(s: SaldoRow): ("custo" | "fornecedor" | "local")[] {
@@ -112,25 +186,24 @@ function dataGaps(s: SaldoRow): ("custo" | "fornecedor" | "local")[] {
   return g;
 }
 
-function getPriority(s: SaldoRow): number {
-  if (semEstoque(s)) return 0;
-  if (s.estoqueMinimo > 0 && s.estoqueFechado <= s.estoqueMinimo / 2) return 1;
-  if (s.abaixoMinimo) return 2;
-  return 3;
-}
+const PRIORITY: Record<Status, number> = { sem: 0, critico: 1, baixo: 2, atencao: 3, saudavel: 4 };
 
 /* CSV: separador ";" e decimal com vírgula (Excel pt-BR). */
 function toCsv(rows: SaldoRow[]): string {
   const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
   const num = (n: number) => n.toLocaleString("pt-BR", { maximumFractionDigits: 3, useGrouping: false });
-  const head = ["Produto", "Tipo", "SKU", "Codigo de barras", "Fechado", "Aberto", "Minimo", "Ideal", "Custo medio", "Valor em estoque", "Local"];
+  const head = ["Produto", "Tipo", "SKU", "Codigo de barras", "Categoria", "Marca", "Fornecedor", "Fechado", "Aberto", "Disponivel", "Minimo", "Ideal", "Custo medio", "Valor em estoque", "Local"];
   const body = rows.map((s) => [
     esc(s.nome),
     esc(TIPO_LABEL[s.tipo] ?? s.tipo),
     esc(s.sku),
     esc(s.ean ?? ""),
+    esc(s.categoria ?? ""),
+    esc(s.marca ?? ""),
+    esc(s.fornecedorNome ?? ""),
     num(s.estoqueFechado),
     num(s.estoqueAberto),
+    num(disponivel(s)),
     num(s.estoqueMinimo),
     num(s.estoqueIdeal),
     num(s.custoMedio ?? 0),
@@ -153,6 +226,8 @@ function baixarCsv(rows: SaldoRow[]) {
 
 // ── Componente principal ──────────────────────────────────────
 
+type Tab = "resumo" | "historico";
+
 export function SaldosView({
   saldos,
   formOptions,
@@ -167,52 +242,62 @@ export function SaldosView({
   const [filtro, setFiltro] = useState<Filtro>("todos");
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
   const [reporItems, setReporItems] = useState<Item[] | null>(null);
-  const [detalhe, setDetalhe] = useState<SaldoRow | null>(null);
+  const [detalhe, setDetalhe] = useState<{ row: SaldoRow; tab: Tab } | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
+  const abrir = (row: SaldoRow, tab: Tab = "resumo") => setDetalhe({ row, tab });
 
   const kpis = useMemo(() => {
-    let valor = 0, sem = 0, repor = 0, critico = 0, revisar = 0;
+    let valor = 0, sem = 0, repor = 0, abaixo = 0;
     for (const s of saldos) {
       valor += valorEstoque(s);
       if (semEstoque(s)) sem++;
-      if (s.abaixoMinimo) repor++;
-      if (isCritico(s)) critico++;
-      if (dataGaps(s).length > 0) revisar++;
+      if (abaixoMin(s)) abaixo++;
+      if (precisaRepor(s)) repor++;
     }
-    return { valor, sem, repor, critico, revisar, total: saldos.length };
+    return { valor, sem, abaixo, repor, total: saldos.length };
   }, [saldos]);
 
   const counts = useMemo(() => {
-    let com = 0;
-    for (const s of saldos) if (!semEstoque(s)) com++;
-    return { todos: saldos.length, com, sem: kpis.sem, baixo: kpis.repor, critico: kpis.critico, revisar: kpis.revisar };
-  }, [saldos, kpis]);
+    let com = 0, sem = 0, critico = 0, baixo = 0, repor = 0, semlocal = 0, pendencias = 0;
+    for (const s of saldos) {
+      if (!semEstoque(s)) com++; else sem++;
+      if (statusOf(s) === "critico") critico++;
+      if (abaixoMin(s)) baixo++;
+      if (precisaRepor(s)) repor++;
+      if (!s.locationNome) semlocal++;
+      if (dataGaps(s).length > 0) pendencias++;
+    }
+    return { todos: saldos.length, com, sem, critico, baixo, repor, semlocal, pendencias };
+  }, [saldos]);
 
   const filtrados = useMemo(() => {
     const termo = q.trim().toLowerCase();
     const out = saldos.filter((s) => {
       switch (filtro) {
-        case "com":     if (semEstoque(s)) return false; break;
-        case "sem":     if (!semEstoque(s)) return false; break;
-        case "baixo":   if (!s.abaixoMinimo) return false; break;
-        case "critico": if (!isCritico(s)) return false; break;
-        case "revisar": if (dataGaps(s).length === 0) return false; break;
+        case "com":        if (semEstoque(s)) return false; break;
+        case "sem":        if (!semEstoque(s)) return false; break;
+        case "critico":    if (statusOf(s) !== "critico") return false; break;
+        case "baixo":      if (!abaixoMin(s)) return false; break;
+        case "repor":      if (!precisaRepor(s)) return false; break;
+        case "semlocal":   if (s.locationNome) return false; break;
+        case "pendencias": if (dataGaps(s).length === 0) return false; break;
       }
       if (termo) {
-        const alvo = `${s.nome} ${s.sku} ${s.ean ?? ""}`.toLowerCase();
+        const alvo = `${s.nome} ${s.sku} ${s.ean ?? ""} ${s.categoria ?? ""} ${s.marca ?? ""} ${s.fornecedorNome ?? ""}`.toLowerCase();
         if (!alvo.includes(termo)) return false;
       }
       return true;
     });
 
     out.sort((a, b) => {
-      const pa = getPriority(a), pb = getPriority(b);
+      const pa = PRIORITY[statusOf(a)], pb = PRIORITY[statusOf(b)];
       if (pa !== pb) return pa - pb;
       if (sort) {
         const f = (s: SaldoRow) =>
-          sort.key === "nome"      ? s.nome.toLowerCase()
+          sort.key === "nome" ? s.nome.toLowerCase()
           : sort.key === "fechado" ? s.estoqueFechado
-          : sort.key === "min"     ? s.estoqueMinimo
-          : sort.key === "custo"   ? (s.custoMedio ?? 0)
           : valorEstoque(s);
         const va = f(a), vb = f(b);
         const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number);
@@ -224,10 +309,13 @@ export function SaldosView({
     return out;
   }, [saldos, q, filtro, sort]);
 
-  const totalValorFiltrado = useMemo(
-    () => filtrados.reduce((acc, s) => acc + valorEstoque(s), 0),
-    [filtrados],
-  );
+  // Paginação — volta à 1ª página quando o conjunto muda.
+  useEffect(() => { setPage(1); }, [q, filtro, sort, pageSize]);
+  const total = filtrados.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const pageSafe = Math.min(page, totalPages);
+  const inicio = (pageSafe - 1) * pageSize;
+  const pageRows = filtrados.slice(inicio, inicio + pageSize);
 
   function toggleSort(key: SortKey) {
     setSort((cur) =>
@@ -240,7 +328,7 @@ export function SaldosView({
   function abrirReposicao(scope: SaldoRow[]) {
     const productIds = new Set(formOptions.products.map((p) => p.id));
     const items: Item[] = scope
-      .filter((s) => s.abaixoMinimo && productIds.has(s.productId))
+      .filter((s) => precisaRepor(s) && productIds.has(s.productId))
       .map((s) => {
         const deficit = s.estoqueIdeal - s.estoqueFechado;
         const prod = formOptions.products.find((p) => p.id === s.productId);
@@ -258,105 +346,105 @@ export function SaldosView({
     ]);
   }
 
-  const pills: { key: Filtro; label: string; count: number; tone: "neutral" | "danger" | "warn" }[] = [
+  type Pill = { key: Filtro; label: string; count: number; tone: "neutral" | "danger" | "warn" | "brand" };
+  const pillsEstoque: Pill[] = [
     { key: "todos",   label: "Todos",          count: counts.todos,   tone: "neutral" },
     { key: "com",     label: "Com estoque",    count: counts.com,     tone: "neutral" },
-    { key: "sem",     label: "Sem estoque",    count: counts.sem,     tone: "danger" },
-    { key: "critico", label: "Críticos",       count: counts.critico, tone: "danger" },
-    { key: "baixo",   label: "Abaixo do mín.", count: counts.baixo,   tone: "warn" },
+    { key: "sem",     label: "Sem estoque",    count: counts.sem,     tone: "danger"  },
+    { key: "critico", label: "Críticos",       count: counts.critico, tone: "danger"  },
+    { key: "baixo",   label: "Abaixo do mín.", count: counts.baixo,   tone: "brand"   },
+    { key: "repor",   label: "A repor",        count: counts.repor,   tone: "warn"    },
   ];
+  // Chips de cadastro só aparecem quando há o que resolver.
+  const pillsCadastro: Pill[] = ([
+    { key: "semlocal",   label: "Sem localização", count: counts.semlocal,   tone: "neutral" },
+    { key: "pendencias", label: "Pendências",      count: counts.pendencias, tone: "warn"    },
+  ] as Pill[]).filter((p) => p.count > 0 || filtro === p.key);
 
   return (
     <div className="flex flex-col gap-4">
-      {/* ── Faixa de saúde (KPIs) ── */}
-      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+      {/* ── Indicadores ── */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi
           icon={Wallet}
           label="Valor em estoque"
           value={fmtMoneyShort(kpis.valor)}
-          hint={`${kpis.total} ${kpis.total === 1 ? "item" : "itens"}`}
+          hint={`${kpis.total} ${kpis.total === 1 ? "produto" : "produtos"}`}
         />
         <Kpi
           icon={PackageX}
           label="Sem estoque"
           value={String(kpis.sem)}
           tone="danger"
-          active={filtro === "sem"}
           onClick={() => setFiltro(filtro === "sem" ? "todos" : "sem")}
-          hint={kpis.sem > 0 ? "perdendo venda" : "tudo abastecido"}
+          hint="p/ venda"
         />
         <Kpi
           icon={AlertOctagon}
           label="Críticos"
-          value={String(kpis.critico)}
+          value={String(kpis.abaixo)}
           tone="danger"
-          active={filtro === "critico"}
-          onClick={() => setFiltro(filtro === "critico" ? "todos" : "critico")}
-          hint="zerados + metade do mín."
+          onClick={() => setFiltro(filtro === "baixo" ? "todos" : "baixo")}
+          hint="abaixo do mín."
         />
         <Kpi
           icon={RefreshCw}
           label="A repor"
           value={String(kpis.repor)}
           tone="warn"
-          active={filtro === "baixo"}
-          onClick={() => setFiltro(filtro === "baixo" ? "todos" : "baixo")}
-          action={
-            kpis.repor > 0
-              ? { label: "Repor", onClick: () => abrirReposicao(saldos) }
-              : undefined
-          }
+          onClick={() => setFiltro(filtro === "repor" ? "todos" : "repor")}
+          hint="abaixo do ideal"
         />
       </div>
 
-      {/* ── Toolbar: filtros + busca + ações ── */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-wrap items-center gap-1.5">
-          {pills.map((p) => (
-            <FilterPill
-              key={p.key}
-              label={p.label}
-              count={p.count}
-              tone={p.tone}
-              active={filtro === p.key}
-              onClick={() => setFiltro(p.key)}
-            />
-          ))}
-          {counts.revisar > 0 && (
-            <>
-              <span className="mx-0.5 h-5 w-px bg-line" aria-hidden />
-              <FilterPill
-                label="Revisar cadastro"
-                count={counts.revisar}
-                tone="warn"
-                icon={ClipboardList}
-                active={filtro === "revisar"}
-                onClick={() => setFiltro(filtro === "revisar" ? "todos" : "revisar")}
-              />
-            </>
-          )}
+      {/* ── Barra de ações: busca + filtros ── */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative w-full shrink-0 sm:max-w-lg">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Buscar por nome, SKU, código, categoria, marca ou fornecedor…"
+            className="w-full rounded-lg border border-line bg-surface py-2 pl-9 pr-3 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+          />
         </div>
-
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1 sm:w-60 sm:flex-none">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Buscar nome, SKU ou código"
-              className="w-full rounded-full border border-line bg-surface py-2 pl-9 pr-3 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
-            />
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="flex flex-1 items-center gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {[...pillsEstoque, ...pillsCadastro].map((p) => (
+              <FilterPill
+                key={p.key}
+                label={p.label}
+                count={p.count}
+                active={filtro === p.key}
+                onClick={() => setFiltro(filtro === p.key ? "todos" : p.key)}
+              />
+            ))}
           </div>
-          <button
-            type="button"
-            onClick={() => baixarCsv(filtrados)}
-            disabled={filtrados.length === 0}
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
-            title="Exportar CSV"
+          <Menu
+            align="end"
+            trigger={
+              <button
+                type="button"
+                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-2 text-sm font-medium text-ink transition-colors hover:border-line-strong hover:bg-surface-2"
+              >
+                <Filter size={15} className="text-muted" />
+                <span>Filtros</span>
+              </button>
+            }
           >
-            <Download size={15} />
-            <span className="hidden sm:inline">Exportar</span>
-          </button>
+            <MenuItem
+              icon={<Download size={15} />}
+              onClick={() => baixarCsv(filtrados)}
+              disabled={filtrados.length === 0}
+            >
+              Exportar CSV
+            </MenuItem>
+            {(filtro !== "todos" || q.trim() !== "") && (
+              <MenuItem icon={<X size={15} />} onClick={() => { setFiltro("todos"); setQ(""); }}>
+                Limpar filtros
+              </MenuItem>
+            )}
+          </Menu>
         </div>
       </div>
 
@@ -370,58 +458,44 @@ export function SaldosView({
               <thead>
                 <tr className="border-b border-line bg-surface-2 text-left text-xs font-semibold uppercase tracking-wide text-faint">
                   <Th label="Produto" sortKey="nome" sort={sort} onSort={toggleSort} />
-                  <Th label="Medidor de saldo" sortKey="fechado" sort={sort} onSort={toggleSort} />
-                  <Th label="Mín / Ideal" sortKey="min" sort={sort} onSort={toggleSort} align="right" />
-                  <Th label="Custo médio" sortKey="custo" sort={sort} onSort={toggleSort} align="right" />
-                  <Th label="Valor" sortKey="valor" sort={sort} onSort={toggleSort} align="right" />
-                  <th className="w-8 px-2 py-2.5" />
+                  <th className="px-4 py-2">Status</th>
+                  <Th label="Estoque" sortKey="fechado" sort={sort} onSort={toggleSort} />
+                  <th className="hidden px-4 py-2 lg:table-cell">
+                    <span className="inline-flex items-center gap-1" title="Conteúdo restante da unidade aberta, vendida em doses/drinks">
+                      Aberto (consumo/drinks)
+                      <Info size={12} className="text-faint" aria-label="Conteúdo restante da unidade aberta, vendida em doses/drinks" />
+                    </span>
+                  </th>
+                  <th className="hidden px-4 py-2 md:table-cell">Reposição</th>
+                  <th className="w-px px-3 py-2" aria-hidden />
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {filtrados.map((s) => {
-                  const zerado = semEstoque(s);
-                  const critico = isCritico(s);
-                  const baixo = s.abaixoMinimo && !critico;
+                {pageRows.map((s) => {
+                  const st = statusOf(s);
                   return (
                     <tr
                       key={s.productId}
-                      onClick={() => setDetalhe(s)}
+                      onClick={() => abrir(s)}
                       className="group cursor-pointer transition-colors hover:bg-surface-2"
                     >
-                      <td className="relative px-4 py-2.5">
-                        <span
-                          aria-hidden
-                          className={cn(
-                            "absolute inset-y-0 left-0 w-1",
-                            zerado || critico ? "bg-danger" : baixo ? "bg-warn" : "bg-transparent",
-                          )}
-                        />
-                        <ProdutoCell s={s} />
+                      <td className="px-4 py-2">
+                        <ProdutoCell s={s} onPendencias={() => router.push(`/produtos/${s.productId}/editar`)} />
                       </td>
-                      <td className="px-4 py-2.5">
-                        <StockGauge
-                          fechado={s.estoqueFechado}
-                          aberto={s.estoqueAberto}
-                          conteudoPorUnidade={s.conteudoPorUnidade}
-                          minimo={s.estoqueMinimo}
-                          ideal={s.estoqueIdeal}
-                          fracionavel={s.fracionavel}
-                        />
+                      <td className="px-4 py-2">
+                        <StatusCell status={st} />
                       </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">
-                        <span className={cn(s.abaixoMinimo ? "font-semibold text-warn" : "text-muted")}>
-                          {fmt(s.estoqueMinimo)}
-                        </span>
-                        <span className="text-faint"> / {fmt(s.estoqueIdeal)}</span>
+                      <td className="px-4 py-2">
+                        <EstoqueCell s={s} />
                       </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums text-muted">
-                        {s.custoMedio != null ? fmtMoney(s.custoMedio) : <span className="text-faint">—</span>}
+                      <td className="hidden px-4 py-2 lg:table-cell">
+                        <AbertaCell s={s} />
                       </td>
-                      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-ink">
-                        {s.custoMedio != null ? fmtMoney(valorEstoque(s)) : <span className="text-faint">—</span>}
+                      <td className="hidden px-4 py-2 md:table-cell">
+                        <ReposicaoStatusCell s={s} />
                       </td>
-                      <td className="px-2 py-2.5 text-right">
-                        <ChevronRight size={16} className="ml-auto text-faint transition-colors group-hover:text-ink" />
+                      <td className="px-3 py-2 text-right">
+                        <ChevronRight size={16} className="ml-auto shrink-0 text-faint transition-colors group-hover:text-ink" />
                       </td>
                     </tr>
                   );
@@ -429,14 +503,12 @@ export function SaldosView({
               </tbody>
               <tfoot>
                 <tr className="border-t border-line bg-surface-2 text-xs font-semibold text-muted">
-                  <td className="px-4 py-2.5" colSpan={3}>
-                    {filtrados.length} {filtrados.length === 1 ? "produto" : "produtos"}
+                  <td className="px-4 py-2" colSpan={3}>
+                    {total} {total === 1 ? "produto" : "produtos"}
                   </td>
-                  <td className="px-4 py-2.5 text-right uppercase tracking-wide text-faint">Total</td>
-                  <td className="px-4 py-2.5 text-right">
-                    <span className="text-sm font-bold tabular-nums text-ink">{fmtMoney(totalValorFiltrado)}</span>
-                  </td>
-                  <td className="px-2 py-2.5" />
+                  <td className="hidden px-4 py-2 lg:table-cell" />
+                  <td className="hidden px-4 py-2 md:table-cell" />
+                  <td className="px-3 py-2" />
                 </tr>
               </tfoot>
             </table>
@@ -444,59 +516,59 @@ export function SaldosView({
 
           {/* ── Cards (mobile) ── */}
           <div className="flex flex-col gap-2.5 md:hidden">
-            {filtrados.map((s) => {
-              const zerado = semEstoque(s);
-              const critico = isCritico(s);
-              const baixo = s.abaixoMinimo && !critico;
+            {pageRows.map((s) => {
+              const st = statusOf(s);
               return (
-                <button
+                <div
                   key={s.productId}
-                  type="button"
-                  onClick={() => setDetalhe(s)}
-                  className={cn(
-                    "relative flex items-center gap-3 overflow-hidden rounded-xl border border-line bg-surface px-3.5 py-3 text-left transition-colors hover:bg-surface-2",
-                  )}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => abrir(s)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(s); } }}
+                  className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-surface px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
                 >
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "absolute inset-y-0 left-0 w-1",
-                      zerado || critico ? "bg-danger" : baixo ? "bg-warn" : "bg-transparent",
-                    )}
-                  />
                   <div className="min-w-0 flex-1">
-                    <ProdutoCell s={s} />
-                    <div className="mt-2">
-                      <StockGauge
-                        fechado={s.estoqueFechado}
-                        aberto={s.estoqueAberto}
-                        conteudoPorUnidade={s.conteudoPorUnidade}
-                        minimo={s.estoqueMinimo}
-                        ideal={s.estoqueIdeal}
-                        fracionavel={s.fracionavel}
-                      />
+                    <div className="flex items-center justify-between gap-2">
+                      <ProdutoCell s={s} onPendencias={() => router.push(`/produtos/${s.productId}/editar`)} />
+                      <StatusCell status={st} compact />
                     </div>
+                    <div className="mt-2 flex items-end justify-between gap-3">
+                      <EstoqueCell s={s} />
+                      <div className="shrink-0 text-right">
+                        <ReposicaoStatusCell s={s} />
+                      </div>
+                    </div>
+                    {temAbertaFrac(s) && (
+                      <div className="mt-1.5">
+                        <AbertaCell s={s} />
+                      </div>
+                    )}
                   </div>
-                  <div className="shrink-0 text-right">
-                    <p className="font-medium tabular-nums text-ink">
-                      {s.custoMedio != null ? fmtMoney(valorEstoque(s)) : "—"}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-faint">mín {fmt(s.estoqueMinimo)}</p>
-                  </div>
-                  <ChevronRight size={16} className="shrink-0 text-faint" />
-                </button>
+                </div>
               );
             })}
           </div>
+
+          <PaginationBar
+            total={total}
+            inicio={inicio}
+            mostrando={pageRows.length}
+            page={pageSafe}
+            totalPages={totalPages}
+            pageSize={pageSize}
+            onPage={setPage}
+            onPageSize={setPageSize}
+          />
         </>
       )}
 
       {/* ── Drawer de detalhe ── */}
       <DetalheDrawer
-        key={detalhe?.productId}
-        saldo={detalhe}
+        key={detalhe?.row.productId}
+        saldo={detalhe?.row ?? null}
+        initialTab={detalhe?.tab ?? "resumo"}
         siteId={siteId}
-        canRepor={detalhe ? formOptions.products.some((p) => p.id === detalhe.productId) : false}
+        canRepor={detalhe ? formOptions.products.some((p) => p.id === detalhe.row.productId) : false}
         onClose={() => setDetalhe(null)}
         onEditar={(id) => router.push(`/produtos/${id}/editar`)}
         onRepor={(s) => { setDetalhe(null); abrirReposicao([s]); }}
@@ -508,7 +580,7 @@ export function SaldosView({
         open={reporItems !== null}
         onClose={() => setReporItems(null)}
         title="Repor estoque"
-        description="Itens abaixo do mínimo já carregados. Ajuste quantidades e custos."
+        description="Itens abaixo do ideal já carregados. Ajuste quantidades e custos."
         width="xl"
       >
         {reporItems && (
@@ -532,52 +604,41 @@ function Kpi({
   value,
   hint,
   tone = "neutral",
-  active = false,
   onClick,
-  action,
 }: {
   icon: React.ElementType;
   label: string;
   value: string;
   hint?: string;
   tone?: "neutral" | "danger" | "warn";
-  active?: boolean;
   onClick?: () => void;
-  action?: { label: string; onClick: () => void };
 }) {
-  const toneRing = tone === "danger" ? "ring-danger/40" : tone === "warn" ? "ring-warn/40" : "ring-brand/40";
-  const iconCls =
+  const iconWrap =
     tone === "danger" ? "bg-danger-soft text-danger"
     : tone === "warn" ? "bg-warn-soft text-warn"
     : "bg-brand-soft text-brand";
+  const valueCls =
+    tone === "danger" ? "text-danger"
+    : tone === "warn" ? "text-warn"
+    : "text-ink";
   const Wrapper: "button" | "div" = onClick ? "button" : "div";
   return (
     <Wrapper
       {...(onClick ? { type: "button" as const, onClick } : {})}
       className={cn(
-        "flex items-center gap-3 rounded-xl border border-line bg-surface px-3.5 py-3 text-left transition-colors",
-        onClick && "hover:bg-surface-2",
-        active && `ring-2 ${toneRing}`,
+        "flex flex-col gap-2.5 rounded-2xl border border-line bg-surface p-4 text-left transition-all",
+        onClick && "hover:border-line-strong hover:shadow-sm",
       )}
     >
-      <span className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-lg", iconCls)}>
-        <Icon size={17} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-[11px] font-medium uppercase tracking-wide text-faint">{label}</p>
-        <p className="font-display text-lg font-semibold leading-tight text-ink tabular-nums">{value}</p>
-        {hint && !action && <p className="truncate text-[11px] text-muted">{hint}</p>}
-        {action && (
-          <span
-            role="button"
-            tabIndex={0}
-            onClick={(e) => { e.stopPropagation(); action.onClick(); }}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); action.onClick(); } }}
-            className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-warn px-2 py-0.5 text-[11px] font-semibold text-on-brand hover:opacity-90"
-          >
-            <RefreshCw size={11} /> {action.label}
-          </span>
-        )}
+      <div className="flex items-center gap-2">
+        <span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-xl", iconWrap)}>
+          <Icon size={16} strokeWidth={2} />
+        </span>
+        <span className="truncate text-[11px] font-semibold uppercase tracking-wide text-muted">{label}</span>
+      </div>
+      <div>
+        <p className={cn("font-display text-2xl font-bold leading-none tabular-nums", valueCls)}>{value}</p>
+        {hint && <p className="mt-1.5 truncate text-[11px] text-faint">{hint}</p>}
       </div>
     </Wrapper>
   );
@@ -588,78 +649,360 @@ function Kpi({
 function FilterPill({
   label,
   count,
-  tone,
-  icon: Icon,
   active,
   onClick,
 }: {
   label: string;
   count: number;
-  tone: "neutral" | "danger" | "warn";
-  icon?: React.ElementType;
   active: boolean;
   onClick: () => void;
 }) {
-  const activeCls =
-    tone === "danger" ? "border-danger bg-danger-soft text-danger"
-    : tone === "warn" ? "border-warn bg-warn-soft text-warn"
-    : "border-brand bg-brand-soft text-brand";
-  const badgeCls =
-    tone === "danger" ? "bg-danger/15 text-danger"
-    : tone === "warn" ? "bg-warn/15 text-warn"
-    : "bg-brand/15 text-brand";
+  // Contorno discreto; ativo destaca em laranja (brand) sem preenchimento sólido.
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
       className={cn(
-        "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-        active ? activeCls : "border-line text-muted hover:bg-surface-2",
+        "flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors",
+        active
+          ? "border-brand bg-brand-soft text-brand"
+          : "border-line bg-surface text-ink hover:border-line-strong hover:bg-surface-2",
       )}
     >
-      {Icon && <Icon size={12} />}
       {label}
-      <span className={cn("rounded-full px-1.5 py-px text-[10px] tabular-nums", active ? badgeCls : "bg-surface-2 text-faint")}>
+      <span
+        className={cn(
+          "min-w-5 rounded-md px-1.5 py-0.5 text-center text-xs font-semibold tabular-nums",
+          active ? "bg-brand/15 text-brand" : "bg-surface-2 text-muted",
+        )}
+      >
         {count}
       </span>
     </button>
   );
 }
 
-// ── Célula de produto (nome + SKU + EAN + chips) ──────────────
+// ── Paginação ─────────────────────────────────────────────────
 
-function ProdutoCell({ s }: { s: SaldoRow }) {
-  const gaps = dataGaps(s);
+function PaginationBar({
+  total,
+  inicio,
+  mostrando,
+  page,
+  totalPages,
+  pageSize,
+  onPage,
+  onPageSize,
+}: {
+  total: number;
+  inicio: number;
+  mostrando: number;
+  page: number;
+  totalPages: number;
+  pageSize: number;
+  onPage: (p: number) => void;
+  onPageSize: (n: number) => void;
+}) {
   return (
-    <div className="min-w-0">
-      <div className="flex items-center gap-1.5">
-        <p className="truncate font-medium text-ink">{s.nome}</p>
-        {s.tipo === "PERSONALIZADO" && (
-          <span className="shrink-0 rounded-full bg-brand-soft px-1.5 py-px text-[10px] font-medium text-brand">
-            <Zap size={9} className="-mt-px mr-0.5 inline" />Pers.
+    <div className="flex flex-col-reverse items-center justify-between gap-3 sm:flex-row">
+      <div className="flex items-center gap-2 text-xs text-muted">
+        <span>
+          {total === 0 ? "0" : `${inicio + 1}–${inicio + mostrando}`} de{" "}
+          <span className="font-semibold text-ink tabular-nums">{total}</span> {total === 1 ? "produto" : "produtos"}
+        </span>
+        <span className="h-3.5 w-px bg-line" aria-hidden />
+        <label className="flex items-center gap-1.5">
+          <span className="hidden sm:inline">Por página</span>
+          <select
+            value={pageSize}
+            onChange={(e) => onPageSize(Number(e.target.value))}
+            className="rounded-lg border border-line bg-surface px-2 py-1 text-xs text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+          >
+            {[10, 25, 50, 100].map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {totalPages > 1 && (
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onPage(page - 1)}
+            disabled={page <= 1}
+            className="grid h-8 w-8 place-items-center rounded-lg border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-40"
+            aria-label="Página anterior"
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <span className="px-2 text-xs font-medium tabular-nums text-muted">
+            {page} <span className="text-faint">/ {totalPages}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => onPage(page + 1)}
+            disabled={page >= totalPages}
+            className="grid h-8 w-8 place-items-center rounded-lg border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-40"
+            aria-label="Próxima página"
+          >
+            <ChevronRight size={16} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Miniatura do produto ──────────────────────────────────────
+
+function Thumb({ url, size = 38 }: { url: string | null; size?: number }) {
+  return url ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt=""
+      className="shrink-0 rounded-lg border border-line object-cover"
+      style={{ width: size, height: size }}
+    />
+  ) : (
+    <div
+      className="grid shrink-0 place-items-center rounded-lg border border-line bg-surface-2 text-faint"
+      style={{ width: size, height: size }}
+    >
+      <Package size={Math.round(size * 0.48)} />
+    </div>
+  );
+}
+
+// ── Situação (dot + rótulo) ───────────────────────────────────
+
+function StatusCell({ status, compact = false }: { status: Status; compact?: boolean }) {
+  const m = STATUS_META[status];
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className={cn("h-2 w-2 shrink-0 rounded-full", m.dot)} />
+      {!compact && <span className={cn("text-xs font-medium", m.text)}>{m.label}</span>}
+    </span>
+  );
+}
+
+// ── Célula de estoque (qtd fechada + barra rumo ao ideal, com mínimo) ─
+
+/** Rótulo da unidade do saldo fechado. Fracionável conta em pacotes ("un"). */
+function closedUnitLabel(s: SaldoRow): string {
+  return s.fracionavel ? "un" : s.unidadeBase.toLowerCase();
+}
+
+/** Tem unidade aberta fracionável mensurável (ex.: garrafa pela metade). */
+function temAbertaFrac(s: SaldoRow): boolean {
+  return s.fracionavel && !!s.conteudoPorUnidade && s.conteudoPorUnidade > 0 && s.estoqueAberto > 0;
+}
+
+function EstoqueCell({ s }: { s: SaldoRow }) {
+  const st = statusOf(s);
+  const m = STATUS_META[st];
+  const { estoqueFechado: f, estoqueIdeal: ideal, estoqueMinimo: min } = s;
+  const pct = ideal > 0 ? Math.round((f / ideal) * 100) : f > 0 ? 100 : 0;
+  const fill = Math.min(100, Math.max(0, pct));
+  const minPos = ideal > 0 && min > 0 ? Math.min(100, (min / ideal) * 100) : null;
+
+  const cob = diasCobertura(s);
+  return (
+    <div className="flex w-40 max-w-full flex-col gap-1">
+      <div className="flex items-baseline gap-1.5">
+        <span className="font-mono text-sm font-semibold tabular-nums text-ink">{fmt(f)}</span>
+        <span className="text-[11px] text-muted">{closedUnitLabel(s)}</span>
+        {cob != null && (
+          <span className="ml-auto text-[11px] font-medium tabular-nums text-muted" title="Cobertura estimada pela média de vendas">
+            ≈ {cob} {cob === 1 ? "dia" : "dias"}
           </span>
         )}
       </div>
-      <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px]">
-        {s.ean && (
-          <span className="flex items-center gap-1 font-mono text-muted">
-            <Barcode size={12} className="shrink-0 text-faint" />
-            {s.ean}
-          </span>
+      {/* Barra: progresso rumo ao ideal, com marcador do mínimo */}
+      <div className="relative h-2 w-full overflow-hidden rounded-full bg-line ring-1 ring-inset ring-line">
+        <div className={cn("h-full rounded-full transition-all", m.bar)} style={{ width: `${fill}%` }} />
+        {minPos != null && (
+          <span
+            aria-hidden
+            title="Estoque mínimo"
+            className="absolute top-1/2 h-3 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink/60"
+            style={{ left: `${minPos}%` }}
+          />
         )}
-        <span className="font-mono text-faint">{s.sku}</span>
-        {s.locationNome && (
-          <span className="flex items-center gap-1 text-faint">
-            <Warehouse size={11} className="shrink-0" />
-            {s.locationNome}
-          </span>
+      </div>
+      {ideal > 0 ? (
+        <div className="flex justify-between text-[10px] tabular-nums text-faint">
+          <span>mín {fmt(min)}</span>
+          <span>ideal {fmt(ideal)}</span>
+        </div>
+      ) : (
+        <span className="text-[10px] text-faint">sem meta definida</span>
+      )}
+    </div>
+  );
+}
+
+// ── Célula de unidade aberta (garrafa + nível de consumo) ─────
+
+/** Volume legível: ml vira "L" quando ≥ 1000. Ex.: 750→"750 ml", 1000→"1 L". */
+function fmtVol(v: number, un: string): string {
+  if (un === "ml" && v >= 1000) {
+    return `${(v / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 2 })} L`;
+  }
+  return `${fmt(v)} ${un}`;
+}
+
+/** Silhueta de garrafa, com líquido preenchendo o corpo conforme o nível. */
+function GarrafaIcon({ pct }: { pct: number }) {
+  const bodyTop = 9;      // y do topo do corpo
+  const bodyBottom = 28;  // y da base
+  const level = bodyBottom - ((bodyBottom - bodyTop) * Math.min(100, Math.max(0, pct))) / 100;
+  const clipId = `g${useId().replace(/:/g, "")}`;
+  return (
+    <svg width="20" height="30" viewBox="0 0 20 30" fill="none" className="shrink-0" aria-hidden>
+      <defs>
+        <clipPath id={clipId}>
+          <path d="M8 1.5h4v3.4c0 .9.5 1.3 1.3 2 .9.8 1.7 1.7 1.7 3.3v15.3a2.5 2.5 0 0 1-2.5 2.5H7.5A2.5 2.5 0 0 1 5 27.5V10.2c0-1.6.8-2.5 1.7-3.3.8-.7 1.3-1.1 1.3-2z" />
+        </clipPath>
+      </defs>
+      {/* líquido */}
+      <rect x="0" y={level} width="20" height={30 - level} className="fill-accent/25" clipPath={`url(#${clipId})`} />
+      {/* contorno */}
+      <path
+        d="M8 1.5h4v3.4c0 .9.5 1.3 1.3 2 .9.8 1.7 1.7 1.7 3.3v15.3a2.5 2.5 0 0 1-2.5 2.5H7.5A2.5 2.5 0 0 1 5 27.5V10.2c0-1.6.8-2.5 1.7-3.3.8-.7 1.3-1.1 1.3-2z"
+        className="stroke-faint"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function AbertaCell({ s }: { s: SaldoRow }) {
+  if (!temAbertaFrac(s)) {
+    return <span className="text-[11px] text-faint">—</span>;
+  }
+  const a = s.estoqueAberto;
+  const cpu = s.conteudoPorUnidade!;
+  const un = s.unidadeBase.toLowerCase();
+  const pct = Math.min(100, Math.round((a / cpu) * 100));
+  return (
+    <div className="flex items-center gap-2.5">
+      <GarrafaIcon pct={pct} />
+      <div className="min-w-0 leading-tight">
+        <span className="whitespace-nowrap text-[13px] tabular-nums">
+          <span className="font-semibold text-accent">{fmtVol(a, un)}</span>
+          <span className="text-muted"> de {fmtVol(cpu, un)}</span>
+        </span>
+        {s.abertaEm && (
+          <p className="mt-0.5 text-[11px] text-faint">Aberta em {fmtDate(s.abertaEm)}</p>
         )}
-        {gaps.length > 0 && (
-          <span className="flex items-center gap-1 rounded-full bg-warn-soft px-1.5 py-px font-medium text-warn">
-            <AlertTriangle size={10} />
-            {gaps.length === 1 ? `sem ${gaps[0]}` : `${gaps.length} pendências`}
-          </span>
-        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Célula de próxima reposição (pedido de compra em aberto) ───
+
+/** Badge com dot colorido. */
+function ReposBadge({ tone, children }: { tone: "ok" | "warn" | "danger" | "muted"; children: React.ReactNode }) {
+  const text = tone === "ok" ? "text-ok" : tone === "warn" ? "text-warn" : tone === "danger" ? "text-danger" : "text-faint";
+  const dot = tone === "ok" ? "bg-ok" : tone === "warn" ? "bg-warn" : tone === "danger" ? "bg-danger" : "bg-faint";
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-medium", text)}>
+      <span className={cn("h-2 w-2 shrink-0 rounded-full", dot)} />
+      {children}
+    </span>
+  );
+}
+
+function ReposicaoStatusCell({ s }: { s: SaldoRow }) {
+  if (s.reposEstado === "prevista") {
+    return (
+      <ReposBadge tone="ok">
+        Compra {s.reposPrevisao ? previsaoLabel(s.reposPrevisao) : "prevista"}
+      </ReposBadge>
+    );
+  }
+  if (s.reposEstado === "pedido") {
+    return <ReposBadge tone="warn">Pedido ao fornecedor</ReposBadge>;
+  }
+  // Sem pedido: só alarma quando precisa repor.
+  if (precisaRepor(s)) {
+    return <ReposBadge tone="danger">Sem reposição</ReposBadge>;
+  }
+  return <span className="text-[11px] text-faint">—</span>;
+}
+
+// ── Célula de produto (miniatura + nome + SKU/EAN + ícones) ────
+
+const GAP_LABEL: Record<"custo" | "fornecedor" | "local", string> = {
+  custo: "sem custo",
+  fornecedor: "sem fornecedor",
+  local: "sem localização",
+};
+
+function GapIcon({ icon: Icon, title, color, onClick }: { icon: React.ElementType; title: string; color: string; onClick?: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onClick?.(); }}
+      title={title}
+      aria-label={title}
+      className={cn("shrink-0 rounded transition-opacity hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)", color)}
+    >
+      <Icon size={13} />
+    </button>
+  );
+}
+
+function ProdutoCell({ s, onPendencias }: { s: SaldoRow; onPendencias?: () => void }) {
+  const semLocal = !s.locationNome;
+  const cadGaps = dataGaps(s).filter((g) => g !== "local"); // custo, fornecedor
+  const mov = s.ultimaMovEm
+    ? `${MOV_SHORT[s.ultimaMovTipo ?? ""] ?? "Movimentação"} ${relTime(s.ultimaMovEm)}`
+    : "Sem movimentação";
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      <Thumb url={s.imagemUrl} />
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5">
+          <p className="truncate font-medium text-ink">{s.nome}</p>
+          {s.tipo === "PERSONALIZADO" && (
+            <span className="shrink-0 rounded-full bg-brand-soft px-1.5 py-px text-[10px] font-medium text-brand">
+              <Zap size={9} className="-mt-px mr-0.5 inline" />Pers.
+            </span>
+          )}
+          {s.locationNome && (
+            <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-surface-2 px-1.5 py-px text-[10px] font-medium text-muted">
+              <MapPin size={9} /> {s.locationNome}
+            </span>
+          )}
+          {semLocal && (
+            <GapIcon
+              icon={MapPin}
+              color="text-faint"
+              title="Produto sem localização definida — clique para corrigir"
+              onClick={onPendencias}
+            />
+          )}
+          {cadGaps.length > 0 && (
+            <GapIcon
+              icon={AlertTriangle}
+              color="text-warn"
+              title={`Cadastro com pendências: ${cadGaps.map((g) => GAP_LABEL[g]).join(", ")} — clique para corrigir`}
+              onClick={onPendencias}
+            />
+          )}
+        </div>
+        <p className={cn("mt-0.5 text-[11px]", s.ultimaMovEm ? "text-muted" : "text-faint")}>{mov}</p>
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+          <span className="font-mono text-faint">{s.sku}</span>
+          {s.ean && <span className="font-mono text-faint">{s.ean}</span>}
+          {s.categoria && <span className="hidden text-muted lg:inline">{s.categoria}</span>}
+        </div>
       </div>
     </div>
   );
@@ -673,16 +1016,18 @@ function Th({
   sort,
   onSort,
   align = "left",
+  className,
 }: {
   label: string;
   sortKey: SortKey;
   sort: { key: SortKey; dir: SortDir } | null;
   onSort: (k: SortKey) => void;
   align?: "left" | "right";
+  className?: string;
 }) {
   const active = sort?.key === sortKey;
   return (
-    <th className={cn("px-4 py-2.5", align === "right" && "text-right")}>
+    <th className={cn("px-4 py-2.5", align === "right" && "text-right", className)}>
       <button
         type="button"
         onClick={() => onSort(sortKey)}
@@ -706,7 +1051,7 @@ function Th({
 // ── Estado vazio ──────────────────────────────────────────────
 
 function EmptyState({ filtro, busca }: { filtro: Filtro; busca: string }) {
-  const Icon = filtro === "sem" ? PackageCheck : filtro === "revisar" ? ClipboardList : Boxes;
+  const Icon = filtro === "sem" ? PackageCheck : filtro === "pendencias" ? ClipboardList : Boxes;
   return (
     <div className="flex flex-col items-center gap-2 rounded-xl border border-line bg-surface py-14 text-center">
       <Icon size={32} className="text-faint" />
@@ -715,7 +1060,7 @@ function EmptyState({ filtro, busca }: { filtro: Filtro; busca: string }) {
           ? "Nenhum produto encontrado para a busca."
           : filtro === "sem"
             ? "Tudo abastecido — nenhum item zerado."
-            : filtro === "revisar"
+            : filtro === "pendencias"
               ? "Cadastro completo — nenhuma pendência."
               : filtro !== "todos"
                 ? "Nenhum produto para este filtro."
@@ -727,10 +1072,9 @@ function EmptyState({ filtro, busca }: { filtro: Filtro; busca: string }) {
 
 // ── Drawer de detalhe ─────────────────────────────────────────
 
-type Tab = "resumo" | "historico";
-
 function DetalheDrawer({
   saldo,
+  initialTab,
   siteId,
   canRepor,
   onClose,
@@ -739,6 +1083,7 @@ function DetalheDrawer({
   onAjustado,
 }: {
   saldo: SaldoRow | null;
+  initialTab: Tab;
   siteId: string | null;
   canRepor: boolean;
   onClose: () => void;
@@ -746,9 +1091,9 @@ function DetalheDrawer({
   onRepor: (s: SaldoRow) => void;
   onAjustado: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>("resumo");
+  const [tab, setTab] = useState<Tab>(initialTab);
 
-  useEffect(() => { if (saldo) setTab("resumo"); }, [saldo]);
+  useEffect(() => { if (saldo) setTab(initialTab); }, [saldo, initialTab]);
 
   const s = saldo;
   const gaps = s ? dataGaps(s) : [];
@@ -816,84 +1161,174 @@ function ResumoTab({
   onRepor: (s: SaldoRow) => void;
   onAjustado: () => void;
 }) {
-  const status = semEstoque(s)
-    ? { label: "Sem estoque", cls: "bg-danger-soft text-danger", Icon: PackageX }
-    : isCritico(s)
-      ? { label: "Crítico", cls: "bg-danger-soft text-danger", Icon: AlertOctagon }
-      : s.abaixoMinimo
-        ? { label: "Abaixo do mínimo", cls: "bg-warn-soft text-warn", Icon: AlertTriangle }
-        : { label: "Saudável", cls: "bg-ok-soft text-ok", Icon: PackageCheck };
+  const st = statusOf(s);
+  const status = STATUS_META[st];
+  const base = s.custo ?? s.custoMedio;
+  const un = s.unidadeBase.toLowerCase();
+  const med = mediaDia(s);
+  const media7 = s.consumo7 / 7;
+  const media30 = s.consumo30 / 30;
+  const deficit = s.estoqueIdeal > 0 && s.estoqueFechado < s.estoqueIdeal ? s.estoqueIdeal - s.estoqueFechado : 0;
+  const dura = med > 0 && deficit > 0 ? Math.round(deficit / med) : null;
+  const custoSug = base != null && deficit > 0 ? deficit * base : null;
+  const pctAberta = temAbertaFrac(s) ? Math.round((s.estoqueAberto / s.conteudoPorUnidade!) * 100) : 0;
+  const podeRepor = canRepor && precisaRepor(s);
+  const [ajuste, setAjuste] = useState(false);
+
+  const gapMsg: Record<"custo" | "fornecedor" | "local", string> = {
+    local: "Localização não cadastrada",
+    custo: "Custo não informado",
+    fornecedor: "Fornecedor não vinculado",
+  };
 
   return (
-    <div className="flex flex-col gap-5">
-      {/* Status + medidor */}
+    <div className="flex flex-col gap-4">
+      {/* ── Topo: tudo que importa em 5s ── */}
       <div className="rounded-xl border border-line bg-surface-2/50 p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <span className={cn("flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold", status.cls)}>
-            <status.Icon size={13} /> {status.label}
-          </span>
-          <span className="rounded-full bg-surface px-2 py-0.5 text-[11px] font-medium text-muted">
-            {TIPO_LABEL[s.tipo] ?? s.tipo}
-          </span>
+        <div className="flex items-start gap-3">
+          <Thumb url={s.imagemUrl} size={56} />
+          <div className="min-w-0 flex-1">
+            <span className={cn("inline-flex items-center gap-1.5 rounded-full bg-surface px-2.5 py-1 text-xs font-semibold", status.text)}>
+              <status.Icon size={13} /> {status.label}
+            </span>
+            <p className="mt-1 truncate text-xs text-muted">
+              {[s.marca, s.categoria, TIPO_LABEL[s.tipo] ?? s.tipo].filter(Boolean).join(" · ")}
+            </p>
+            <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+              <span>
+                <span className="font-mono text-base font-bold tabular-nums text-ink">{fmt(s.estoqueFechado)}</span>
+                <span className="text-xs text-muted"> fechadas</span>
+              </span>
+              {temAbertaFrac(s) && (
+                <span>
+                  <span className="font-mono text-base font-bold tabular-nums text-accent">{fmtVol(s.estoqueAberto, un)}</span>
+                  <span className="text-xs text-muted"> aberta</span>
+                </span>
+              )}
+            </div>
+          </div>
         </div>
-        <StockGauge
-          fechado={s.estoqueFechado}
-          aberto={s.estoqueAberto}
-          conteudoPorUnidade={s.conteudoPorUnidade}
-          minimo={s.estoqueMinimo}
-          ideal={s.estoqueIdeal}
-          fracionavel={s.fracionavel}
-        />
+
+        {deficit > 0 ? (
+          <p className="mt-3 text-sm font-medium text-ink">
+            Faltam <span className="font-semibold text-brand">{fmt(deficit)} un</span> para o ideal
+          </p>
+        ) : (
+          <p className="mt-3 text-sm font-medium text-ok">Estoque no ideal</p>
+        )}
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          {podeRepor && (
+            <button
+              type="button"
+              onClick={() => onRepor(s)}
+              className="flex items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+            >
+              <RefreshCw size={14} /> Repor
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setAjuste((v) => !v)}
+            className={cn(
+              "flex items-center gap-1.5 rounded-full border px-4 py-2 text-sm font-medium transition-colors",
+              ajuste ? "border-brand bg-brand-soft text-brand" : "border-line bg-surface text-ink hover:bg-surface-2",
+            )}
+          >
+            <SlidersHorizontal size={14} className={ajuste ? "" : "text-muted"} /> Ajustar saldo
+          </button>
+        </div>
       </div>
 
-      {/* Números */}
-      <dl className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-        <Stat label="Fechadas" value={`${fmt(s.estoqueFechado)}`} />
-        <Stat label="Mín / Ideal" value={`${fmt(s.estoqueMinimo)} / ${fmt(s.estoqueIdeal)}`} />
-        <Stat label="Custo médio" value={s.custoMedio != null ? fmtMoney(s.custoMedio) : "—"} />
-        <Stat label="Valor em estoque" value={s.custoMedio != null ? fmtMoney(valorEstoque(s)) : "—"} />
-      </dl>
+      {/* Ajuste rápido — controlado pelo botão do topo */}
+      <AjusteInline s={s} siteId={siteId} onAjustado={onAjustado} aberta={ajuste} setAberta={setAjuste} />
 
+      {/* ── Cadastro incompleto (some quando resolvido) ── */}
       {gaps.length > 0 && (
-        <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn-soft/60 px-3 py-2.5 text-xs text-warn">
-          <AlertTriangle size={14} className="mt-px shrink-0" />
-          <span>
-            Cadastro incompleto: <strong>{gaps.join(", ")}</strong>. Complete em editar produto para custo e reposição corretos.
-          </span>
+        <div className="rounded-xl border border-warn/30 bg-warn-soft/50 p-3.5">
+          <div className="flex items-center gap-1.5 text-sm font-semibold text-warn">
+            <AlertTriangle size={15} /> Cadastro incompleto
+          </div>
+          <ul className="mt-1.5 flex flex-col gap-0.5 text-xs text-ink-2">
+            {gaps.map((g) => <li key={g}>{gapMsg[g]}</li>)}
+          </ul>
+          <button
+            type="button"
+            onClick={() => onEditar(s.productId)}
+            className="mt-2.5 inline-flex items-center gap-1.5 rounded-full border border-warn/40 bg-surface px-3 py-1.5 text-xs font-semibold text-warn transition-colors hover:bg-warn-soft"
+          >
+            <Pencil size={13} /> Completar cadastro
+          </button>
         </div>
       )}
 
-      {/* Ações */}
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => onEditar(s.productId)}
-          className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-        >
-          <Pencil size={14} className="text-muted" /> Editar produto
-        </button>
-        {canRepor && s.abaixoMinimo && (
-          <button
-            type="button"
-            onClick={() => onRepor(s)}
-            className="flex items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-          >
-            <RefreshCw size={14} /> Repor
-          </button>
+      {/* ── SALDO ── */}
+      <div className="rounded-xl border border-line bg-surface p-4">
+        <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-faint">Saldo</h3>
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
+          <Field label="Fechadas" value={`${fmt(s.estoqueFechado)} un`} />
+          <Field
+            label="Aberta"
+            value={temAbertaFrac(s) ? `${fmtVol(s.estoqueAberto, un)} (${pctAberta}%)` : "—"}
+            tone={temAbertaFrac(s) ? "accent" : undefined}
+          />
+          <Field label="Ideal" value={s.estoqueIdeal > 0 ? `${fmt(s.estoqueIdeal)} un` : "—"} />
+          <Field label="Comprar" value={deficit > 0 ? `${fmt(deficit)} un` : "no ideal"} tone={deficit > 0 ? "brand" : "ok"} />
+        </dl>
+        {deficit > 0 && (dura != null || custoSug != null) && (
+          <p className="mt-3 border-t border-line pt-2.5 text-xs text-muted">
+            Sugestão: comprar {fmt(deficit)} un
+            {dura != null && ` · ≈ dura ${dura} ${dura === 1 ? "dia" : "dias"}`}
+            {custoSug != null && ` · ${fmtMoney(custoSug)}`}
+          </p>
         )}
       </div>
 
-      {/* Ajuste rápido */}
-      <AjusteInline s={s} siteId={siteId} onAjustado={onAjustado} />
+      {/* ── Consumo médio (linha única, espaçada) ── */}
+      <div className="rounded-xl border border-line bg-surface px-4 py-3">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-faint">Consumo médio</h3>
+        <div className="mt-2 flex flex-wrap items-baseline gap-x-8 gap-y-2 text-sm tabular-nums text-ink">
+          <span><span className="text-muted">Hoje</span> <b>{fmt(s.consumoHoje)}</b></span>
+          <span><span className="text-muted">7 dias</span> <b>{fmt1(media7)}</b><span className="text-faint">/dia</span></span>
+          <span><span className="text-muted">30 dias</span> <b>{fmt1(media30)}</b><span className="text-faint">/dia</span></span>
+        </div>
+      </div>
+
+      {/* ── COMERCIAL ── */}
+      <div className="rounded-xl border border-line bg-surface p-4">
+        <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-faint">Comercial</h3>
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
+          <Field label="Venda" value={s.precoVenda != null ? fmtMoney(s.precoVenda) : "—"} />
+          <Field label="Custo" value={base != null ? fmtMoney(base) : "—"} />
+          <Field label="Médio" value={s.custoMedio != null ? fmtMoney(s.custoMedio) : "—"} />
+          <Field label="Fornecedor" value={s.fornecedorNome ?? "—"} />
+          <Field label="Valor em estoque" value={s.custoMedio != null ? fmtMoney(valorEstoque(s)) : "—"} />
+        </dl>
+      </div>
+
+      {/* Editar produto (terciário) */}
+      <button
+        type="button"
+        onClick={() => onEditar(s.productId)}
+        className="flex items-center gap-1.5 self-start text-sm font-medium text-muted transition-colors hover:text-ink"
+      >
+        <Pencil size={14} /> Editar produto
+      </button>
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+// Campo compacto rótulo-sobre-valor (dentro de cards agrupados).
+function Field({ label, value, tone }: { label: string; value: string; tone?: "accent" | "brand" | "ok" }) {
+  const toneCls =
+    tone === "accent" ? "text-accent"
+    : tone === "brand" ? "text-brand"
+    : tone === "ok" ? "text-ok"
+    : "text-ink";
   return (
-    <div className="rounded-lg border border-line bg-surface px-3 py-2">
+    <div className="min-w-0">
       <dt className="text-[11px] font-medium uppercase tracking-wide text-faint">{label}</dt>
-      <dd className="mt-0.5 font-mono text-sm font-semibold text-ink tabular-nums">{value}</dd>
+      <dd className={cn("mt-0.5 truncate font-mono text-sm font-semibold tabular-nums", toneCls)}>{value}</dd>
     </div>
   );
 }
@@ -904,12 +1339,15 @@ function AjusteInline({
   s,
   siteId,
   onAjustado,
+  aberta,
+  setAberta,
 }: {
   s: SaldoRow;
   siteId: string | null;
   onAjustado: () => void;
+  aberta: boolean;
+  setAberta: (b: boolean) => void;
 }) {
-  const [aberta, setAberta] = useState(false);
   const [contagem, setContagem] = useState<string>(String(s.estoqueFechado));
   const [motivo, setMotivo] = useState("");
   const [pending, setPending] = useState(false);
@@ -919,17 +1357,7 @@ function AjusteInline({
   const delta = Number.isFinite(nova) ? nova - s.estoqueFechado : 0;
   const podeEnviar = siteId != null && Number.isFinite(nova) && delta !== 0 && motivo.trim().length >= 3 && !pending;
 
-  if (!aberta) {
-    return (
-      <button
-        type="button"
-        onClick={() => setAberta(true)}
-        className="flex items-center gap-1.5 self-start text-sm font-medium text-brand transition-colors hover:text-brand-strong"
-      >
-        <SlidersHorizontal size={14} /> Ajustar saldo por contagem
-      </button>
-    );
-  }
+  if (!aberta) return null;
 
   async function salvar() {
     if (!podeEnviar || siteId == null) return;
@@ -951,11 +1379,16 @@ function AjusteInline({
   }
 
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-line bg-surface-2/50 p-4">
+    <div className="flex flex-col gap-3 rounded-xl border border-line-strong bg-surface-2 p-4">
       <div className="flex items-center justify-between">
         <p className="text-sm font-semibold text-ink">Ajustar saldo por contagem</p>
-        <button type="button" onClick={() => setAberta(false)} className="text-xs text-muted hover:text-ink">
-          Cancelar
+        <button
+          type="button"
+          onClick={() => setAberta(false)}
+          aria-label="Cancelar ajuste"
+          className="grid h-7 w-7 place-items-center rounded-lg text-muted transition-colors hover:bg-line-strong/40 hover:text-ink"
+        >
+          <X size={16} />
         </button>
       </div>
 

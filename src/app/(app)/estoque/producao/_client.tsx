@@ -20,10 +20,12 @@ export function ProducaoForm({
   sites,
   defaultSiteId,
   personalizados,
+  onDone,
 }: {
   sites: Site[];
   defaultSiteId: string | null;
   personalizados: Personalizado[];
+  onDone?: () => void;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +59,7 @@ export function ProducaoForm({
         setVariantId("");
         setQuantidade(1);
         setObservacao("");
+        onDone?.();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao registrar.");
       }

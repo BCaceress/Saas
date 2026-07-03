@@ -556,7 +556,7 @@ export async function setSiteAction(siteId: string) {
 // ── Fetch data for header panels (lazy-load) ──────────────────
 
 import { getActiveSiteId, listSites } from "@/lib/sites";
-import { loadEntradaFormOptions, loadInventarios } from "./_data";
+import { loadEntradaFormOptions, loadInventarios, loadPersonalizados } from "./_data";
 
 export async function fetchAjustesFormDataAction() {
   const ctx = await requireActiveTenant();
@@ -590,6 +590,37 @@ export async function fetchInventarioDataAction() {
       })),
       sites,
       activeSiteId,
+    };
+  });
+}
+
+export async function fetchProducaoDataAction() {
+  const ctx = await requireActiveTenant();
+  return runWithTenant(ctx.tenant.id, async () => {
+    const [siteId, sites, personalizados] = await Promise.all([
+      getActiveSiteId(),
+      listSites(),
+      loadPersonalizados(),
+    ]);
+    // Decimals do Prisma não cruzam a fronteira RSC → client; converter para número.
+    return {
+      siteId,
+      sites,
+      personalizados: personalizados.map((p) => ({
+        id: p.id,
+        nome: p.nome,
+        sku: p.sku,
+        variants: p.variants.map((v) => ({
+          id: v.id,
+          nome: v.nome,
+          fatorEscala: Number(v.fatorEscala),
+          volumeMl: v.volumeMl == null ? null : Number(v.volumeMl),
+        })),
+        components: p.components.map((c) => ({
+          component: { nome: c.component.nome, unidadeBase: c.component.unidadeBase },
+          quantidade: Number(c.quantidade),
+        })),
+      })),
     };
   });
 }
