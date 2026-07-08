@@ -1,7 +1,6 @@
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
-import { PageHeader } from "@/components/app/page-header";
 import { FornecedoresManager } from "./_client";
 
 export default async function FornecedoresPage() {
@@ -13,13 +12,6 @@ export default async function FornecedoresPage() {
 
   return (
     <div className="flex flex-col gap-5">
-      <PageHeader
-        eyebrow="Configurações"
-        title="Fornecedores"
-        description="Cadastre e gerencie os fornecedores da sua operação."
-        backHref="/configuracoes"
-        innerClassName="max-w-none"
-      />
       <FornecedoresManager
         suppliers={suppliers.map((s) => ({
           id: s.id,

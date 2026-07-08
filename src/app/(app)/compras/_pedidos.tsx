@@ -62,7 +62,7 @@ type Packaging = { id: string; nome: string; fatorConversao: number; isCompraDef
 type Product = { id: string; nome: string; sku: string; custoMedio: number | null; supplierIds: string[]; packagings: Packaging[] };
 type Supplier = { id: string; razaoSocial: string; nomeFantasia: string | null };
 type Site = { id: string; nome: string; tipo: string };
-type FormOptions = { suppliers: Supplier[]; sites: Site[]; products: Product[] };
+export type FormOptions = { suppliers: Supplier[]; sites: Site[]; products: Product[] };
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -424,7 +424,7 @@ function PedidoDrawer({
 
 type Row = { productId: string; packagingId: string | null; qtd: string; custo: string };
 
-function PedidoForm({
+export function PedidoForm({
   mode,
   pedido,
   formOptions,

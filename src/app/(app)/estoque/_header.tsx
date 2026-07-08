@@ -23,6 +23,8 @@ import {
   fetchInventarioDataAction,
 } from "./actions";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/app/page-header";
+import { navIcon } from "@/components/app/nav-config";
 import { Sheet } from "@/components/ui/sheet";
 import { AjustesForm } from "./ajustes/_client";
 import { DevolucaoForm } from "./devolucoes/_client";
@@ -214,10 +216,15 @@ export function EstoqueHeader({
   return (
     <>
       <div className="flex flex-col gap-0">
-        {/* Row 1 — title + actions + site */}
-        <div className="flex items-center gap-2.5 pb-3">
-          <h1 className="mr-auto text-xl font-semibold text-ink">Estoque</h1>
-
+        {/* Row 1 — cabeçalho padrão + ações + site */}
+        <PageHeader
+          title="Estoque"
+          icon={navIcon("/estoque")}
+          description="Saldos, entradas e movimentações por loja."
+          innerClassName="max-w-none"
+          className="pb-3"
+          actions={
+            <>
           {/* Movimentações — acesso ao razão */}
           <Link
             href="/estoque/movimentacoes"
@@ -317,7 +324,9 @@ export function EstoqueHeader({
               )}
             </div>
           )}
-        </div>
+            </>
+          }
+        />
 
         {/* Row 2 — tab bar (só aparece quando há navegação secundária) */}
         {navTabs.length > 0 && (

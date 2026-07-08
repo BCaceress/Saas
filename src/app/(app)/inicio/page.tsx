@@ -4,6 +4,7 @@ import { db } from "@/lib/prisma";
 import { resolvePeriodo, variacao, fmtData } from "@/lib/periodo";
 import { brl } from "@/lib/utils";
 import { PageHeader } from "@/components/app/page-header";
+import { navIcon } from "@/components/app/nav-config";
 import { ReportFilters } from "@/components/app/report-filters";
 import { KpiCard } from "@/components/charts/kpi-card";
 import { ChartCard, ChartEmpty } from "@/components/charts/chart-card";
@@ -103,8 +104,8 @@ export default async function DashboardPage({
     <div className="space-y-6 pb-10">
       <PageHeader
         title="Início"
+        icon={navIcon("/inicio")}
         description={`Visão de ${periodo.label.toLowerCase()} — o que precisa de atenção primeiro.`}
-        eyebrow="Painel"
         innerClassName="max-w-none"
         actions={<ReportFilters sites={data.sites} activeSiteId={data.siteId} multiSite={multiSite} />}
       />

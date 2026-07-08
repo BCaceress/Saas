@@ -50,3 +50,42 @@ export function ThemeToggle() {
     </button>
   );
 }
+
+export function ThemeMenuItem() {
+  const [theme, setTheme] = useState<Theme>("light");
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    const applied = document.documentElement.getAttribute("data-theme");
+    const saved =
+      applied === "dark" || applied === "light"
+        ? applied
+        : localStorage.getItem("theme");
+    setTheme(saved === "dark" || saved === "light" ? saved : systemTheme());
+    setMounted(true);
+  }, []);
+
+  function toggle() {
+    const next: Theme = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.setAttribute("data-theme", next);
+    try {
+      localStorage.setItem("theme", next);
+    } catch {}
+    document.cookie = `theme=${next};path=/;max-age=31536000;samesite=lax`;
+  }
+
+  const isDark = theme === "dark";
+
+  return (
+    <button
+      role="menuitem"
+      type="button"
+      onClick={toggle}
+      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-ink-2 transition-colors hover:bg-surface-2"
+    >
+      {mounted && isDark ? <Sun size={15} /> : <Moon size={15} />}
+      {mounted && isDark ? "Modo claro" : "Modo escuro"}
+    </button>
+  );
+}

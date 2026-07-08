@@ -8,6 +8,8 @@ import {
   loadEntradasExtrato,
 } from "../estoque/_data";
 import { SiteSelector } from "@/components/app/site-selector";
+import { PageHeader } from "@/components/app/page-header";
+import { navIcon } from "@/components/app/nav-config";
 import { ComprasHub } from "./_hub";
 
 const serialPedido = <T extends { previsaoEntrega: Date | null; createdAt: Date; enviadoEm: Date | null }>(p: T) => ({
@@ -42,15 +44,13 @@ export default async function ComprasPage() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-ink">Compras</h1>
-          <p className="text-sm text-muted">
-            Do pedido ao fornecedor até a entrada no estoque — pedidos, recebimentos e histórico.
-          </p>
-        </div>
-        <SiteSelector sites={data.sites} activeSiteId={data.activeSiteId} />
-      </div>
+      <PageHeader
+        title="Compras"
+        icon={navIcon("/compras")}
+        description="Do pedido ao fornecedor até a entrada no estoque — pedidos, recebimentos e histórico."
+        innerClassName="max-w-none"
+        actions={<SiteSelector sites={data.sites} activeSiteId={data.activeSiteId} />}
+      />
       <ComprasHub
         compras={{ pedidos: pedidosSerial, formOptions: data.formOptions }}
         receber={{ pedidos: pedidosReceberSerial, transferencias: transfersSerial }}

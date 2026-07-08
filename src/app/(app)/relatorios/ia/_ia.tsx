@@ -31,19 +31,35 @@ type Mensagem =
   | { tipo: "resposta"; resultado: ResultadoIA }
   | { tipo: "erro"; texto: string };
 
-export function RelatorioIA() {
+export function RelatorioIA({
+  perguntaInicial,
+  compacto = false,
+}: {
+  /** Pergunta enviada automaticamente ao montar (uso no drawer do hub). */
+  perguntaInicial?: string;
+  /** Layout enxuto para viver dentro de um drawer. */
+  compacto?: boolean;
+} = {}) {
   const [pergunta, setPergunta] = useState("");
   const [historico, setHistorico] = useState<Mensagem[]>([]);
   const [pending, start] = useTransition();
   const [gravando, setGravando] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const enviouInicial = useRef(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [historico, pending]);
+
+  useEffect(() => {
+    if (!perguntaInicial || enviouInicial.current) return;
+    enviouInicial.current = true;
+    enviar(perguntaInicial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [perguntaInicial]);
 
   function enviar(texto: string) {
     const q = texto.trim();
@@ -105,7 +121,7 @@ export function RelatorioIA() {
   return (
     <div className="flex flex-col gap-6">
       {/* Empty state / suggestions */}
-      {vazio && (
+      {vazio && !compacto && (
         <div className="space-y-6 py-4">
           <div className="flex flex-col items-center gap-3 text-center">
             <div className="grid h-14 w-14 place-items-center rounded-lg bg-brand-softer text-brand">
@@ -131,6 +147,27 @@ export function RelatorioIA() {
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Empty state enxuto — dentro do drawer o Sheet já dá título/descrição */}
+      {vazio && compacto && (
+        <div className="space-y-2 py-1">
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted">Exemplos</p>
+          <ul className="space-y-1">
+            {SUGESTOES.map((s) => (
+              <li key={s}>
+                <button
+                  type="button"
+                  onClick={() => enviar(s)}
+                  className="flex w-full cursor-pointer items-center gap-2 rounded-(--radius-sm) px-2.5 py-2 text-left text-sm text-muted transition-colors hover:bg-brand-soft hover:text-ink"
+                >
+                  <Sparkles size={13} className="shrink-0 text-brand" aria-hidden />
+                  {s}
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -294,7 +331,11 @@ export function RelatorioIA() {
                 }
               }}
               rows={1}
-              placeholder="O que você quer saber? Ex.: produtos com margem abaixo de 20% este mês"
+              placeholder={
+                compacto
+                  ? "Digite sua pergunta…"
+                  : "O que você quer saber? Ex.: produtos com margem abaixo de 20% este mês"
+              }
               className="max-h-40 min-h-9 flex-1 resize-none bg-transparent py-1.5 text-sm text-ink outline-none placeholder:text-faint"
             />
 

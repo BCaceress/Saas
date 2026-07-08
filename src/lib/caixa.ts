@@ -19,6 +19,14 @@ export async function sessaoAtual(tenantId: string, siteId: string, operatorUser
   });
 }
 
+/** Caixa aberto do operador em qualquer site do tenant (p/ bloquear logout e abrir o painel). */
+export async function caixaAbertoDoOperador(tenantId: string, operatorUserId: string) {
+  return basePrisma.cashSession.findFirst({
+    where: { tenantId, operatorUserId, status: "ABERTA" },
+    include: { site: { select: { nome: true } } },
+  });
+}
+
 export async function abrirCaixa(
   tenantId: string,
   siteId: string,

@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { Input, Select } from "@/components/ui/input";
 import { PageHeader } from "@/components/app/page-header";
+import { navIcon } from "@/components/app/nav-config";
 import {
   ProductSidePanel, stockLevel, TIPO_LABEL, TIPO_ICON, STOCK_COLOR, STOCK_TITLE, STOCK_TEXT,
 } from "@/components/app/product-side-panel";
@@ -89,6 +90,7 @@ export function ProdutosClient(props: {
     <>
       <PageHeader
         title="Produtos"
+        icon={navIcon("/produtos")}
         innerClassName="max-w-none"
         actions={
           <>

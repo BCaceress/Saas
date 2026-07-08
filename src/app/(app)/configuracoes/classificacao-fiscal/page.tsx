@@ -1,5 +1,6 @@
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
+import { Scale } from "lucide-react";
 import { db } from "@/lib/prisma";
 import { PageHeader } from "@/components/app/page-header";
 import { FiscalManager } from "./_client";
@@ -20,8 +21,8 @@ export default async function ClassificacaoFiscalPage() {
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
-        eyebrow="Configurações"
         title="Classificação fiscal"
+        icon={Scale}
         description="Perfis fiscais (NCM/CEST) e o vínculo padrão de cada subcategoria."
         backHref="/configuracoes"
         innerClassName="max-w-none"

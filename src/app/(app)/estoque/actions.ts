@@ -5,6 +5,7 @@ import { z } from "zod";
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
+import { loadComprasFormOptions } from "./_data";
 import {
   registrarEntrada,
   registrarAjuste,
@@ -158,6 +159,10 @@ const pedidoSchema = z.object({
 });
 
 const parsePrevisao = (v?: string | null) => (v ? new Date(`${v}T00:00:00`) : null);
+
+export async function loadComprasFormOptionsAction() {
+  return tx(() => loadComprasFormOptions());
+}
 
 export async function criarPedidoCompraAction(
   input: z.input<typeof pedidoSchema>,

@@ -16,6 +16,8 @@ import { cn, brl } from "@/lib/utils";
 import { maskCpf, maskDate, maskPhone } from "@/lib/masks";
 import { tierFromGasto, fmtDataUTC, fmtDiasAtras } from "@/lib/customers";
 import { CustomerSidePanel } from "@/components/app/customer-side-panel";
+import { PageHeader } from "@/components/app/page-header";
+import { navIcon } from "@/components/app/nav-config";
 import {
   createCustomer, updateCustomer, setCustomerActive, sendCoupon,
 } from "./actions";
@@ -108,20 +110,20 @@ export function ClientesClient({
   return (
     <div className="flex flex-col gap-5">
       {/* Cabeçalho */}
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-ink">Clientes</h1>
-          <p className="text-sm text-muted">
-            Fidelize quem compra com você. {rows.length} {rows.length === 1 ? "cliente" : "clientes"}.
-          </p>
-        </div>
-        <button
-          onClick={() => { setModalError(undefined); setForm(emptyForm()); }}
-          className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-        >
-          <Plus size={16} /> Adicionar
-        </button>
-      </div>
+      <PageHeader
+        title="Clientes"
+        icon={navIcon("/clientes")}
+        description={`Fidelize quem compra com você. ${rows.length} ${rows.length === 1 ? "cliente" : "clientes"}.`}
+        innerClassName="max-w-none"
+        actions={
+          <button
+            onClick={() => { setModalError(undefined); setForm(emptyForm()); }}
+            className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+          >
+            <Plus size={16} /> Adicionar
+          </button>
+        }
+      />
 
       {/* Inteligência — cupons sugeridos */}
       {pendentes.length > 0 && (

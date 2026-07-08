@@ -1,66 +1,9 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useState, useTransition } from "react";
-import { BarChart2, FileText, Sparkles, Store, ChevronDown, Check } from "lucide-react";
+import { Store, ChevronDown, Check } from "lucide-react";
 import { setReportSiteAction } from "./actions";
-
-const SECOES = [
-  { id: "relatorios", label: "Relatórios", href: "/relatorios/lista", icon: BarChart2 },
-  { id: "documentos", label: "Documentos", href: "/relatorios/documentos", icon: FileText },
-  { id: "ia", label: "Assistente IA", href: "/relatorios/ia", icon: Sparkles },
-] as const;
-
-const RELATORIO_PREFIXES = [
-  "/relatorios/vendas",
-  "/relatorios/margem",
-  "/relatorios/estoque",
-  "/relatorios/perdas",
-  "/relatorios/compras",
-  "/relatorios/producao",
-  "/relatorios/pagamentos",
-  "/relatorios/abc",
-  "/relatorios/fiscal",
-  "/relatorios/lista",
-];
-
-function resolveSecao(pathname: string): string {
-  if (pathname.startsWith("/relatorios/documentos")) return "documentos";
-  if (pathname.startsWith("/relatorios/ia")) return "ia";
-  if (RELATORIO_PREFIXES.some((p) => pathname.startsWith(p))) return "relatorios";
-  return "relatorios";
-}
-
-export function AnalyticsNav() {
-  const pathname = usePathname();
-  const ativa = resolveSecao(pathname);
-
-  return (
-    <nav className="flex items-center gap-1" aria-label="Análises">
-      {SECOES.map((s) => {
-        const Icon = s.icon;
-        const active = ativa === s.id;
-        return (
-          <Link
-            key={s.id}
-            href={s.href}
-            className={cn(
-              "flex items-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-medium transition-colors",
-              active
-                ? "bg-brand/10 text-brand"
-                : "text-muted hover:bg-surface-2 hover:text-ink",
-            )}
-          >
-            <Icon size={15} aria-hidden />
-            {s.label}
-          </Link>
-        );
-      })}
-    </nav>
-  );
-}
 
 type SiteRow = { id: string; nome: string; tipo: string };
 

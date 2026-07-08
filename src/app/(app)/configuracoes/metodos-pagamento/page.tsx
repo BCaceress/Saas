@@ -1,6 +1,7 @@
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { listSites } from "@/lib/sites";
+import { CreditCard } from "lucide-react";
 import { listSitePaymentMethods } from "@/lib/vendas";
 import { PageHeader } from "@/components/app/page-header";
 import { MetodosClient } from "./_client";
@@ -28,8 +29,8 @@ export default async function MetodosPagamentoPage() {
     return (
       <div className="flex flex-col gap-5">
         <PageHeader
-          eyebrow="Configurações"
           title="Métodos de pagamento"
+          icon={CreditCard}
           description="Defina quais formas de pagamento cada loja aceita no checkout."
           backHref="/configuracoes"
         />

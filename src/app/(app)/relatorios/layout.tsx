@@ -1,6 +1,8 @@
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId, listSites } from "@/lib/sites";
-import { AnalyticsNav, AnalyticsSiteSelector } from "./_controls";
+import { PageHeader } from "@/components/app/page-header";
+import { navIcon } from "@/components/app/nav-config";
+import { AnalyticsSiteSelector } from "./_controls";
 
 export default async function RelatoriosLayout({ children }: { children: React.ReactNode }) {
   const ctx = await requireActiveTenant();
@@ -12,22 +14,18 @@ export default async function RelatoriosLayout({ children }: { children: React.R
 
   return (
     <div className="space-y-6 pb-10">
-      {/* Header: título à esquerda, abas à direita */}
-      <header className="border-b border-line pb-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h1 className="font-display text-[28px] font-bold leading-tight tracking-tight text-black dark:text-ink">
-            Análises
-          </h1>
-          <div className="flex items-center gap-2">
-            <AnalyticsNav />
-            {multiSite && (
-              <span className="ml-1 border-l border-line pl-3">
-                <AnalyticsSiteSelector sites={sites} activeSiteId={activeSiteId} />
-              </span>
-            )}
-          </div>
-        </div>
-      </header>
+      {/* Header: título + propósito. Sem abas — o hub é um ambiente único. */}
+      <PageHeader
+        title="Relatórios"
+        icon={navIcon("/relatorios")}
+        description="Descubra informações sobre seu negócio, gere relatórios, consulte documentos ou faça perguntas para a IA."
+        innerClassName="max-w-none"
+        actions={
+          multiSite ? (
+            <AnalyticsSiteSelector sites={sites} activeSiteId={activeSiteId} />
+          ) : undefined
+        }
+      />
 
       {children}
     </div>

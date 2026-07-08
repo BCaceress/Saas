@@ -23,7 +23,7 @@ export function Sheet({
   description?: string;
   children: React.ReactNode;
   footer?: React.ReactNode;
-  width?: "md" | "lg" | "xl";
+  width?: "md" | "lg" | "xl" | "2xl";
 }) {
   React.useEffect(() => {
     if (!open) return;
@@ -38,7 +38,7 @@ export function Sheet({
 
   if (!open) return null;
 
-  const widths = { md: "max-w-md", lg: "max-w-lg", xl: "max-w-2xl" };
+  const widths = { md: "max-w-md", lg: "max-w-lg", xl: "max-w-2xl", "2xl": "max-w-3xl" };
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label={title}>

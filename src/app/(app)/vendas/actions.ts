@@ -32,6 +32,7 @@ const pagamentoSchema = z.object({
 // ── PDV: finaliza a venda completa numa ação (carrinho client-side) ──
 const finalizarPdvSchema = z.object({
   siteId: z.string().min(1, "Selecione o site."),
+  customerId: z.string().optional().nullable(),
   items: z.array(itemSchema).min(1, "Adicione ao menos um item."),
   descontoVenda: z.number().nonnegative().default(0),
   maiorIdadeConfirmada: z.boolean().default(false),
@@ -51,6 +52,7 @@ export async function finalizarVendaPdvAction(input: z.input<typeof finalizarPdv
       origem: "PDV",
       cashSessionId: sessao.id,
       operatorUserId: userId,
+      customerId: d.customerId ?? null,
       items: d.items,
       descontoVenda: d.descontoVenda,
       maiorIdadeConfirmada: d.maiorIdadeConfirmada,

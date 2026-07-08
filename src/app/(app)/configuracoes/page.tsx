@@ -1,15 +1,17 @@
 import Link from "next/link";
-import { MapPin, CreditCard, Truck, Scale, Gift } from "lucide-react";
+import { MapPin, CreditCard, Scale, Gift } from "lucide-react";
+import { PageHeader } from "@/components/app/page-header";
+import { navIcon } from "@/components/app/nav-config";
 
 export default function ConfiguracoesPage() {
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <h1 className="text-xl font-semibold text-ink">Configurações</h1>
-        <p className="text-sm text-muted">
-          Gerencie as configurações da sua operação.
-        </p>
-      </div>
+      <PageHeader
+        title="Configurações"
+        icon={navIcon("/configuracoes")}
+        description="Gerencie as configurações da sua operação."
+        innerClassName="max-w-none"
+      />
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <Link
           href="/configuracoes/sites"
@@ -36,20 +38,6 @@ export default function ConfiguracoesPage() {
             <p className="font-semibold text-ink">Métodos de pagamento</p>
             <p className="mt-0.5 text-sm text-muted">
               Defina as formas de pagamento aceitas por loja.
-            </p>
-          </div>
-        </Link>
-        <Link
-          href="/configuracoes/fornecedores"
-          className="flex items-start gap-4 rounded-[var(--radius-lg)] border border-line bg-surface p-5 transition-colors hover:bg-surface-2"
-        >
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
-            <Truck size={18} />
-          </span>
-          <div>
-            <p className="font-semibold text-ink">Fornecedores</p>
-            <p className="mt-0.5 text-sm text-muted">
-              Cadastre e gerencie os fornecedores da operação.
             </p>
           </div>
         </Link>

@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { Sidebar, type SidebarToggles } from "@/components/app/sidebar";
 import { Navbar } from "@/components/app/navbar";
+import type { CaixaInfo } from "@/components/app/caixa-sheet";
+import type { PaymentMethod } from "@/generated/prisma";
 
 export function AppShell({
   toggles,
@@ -14,6 +16,8 @@ export function AppShell({
   trialDias,
   vocabularioPonto,
   multiPonto,
+  caixaInfo,
+  metodosCaixa,
   onSignOut,
   children,
 }: {
@@ -26,6 +30,8 @@ export function AppShell({
   trialDias: number | null;
   vocabularioPonto: string;
   multiPonto: boolean;
+  caixaInfo: CaixaInfo | null;
+  metodosCaixa: PaymentMethod[];
   onSignOut: () => void;
   children: React.ReactNode;
 }) {
@@ -49,6 +55,8 @@ export function AppShell({
           userCargo={userCargo}
           vocabularioPonto={vocabularioPonto}
           multiPonto={multiPonto}
+          caixaInfo={caixaInfo}
+          metodosCaixa={metodosCaixa}
           onSignOut={onSignOut}
         />
         <main className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-1 pb-2 sm:px-2">

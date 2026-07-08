@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { AppShell } from "@/components/app/app-shell";
 import { Toaster } from "@/components/ui/toast";
+import { caixaAbertoDoOperador, relatorioCaixa } from "@/lib/caixa";
+import { listSitePaymentMethods } from "@/lib/vendas";
 import { signOutAction } from "./actions";
 import type { Role } from "@/generated/prisma";
 
@@ -38,6 +40,26 @@ export default async function ShellLayout({
 
   const vocabularioPonto = tenant.tipoOperacao === "AUTONOMO" ? "Ponto" : "Loja";
 
+  const sessaoAberta = tenant.moduloPdv
+    ? await caixaAbertoDoOperador(tenant.id, user.id ?? "")
+    : null;
+
+  const caixaInfo = sessaoAberta
+    ? {
+        id: sessaoAberta.id,
+        siteNome: sessaoAberta.site.nome,
+        abertaEm: sessaoAberta.abertaEm,
+        valorAbertura: Number(sessaoAberta.valorAbertura),
+        relatorio: await relatorioCaixa(tenant.id, sessaoAberta.id),
+      }
+    : null;
+
+  const metodosCaixa = sessaoAberta
+    ? (await listSitePaymentMethods(tenant.id, sessaoAberta.siteId))
+        .filter((m) => m.ativo)
+        .map((m) => m.metodo)
+    : [];
+
   return (
     <AppShell
       toggles={{
@@ -53,6 +75,8 @@ export default async function ShellLayout({
       trialDias={tenant.status === "TRIAL" ? trialDaysLeft(tenant.trialEndsAt) : null}
       vocabularioPonto={vocabularioPonto}
       multiPonto={(tenant.numPontos ?? 1) > 1}
+      caixaInfo={caixaInfo}
+      metodosCaixa={metodosCaixa}
       onSignOut={signOutAction}
     >
       {children}

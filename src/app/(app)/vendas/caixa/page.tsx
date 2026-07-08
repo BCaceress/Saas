@@ -1,6 +1,7 @@
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { getActiveSiteId, listSites } from "@/lib/sites";
+import { Wallet } from "lucide-react";
 import { sessaoAtual, relatorioCaixa } from "@/lib/caixa";
 import { PageHeader } from "@/components/app/page-header";
 import { CaixaClient } from "./_client";
@@ -19,8 +20,8 @@ export default async function CaixaPage() {
     return (
       <div className="flex flex-col gap-5">
         <PageHeader
-          eyebrow="PDV"
           title="Caixa"
+          icon={Wallet}
           description="Abertura, sangria, suprimento e fechamento do turno."
           backHref="/vendas"
         />

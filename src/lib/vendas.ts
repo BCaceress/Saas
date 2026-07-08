@@ -98,6 +98,7 @@ export async function criarVenda(
     origem: "PDV" | "TOTEM" | "APP";
     cashSessionId?: string | null;
     operatorUserId?: string | null;
+    customerId?: string | null;
     items: NovoItemVenda[];
     descontoVenda?: number;
     maiorIdadeConfirmada?: boolean;
@@ -184,6 +185,7 @@ export async function criarVenda(
         status: "ABERTA",
         cashSessionId: input.cashSessionId ?? null,
         operatorUserId: input.operatorUserId ?? null,
+        customerId: input.customerId ?? null,
         subtotal,
         desconto: descontoVenda,
         total,

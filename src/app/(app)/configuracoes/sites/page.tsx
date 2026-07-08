@@ -1,6 +1,8 @@
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
+import { MapPin } from "lucide-react";
+import { PageHeader } from "@/components/app/page-header";
 import { SitesManager } from "./_client";
 import { DistribuicaoConfig } from "./_distribuicao-config";
 
@@ -27,12 +29,13 @@ export default async function SitesPage() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <h1 className="text-xl font-semibold text-ink">Lojas e pontos</h1>
-        <p className="text-sm text-muted">
-          Lojas, pontos autônomos e centros de distribuição do tenant.
-        </p>
-      </div>
+      <PageHeader
+        title="Lojas e pontos"
+        icon={MapPin}
+        description="Lojas, pontos autônomos e centros de distribuição do tenant."
+        backHref="/configuracoes"
+        innerClassName="max-w-none"
+      />
       <DistribuicaoConfig
         topologiaInicial={ctx.tenant.topologia ?? "LOCAL"}
         recebimentoInicial={ctx.tenant.recebimentoExigeContagem}

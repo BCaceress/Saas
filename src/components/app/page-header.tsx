@@ -1,16 +1,17 @@
 import * as React from "react";
 import Link from "next/link";
-import { ChevronRight, ArrowLeft } from "lucide-react";
+import { ChevronRight, ArrowLeft, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
  * PageHeader — cabeçalho padrão de toda tela do app.
  *
  * Banda compacta de uma linha: breadcrumb opcional acima, depois
- * [voltar] título [badge] … [ações à direita]. Descrição entra discreta abaixo,
- * só quando necessária. Chrome mínimo, baixa altura — na linha de SaaS modernos
- * (Linear/Vercel). Ações de formulário (Salvar/Cancelar) NÃO ficam aqui: vão
- * para um footer sticky na própria tela.
+ * [voltar] [tile de ícone] título [badge] … [ações à direita]. Descrição entra
+ * discreta abaixo, só quando necessária. O ícone é o MESMO do menu lateral
+ * (fonte única: nav-config → `navIcon(href)`), num tile brand-soft que ancora
+ * a identidade da tela. Chrome mínimo, baixa altura. Ações de formulário
+ * (Salvar/Cancelar) NÃO ficam aqui: vão para um footer sticky na própria tela.
  *
  * Server Component (Link funciona direto). Acessibilidade: <header> semântico,
  * <h1> único por tela, breadcrumb como <nav aria-label> com aria-current na
@@ -28,8 +29,9 @@ export interface PageHeaderProps {
   title: string;
   /** Linha de apoio: explica a tela em uma frase curta. */
   description?: string;
-  /** Eyebrow tipográfico acima do título (mono, caixa alta). Ex.: módulo. */
-  eyebrow?: string;
+  /** Ícone da página — passe o mesmo do menu via `navIcon(href)` (nav-config),
+   *  ou um Lucide direto em subpáginas. Renderiza como tile brand-soft. */
+  icon?: LucideIcon;
   /** Trilha de navegação. O último item é tratado como página atual. */
   breadcrumbs?: Crumb[];
   /** Botão "voltar" à esquerda do título. */
@@ -49,7 +51,7 @@ export interface PageHeaderProps {
 export function PageHeader({
   title,
   description,
-  eyebrow,
+  icon: Icon,
   breadcrumbs,
   backHref,
   badge,
@@ -59,7 +61,7 @@ export function PageHeader({
   innerClassName,
 }: PageHeaderProps) {
   return (
-    <header className={cn("bg-transparent", className)}>
+    <header className={cn("border-b border-line pb-4", className)}>
       <div
         className={cn(
           "mx-auto w-full max-w-6xl",
@@ -71,32 +73,38 @@ export function PageHeader({
         )}
 
         <div className="flex flex-wrap items-start justify-between gap-x-5 gap-y-3">
-          {/* Bloco identitário: voltar + título */}
-          <div className="flex min-w-0 items-start gap-3">
+          {/* Bloco identitário: voltar + ícone + título */}
+          <div className="flex min-w-0 items-center gap-3">
             {backHref && (
               <Link
                 href={backHref}
                 aria-label="Voltar"
-                className="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-full border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink"
               >
                 <ArrowLeft size={17} />
               </Link>
             )}
 
+            {Icon && (
+              <span
+                aria-hidden
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand"
+              >
+                <Icon size={19} />
+              </span>
+            )}
+
             <div className="min-w-0">
-              {eyebrow && (
-                <span className="mb-1 block font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-brand">
-                  {eyebrow}
-                </span>
-              )}
               <div className="flex min-w-0 flex-wrap items-center gap-2.5">
-                <h1 className="truncate font-display text-[28px] font-bold leading-tight tracking-tight text-black dark:text-ink">
+                <h1 className="truncate font-display text-[21px] font-semibold leading-tight tracking-tight text-ink">
                   {title}
                 </h1>
                 {badge}
               </div>
               {description && (
-                <p className="mt-1 text-sm text-muted">{description}</p>
+                <p className="mt-0.5 max-w-2xl truncate text-sm text-muted">
+                  {description}
+                </p>
               )}
             </div>
           </div>

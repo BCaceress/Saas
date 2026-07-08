@@ -147,6 +147,7 @@ export function NotificationBell() {
         onClick={() => setOpen((v) => !v)}
         className="relative grid h-10 w-10 place-items-center rounded-full border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink cursor-pointer"
         aria-label={`Alertas${total > 0 ? ` (${total})` : ""}`}
+        title="Alertas"
         aria-haspopup="menu"
         aria-expanded={open}
       >
