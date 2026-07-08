@@ -11,6 +11,25 @@ export function maskCnpj(value: string): string {
   return out;
 }
 
+/** Aplica máscara de CPF progressiva: 000.000.000-00. */
+export function maskCpf(value: string): string {
+  const d = onlyDigits(value).slice(0, 11);
+  let out = d;
+  if (d.length > 3) out = `${d.slice(0, 3)}.${d.slice(3)}`;
+  if (d.length > 6) out = `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6)}`;
+  if (d.length > 9) out = `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}`;
+  return out;
+}
+
+/** Aplica máscara de data: dd/mm/aaaa. */
+export function maskDate(value: string): string {
+  const d = onlyDigits(value).slice(0, 8);
+  let out = d;
+  if (d.length > 2) out = `${d.slice(0, 2)}/${d.slice(2)}`;
+  if (d.length > 4) out = `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`;
+  return out;
+}
+
 /** Aplica máscara de CEP: 00000-000. */
 export function maskCep(value: string): string {
   const d = onlyDigits(value).slice(0, 8);

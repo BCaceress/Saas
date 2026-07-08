@@ -7,7 +7,7 @@ import {
   Plus, Tag, FolderTree, Warehouse, Truck, Upload, Search, Settings2,
   Pencil, PackageOpen, Wine, ChevronDown, Boxes, Sparkles,
   MoreVertical, Percent, EyeOff, Eye, X,
-  Barcode, Hash,
+  Barcode, Hash, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { cn, brl, margem } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,8 @@ import type {
 } from "./_types";
 
 type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv";
+
+const POR_PAGINA = [25, 50, 100, 200];
 
 export function ProdutosClient(props: {
   rows: ProductRow[];
@@ -49,6 +51,8 @@ export function ProdutosClient(props: {
   const [fSub, setFSub] = useState("");
   const [fMarca, setFMarca] = useState("");
   const [fStatus, setFStatus] = useState("ativos");
+  const [porPagina, setPorPagina] = useState(50);
+  const [pagina, setPagina] = useState(1);
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -62,6 +66,16 @@ export function ProdutosClient(props: {
       return true;
     });
   }, [rows, q, fTipo, fSub, fMarca, fStatus]);
+
+  // Volta pra primeira página quando filtro/tamanho muda
+  useEffect(() => {
+    setPagina(1);
+  }, [q, fTipo, fSub, fMarca, fStatus, porPagina]);
+
+  const totalPaginas = Math.max(1, Math.ceil(filtered.length / porPagina));
+  const paginaAtual = Math.min(pagina, totalPaginas);
+  const inicio = (paginaAtual - 1) * porPagina;
+  const paged = filtered.slice(inicio, inicio + porPagina);
 
   function novo(tipo: "simples" | "insumo" | "combo" | "personalizado") { router.push(`/produtos/novo/${tipo}`); }
   function editar(p: ProductRow) { router.push(`/produtos/${p.id}/editar`); }
@@ -162,12 +176,12 @@ export function ProdutosClient(props: {
                   <th className="hidden px-4 py-2.5 lg:table-cell">Categoria</th>
                   <th className="px-4 py-2.5">Preço</th>
                   <th className="hidden px-4 py-2.5 md:table-cell">Fornecedor</th>
-                  <th className="px-4 py-2.5">Disp.</th>
+                  <th className="px-4 py-2.5">Estoque</th>
                   <th className="w-10 px-3 py-2.5" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {filtered.map((p) => {
+                {paged.map((p) => {
                   const level = stockLevel(p);
                   const principal = p.fornecedores.find((f) => f.isPrincipal) ?? p.fornecedores[0];
                   return (
@@ -236,12 +250,9 @@ export function ProdutosClient(props: {
                         )}
                       </td>
 
-                      {/* Disponibilidade */}
+                      {/* Estoque */}
                       <td className="px-4 py-2">
-                        <span className={cn("inline-flex items-center gap-1.5 text-[12px] font-medium", STOCK_TEXT[level])}>
-                          <span className={cn("h-2 w-2 shrink-0 rounded-full", STOCK_COLOR[level])} />
-                          {STOCK_TITLE[level]}
-                        </span>
+                        <StockCell p={p} level={level} />
                       </td>
 
                       {/* Ações */}
@@ -275,6 +286,58 @@ export function ProdutosClient(props: {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* ── Paginação ── */}
+        {temProdutos && filtered.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 px-1">
+            <div className="flex items-center gap-2 text-xs text-faint">
+              <span>
+                {inicio + 1}–{Math.min(inicio + porPagina, filtered.length)} de {filtered.length}
+                {rows.length !== filtered.length ? ` (${rows.length} no total)` : ""}
+              </span>
+              <span className="text-line">·</span>
+              <label className="flex items-center gap-1.5">
+                Exibir
+                <select
+                  value={porPagina}
+                  onChange={(e) => setPorPagina(Number(e.target.value))}
+                  className="h-7 cursor-pointer appearance-none rounded-lg border border-line bg-surface px-2 text-xs font-medium text-ink focus:border-brand focus:outline-none"
+                >
+                  {POR_PAGINA.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+                por página
+              </label>
+            </div>
+
+            {totalPaginas > 1 && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setPagina((p) => Math.max(1, p - 1))}
+                  disabled={paginaAtual <= 1}
+                  className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border border-line bg-surface text-ink transition-colors hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-40"
+                  aria-label="Página anterior"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <span className="min-w-20 text-center text-xs font-medium text-muted">
+                  Página {paginaAtual} de {totalPaginas}
+                </span>
+                <button
+                  onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))}
+                  disabled={paginaAtual >= totalPaginas}
+                  className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border border-line bg-surface text-ink transition-colors hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-40"
+                  aria-label="Próxima página"
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -445,6 +508,82 @@ function ImageViewer({ url, onClose }: { url: string; onClose: () => void }) {
 }
 
 // ── Célula de preço com tooltip (custo × venda) ──────────────────────────────
+
+function StockCell({ p, level }: { p: ProductRow; level: "ok" | "warn" | "danger" }) {
+  const [show, setShow] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Personalizado (feito na hora) e insumo sem mínimo/ideal não têm controle de estoque.
+  const semControle =
+    p.tipo === "PERSONALIZADO" ||
+    (p.tipo === "INSUMO" && p.estoque.minimo <= 0 && p.estoque.ideal <= 0);
+
+  // Só locais ativos (locationAtivo === false = arquivado); agrupa por loja.
+  const lojas = useMemo(() => {
+    const map = new Map<string, { siteNome: string; fechado: number; aberto: number }>();
+    for (const l of p.locais) {
+      if (!l.siteAtivo) continue;
+      if (l.locationAtivo === false) continue;
+      const cur = map.get(l.siteId) ?? { siteNome: l.siteNome, fechado: 0, aberto: 0 };
+      cur.fechado += l.fechado;
+      cur.aberto += l.aberto;
+      map.set(l.siteId, cur);
+    }
+    return [...map.values()];
+  }, [p.locais]);
+
+  const hasDetail = lojas.length > 0;
+
+  function handleEnter() {
+    if (!hasDetail) return;
+    const rect = ref.current?.getBoundingClientRect();
+    if (rect) setPos({ top: rect.top + window.scrollY, left: rect.left + window.scrollX });
+    setShow(true);
+  }
+
+  if (semControle) {
+    return <span className="text-[12px] text-muted">Sem controle de estoque</span>;
+  }
+
+  return (
+    <>
+      <div
+        ref={ref}
+        className={cn("inline-flex", hasDetail && "cursor-help")}
+        onMouseEnter={handleEnter}
+        onMouseLeave={() => setShow(false)}
+      >
+        <span className={cn("inline-flex items-center gap-1.5 text-[12px] font-medium", STOCK_TEXT[level])}>
+          <span className={cn("h-2 w-2 shrink-0 rounded-full", STOCK_COLOR[level])} />
+          {STOCK_TITLE[level]}
+        </span>
+      </div>
+
+      {show && hasDetail && typeof document !== "undefined" && createPortal(
+        <div
+          className="fixed z-[100] min-w-50 max-w-70 rounded-lg border border-line bg-surface p-2.5 shadow-lg"
+          style={{ top: pos.top - 8, left: pos.left, transform: "translateY(-100%)" }}
+          onMouseEnter={() => setShow(true)}
+          onMouseLeave={() => setShow(false)}
+        >
+          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">Estoque por loja</p>
+          <ul className="space-y-1.5">
+            {lojas.map((l, i) => (
+              <li key={i} className="flex items-center justify-between gap-3 text-[12px]">
+                <span className="min-w-0 truncate text-ink-2">{l.siteNome}</span>
+                <span className="shrink-0 font-mono font-medium text-ink tnum">
+                  {l.fechado} unidade{l.fechado === 1 ? "" : "s"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
 
 function PriceCell({ tipo, precoVenda, custo }: { tipo: string; precoVenda: number | null; custo: number | null }) {
   const [show, setShow] = useState(false);

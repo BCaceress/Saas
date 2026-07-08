@@ -51,8 +51,11 @@ export type ProductRow = {
 export type ProductLocationStock = {
   siteId: string;
   siteNome: string;
+  siteAtivo: boolean;
   locationNome: string | null;
   locationTipo: StorageType | null;
+  /** null = estoque a nível de loja (sem local); false = local arquivado. */
+  locationAtivo: boolean | null;
   fechado: number;
   aberto: number;
 };

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { MapPin, CreditCard, Truck, Scale } from "lucide-react";
+import { MapPin, CreditCard, Truck, Scale, Gift } from "lucide-react";
 
 export default function ConfiguracoesPage() {
   return (
@@ -50,6 +50,20 @@ export default function ConfiguracoesPage() {
             <p className="font-semibold text-ink">Fornecedores</p>
             <p className="mt-0.5 text-sm text-muted">
               Cadastre e gerencie os fornecedores da operação.
+            </p>
+          </div>
+        </Link>
+        <Link
+          href="/configuracoes/fidelizacao"
+          className="flex items-start gap-4 rounded-[var(--radius-lg)] border border-line bg-surface p-5 transition-colors hover:bg-surface-2"
+        >
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent">
+            <Gift size={18} />
+          </span>
+          <div>
+            <p className="font-semibold text-ink">Fidelização</p>
+            <p className="mt-0.5 text-sm text-muted">
+              Cupons de retorno e aniversário, envio automático por WhatsApp.
             </p>
           </div>
         </Link>

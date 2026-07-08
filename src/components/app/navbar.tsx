@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   Search,
-  Bell,
   ChevronDown,
   LogOut,
   Store,
@@ -16,6 +15,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/app/theme-toggle";
+import { NotificationBell } from "@/components/app/notification-bell";
 import { ProductSidePanel, TIPO_LABEL } from "@/components/app/product-side-panel";
 import { searchProducts } from "@/app/(app)/produtos/actions";
 import { brl } from "@/lib/utils";
@@ -200,17 +200,8 @@ export function Navbar({
           <HelpCircle size={18} />
         </a>
 
-        {/* Notificações */}
-        <button
-          className="relative grid h-10 w-10 place-items-center rounded-full border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink cursor-pointer"
-          aria-label="Notificações"
-        >
-          <Bell size={18} />
-          <span
-            className="absolute right-2.5 top-2.5 h-2 w-2 rounded-full bg-brand ring-2 ring-surface"
-            aria-hidden
-          />
-        </button>
+        {/* Alertas */}
+        <NotificationBell />
 
         <span className="mx-1 hidden h-7 w-px bg-line sm:block" aria-hidden />
 

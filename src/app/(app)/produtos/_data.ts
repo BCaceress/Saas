@@ -21,8 +21,8 @@ export const PRODUCT_INCLUDE = {
   subcategory: { include: { category: true } },
   stocks: {
     include: {
-      site: { select: { nome: true } },
-      location: { select: { nome: true, tipo: true } },
+      site: { select: { nome: true, ativo: true } },
+      location: { select: { nome: true, tipo: true, ativo: true } },
     },
   },
   packagings: { orderBy: { nome: "asc" } },
@@ -106,8 +106,10 @@ export function toProductRow(p: ProductWithRelations, totalVendido: number): Pro
       .map((st) => ({
         siteId: st.siteId!,
         siteNome: st.site?.nome ?? "",
+        siteAtivo: st.site?.ativo ?? true,
         locationNome: st.location?.nome ?? null,
         locationTipo: st.location?.tipo ?? null,
+        locationAtivo: st.location?.ativo ?? null,
         fechado: Number(st.estoqueFechado),
         aberto: Number(st.estoqueAberto),
       })),

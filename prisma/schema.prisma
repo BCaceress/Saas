@@ -94,6 +94,11 @@ model Tenant {
   // estoque em trânsito); se false, expedição auto-confirma o recebimento.
   recebimentoExigeContagem Boolean @default(false)
 
+  // Fidelização / CRM: envio automático de cupom (risco + aniversário) via
+  // WhatsApp. Desligado por padrão — o operador liga em Configurações.
+  cupomAutomatico  Boolean @default(false)
+  cupomDiasRisco   Int     @default(25) // dias sem comprar → cliente em risco
+
   onboardingDone Boolean @default(false)
 
   createdAt DateTime @default(now())
@@ -110,6 +115,7 @@ model Tenant {
   products         Product[]
   tags             Tag[]
   sites            Site[]
+  customers        Customer[]
 
   @@index([status])
 }
@@ -319,6 +325,19 @@ enum CashMovementType {
   SANGRIA // retirada de dinheiro
   SUPRIMENTO // reforço de dinheiro
   FECHAMENTO
+}
+
+enum Sexo {
+  MASCULINO
+  FEMININO
+  OUTRO
+}
+
+// Motivo do cupom enviado — dirige a mensagem e evita reenvio duplicado.
+enum CouponReason {
+  RISCO // cliente ativo parou de comprar
+  ANIVERSARIO
+  MANUAL
 }
 
 model Brand {
@@ -975,6 +994,7 @@ model Sale {
   status         SaleStatus @default(ABERTA)
   cashSessionId  String? // só PDV
   operatorUserId String? // só PDV
+  customerId     String? // cliente identificado (fidelização) — opcional
 
   subtotal Decimal @default(0) @db.Decimal(12, 2)
   desconto Decimal @default(0) @db.Decimal(12, 2)
@@ -987,12 +1007,14 @@ model Sale {
 
   site        Site         @relation(fields: [siteId], references: [id])
   cashSession CashSession? @relation(fields: [cashSessionId], references: [id])
+  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
   items       SaleItem[]
   payments    Payment[]
 
   @@index([tenantId])
   @@index([siteId])
   @@index([cashSessionId])
+  @@index([customerId])
   @@index([status])
   @@index([createdAt])
 }
@@ -1084,6 +1106,53 @@ model SitePaymentMethod {
 
   @@unique([siteId, metodo])
   @@index([tenantId])
+}
+
+// ============================================================
+// CRM / FIDELIZAÇÃO
+// Cadastro leve do consumidor final para fidelização. Métricas (total gasto,
+// ticket, visitas, produtos favoritos) NÃO ficam aqui — derivam de Sale/SaleItem
+// via customerId, computadas ao vivo. `pontos` é o único saldo materializado.
+// ============================================================
+
+model Customer {
+  id             String    @id @default(cuid())
+  tenantId       String
+  nome           String
+  cpf            String? // só dígitos
+  dataNascimento DateTime? @db.Date
+  sexo           Sexo?
+  whatsapp       String? // só dígitos (DDD + número)
+  pontos         Int       @default(0)
+  ativo          Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  tenant  Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sales   Sale[]
+  coupons CouponSend[]
+
+  @@unique([tenantId, cpf])
+  @@index([tenantId])
+  @@index([tenantId, nome])
+}
+
+// Registro de cupom enviado (risco/aniversário/manual). Serve de trava para não
+// reenviar o mesmo tipo em janela curta e de histórico do disparo (WhatsApp).
+model CouponSend {
+  id         String       @id @default(cuid())
+  tenantId   String
+  customerId String
+  motivo     CouponReason
+  automatico Boolean      @default(false)
+  mensagem   String?
+  createdAt  DateTime     @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([createdAt])
 }
 
 // ============================================================
