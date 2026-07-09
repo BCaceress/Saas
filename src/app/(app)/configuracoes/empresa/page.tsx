@@ -20,6 +20,7 @@ export default async function EmpresaPage() {
         subdomain={tenant.subdomain}
         initial={{
           nome: tenant.nome,
+          logoUrl: tenant.logoUrl ?? "",
           razaoSocial: tenant.razaoSocial ?? "",
           cnpj: tenant.cnpj ?? "",
           telefone: tenant.telefone ?? "",

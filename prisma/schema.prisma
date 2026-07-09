@@ -81,6 +81,7 @@ model Tenant {
   // Perfil da empresa (Configurações → Empresa)
   cnpj         String?
   razaoSocial  String?
+  logoUrl      String? // logo da loja (exibida no totem/autoatendimento)
   telefone     String?
   emailContato String?
   cep          String?

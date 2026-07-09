@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Globe } from "lucide-react";
+import { Search, Globe, Upload, Trash2, ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
@@ -10,8 +10,29 @@ import { toast } from "@/components/ui/toast";
 import { maskCnpj, maskPhone, maskCep } from "@/lib/masks";
 import { updateEmpresa } from "../actions";
 
+/**
+ * Redimensiona a logo no navegador (máx. 256px) e devolve um data URL PNG —
+ * pequena o bastante para viver no próprio banco, sem storage externo.
+ */
+async function resizeLogo(file: File): Promise<string> {
+  const bitmap = await createImageBitmap(file);
+  const MAX = 256;
+  const scale = Math.min(1, MAX / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas indisponível.");
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  return canvas.toDataURL("image/png");
+}
+
 type EmpresaForm = {
   nome: string;
+  logoUrl: string;
   razaoSocial: string;
   cnpj: string;
   telefone: string;
@@ -33,6 +54,7 @@ export function EmpresaClient({
   const router = useRouter();
   const [pending, start] = useTransition();
   const [loadingCnpj, setLoadingCnpj] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [form, setForm] = useState<EmpresaForm>({
     ...initial,
     cnpj: initial.cnpj ? maskCnpj(initial.cnpj) : "",
@@ -41,6 +63,18 @@ export function EmpresaClient({
   });
 
   const set = (patch: Partial<EmpresaForm>) => setForm((f) => ({ ...f, ...patch }));
+
+  async function onLogoFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // permite reenviar o mesmo arquivo
+    if (!file) return;
+    try {
+      set({ logoUrl: await resizeLogo(file) });
+      toast.success("Logo carregada — salve para aplicar.");
+    } catch {
+      toast.error("Não foi possível ler a imagem. Tente um PNG ou JPG.");
+    }
+  }
 
   async function buscarCnpj() {
     const digits = form.cnpj.replace(/\D/g, "");
@@ -105,6 +139,44 @@ export function EmpresaClient({
               onChange={(e) => set({ nome: e.target.value })}
               placeholder="Ex.: Mercadinho do João"
             />
+          </Field>
+
+          <Field
+            label="Logo da loja"
+            htmlFor="logo"
+            hint="Aparece na tela inicial do autoatendimento. PNG ou JPG, de preferência quadrada."
+            className="sm:col-span-2"
+          >
+            <div className="flex items-center gap-3">
+              {form.logoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={form.logoUrl}
+                  alt="Logo da loja"
+                  className="h-16 w-16 shrink-0 rounded-xl border border-line bg-surface-2 object-contain p-1"
+                />
+              ) : (
+                <span className="grid h-16 w-16 shrink-0 place-items-center rounded-xl border border-dashed border-line bg-surface-2 text-faint">
+                  <ImageIcon size={22} />
+                </span>
+              )}
+              <input
+                ref={fileRef}
+                id="logo"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                className="hidden"
+                onChange={onLogoFile}
+              />
+              <Button type="button" variant="outline" onClick={() => fileRef.current?.click()}>
+                <Upload size={16} /> {form.logoUrl ? "Trocar imagem" : "Enviar imagem"}
+              </Button>
+              {form.logoUrl && (
+                <Button type="button" variant="outline" onClick={() => set({ logoUrl: "" })}>
+                  <Trash2 size={16} /> Remover
+                </Button>
+              )}
+            </div>
           </Field>
 
           <Field

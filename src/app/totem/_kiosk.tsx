@@ -17,15 +17,19 @@ export function TotemKiosk({
   produtos,
   metodosAtivos,
   tenantNome,
+  tenantLogoUrl,
   controleIdade,
   temPin,
+  maisVendidos,
 }: {
   siteId: string | null;
   produtos: ProdutoVenda[];
   metodosAtivos: PaymentMethod[];
   tenantNome: string;
+  tenantLogoUrl: string | null;
   controleIdade: boolean;
   temPin: boolean;
+  maisVendidos: string[];
 }) {
   const router = useRouter();
   const [iniciado, setIniciado] = useState(false);
@@ -46,9 +50,15 @@ export function TotemKiosk({
   if (!iniciado) {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center gap-8 p-6 text-center">
-        <span className="grid h-20 w-20 place-items-center rounded-3xl bg-brand-soft text-brand">
-          <MonitorSmartphone size={40} />
-        </span>
+        {tenantLogoUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={tenantLogoUrl} alt={tenantNome}
+            className="h-40 w-40 rounded-3xl border border-line bg-surface object-contain p-3 shadow-[var(--shadow-1)]" />
+        ) : (
+          <span className="grid h-20 w-20 place-items-center rounded-3xl bg-brand-soft text-brand">
+            <MonitorSmartphone size={40} />
+          </span>
+        )}
         <div>
           <h1 className="font-display text-4xl font-bold text-ink">{tenantNome}</h1>
           <p className="mt-2 text-lg text-muted">Autoatendimento</p>
@@ -71,13 +81,15 @@ export function TotemKiosk({
 
   // ── Modo quiosque ──
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-bg p-4">
+    <div className="scrollbar-none fixed inset-0 z-50 overflow-y-auto bg-bg p-4">
       <TotemVenda
         siteId={siteId}
         produtos={produtos}
         metodosAtivos={metodosAtivos}
         tenantNome={tenantNome}
+        tenantLogoUrl={tenantLogoUrl}
         controleIdade={controleIdade}
+        maisVendidos={maisVendidos}
       />
       {/* Saída discreta do quiosque */}
       <button

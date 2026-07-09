@@ -17,14 +17,23 @@ export default async function TotemPage() {
 
   return runWithTenant(ctx.tenant.id, async () => {
     const siteId = await getActiveSiteId();
-    const [produtos, metodos, site] = await Promise.all([
+    const [produtos, metodos, site, vendidos] = await Promise.all([
       loadProdutosVenda(siteId),
       siteId ? listSitePaymentMethods(ctx.tenant.id, siteId) : Promise.resolve([]),
       siteId
         ? db.site.findFirst({ where: { id: siteId }, select: { controleIdade: true } })
         : Promise.resolve(null),
+      // Mais vendidos (global, vendas pagas) — para "Recomendados"/anônimo.
+      db.saleItem.groupBy({
+        by: ["productId"],
+        where: { sale: { status: "PAGA" } },
+        _sum: { quantidade: true },
+        orderBy: { _sum: { quantidade: "desc" } },
+        take: 12,
+      }),
     ]);
     const metodosAtivos = metodos.filter((m) => m.ativo).map((m) => m.metodo);
+    const maisVendidos = vendidos.map((v) => v.productId);
 
     return (
       <TotemKiosk
@@ -32,8 +41,10 @@ export default async function TotemPage() {
         produtos={produtos}
         metodosAtivos={metodosAtivos}
         tenantNome={ctx.tenant.nome}
+        tenantLogoUrl={ctx.tenant.logoUrl}
         controleIdade={site?.controleIdade ?? false}
         temPin={!!ctx.tenant.totemPinHash}
+        maisVendidos={maisVendidos}
       />
     );
   });

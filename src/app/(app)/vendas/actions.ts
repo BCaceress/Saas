@@ -68,9 +68,10 @@ export async function finalizarVendaPdvAction(input: z.input<typeof finalizarPdv
 const totemSchema = z.object({
   siteId: z.string().min(1),
   origem: z.enum(["TOTEM", "APP"]).default("TOTEM"),
+  customerId: z.string().optional().nullable(),
   items: z.array(itemSchema).min(1, "Adicione ao menos um item."),
   maiorIdadeConfirmada: z.boolean().default(false),
-  metodo: z.enum(["PIX", "CARTAO_CREDITO", "CARTAO_DEBITO"]).default("PIX"),
+  metodo: z.enum(["PIX", "CARTAO_CREDITO", "CARTAO_DEBITO", "DINHEIRO"]).default("PIX"),
 });
 
 export async function criarVendaTotemAction(input: z.input<typeof totemSchema>) {
@@ -79,6 +80,7 @@ export async function criarVendaTotemAction(input: z.input<typeof totemSchema>) 
     const saleId = await criarVenda(tid, {
       siteId: d.siteId,
       origem: d.origem,
+      customerId: d.customerId ?? null,
       items: d.items,
       maiorIdadeConfirmada: d.maiorIdadeConfirmada,
       pagamentoIntegralPendente: d.metodo,

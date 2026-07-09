@@ -35,6 +35,7 @@ const ok = () => revalidatePath("/configuracoes", "layout");
 
 const empresaSchema = z.object({
   nome: z.string().trim().min(2, "Informe o nome do mercado."),
+  logoUrl: z.string().trim().optional().nullable(),
   razaoSocial: z.string().trim().optional().nullable(),
   cnpj: z.string().optional().nullable(),
   telefone: z.string().optional().nullable(),
@@ -53,11 +54,20 @@ export async function updateEmpresa(input: z.input<typeof empresaSchema>) {
     if (cnpj && cnpj.length !== 14) throw new Error("CNPJ incompleto — confira os 14 dígitos.");
     const email = d.emailContato?.trim() ?? "";
     if (email && !/^\S+@\S+\.\S+$/.test(email)) throw new Error("E-mail de contato inválido.");
+    // Logo: data URL (upload redimensionado no client) ou URL http(s) legada.
+    const logoUrl = d.logoUrl?.trim() ?? "";
+    if (logoUrl && !/^(data:image\/(png|jpeg|webp|svg\+xml);base64,|https?:\/\/)/.test(logoUrl)) {
+      throw new Error("Logo inválida — envie a imagem novamente.");
+    }
+    if (logoUrl.length > 700_000) {
+      throw new Error("Logo muito grande — envie uma imagem menor.");
+    }
 
     await db.tenant.update({
       where: { id: tenant.id },
       data: {
         nome: d.nome.trim(),
+        logoUrl: logoUrl || null,
         razaoSocial: d.razaoSocial?.trim() || null,
         cnpj: cnpj || null,
         telefone: d.telefone ? onlyDigits(d.telefone) || null : null,
