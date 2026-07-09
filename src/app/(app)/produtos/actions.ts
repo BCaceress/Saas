@@ -10,7 +10,14 @@ import { getOrCreateDefaultSite } from "@/lib/sites";
 import { generateSku } from "@/lib/sku";
 import { getCosmosByEan, CosmosError } from "@/lib/cosmos";
 import { completeJson, llmConfigured } from "@/lib/llm";
-import { PRODUCT_INCLUDE, toProductRow, loadProductInsights, type ProductInsights } from "./_data";
+import {
+  PRODUCT_INCLUDE,
+  toProductRow,
+  loadProductInsights,
+  loadGerenciarExtras,
+  type ProductInsights,
+  type GerenciarExtras,
+} from "./_data";
 import type { ProductRow } from "./_types";
 import type { StorageType } from "@/generated/prisma";
 
@@ -55,20 +62,13 @@ export async function searchProducts(queryRaw: string): Promise<ProductRow[]> {
       include: PRODUCT_INCLUDE,
     });
 
-    const ids = products.map((p) => p.id);
-    const salesStats = ids.length
-      ? await db.saleItem.groupBy({
-          by: ["productId"],
-          where: { productId: { in: ids } },
-          _sum: { quantidade: true },
-        })
-      : [];
-    const vendidoMap = Object.fromEntries(
-      salesStats.map((s) => [s.productId, Number(s._sum.quantidade ?? 0)])
-    );
-
-    return products.map((p) => toProductRow(p, vendidoMap[p.id] ?? 0));
+    return products.map((p) => toProductRow(p));
   });
+}
+
+/** Dados dos sheets de gerenciamento — buscado sob demanda ao abrir "Gerenciar" em /produtos. */
+export async function getGerenciarExtras(): Promise<GerenciarExtras> {
+  return tx(() => loadGerenciarExtras());
 }
 
 /** Alertas do sidepanel — buscado sob demanda ao abrir o produto. */

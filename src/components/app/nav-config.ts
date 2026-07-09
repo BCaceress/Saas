@@ -3,13 +3,11 @@ import {
   Boxes,
   Warehouse,
   Users,
-  UserCog,
   ShoppingCart,
   ShoppingBag,
   ClipboardList,
   BarChart3,
   Wallet,
-  Settings,
   Recycle,
   Truck,
   Factory,
@@ -93,18 +91,6 @@ export const NAV_GROUPS: NavGroup[] = [
       },
       { href: "/financeiro", label: "Financeiro", icon: Wallet, enabled: false },
       { href: "/relatorios", label: "Análises", icon: BarChart3, enabled: true },
-    ],
-  },
-  {
-    title: "Sistema",
-    items: [
-      {
-        href: "/configuracoes/usuarios",
-        label: "Usuários",
-        icon: UserCog,
-        enabled: true,
-      },
-      { href: "/configuracoes", label: "Configurações", icon: Settings, enabled: true },
     ],
   },
 ];

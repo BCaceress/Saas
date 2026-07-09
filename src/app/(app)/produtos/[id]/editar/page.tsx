@@ -177,7 +177,6 @@ export default async function EditarProdutoPage({
         nome: ps.supplier.nomeFantasia ?? ps.supplier.razaoSocial,
         isPrincipal: ps.isPrincipal,
       })),
-      totalVendido: 0,
       locais: [],
     };
     return { kind: "product" as const, row, opts };

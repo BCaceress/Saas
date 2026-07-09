@@ -4,6 +4,7 @@ import type { Prisma } from "@/generated/prisma";
 import type {
   BrandOpt,
   CategoryOpt,
+  CategoryNode,
   SubcategoryOpt,
   StorageOpt,
   SupplierRow,
@@ -36,7 +37,7 @@ export const PRODUCT_INCLUDE = {
 type ProductWithRelations = Prisma.ProductGetPayload<{ include: typeof PRODUCT_INCLUDE }>;
 
 /** Mapeia um Product (com relações) para o shape usado na UI (§6: combos/receitas derivam custo/disponibilidade). */
-export function toProductRow(p: ProductWithRelations, totalVendido: number): ProductRow {
+export function toProductRow(p: ProductWithRelations): ProductRow {
   const principal = p.suppliers.find((s) => s.isPrincipal);
 
   const composto = p.tipo === "COMBO" || p.tipo === "PERSONALIZADO";
@@ -100,7 +101,6 @@ export function toProductRow(p: ProductWithRelations, totalVendido: number): Pro
       nome: ps.supplier.nomeFantasia ?? ps.supplier.razaoSocial,
       isPrincipal: ps.isPrincipal,
     })),
-    totalVendido,
     locais: p.stocks
       .filter((st) => st.siteId !== null)
       .map((st) => ({
@@ -115,6 +115,77 @@ export function toProductRow(p: ProductWithRelations, totalVendido: number): Pro
       })),
   };
 }
+
+/**
+ * Dados dos sheets de gerenciamento (categorias, armazenagem, fornecedores).
+ * Buscado sob demanda ao abrir "Gerenciar" em /produtos, não no load da página
+ * (evita 4 queries no carregamento inicial da listagem).
+ */
+export async function loadGerenciarExtras() {
+  const [categories, locations, suppliers, sites] = await Promise.all([
+    db.category.findMany({
+      orderBy: { nome: "asc" },
+      include: { subcategories: { orderBy: { nome: "asc" } } },
+    }),
+    db.storageLocation.findMany({
+      where: { ativo: true },
+      orderBy: { nome: "asc" },
+      include: { site: { select: { nome: true } } },
+    }),
+    db.supplier.findMany({ orderBy: { razaoSocial: "asc" } }),
+    db.site.findMany({
+      where: { ativo: true },
+      orderBy: { nome: "asc" },
+      select: { id: true, nome: true },
+    }),
+  ]);
+
+  const categoryTree: CategoryNode[] = categories.map((c) => ({
+    id: c.id,
+    nome: c.nome,
+    skuPrefix: c.skuPrefix,
+    subcategorias: c.subcategories.map((s) => ({
+      id: s.id,
+      nome: s.nome,
+      skuPrefix: s.skuPrefix,
+      ativo: s.ativo,
+    })),
+  }));
+
+  const storageOpts: StorageOpt[] = locations.map((l) => ({
+    id: l.id,
+    nome: l.nome,
+    tipo: l.tipo,
+    ativo: l.ativo,
+    siteId: l.siteId,
+    siteNome: l.site?.nome ?? null,
+  }));
+
+  const supplierRows: SupplierRow[] = suppliers.map((s) => ({
+    id: s.id,
+    cnpj: s.cnpj,
+    razaoSocial: s.razaoSocial,
+    nomeFantasia: s.nomeFantasia,
+    email: s.email,
+    telefone: s.telefone,
+    nomeContatoPrincipal: s.nomeContatoPrincipal,
+    website: s.website,
+    cep: s.cep,
+    logradouro: s.logradouro,
+    numero: s.numero,
+    complemento: s.complemento,
+    bairro: s.bairro,
+    municipio: s.municipio,
+    uf: s.uf,
+    ativo: s.ativo,
+  }));
+
+  const siteOpts = sites.map((s) => ({ id: s.id, nome: s.nome }));
+
+  return { categoryTree, storageOpts, supplierRows, siteOpts };
+}
+
+export type GerenciarExtras = Awaited<ReturnType<typeof loadGerenciarExtras>>;
 
 export type ProductFormOptions = {
   brandOpts: BrandOpt[];

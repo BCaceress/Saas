@@ -43,7 +43,6 @@ export type ProductRow = {
   salesChannels: SalesChannelItem[];
   packagings: ProductPackagingItem[];
   fornecedores: { id: string; nome: string; isPrincipal: boolean }[];
-  totalVendido: number;
   /** Saldo por loja/local de armazenagem (§3: cada Stock é um site × produto). */
   locais: ProductLocationStock[];
 };
@@ -70,6 +69,8 @@ export type ProductPackagingItem = {
 
 export type BrandOpt = { id: string; nome: string };
 export type CategoryOpt = { id: string; nome: string };
+/** Opção enxuta pro filtro de subcategoria da listagem (não carrega skuPrefix/defaults do form). */
+export type SubcategoryFilterOpt = { id: string; nome: string; categoriaNome: string };
 export type SubcategoryOpt = {
   id: string;
   nome: string;

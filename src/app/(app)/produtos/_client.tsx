@@ -13,6 +13,7 @@ import { cn, brl, margem } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { Input, Select } from "@/components/ui/input";
+import { Sheet } from "@/components/ui/sheet";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import {
@@ -20,11 +21,12 @@ import {
 } from "@/components/app/product-side-panel";
 import { BrandSheet, CategorySheet, StorageSheet, SupplierSheet } from "./_sheets/sidepanels";
 import { CsvSheet } from "./_sheets/csv-sheet";
-import { archiveProduct } from "./actions";
+import { archiveProduct, getGerenciarExtras } from "./actions";
 import type {
-  ProductRow, CategoryNode, BrandOpt, SubcategoryOpt, StorageOpt, SupplierRow,
+  ProductRow, BrandOpt, SubcategoryFilterOpt,
   ProductPackagingItem,
 } from "./_types";
+import type { GerenciarExtras } from "./_data";
 
 type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv";
 
@@ -32,20 +34,26 @@ const POR_PAGINA = [25, 50, 100, 200];
 
 export function ProdutosClient(props: {
   rows: ProductRow[];
-  categoryTree: CategoryNode[];
-  subOpts: SubcategoryOpt[];
+  subOpts: SubcategoryFilterOpt[];
   brandOpts: BrandOpt[];
-  storageOpts: StorageOpt[];
-  supplierRows: SupplierRow[];
-  siteOpts: { id: string; nome: string }[];
 }) {
-  const { rows, categoryTree, subOpts, brandOpts, storageOpts, supplierRows, siteOpts } = props;
+  const { rows, subOpts, brandOpts } = props;
   const router = useRouter();
   const [, start] = useTransition();
 
   const [sheet, setSheet] = useState<SheetKind>(null);
   const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+
+  // Dados dos sheets de "Gerenciar" (categorias/armazenagem/fornecedores) só
+  // são buscados quando o usuário de fato abre o menu — não no load da página.
+  const [extras, setExtras] = useState<GerenciarExtras | null>(null);
+  const extrasRequested = useRef(false);
+  function ensureExtras() {
+    if (extrasRequested.current) return;
+    extrasRequested.current = true;
+    getGerenciarExtras().then(setExtras);
+  }
 
   const [q, setQ] = useState("");
   const [fTipo, setFTipo] = useState("");
@@ -97,16 +105,22 @@ export function ProdutosClient(props: {
             <Menu
               align="end"
               trigger={
-                <Button variant="secondary" size="sm" className="gap-1.5">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="gap-1.5"
+                  onMouseEnter={ensureExtras}
+                  onFocus={ensureExtras}
+                >
                   <Settings2 size={15} /> Gerenciar
                   <ChevronDown size={14} className="-mr-0.5 text-muted" />
                 </Button>
               }
             >
               <MenuItem icon={<Tag size={15} />} onClick={() => setSheet("brand")}>Marcas</MenuItem>
-              <MenuItem icon={<FolderTree size={15} />} onClick={() => setSheet("category")}>Categorias</MenuItem>
-              <MenuItem icon={<Warehouse size={15} />} onClick={() => setSheet("storage")}>Armazenagem</MenuItem>
-              <MenuItem icon={<Truck size={15} />} onClick={() => setSheet("supplier")}>Fornecedores</MenuItem>
+              <MenuItem icon={<FolderTree size={15} />} onClick={() => { ensureExtras(); setSheet("category"); }}>Categorias</MenuItem>
+              <MenuItem icon={<Warehouse size={15} />} onClick={() => { ensureExtras(); setSheet("storage"); }}>Armazenagem</MenuItem>
+              <MenuItem icon={<Truck size={15} />} onClick={() => { ensureExtras(); setSheet("supplier"); }}>Fornecedores</MenuItem>
               <div className="my-1 h-px bg-line" role="separator" />
               <MenuItem icon={<Upload size={15} />} onClick={() => setSheet("csv")}>Importar CSV</MenuItem>
             </Menu>
@@ -344,9 +358,21 @@ export function ProdutosClient(props: {
         )}
 
         {sheet === "brand" && <BrandSheet open onClose={() => setSheet(null)} brands={brandOpts} />}
-        {sheet === "category" && <CategorySheet open onClose={() => setSheet(null)} tree={categoryTree} />}
-        {sheet === "storage" && <StorageSheet open onClose={() => setSheet(null)} locations={storageOpts} sites={siteOpts} />}
-        {sheet === "supplier" && <SupplierSheet open onClose={() => setSheet(null)} suppliers={supplierRows} />}
+        {sheet === "category" && (
+          extras
+            ? <CategorySheet open onClose={() => setSheet(null)} tree={extras.categoryTree} />
+            : <LoadingSheet title="Categorias" onClose={() => setSheet(null)} />
+        )}
+        {sheet === "storage" && (
+          extras
+            ? <StorageSheet open onClose={() => setSheet(null)} locations={extras.storageOpts} sites={extras.siteOpts} />
+            : <LoadingSheet title="Armazenagem" onClose={() => setSheet(null)} />
+        )}
+        {sheet === "supplier" && (
+          extras
+            ? <SupplierSheet open onClose={() => setSheet(null)} suppliers={extras.supplierRows} />
+            : <LoadingSheet title="Fornecedores" onClose={() => setSheet(null)} />
+        )}
         {sheet === "csv" && <CsvSheet open onClose={() => setSheet(null)} />}
       </div>
 
@@ -644,6 +670,14 @@ function PriceCell({ tipo, precoVenda, custo }: { tipo: string; precoVenda: numb
         document.body,
       )}
     </>
+  );
+}
+
+function LoadingSheet({ title, onClose }: { title: string; onClose: () => void }) {
+  return (
+    <Sheet open onClose={onClose} title={title}>
+      <p className="py-8 text-center text-sm text-muted">Carregando…</p>
+    </Sheet>
   );
 }
 
