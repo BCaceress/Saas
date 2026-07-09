@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo, useState, useTransition, useEffect, createElement } from "react";
+import { useMemo, useState, useTransition, useEffect, useRef, createElement } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus, Minus, Trash2, Loader2, ShoppingCart, QrCode, CheckCircle2,
   User, UserPlus, ArrowRight, ArrowLeft, Star, RotateCcw,
   Sparkles, Flame, Delete, X, Award, Wallet, Banknote, CreditCard,
-  ShieldCheck, ImageIcon,
+  ShieldCheck, ImageIcon, Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { criarVendaTotemAction } from "@/app/(app)/vendas/actions";
@@ -774,116 +774,323 @@ function Fileira({ produtos, onPick, qtd }: { produtos: ProdutoVenda[]; onPick: 
   );
 }
 
-/* ═══════════════════ MONTAR BEBIDA (PERSONALIZADO) ═══════════════════ */
+/* ═══════════════════ MONTAR BEBIDA (PERSONALIZADO) ═══════════════════
+   Configurador em duas áreas: produto à esquerda (limpo, só identidade) e
+   montagem passo a passo à direita, em acordeão — uma etapa aberta por vez.
+   Concluiu a etapa → colapsa com check, abre a próxima sozinha. Ao terminar
+   tudo, aparece o resumo final. Destaque só em laranja (brand); sem verde. */
 function PersonalizarModal({ p, onFechar, onConfirmar }: {
   p: ProdutoVenda;
   onFechar: () => void;
   onConfirmar: (selecoes: string[], precoExtra: number, detalhe: string) => void;
 }) {
   const groups = p.groups ?? [];
-  // Pré-seleciona os padrões disponíveis de cada grupo.
-  const [sel, setSel] = useState<Record<string, string[]>>(() => {
-    const init: Record<string, string[]> = {};
-    for (const g of groups) {
-      init[g.id] = g.items.filter((i) => i.isDefault && i.disponivel).map((i) => i.componentProductId);
-    }
-    return init;
-  });
+  const [sel, setSel] = useState<Record<string, string[]>>({});
+  const [aberto, setAberto] = useState<string | null>(groups[0]?.id ?? null);
+  const groupRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const resumoRef = useRef<HTMLDivElement | null>(null);
 
-  function toggle(g: ComponentGroupVenda, id: string) {
-    setSel((prev) => {
-      const cur = prev[g.id] ?? [];
-      if (g.tipoSelecao === "UNICA") return { ...prev, [g.id]: cur[0] === id ? [] : [id] };
-      if (cur.includes(id)) return { ...prev, [g.id]: cur.filter((x) => x !== id) };
-      if (g.maxSelecoes != null && cur.length >= g.maxSelecoes) return prev; // limite atingido
-      return { ...prev, [g.id]: [...cur, id] };
-    });
+  /** Abre uma etapa (ou o resumo, se null) e rola até ela. */
+  function irPara(id: string | null) {
+    setAberto(id);
+    const reduz = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setTimeout(() => {
+      const alvo = id ? groupRefs.current.get(id) : resumoRef.current;
+      alvo?.scrollIntoView({ behavior: reduz ? "auto" : "smooth", block: "start" });
+    }, 220);
   }
 
-  const escolhidos = groups.flatMap((g) =>
-    (sel[g.id] ?? []).map((id) => g.items.find((i) => i.componentProductId === id)).filter(Boolean),
-  ) as ComponentGroupVenda["items"];
+  /** Próxima etapa vazia depois desta; senão, obrigatória pendente; senão, resumo. */
+  function avancarDe(gId: string, s: Record<string, string[]>) {
+    const idx = groups.findIndex((x) => x.id === gId);
+    const depois = groups.slice(idx + 1).find((x) => (s[x.id] ?? []).length === 0);
+    const pendente = groups.find((x) => x.obrigatoria && x.id !== gId && (s[x.id] ?? []).length === 0);
+    irPara(depois?.id ?? pendente?.id ?? null);
+  }
+
+  function toggle(g: ComponentGroupVenda, id: string) {
+    const cur = sel[g.id] ?? [];
+    let novo: Record<string, string[]>;
+    if (g.tipoSelecao === "UNICA") novo = { ...sel, [g.id]: cur[0] === id ? [] : [id] };
+    else if (cur.includes(id)) novo = { ...sel, [g.id]: cur.filter((x) => x !== id) };
+    else if (g.maxSelecoes != null && cur.length >= g.maxSelecoes) return; // limite atingido
+    else novo = { ...sel, [g.id]: [...cur, id] };
+    setSel(novo);
+
+    // Escolha única feita ou limite alcançado → fecha e abre a próxima etapa.
+    const feitos = novo[g.id]?.length ?? 0;
+    const concluiu = g.tipoSelecao === "UNICA" ? feitos === 1
+      : g.maxSelecoes != null && feitos >= g.maxSelecoes;
+    if (concluiu) avancarDe(g.id, novo);
+  }
+
+  const escolhidosDe = (g: ComponentGroupVenda) =>
+    (sel[g.id] ?? []).map((id) => g.items.find((i) => i.componentProductId === id)).filter(Boolean) as ComponentGroupVenda["items"];
+
+  const escolhidos = groups.flatMap(escolhidosDe);
   const precoExtra = escolhidos.reduce((s, i) => s + (i.acrescimoPreco ?? 0), 0);
-  const valido = groups.filter((g) => g.obrigatoria).every((g) => (sel[g.id] ?? []).length > 0);
   const totalUnit = precoBase(p) + precoExtra;
   const detalhe = escolhidos.map((i) => i.nome).join(", ");
 
+  const pendentes = groups.filter((g) => g.obrigatoria && (sel[g.id] ?? []).length === 0);
+  const valido = pendentes.length === 0;
+
+  // Imagem principal acompanha a montagem quando o produto não tem foto própria.
+  const imgPrincipal = p.imagemUrl ?? [...escolhidos].reverse().find((i) => i.imagemUrl)?.imagemUrl ?? null;
+  const vol = volumeBase(p);
+
+  const subtitulo = (g: ComponentGroupVenda) =>
+    g.tipoSelecao === "UNICA"
+      ? (g.obrigatoria ? "Escolha 1 opção" : "Opcional — escolha 1 se quiser")
+      : g.maxSelecoes != null
+        ? `${g.obrigatoria ? "Escolha" : "Opcional — escolha"} até ${g.maxSelecoes} opções`
+        : `${g.obrigatoria ? "Escolha" : "Opcional — escolha"} quantas quiser`;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center sm:p-4"
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-2 backdrop-blur-sm sm:p-4 lg:p-8"
       role="dialog" aria-modal="true" aria-label={`Montar ${p.nome}`} onClick={onFechar}>
-      <div className="flex max-h-[92dvh] w-full max-w-lg flex-col rounded-t-3xl bg-bg sm:rounded-3xl"
+      <div
+        className="flex h-[94dvh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl bg-bg shadow-[var(--shadow-2)] motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95"
         onClick={(e) => e.stopPropagation()}>
-        {/* Cabeçalho */}
-        <div className="flex items-center justify-between gap-3 p-4 pb-2">
-          <div className="min-w-0">
-            <h3 className="truncate font-display text-2xl font-bold text-ink">{p.nome}</h3>
-            <p className="text-sm text-muted">Monte do seu jeito</p>
+
+        {/* Cabeçalho compacto — só quando a coluna do produto não cabe */}
+        <div className="flex items-center gap-3 border-b border-line p-3 lg:hidden">
+          <span className="grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-2xl bg-surface-2">
+            {imgPrincipal ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={imgPrincipal} alt="" className="h-full w-full object-contain p-1" />
+            ) : <CatIcon nome={p.categoria} size={26} className="text-faint" />}
+          </span>
+          <div className="min-w-0 flex-1">
+            <h3 className="truncate font-display text-xl font-bold text-ink">{p.nome}</h3>
+            <p className="text-sm text-muted">{vol && `${vol} · `}A partir de {brl(precoBase(p))}</p>
           </div>
           <button onClick={onFechar} aria-label="Fechar"
-            className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-line text-muted hover:bg-surface-2">
-            <X size={22} />
+            className="grid h-12 w-12 shrink-0 place-items-center rounded-full border border-line text-muted transition-colors hover:bg-surface-2 active:scale-95">
+            <X size={24} />
           </button>
         </div>
 
-        {/* Grupos */}
-        <div className="scrollbar-none flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-4 pt-2">
-          {groups.map((g) => {
-            const atual = sel[g.id] ?? [];
-            return (
-              <section key={g.id}>
-                <div className="mb-2 flex items-center justify-between">
-                  <h4 className="font-semibold text-ink">{g.nome}</h4>
-                  <span className={cn(
-                    "rounded-full px-2.5 py-0.5 text-xs font-semibold",
-                    g.obrigatoria && atual.length === 0 ? "bg-warn-soft text-warn" : "bg-surface-2 text-muted",
-                  )}>
-                    {g.obrigatoria ? "Obrigatório" : "Opcional"}
-                    {g.tipoSelecao === "MULTIPLA" && g.maxSelecoes != null && ` · até ${g.maxSelecoes}`}
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {g.items.map((item) => {
-                    const marcado = atual.includes(item.componentProductId);
-                    return (
-                      <button key={item.componentProductId} disabled={!item.disponivel}
-                        onClick={() => toggle(g, item.componentProductId)}
-                        className={cn(
-                          "flex items-center gap-2.5 rounded-2xl border p-3 text-left transition-colors active:scale-[0.98]",
-                          marcado ? "border-brand bg-brand-soft" : "border-line bg-surface hover:bg-surface-2",
-                          "disabled:pointer-events-none disabled:opacity-40",
-                        )}>
-                        <span className={cn(
-                          "grid h-6 w-6 shrink-0 place-items-center rounded-full border-2",
-                          marcado ? "border-brand bg-brand text-on-brand" : "border-line-strong bg-surface",
-                        )}>
-                          {marcado && <CheckCircle2 size={14} />}
+        <div className="flex min-h-0 flex-1">
+          {/* ── Produto: só identidade, sem resumo ── */}
+          <aside className="hidden w-[35%] max-w-md shrink-0 flex-col gap-5 overflow-y-auto border-r border-line bg-surface p-6 lg:flex">
+            <div className="relative aspect-square w-full overflow-hidden rounded-3xl bg-surface-2">
+              {imgPrincipal ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img key={imgPrincipal} src={imgPrincipal} alt={p.nome}
+                  className="absolute inset-0 h-full w-full object-contain p-5 motion-safe:animate-in motion-safe:fade-in" />
+              ) : (
+                <span className="absolute inset-0 grid place-items-center text-faint"><CatIcon nome={p.categoria} size={80} /></span>
+              )}
+              {p.restricaoIdade && (
+                <span className="absolute left-3 top-3 rounded-lg bg-danger-soft px-2 py-1 text-xs font-bold text-danger">18+</span>
+              )}
+            </div>
+            <div>
+              {p.categoria && (
+                <span className="mb-2.5 inline-flex items-center gap-1.5 rounded-full bg-brand-soft px-3 py-1 text-xs font-bold text-brand">
+                  <CatIcon nome={p.categoria} size={13} /> {p.categoria}
+                </span>
+              )}
+              <h3 className="font-display text-3xl font-bold leading-tight text-ink">{p.nome}</h3>
+              <p className="mt-2 text-base leading-relaxed text-muted">
+                Monte do seu jeito em {groups.length} {groups.length === 1 ? "passo" : "passos"}.
+              </p>
+              <div className="mt-4 flex items-baseline gap-2.5">
+                <span className="font-display text-2xl font-bold tabular-nums text-ink">{brl(precoBase(p))}</span>
+                {vol && <span className="font-mono text-sm text-muted">{vol}</span>}
+              </div>
+              <p className="mt-0.5 text-xs text-faint">Valor inicial — adicionais entram no total.</p>
+            </div>
+          </aside>
+
+          {/* ── Montagem: acordeão de etapas ── */}
+          <div className="scrollbar-none relative min-w-0 flex-1 overflow-y-auto">
+            <button onClick={onFechar} aria-label="Fechar"
+              className="absolute right-4 top-4 z-10 hidden h-12 w-12 shrink-0 place-items-center rounded-full border border-line bg-bg text-muted transition-colors hover:bg-surface-2 active:scale-95 lg:grid">
+              <X size={24} />
+            </button>
+
+            <div className="mx-auto flex max-w-3xl flex-col gap-3 p-4 pb-8 sm:p-6 lg:pr-20">
+              {groups.map((g, gi) => {
+                const atual = sel[g.id] ?? [];
+                const feito = atual.length > 0;
+                const aberta = aberto === g.id;
+                const noLimite = g.tipoSelecao === "MULTIPLA" && g.maxSelecoes != null && atual.length >= g.maxSelecoes;
+                const nomes = escolhidosDe(g).map((i) => i.nome).join(", ");
+
+                // ── Etapa fechada: uma linha, tocável para abrir/alterar ──
+                if (!aberta) {
+                  return (
+                    <button key={g.id} ref={(el) => { if (el) groupRefs.current.set(g.id, el); }}
+                      onClick={() => irPara(g.id)}
+                      className={cn(
+                        "flex w-full scroll-mt-4 items-center gap-3.5 rounded-2xl border bg-surface p-4 text-left transition-all",
+                        "hover:border-brand/50 hover:shadow-[var(--shadow-1)] active:scale-[0.99]",
+                        feito ? "border-line" : "border-line opacity-70",
+                      )}>
+                      <span className={cn(
+                        "grid h-11 w-11 shrink-0 place-items-center rounded-full font-display text-lg font-bold",
+                        feito ? "bg-brand text-on-brand" : "border-2 border-line-strong bg-bg text-muted",
+                      )}>
+                        {feito ? <Check size={22} strokeWidth={3} className="motion-safe:animate-in motion-safe:zoom-in" /> : gi + 1}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium text-muted">{g.nome}</span>
+                        <span className={cn("block truncate font-semibold", feito ? "text-base text-ink" : "text-sm text-faint")}>
+                          {feito ? nomes : subtitulo(g)}
                         </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-medium text-ink">{item.nome}</span>
-                          {item.acrescimoPreco != null && item.acrescimoPreco > 0 && (
-                            <span className="block font-mono text-xs text-accent">+{brl(item.acrescimoPreco)}</span>
-                          )}
-                          {!item.disponivel && <span className="block text-xs text-muted">Indisponível</span>}
+                      </span>
+                      <span className="shrink-0 text-sm font-bold text-brand">{feito ? "Alterar" : "Escolher"}</span>
+                    </button>
+                  );
+                }
+
+                // ── Etapa aberta: título + cards ──
+                return (
+                  <section key={g.id} ref={(el) => { if (el) groupRefs.current.set(g.id, el); }}
+                    className="scroll-mt-4 rounded-3xl border-2 border-brand/30 bg-surface p-4 shadow-[var(--shadow-float)] sm:p-5 motion-safe:animate-in motion-safe:fade-in">
+                    <div className="mb-4 flex items-center gap-3.5">
+                      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-brand font-display text-lg font-bold text-on-brand">
+                        {gi + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <h4 className="font-display text-xl font-bold text-ink sm:text-2xl">{g.nome}</h4>
+                        <p className="text-sm font-medium text-muted">
+                          {noLimite ? "Limite atingido — toque em uma opção marcada para trocar" : subtitulo(g)}
+                        </p>
+                      </div>
+                      {g.tipoSelecao === "MULTIPLA" && g.maxSelecoes != null && (
+                        <span className="shrink-0 rounded-full bg-surface-2 px-3 py-1 font-mono text-sm font-bold tabular-nums text-ink">
+                          {atual.length}/{g.maxSelecoes}
                         </span>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 2xl:grid-cols-4">
+                      {g.items.map((item) => {
+                        const marcado = atual.includes(item.componentProductId);
+                        const bloqueado = !item.disponivel;
+                        const extra = item.acrescimoPreco != null && item.acrescimoPreco > 0;
+                        return (
+                          <button key={item.componentProductId} disabled={bloqueado}
+                            onClick={() => toggle(g, item.componentProductId)}
+                            aria-pressed={marcado}
+                            className={cn(
+                              "group relative flex min-h-44 flex-col overflow-hidden rounded-2xl border-2 bg-bg text-left transition-all",
+                              marcado
+                                ? "border-brand bg-brand-soft/50 shadow-[var(--shadow-1)]"
+                                : "border-line motion-safe:hover:-translate-y-0.5 hover:shadow-[var(--shadow-float)]",
+                              "active:scale-[0.97] disabled:pointer-events-none",
+                            )}>
+                            {/* Foto grande */}
+                            <span className="relative block h-28 w-full shrink-0 sm:h-32">
+                              {item.imagemUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={item.imagemUrl} alt=""
+                                  className={cn("absolute inset-0 h-full w-full object-contain p-2.5", bloqueado && "grayscale opacity-40")}
+                                  loading="lazy" />
+                              ) : (
+                                <span className={cn("absolute inset-0 grid place-items-center text-faint", bloqueado && "opacity-40")}>
+                                  <CatIcon nome={p.categoria} size={40} />
+                                </span>
+                              )}
+                              {marcado && (
+                                <span className="absolute right-2.5 top-2.5 grid h-7 w-7 place-items-center rounded-full bg-brand text-on-brand motion-safe:animate-in motion-safe:zoom-in">
+                                  <Check size={16} strokeWidth={3} />
+                                </span>
+                              )}
+                              {bloqueado ? (
+                                <span className="absolute left-2.5 top-2.5 rounded-md border border-line bg-bg/90 px-2 py-0.5 text-[11px] font-semibold text-muted">
+                                  Indisponível
+                                </span>
+                              ) : item.isDefault && !marcado ? (
+                                <span className="absolute left-2.5 top-2.5 flex items-center gap-1 rounded-md border border-line bg-bg/90 px-2 py-0.5 text-[11px] font-semibold text-ink-2">
+                                  <Star size={11} className="fill-accent text-accent" /> Popular
+                                </span>
+                              ) : null}
+                            </span>
+                            {/* Nome + valor */}
+                            <span className="flex min-w-0 flex-1 flex-col justify-between gap-1.5 px-3.5 pb-3.5 pt-1">
+                              <span className={cn("line-clamp-2 text-base font-semibold leading-snug", bloqueado ? "text-muted" : "text-ink")}>
+                                {item.nome}
+                              </span>
+                              <span className={cn("font-mono text-sm", extra ? "font-bold text-accent" : "text-muted")}>
+                                {extra ? `+${brl(item.acrescimoPreco!)}` : "Incluído"}
+                              </span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Etapas sem fechamento automático ganham saída explícita */}
+                    {(g.tipoSelecao === "MULTIPLA" && !noLimite && atual.length > 0) || (!g.obrigatoria && atual.length === 0) ? (
+                      <button onClick={() => avancarDe(g.id, sel)}
+                        className="mt-4 flex h-12 items-center gap-2 rounded-full border border-line px-6 text-base font-semibold text-ink transition-colors hover:border-brand hover:text-brand active:scale-95">
+                        {atual.length > 0 ? "Continuar" : "Pular esta etapa"} <ArrowRight size={18} />
                       </button>
-                    );
-                  })}
+                    ) : null}
+                  </section>
+                );
+              })}
+
+              {/* ── Resumo final: só quando tudo estiver escolhido ── */}
+              {valido && aberto === null && (
+                <div ref={resumoRef}
+                  className="scroll-mt-4 rounded-3xl border-2 border-brand bg-brand-soft/50 p-5 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3">
+                  <p className="flex items-center gap-2 font-display text-xl font-bold text-ink">
+                    <CheckCircle2 size={24} className="text-brand" /> Tudo pronto!
+                  </p>
+                  <p className="mt-0.5 text-sm text-muted">Confira sua montagem e adicione ao carrinho.</p>
+                  <div className="mt-4 flex flex-col gap-2">
+                    {groups.map((g) => {
+                      const itens = escolhidosDe(g);
+                      if (itens.length === 0) return null;
+                      return (
+                        <div key={g.id} className="flex items-baseline justify-between gap-3">
+                          <span className="shrink-0 text-sm text-muted">{g.nome}</span>
+                          <span className="min-w-0 truncate text-right text-base font-semibold text-ink">
+                            {itens.map((i) => i.nome).join(", ")}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    <div className="mt-1 flex items-baseline justify-between border-t border-brand/20 pt-2.5">
+                      <span className="font-semibold text-ink">Total</span>
+                      <span className="font-display text-2xl font-bold tabular-nums text-accent">{brl(totalUnit)}</span>
+                    </div>
+                  </div>
                 </div>
-              </section>
-            );
-          })}
+              )}
+            </div>
+          </div>
         </div>
 
-        {/* Rodapé: total + adicionar */}
-        <div className="flex items-center gap-3 border-t border-line p-4">
-          <div className="min-w-0 flex-1">
+        {/* ── Rodapé fixo: preço vivo + ação única ── */}
+        <div className="flex items-center gap-4 border-t border-line bg-surface p-4 sm:px-6">
+          <div className="min-w-0">
             <p className="text-sm text-muted">Total do item</p>
-            <p className="font-display text-2xl font-bold tabular-nums text-ink">{brl(totalUnit)}</p>
+            <p key={totalUnit}
+              className="font-display text-2xl font-bold tabular-nums text-accent motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2">
+              {brl(totalUnit)}
+            </p>
           </div>
-          <BotaoGrande disabled={!valido} onClick={() => onConfirmar(escolhidos.map((i) => i.componentProductId), precoExtra, detalhe)}
-            className="w-auto shrink-0 px-8 py-4 text-lg">
-            <Plus size={20} /> Adicionar
-          </BotaoGrande>
+          <button disabled={!valido}
+            onClick={() => onConfirmar(escolhidos.map((i) => i.componentProductId), precoExtra, detalhe)}
+            className={cn(
+              "ml-auto flex h-16 shrink-0 items-center justify-center gap-3 rounded-2xl px-6 font-display text-lg font-bold transition-all sm:px-10 sm:text-xl",
+              valido
+                ? "bg-brand text-on-brand shadow-[var(--shadow-2)] hover:bg-brand-strong active:scale-[0.98]"
+                : "cursor-not-allowed bg-surface-2 text-muted",
+            )}>
+            {valido ? (
+              <><Plus size={24} strokeWidth={2.5} /> Adicionar ao carrinho
+                <span className="rounded-xl bg-on-brand/15 px-3 py-1 tabular-nums">{brl(totalUnit)}</span></>
+            ) : (
+              <>{pendentes.length === 1 ? `Escolha: ${pendentes[0].nome}` : `Faltam ${pendentes.length} escolhas`}</>
+            )}
+          </button>
         </div>
       </div>
     </div>
