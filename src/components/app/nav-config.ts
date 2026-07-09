@@ -13,6 +13,7 @@ import {
   Recycle,
   Truck,
   Factory,
+  MonitorSmartphone,
   type LucideIcon,
 } from "lucide-react";
 
@@ -26,6 +27,7 @@ export type NavToggles = {
   moduloPdv: boolean;
   moduloComodato: boolean;
   moduloRota: boolean;
+  moduloAutoatendimento: boolean;
 };
 
 export type NavItem = {
@@ -68,11 +70,11 @@ export const NAV_GROUPS: NavGroup[] = [
         show: (t) => t.moduloPdv,
       },
       {
-        href: "/vendas/totem",
+        href: "/totem",
         label: "Autoatendimento",
-        icon: ShoppingCart,
+        icon: MonitorSmartphone,
         enabled: true,
-        show: (t) => !t.moduloPdv,
+        show: (t) => t.moduloAutoatendimento,
       },
       { href: "/pedidos", label: "Pedidos", icon: ClipboardList, enabled: false },
       {
@@ -86,7 +88,7 @@ export const NAV_GROUPS: NavGroup[] = [
         href: "/comodato",
         label: "Comodato",
         icon: Recycle,
-        enabled: false,
+        enabled: true,
         show: (t) => t.moduloComodato,
       },
       { href: "/financeiro", label: "Financeiro", icon: Wallet, enabled: false },

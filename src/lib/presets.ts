@@ -17,6 +17,7 @@ export type ModuleToggles = {
   moduloFiscal: boolean;
   moduloComodato: boolean;
   moduloRota: boolean;
+  moduloAutoatendimento: boolean;
 };
 
 export type Preset = {
@@ -32,21 +33,21 @@ export const PRESETS: Record<TipoOperacao, Preset> = {
   AUTONOMO: {
     atendimento: "SELF_SERVICE",
     topologia: "CD_ABASTECE",
-    toggles: { moduloPdv: false, moduloFiscal: false, moduloComodato: false, moduloRota: true },
+    toggles: { moduloPdv: false, moduloFiscal: false, moduloComodato: false, moduloRota: true, moduloAutoatendimento: true },
     pergunta: "pagamento",
     vocabularioPonto: "Ponto",
   },
   MERCADINHO: {
     atendimento: "OPERADOR_PDV",
     topologia: "LOCAL",
-    toggles: { moduloPdv: true, moduloFiscal: false, moduloComodato: false, moduloRota: false },
+    toggles: { moduloPdv: true, moduloFiscal: false, moduloComodato: false, moduloRota: false, moduloAutoatendimento: false },
     pergunta: "fiscal",
     vocabularioPonto: "Loja",
   },
   CONVENIENCIA_BEBIDAS: {
     atendimento: "OPERADOR_PDV",
     topologia: "LOCAL",
-    toggles: { moduloPdv: true, moduloFiscal: true, moduloComodato: false, moduloRota: false },
+    toggles: { moduloPdv: true, moduloFiscal: true, moduloComodato: false, moduloRota: false, moduloAutoatendimento: false },
     pergunta: "comodato",
     vocabularioPonto: "Loja",
   },

@@ -1,6 +1,7 @@
 "use server";
 
 import { z } from "zod";
+import bcrypt from "bcryptjs";
 import { revalidatePath } from "next/cache";
 import { db, basePrisma } from "@/lib/prisma";
 import { requireActiveTenant, type ActiveTenant } from "@/lib/current-tenant";
@@ -79,6 +80,7 @@ const modulosSchema = z.object({
   moduloFiscal: z.boolean(),
   moduloComodato: z.boolean(),
   moduloRota: z.boolean(),
+  moduloAutoatendimento: z.boolean(),
 });
 
 export async function updateModulos(input: z.input<typeof modulosSchema>) {
@@ -87,6 +89,22 @@ export async function updateModulos(input: z.input<typeof modulosSchema>) {
     await db.tenant.update({ where: { id: tenant.id }, data: d });
     // Toggles mudam o menu (sidebar) — revalida o shell inteiro.
     revalidatePath("/", "layout");
+  });
+}
+
+// ── Autoatendimento (totem) ─────────────────────────────────
+
+const totemPinSchema = z.object({
+  // null limpa o PIN (saída livre do quiosque).
+  pin: z.string().regex(/^\d{4,6}$/, "PIN de 4 a 6 dígitos.").nullable(),
+});
+
+export async function updateTotemPin(input: z.input<typeof totemPinSchema>) {
+  return txGestor(async ({ tenant }) => {
+    const d = totemPinSchema.parse(input);
+    const totemPinHash = d.pin ? await bcrypt.hash(d.pin, 10) : null;
+    await db.tenant.update({ where: { id: tenant.id }, data: { totemPinHash } });
+    ok();
   });
 }
 

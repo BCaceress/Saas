@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ShoppingCart, ReceiptText, Recycle, Truck } from "lucide-react";
+import { ShoppingCart, ReceiptText, Recycle, Truck, MonitorSmartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
@@ -14,6 +14,7 @@ type Modulos = {
   moduloFiscal: boolean;
   moduloComodato: boolean;
   moduloRota: boolean;
+  moduloAutoatendimento: boolean;
 };
 
 const MODULOS: {
@@ -28,7 +29,14 @@ const MODULOS: {
     icon: <ShoppingCart size={18} />,
     title: "PDV com operador",
     description:
-      "Frente de caixa completa: caixa por turno, sangria e fechamento. Desligado, o app mostra o autoatendimento.",
+      "Frente de caixa completa: caixa por turno, sangria e fechamento.",
+  },
+  {
+    key: "moduloAutoatendimento",
+    icon: <MonitorSmartphone size={18} />,
+    title: "Autoatendimento (totem)",
+    description:
+      "Modo quiosque em tela cheia para o cliente comprar sozinho. Funciona junto ou separado do PDV.",
   },
   {
     key: "moduloFiscal",
@@ -44,7 +52,6 @@ const MODULOS: {
     title: "Comodato",
     description:
       "Controle de ativos emprestados a clientes: barris, cilindros e equipamentos.",
-    emBreve: true,
   },
   {
     key: "moduloRota",

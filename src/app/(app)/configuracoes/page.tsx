@@ -10,6 +10,7 @@ import {
   Warehouse,
   Wallet,
   Bell,
+  MonitorSmartphone,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
@@ -22,6 +23,12 @@ const CARDS: {
   title: string;
   description: string;
 }[] = [
+  {
+    href: "/configuracoes/autoatendimento",
+    icon: MonitorSmartphone,
+    title: "Autoatendimento",
+    description: "PIN de saída do modo quiosque e acesso ao totem.",
+  },
   {
     href: "/configuracoes/caixa",
     icon: Wallet,

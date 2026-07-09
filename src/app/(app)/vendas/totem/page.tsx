@@ -1,31 +1,6 @@
-import { requireActiveTenant } from "@/lib/current-tenant";
-import { runWithTenant } from "@/lib/tenant-context";
-import { getActiveSiteId } from "@/lib/sites";
-import { listSitePaymentMethods } from "@/lib/vendas";
-import { db } from "@/lib/prisma";
-import { loadProdutosVenda } from "../_data";
-import { TotemClient } from "./_client";
+import { redirect } from "next/navigation";
 
-export default async function TotemPage() {
-  const ctx = await requireActiveTenant();
-
-  return runWithTenant(ctx.tenant.id, async () => {
-    const siteId = await getActiveSiteId();
-    const [produtos, metodos, site] = await Promise.all([
-      loadProdutosVenda(siteId),
-      siteId ? listSitePaymentMethods(ctx.tenant.id, siteId) : Promise.resolve([]),
-      siteId ? db.site.findFirst({ where: { id: siteId }, select: { controleIdade: true } }) : Promise.resolve(null),
-    ]);
-    const metodosAtivos = metodos.filter((m) => m.ativo).map((m) => m.metodo);
-
-    return (
-      <TotemClient
-        siteId={siteId}
-        produtos={produtos}
-        metodosAtivos={metodosAtivos}
-        tenantNome={ctx.tenant.nome}
-        controleIdade={site?.controleIdade ?? false}
-      />
-    );
-  });
+// O totem virou quiosque em /totem (fora do shell). Redirect preserva bookmarks.
+export default function TotemAntigoPage() {
+  redirect("/totem");
 }

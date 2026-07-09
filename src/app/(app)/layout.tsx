@@ -66,6 +66,7 @@ export default async function ShellLayout({
         moduloPdv: tenant.moduloPdv,
         moduloComodato: tenant.moduloComodato,
         moduloRota: tenant.moduloRota,
+        moduloAutoatendimento: tenant.moduloAutoatendimento,
       }}
       tenantNome={tenant.nome}
       planoLabel={PLANO_LABEL[tenant.status] ?? tenant.status}

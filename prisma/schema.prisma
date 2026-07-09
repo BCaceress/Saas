@@ -96,10 +96,14 @@ model Tenant {
   numPontos    Int?
 
   // Toggles de módulo (lidos no middleware/menu)
-  moduloPdv      Boolean @default(false)
-  moduloFiscal   Boolean @default(false)
-  moduloComodato Boolean @default(false)
-  moduloRota     Boolean @default(false)
+  moduloPdv             Boolean @default(false)
+  moduloFiscal          Boolean @default(false)
+  moduloComodato        Boolean @default(false)
+  moduloRota            Boolean @default(false)
+  moduloAutoatendimento Boolean @default(false)
+
+  // Autoatendimento (totem): PIN para sair do modo quiosque. null = saída livre.
+  totemPinHash String?
 
   // Distribuição CD→loja: se true, recebimento exige contagem na loja (gera
   // estoque em trânsito); se false, expedição auto-confirma o recebimento.
@@ -139,6 +143,8 @@ model Tenant {
   tags             Tag[]
   sites            Site[]
   customers        Customer[]
+  comodatoAssets   ComodatoAsset[]
+  containerTypes   ContainerType[]
 
   @@index([status])
 }
@@ -376,6 +382,19 @@ enum CouponReason {
   RISCO // cliente ativo parou de comprar
   ANIVERSARIO
   MANUAL
+}
+
+enum ComodatoAssetStatus {
+  DISPONIVEL
+  EMPRESTADO
+  MANUTENCAO
+  BAIXADO // fora de uso (vendido, perdido, sucata)
+}
+
+enum ContainerMovementType {
+  ENTREGA // entregue ao cliente (saldo do cliente sobe)
+  DEVOLUCAO // devolvido pelo cliente (saldo desce)
+  AJUSTE // acerto manual (quantidade assinada)
 }
 
 model Brand {
@@ -1166,9 +1185,11 @@ model Customer {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  tenant  Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  sales   Sale[]
-  coupons CouponSend[]
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sales              Sale[]
+  coupons            CouponSend[]
+  comodatoLoans      ComodatoLoan[]
+  containerMovements ContainerMovement[]
 
   @@unique([tenantId, cpf])
   @@index([tenantId])
@@ -1191,6 +1212,97 @@ model CouponSend {
   @@index([tenantId])
   @@index([customerId])
   @@index([createdAt])
+}
+
+// ============================================================
+// COMODATO
+// Ativos emprestados a clientes. Dois sabores:
+// (1) ComodatoAsset: equipamento serializado (chopeira, freezer, cilindro) com
+//     ciclo empréstimo→devolução via ComodatoLoan (aberto = devolvidoEm null).
+// (2) ContainerType + ContainerMovement: vasilhames retornáveis por quantidade
+//     (cascos/barris) — razão ASSINADO por cliente; saldo = Σ quantidade.
+// ============================================================
+
+model ComodatoAsset {
+  id            String              @id @default(cuid())
+  tenantId      String
+  nome          String // ex.: "Chopeira 2 vias"
+  identificacao String // serial / nº de patrimônio
+  status        ComodatoAssetStatus @default(DISPONIVEL)
+  valorEstimado Decimal?            @db.Decimal(10, 2) // valor de reposição
+  observacao    String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  loans  ComodatoLoan[]
+
+  @@unique([tenantId, identificacao])
+  @@index([tenantId])
+  @@index([tenantId, status])
+}
+
+// Empréstimo de UM equipamento a UM cliente. Aberto = devolvidoEm null.
+// Invariante (garantida nas actions): no máximo 1 loan aberto por asset.
+model ComodatoLoan {
+  id                String    @id @default(cuid())
+  tenantId          String
+  assetId           String
+  customerId        String
+  emprestadoEm      DateTime  @default(now())
+  previsaoDevolucao DateTime? @db.Date
+  devolvidoEm       DateTime?
+  condicaoSaida     String? // estado do equipamento na entrega
+  condicaoRetorno   String? // estado na devolução
+  observacao        String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  asset    ComodatoAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  customer Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId])
+  @@index([tenantId, devolvidoEm])
+  @@index([assetId])
+  @@index([customerId])
+}
+
+// Tipo de vasilhame retornável controlado por quantidade (casco, barril 30L…).
+model ContainerType {
+  id            String   @id @default(cuid())
+  tenantId      String
+  nome          String
+  valorUnitario Decimal? @db.Decimal(10, 2) // valor de reposição unitário
+  ativo         Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant    Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  movements ContainerMovement[]
+
+  @@unique([tenantId, nome])
+  @@index([tenantId])
+}
+
+// Razão assinado: quantidade guardada JÁ com sinal (ENTREGA > 0, DEVOLUCAO < 0,
+// AJUSTE +/-). Saldo do cliente = SUM(quantidade) por (customer × type).
+model ContainerMovement {
+  id              String                @id @default(cuid())
+  tenantId        String
+  containerTypeId String
+  customerId      String
+  tipo            ContainerMovementType
+  quantidade      Int // assinada
+  observacao      String?
+  createdAt       DateTime              @default(now())
+
+  containerType ContainerType @relation(fields: [containerTypeId], references: [id], onDelete: Restrict)
+  customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId])
+  @@index([tenantId, customerId])
+  @@index([containerTypeId])
+  @@index([customerId])
 }
 
 // ============================================================

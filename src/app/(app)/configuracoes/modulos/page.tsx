@@ -22,6 +22,7 @@ export default async function ModulosPage() {
           moduloFiscal: tenant.moduloFiscal,
           moduloComodato: tenant.moduloComodato,
           moduloRota: tenant.moduloRota,
+          moduloAutoatendimento: tenant.moduloAutoatendimento,
         }}
       />
     </div>

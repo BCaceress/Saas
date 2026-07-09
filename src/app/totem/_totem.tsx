@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import { Plus, Minus, Trash2, Loader2, ShoppingCart, QrCode, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
-import { criarVendaTotemAction, confirmarPagamentoTotemAction } from "../actions";
-import type { ProdutoVenda } from "../_data";
+import { criarVendaTotemAction, confirmarPagamentoTotemAction } from "@/app/(app)/vendas/actions";
+import type { ProdutoVenda } from "@/app/(app)/vendas/_data";
 import type { PaymentMethod } from "@/generated/prisma";
 
 const brl = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -18,7 +18,7 @@ type CartItem = {
 
 type Etapa = "compra" | "idade" | "pagamento" | "confirmado";
 
-export function TotemClient({
+export function TotemVenda({
   siteId,
   produtos,
   metodosAtivos,
