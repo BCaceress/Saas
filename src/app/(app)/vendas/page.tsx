@@ -39,6 +39,12 @@ export default async function VendasPage() {
               }
             : null
         }
+        fundoTrocoPadrao={
+          ctx.tenant.caixaFundoTroco != null ? Number(ctx.tenant.caixaFundoTroco) : null
+        }
+        limiteGaveta={
+          ctx.tenant.caixaLimiteGaveta != null ? Number(ctx.tenant.caixaLimiteGaveta) : null
+        }
       />
     );
   });

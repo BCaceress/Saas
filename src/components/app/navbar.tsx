@@ -37,6 +37,7 @@ export function Navbar({
   multiPonto,
   caixaInfo,
   metodosCaixa,
+  limiteGaveta,
   onSignOut,
 }: {
   onToggleSidebar: () => void;
@@ -49,6 +50,7 @@ export function Navbar({
   multiPonto: boolean;
   caixaInfo: CaixaInfo | null;
   metodosCaixa: PaymentMethod[];
+  limiteGaveta?: number | null;
   onSignOut: () => void;
 }) {
   const router = useRouter();
@@ -354,6 +356,7 @@ export function Navbar({
         defaultSiteId={null}
         metodos={metodosCaixa}
         caixa={caixaInfo}
+        limiteGaveta={limiteGaveta}
       />
     </header>
   );

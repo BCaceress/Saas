@@ -32,6 +32,7 @@ const GRACA_NOVO = DIA;
 export async function getAlerts(): Promise<AlertItem[]> {
   return withTenant(async (ctx) => {
     const agora = Date.now();
+    const paradoMs = (ctx.tenant.produtoParadoDias || 45) * DIA;
 
     const [produtos, movs, inventarios, transferencias, pedidos] = await Promise.all([
       db.product.findMany({
@@ -190,7 +191,7 @@ export async function getAlerts(): Promise<AlertItem[]> {
           href,
           acaoLabel: abrir,
         });
-      } else if (ultimo != null && agora - ultimo >= 45 * DIA && total > 0) {
+      } else if (ultimo != null && agora - ultimo >= paradoMs && total > 0) {
         const dias = Math.round((agora - ultimo) / DIA);
         alerts.push({
           id: `parado:${p.id}`,
@@ -296,6 +297,8 @@ export async function getAlerts(): Promise<AlertItem[]> {
       }
     }
 
-    return sortAlerts(alerts);
+    // Categorias desligadas em Configurações → Notificações.
+    const off = new Set(ctx.tenant.alertasDesativados);
+    return sortAlerts(off.size ? alerts.filter((a) => !off.has(a.category)) : alerts);
   });
 }

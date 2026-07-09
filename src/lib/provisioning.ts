@@ -73,6 +73,10 @@ export async function signupWithTenant(input: SignupInput): Promise<SignupResult
       data: { name, email, passwordHash },
     });
 
+    // Convite pendente? Entra na equipe que convidou — não cria tenant novo.
+    const invited = await acceptInvites(tx, user.id, email);
+    if (invited) return { userId: user.id, ...invited };
+
     const subdomain = await uniqueSubdomain(tx, name || email.split("@")[0]);
 
     const tenant = await tx.tenant.create({
@@ -100,6 +104,38 @@ export class SignupError extends Error {
   }
 }
 
+type Tx = Parameters<Parameters<typeof basePrisma.$transaction>[0]>[0];
+
+/**
+ * Consome convites pendentes do e-mail (Configurações → Usuários): cria uma
+ * Membership por convite e apaga os convites. Retorna o tenant do primeiro
+ * convite (destino do redirect) ou null se não havia convite.
+ */
+async function acceptInvites(
+  tx: Tx,
+  userId: string,
+  email: string
+): Promise<{ tenantId: string; subdomain: string } | null> {
+  const invites = await tx.invite.findMany({
+    where: { email },
+    orderBy: { createdAt: "asc" },
+  });
+  if (invites.length === 0) return null;
+
+  for (const inv of invites) {
+    await tx.membership.create({
+      data: { userId, tenantId: inv.tenantId, role: inv.role },
+    });
+  }
+  await tx.invite.deleteMany({ where: { email } });
+
+  const tenant = await tx.tenant.findUniqueOrThrow({
+    where: { id: invites[0].tenantId },
+    select: { id: true, subdomain: true },
+  });
+  return { tenantId: tenant.id, subdomain: tenant.subdomain };
+}
+
 /**
  * Provisiona Tenant + Membership + seed para um User já existente (caso OAuth:
  * o adapter cria o User; aqui criamos o resto). Idempotente: se o usuário já
@@ -120,6 +156,12 @@ export async function provisionTenantForUser(input: {
   const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
 
   await basePrisma.$transaction(async (tx) => {
+    // Convite pendente (OAuth)? Entra na equipe — não cria tenant novo.
+    if (input.email) {
+      const invited = await acceptInvites(tx, input.userId, input.email.toLowerCase());
+      if (invited) return;
+    }
+
     const subdomain = await uniqueSubdomain(tx, base);
     const tenant = await tx.tenant.create({
       data: {

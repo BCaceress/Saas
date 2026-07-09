@@ -18,6 +18,7 @@ export function AppShell({
   multiPonto,
   caixaInfo,
   metodosCaixa,
+  limiteGaveta,
   onSignOut,
   children,
 }: {
@@ -32,6 +33,7 @@ export function AppShell({
   multiPonto: boolean;
   caixaInfo: CaixaInfo | null;
   metodosCaixa: PaymentMethod[];
+  limiteGaveta?: number | null;
   onSignOut: () => void;
   children: React.ReactNode;
 }) {
@@ -57,6 +59,7 @@ export function AppShell({
           multiPonto={multiPonto}
           caixaInfo={caixaInfo}
           metodosCaixa={metodosCaixa}
+          limiteGaveta={limiteGaveta}
           onSignOut={onSignOut}
         />
         <main className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-1 pb-2 sm:px-2">

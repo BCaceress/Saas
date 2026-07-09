@@ -58,6 +58,8 @@ export function CaixaSheet({
   metodos,
   caixa,
   onChanged,
+  fundoTrocoPadrao,
+  limiteGaveta,
 }: {
   open: boolean;
   onClose: () => void;
@@ -66,6 +68,9 @@ export function CaixaSheet({
   metodos: PaymentMethod[];
   caixa: CaixaInfo | null;
   onChanged?: () => void;
+  /** Configurações → Caixa: sugestão de abertura e teto de dinheiro na gaveta. */
+  fundoTrocoPadrao?: number | null;
+  limiteGaveta?: number | null;
 }) {
   const router = useRouter();
   const [siteId, setSiteId] = useState(defaultSiteId ?? sites[0]?.id ?? "");
@@ -84,6 +89,8 @@ export function CaixaSheet({
         metodos={metodos}
         caixa={caixa}
         onDone={onChanged ?? (() => router.refresh())}
+        fundoTrocoPadrao={fundoTrocoPadrao}
+        limiteGaveta={limiteGaveta}
       />
     </Sheet>
   );
@@ -96,6 +103,8 @@ function CaixaPanel({
   metodos,
   caixa,
   onDone,
+  fundoTrocoPadrao,
+  limiteGaveta,
 }: {
   sites: { id: string; nome: string }[];
   siteId: string;
@@ -103,10 +112,14 @@ function CaixaPanel({
   metodos: PaymentMethod[];
   caixa: CaixaInfo | null;
   onDone: () => void;
+  fundoTrocoPadrao?: number | null;
+  limiteGaveta?: number | null;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [valorAbertura, setValorAbertura] = useState("");
+  const [valorAbertura, setValorAbertura] = useState(() =>
+    fundoTrocoPadrao ? fmtCentavos(String(Math.round(fundoTrocoPadrao * 100))) : "",
+  );
   const [mov, setMov] = useState<"SANGRIA" | "SUPRIMENTO" | null>(null);
   const [movValor, setMovValor] = useState("");
   const [movMotivo, setMovMotivo] = useState("");
@@ -258,6 +271,12 @@ function CaixaPanel({
           Abertura {brl(caixa.valorAbertura)} · + vendas em dinheiro · ±
           sangria/suprimento
         </p>
+        {limiteGaveta != null && dinheiroEmCaixa > limiteGaveta && (
+          <p className="rounded-[var(--radius)] bg-warn-soft px-3 py-2 text-xs font-medium text-warn">
+            Gaveta acima do limite de {brl(limiteGaveta)} — considere fazer uma
+            sangria.
+          </p>
+        )}
       </div>
 
       {errBox}

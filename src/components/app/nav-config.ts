@@ -100,7 +100,7 @@ export const NAV_GROUPS: NavGroup[] = [
         href: "/configuracoes/usuarios",
         label: "Usuários",
         icon: UserCog,
-        enabled: false,
+        enabled: true,
       },
       { href: "/configuracoes", label: "Configurações", icon: Settings, enabled: true },
     ],

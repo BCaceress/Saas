@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
-import { cn } from "@/lib/utils";
 import { updateCupomConfig } from "../../clientes/actions";
+import { Switch } from "../_ui";
 
 export function FidelizacaoClient({
   cupomAutomatico, cupomDiasRisco,
@@ -55,24 +55,11 @@ export function FidelizacaoClient({
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={auto}
-            aria-label="Envio automático de cupom"
-            onClick={() => setAuto((v) => !v)}
-            className={cn(
-              "relative mt-1 h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors",
-              auto ? "bg-brand" : "bg-line-strong",
-            )}
-          >
-            <span
-              className={cn(
-                "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
-                auto ? "translate-x-5" : "translate-x-0.5",
-              )}
-            />
-          </button>
+          <Switch
+            checked={auto}
+            onChange={setAuto}
+            label="Envio automático de cupom"
+          />
         </div>
       </div>
 

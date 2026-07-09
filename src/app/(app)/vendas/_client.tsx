@@ -116,12 +116,16 @@ export function PdvClient({
   produtos,
   metodosAtivos,
   caixa,
+  fundoTrocoPadrao,
+  limiteGaveta,
 }: {
   sites: { id: string; nome: string; controleIdade?: boolean }[];
   defaultSiteId: string | null;
   produtos: ProdutoVenda[];
   metodosAtivos: PaymentMethod[];
   caixa: CaixaInfo | null;
+  fundoTrocoPadrao?: number | null;
+  limiteGaveta?: number | null;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -633,6 +637,8 @@ export function PdvClient({
         metodos={metodosAtivos}
         caixa={caixa}
         onChanged={() => router.refresh()}
+        fundoTrocoPadrao={fundoTrocoPadrao}
+        limiteGaveta={limiteGaveta}
       />
     </>
   );

@@ -268,6 +268,7 @@ export function ProductForm({
   storage,
   suppliers,
   fiscalProfiles,
+  defaultEstoqueMinimo,
 }: {
   mode: "new" | "edit";
   tipo: Tipo;
@@ -278,6 +279,8 @@ export function ProductForm({
   storage: StorageOpt[];
   suppliers: SupplierRow[];
   fiscalProfiles: FiscalOpt[];
+  /** Padrão do tenant (Configurações → Estoque) — pré-preenche o mínimo no cadastro. */
+  defaultEstoqueMinimo?: number;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -358,7 +361,8 @@ export function ProductForm({
     product?.conteudoPorUnidade?.toString() ?? "",
   );
   const [estoqueMinimo, setMin] = useState(
-    product?.estoque.minimo?.toString() ?? "",
+    product?.estoque.minimo?.toString() ??
+      (defaultEstoqueMinimo ? String(defaultEstoqueMinimo) : ""),
   );
   const [estoqueIdeal, setIdeal] = useState(
     product?.estoque.ideal?.toString() ?? "",

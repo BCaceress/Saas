@@ -59,6 +59,7 @@ export default async function NovoProdutoPage({
       storage={opts.storageOpts}
       suppliers={opts.supplierRows}
       fiscalProfiles={opts.fiscalOpts}
+      defaultEstoqueMinimo={ctx.tenant.estoqueMinimoPadrao}
     />
   );
 }

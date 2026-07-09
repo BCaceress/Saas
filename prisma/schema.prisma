@@ -78,6 +78,17 @@ model Tenant {
   status      TenantStatus @default(TRIAL)
   trialEndsAt DateTime?
 
+  // Perfil da empresa (Configurações → Empresa)
+  cnpj         String?
+  razaoSocial  String?
+  telefone     String?
+  emailContato String?
+  cep          String?
+  rua          String?
+  numero       String?
+  cidade       String?
+  estado       String?
+
   // Onboarding -> defaults
   tipoOperacao TipoOperacao?
   atendimento  Atendimento?
@@ -99,12 +110,24 @@ model Tenant {
   cupomAutomatico  Boolean @default(false)
   cupomDiasRisco   Int     @default(25) // dias sem comprar → cliente em risco
 
+  // Estoque (Configurações → Estoque e alertas)
+  estoqueMinimoPadrao Int @default(0) // pré-preenche o mínimo ao cadastrar produto
+  produtoParadoDias   Int @default(45) // dias sem movimentação → alerta "parado"
+
+  // Caixa / PDV (Configurações → Caixa)
+  caixaFundoTroco   Decimal? @db.Decimal(10, 2) // sugestão de abertura
+  caixaLimiteGaveta Decimal? @db.Decimal(10, 2) // acima disso, sugere sangria
+
+  // Sino de alertas: categorias desligadas pelo operador (AlertCategory[])
+  alertasDesativados String[] @default([])
+
   onboardingDone Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   memberships      Membership[]
+  invites          Invite[]
   subscription     Subscription?
   brands           Brand[]
   categories       Category[]
@@ -132,6 +155,21 @@ model Membership {
 
   @@unique([userId, tenantId])
   @@index([tenantId])
+}
+
+// Convite de equipe (tabela de CONTROLE, como Membership): criado em
+// Configurações → Usuários; consumido no signup/OAuth quando o e-mail bate.
+model Invite {
+  id        String   @id @default(cuid())
+  tenantId  String
+  email     String
+  role      Role     @default(MEMBER)
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, email])
+  @@index([email])
 }
 
 model Subscription {

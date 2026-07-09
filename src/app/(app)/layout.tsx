@@ -77,6 +77,9 @@ export default async function ShellLayout({
       multiPonto={(tenant.numPontos ?? 1) > 1}
       caixaInfo={caixaInfo}
       metodosCaixa={metodosCaixa}
+      limiteGaveta={
+        tenant.caixaLimiteGaveta != null ? Number(tenant.caixaLimiteGaveta) : null
+      }
       onSignOut={signOutAction}
     >
       {children}

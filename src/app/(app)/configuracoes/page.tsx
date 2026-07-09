@@ -1,7 +1,89 @@
 import Link from "next/link";
-import { MapPin, CreditCard, Scale, Gift } from "lucide-react";
+import {
+  MapPin,
+  CreditCard,
+  Scale,
+  Gift,
+  Building2,
+  UserCog,
+  Blocks,
+  Warehouse,
+  Wallet,
+  Bell,
+  type LucideIcon,
+} from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
+
+const CARDS: {
+  href: string;
+  icon: LucideIcon;
+  tone?: "accent";
+  title: string;
+  description: string;
+}[] = [
+  {
+    href: "/configuracoes/caixa",
+    icon: Wallet,
+    title: "Caixa",
+    description: "Fundo de troco padrão e limite de dinheiro na gaveta.",
+  },
+  {
+    href: "/configuracoes/classificacao-fiscal",
+    icon: Scale,
+    title: "Classificação fiscal",
+    description: "Perfis fiscais e vínculo por subcategoria.",
+  },
+  {
+    href: "/configuracoes/empresa",
+    icon: Building2,
+    title: "Empresa",
+    description: "Nome, CNPJ, contato e endereço do seu mercado.",
+  },
+  {
+    href: "/configuracoes/estoque",
+    icon: Warehouse,
+    title: "Estoque e alertas",
+    description: "Mínimo padrão, produto parado e contagem no recebimento.",
+  },
+  {
+    href: "/configuracoes/fidelizacao",
+    icon: Gift,
+    tone: "accent",
+    title: "Fidelização",
+    description: "Cupons de retorno e aniversário, envio automático por WhatsApp.",
+  },
+  {
+    href: "/configuracoes/sites",
+    icon: MapPin,
+    title: "Lojas e pontos",
+    description: "Gerencie lojas, pontos e centros de distribuição.",
+  },
+  {
+    href: "/configuracoes/metodos-pagamento",
+    icon: CreditCard,
+    title: "Métodos de pagamento",
+    description: "Defina as formas de pagamento aceitas por loja.",
+  },
+  {
+    href: "/configuracoes/modulos",
+    icon: Blocks,
+    title: "Módulos",
+    description: "Ligue PDV, fiscal, comodato e rota conforme a operação.",
+  },
+  {
+    href: "/configuracoes/notificacoes",
+    icon: Bell,
+    title: "Notificações",
+    description: "Escolha quais grupos de alerta aparecem no sino.",
+  },
+  {
+    href: "/configuracoes/usuarios",
+    icon: UserCog,
+    title: "Usuários",
+    description: "Convide a equipe e defina o papel de cada pessoa.",
+  },
+];
 
 export default function ConfiguracoesPage() {
   return (
@@ -13,62 +95,27 @@ export default function ConfiguracoesPage() {
         innerClassName="max-w-none"
       />
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <Link
-          href="/configuracoes/sites"
-          className="flex items-start gap-4 rounded-[var(--radius-lg)] border border-line bg-surface p-5 transition-colors hover:bg-surface-2"
-        >
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
-            <MapPin size={18} />
-          </span>
-          <div>
-            <p className="font-semibold text-ink">Lojas e pontos</p>
-            <p className="mt-0.5 text-sm text-muted">
-              Gerencie lojas, pontos e centros de distribuição.
-            </p>
-          </div>
-        </Link>
-        <Link
-          href="/configuracoes/metodos-pagamento"
-          className="flex items-start gap-4 rounded-[var(--radius-lg)] border border-line bg-surface p-5 transition-colors hover:bg-surface-2"
-        >
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
-            <CreditCard size={18} />
-          </span>
-          <div>
-            <p className="font-semibold text-ink">Métodos de pagamento</p>
-            <p className="mt-0.5 text-sm text-muted">
-              Defina as formas de pagamento aceitas por loja.
-            </p>
-          </div>
-        </Link>
-        <Link
-          href="/configuracoes/fidelizacao"
-          className="flex items-start gap-4 rounded-[var(--radius-lg)] border border-line bg-surface p-5 transition-colors hover:bg-surface-2"
-        >
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent">
-            <Gift size={18} />
-          </span>
-          <div>
-            <p className="font-semibold text-ink">Fidelização</p>
-            <p className="mt-0.5 text-sm text-muted">
-              Cupons de retorno e aniversário, envio automático por WhatsApp.
-            </p>
-          </div>
-        </Link>
-        <Link
-          href="/configuracoes/classificacao-fiscal"
-          className="flex items-start gap-4 rounded-[var(--radius-lg)] border border-line bg-surface p-5 transition-colors hover:bg-surface-2"
-        >
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
-            <Scale size={18} />
-          </span>
-          <div>
-            <p className="font-semibold text-ink">Classificação fiscal</p>
-            <p className="mt-0.5 text-sm text-muted">
-              Perfis fiscais e vínculo por subcategoria.
-            </p>
-          </div>
-        </Link>
+        {CARDS.map((c) => (
+          <Link
+            key={c.href}
+            href={c.href}
+            className="flex items-start gap-4 rounded-[var(--radius-lg)] border border-line bg-surface p-5 transition-colors hover:bg-surface-2"
+          >
+            <span
+              className={
+                c.tone === "accent"
+                  ? "grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent"
+                  : "grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand"
+              }
+            >
+              <c.icon size={18} />
+            </span>
+            <div>
+              <p className="font-semibold text-ink">{c.title}</p>
+              <p className="mt-0.5 text-sm text-muted">{c.description}</p>
+            </div>
+          </Link>
+        ))}
       </div>
     </div>
   );
