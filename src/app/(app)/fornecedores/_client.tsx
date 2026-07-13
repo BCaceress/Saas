@@ -18,11 +18,6 @@ import {
   Phone,
   Wallet,
   History,
-  Send,
-  Clock,
-  PackageCheck,
-  CheckCircle2,
-  Ban,
 } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
@@ -41,16 +36,6 @@ import {
   setSupplierActive,
 } from "../produtos/actions";
 import type { SupplierRow } from "../produtos/_types";
-
-/** Ícone por status — cores vêm de PEDIDO_STATUS (compras/_ui), mesma fonte da tela de Compras. */
-const PEDIDO_ICON: Record<string, React.ReactNode> = {
-  RASCUNHO: <Pencil size={14} />,
-  ENVIADO: <Send size={14} />,
-  AGUARDANDO: <Clock size={14} />,
-  RECEBIDO_PARCIAL: <PackageCheck size={14} />,
-  RECEBIDO: <CheckCircle2 size={14} />,
-  CANCELADO: <Ban size={14} />,
-};
 
 function StatCell({
   icon, label, value, sub, className,
@@ -646,6 +631,7 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
                 <div className="divide-y divide-line rounded-[var(--radius-lg)] border border-line">
                   {resumo.ultimosPedidos.map((p) => {
                     const st = PEDIDO_STATUS[p.status] ?? PEDIDO_STATUS.RASCUNHO;
+                    const StatusIcon = st.icon;
                     return (
                       <button
                         key={p.id}
@@ -656,7 +642,7 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
                         className="flex w-full cursor-pointer items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2"
                       >
                         <span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg", st.soft, st.text)}>
-                          {PEDIDO_ICON[p.status] ?? PEDIDO_ICON.RASCUNHO}
+                          <StatusIcon size={14} />
                         </span>
                         <div className="min-w-0 flex-1">
                           <p className="font-mono text-[13px] font-semibold text-ink">{p.numero}</p>

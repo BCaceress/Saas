@@ -11,11 +11,11 @@ import {
   User,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { fmtMoney } from "./_ui";
+import { fmtMoney, PEDIDO_STATUS } from "./_ui";
 
-type Origem = "COMPRA" | "MANUAL" | "TRANSFERENCIA" | "AJUSTE" | "DEVOLUCAO_CLIENTE";
+type Origem = "COMPRA" | "MANUAL" | "TRANSFERENCIA" | "AJUSTE" | "DEVOLUCAO_CLIENTE" | "PEDIDO";
 
-type Evento = {
+export type Evento = {
   id: string;
   origem: Origem;
   titulo: string;
@@ -25,17 +25,44 @@ type Evento = {
   valor: number | null;
   data: string;
   registradoPor: string | null;
+  pedidoCriadoEm: string | null;
+  pedidoEnviadoEm: string | null;
+  statusPedido: string | null;
 };
 
 const fmtHora = (iso: string) => new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+const fmtDataHora = (iso: string) =>
+  new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }) + " às " + fmtHora(iso);
 
-const ORIGEM: Record<Origem, { label: string; icon: React.ElementType; cls: string }> = {
+export const ORIGEM_ENTRADA: Record<Origem, { label: string; icon: React.ElementType; cls: string }> = {
   COMPRA:            { label: "Compra",         icon: Truck,             cls: "bg-brand-soft text-brand" },
   MANUAL:            { label: "Entrada manual", icon: ClipboardList,     cls: "bg-surface-2 text-muted" },
   TRANSFERENCIA:     { label: "Transferência",  icon: ArrowLeftRight,    cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400" },
   AJUSTE:            { label: "Ajuste",         icon: SlidersHorizontal, cls: "bg-accent-soft text-accent" },
   DEVOLUCAO_CLIENTE: { label: "Devolução",      icon: Undo2,             cls: "bg-ok-soft text-ok" },
+  PEDIDO:            { label: "Pedido",         icon: ClipboardList,     cls: "bg-surface-2 text-muted" },
 };
+
+/** Todo evento do extrato já é uma entrada consumada — o rótulo confirma qual ação a gerou. */
+export const ORIGEM_STATUS: Record<Origem, string> = {
+  COMPRA: "Recebido",
+  MANUAL: "Registrada",
+  TRANSFERENCIA: "Recebida",
+  AJUSTE: "Registrado",
+  DEVOLUCAO_CLIENTE: "Registrada",
+  PEDIDO: "Atualizado",
+};
+
+/** Ícone/cor/label do evento — pedidos ainda não recebidos usam o status real do PurchaseOrder (mesma paleta de Compras). */
+export function eventoMeta(e: Evento): { label: string; icon: React.ElementType; cls: string } {
+  if (e.origem === "PEDIDO" && e.statusPedido && PEDIDO_STATUS[e.statusPedido]) return PEDIDO_STATUS[e.statusPedido];
+  return ORIGEM_ENTRADA[e.origem];
+}
+
+export function eventoStatusLabel(e: Evento): string {
+  if (e.origem === "PEDIDO" && e.statusPedido && PEDIDO_STATUS[e.statusPedido]) return PEDIDO_STATUS[e.statusPedido].label;
+  return ORIGEM_STATUS[e.origem];
+}
 
 function diaLabel(iso: string): string {
   const d = new Date(iso);
@@ -50,6 +77,7 @@ function diaLabel(iso: string): string {
 const FILTROS: { key: Origem | "todos"; label: string }[] = [
   { key: "todos", label: "Tudo" },
   { key: "COMPRA", label: "Compras" },
+  { key: "PEDIDO", label: "Pedidos" },
   { key: "TRANSFERENCIA", label: "Transferências" },
   { key: "AJUSTE", label: "Ajustes" },
   { key: "DEVOLUCAO_CLIENTE", label: "Devoluções" },
@@ -124,7 +152,7 @@ export function ExtratoEntradas({ eventos }: { eventos: Evento[] }) {
               </div>
               <div className="flex flex-col gap-2">
                 {lista.map((e) => {
-                  const meta = ORIGEM[e.origem];
+                  const meta = eventoMeta(e);
                   const Icon = meta.icon;
                   return (
                     <div key={e.id} className="relative flex items-center gap-3 rounded-2xl border border-line bg-surface px-4 py-3 shadow-(--shadow-1)">
@@ -147,6 +175,13 @@ export function ExtratoEntradas({ eventos }: { eventos: Evento[] }) {
                             </span>
                           )}
                         </div>
+                        {e.origem === "COMPRA" && e.pedidoCriadoEm && (
+                          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-faint">
+                            <span>Solicitado {fmtDataHora(e.pedidoCriadoEm)}</span>
+                            {e.pedidoEnviadoEm && <span>· Enviado {fmtDataHora(e.pedidoEnviadoEm)}</span>}
+                            <span>· Recebido {fmtDataHora(e.data)}</span>
+                          </div>
+                        )}
                       </div>
                       <div className="shrink-0 text-right">
                         {e.valor != null && <p className="font-medium tabular-nums text-ink">{fmtMoney(e.valor)}</p>}

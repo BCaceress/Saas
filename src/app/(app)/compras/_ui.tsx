@@ -1,6 +1,19 @@
 "use client";
 
-import { Minus, Package, Plus } from "lucide-react";
+import {
+  CalendarClock,
+  CircleCheck,
+  CircleX,
+  Clock3,
+  FilePenLine,
+  Minus,
+  Package,
+  PackageCheck,
+  Plus,
+  Send,
+  Truck,
+  TriangleAlert,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // Primitivos compartilhados do módulo de Compras.
@@ -8,24 +21,38 @@ import { cn } from "@/lib/utils";
 export const fmtMoney = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 export const fmtQtd = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 
-/** Status do pedido de compra — cores/label únicas, usadas em toda tela que referencia um PurchaseOrder. */
-export const PEDIDO_STATUS: Record<string, { label: string; cls: string; dot: string; soft: string; text: string }> = {
-  RASCUNHO:         { label: "Em elaboração",      cls: "bg-surface-2 text-muted",  dot: "bg-faint",  soft: "bg-surface-2",  text: "text-muted" },
-  ENVIADO:          { label: "Enviado",            cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500", soft: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400" },
-  AGUARDANDO:       { label: "Aguardando entrega", cls: "bg-warn-soft text-warn",   dot: "bg-warn",   soft: "bg-warn-soft",  text: "text-warn" },
-  RECEBIDO_PARCIAL: { label: "Recebido parcial",   cls: "bg-brand-soft text-brand", dot: "bg-brand",  soft: "bg-brand-soft", text: "text-brand" },
-  RECEBIDO:         { label: "Recebido",           cls: "bg-ok-soft text-ok",       dot: "bg-ok",     soft: "bg-ok-soft",    text: "text-ok" },
-  CANCELADO:        { label: "Cancelado",          cls: "bg-danger-soft text-danger", dot: "bg-danger", soft: "bg-danger-soft", text: "text-danger" },
+/** Status do pedido de compra — ícone/cores/label únicos, usados em toda tela que referencia um PurchaseOrder. */
+export const PEDIDO_STATUS: Record<string, { label: string; icon: React.ElementType; cls: string; dot: string; soft: string; text: string }> = {
+  RASCUNHO:         { label: "Em elaboração",      icon: FilePenLine,   cls: "bg-surface-2 text-muted",  dot: "bg-faint",  soft: "bg-surface-2",  text: "text-muted" },
+  ENVIADO:          { label: "Enviado",            icon: Send,         cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500", soft: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400" },
+  AGUARDANDO:       { label: "Aguardando entrega", icon: Clock3,       cls: "bg-warn-soft text-warn",   dot: "bg-warn",   soft: "bg-warn-soft",  text: "text-warn" },
+  RECEBIDO_PARCIAL: { label: "Recebido parcial",   icon: PackageCheck, cls: "bg-brand-soft text-brand", dot: "bg-brand",  soft: "bg-brand-soft", text: "text-brand" },
+  RECEBIDO:         { label: "Recebido",           icon: CircleCheck,  cls: "bg-ok-soft text-ok",       dot: "bg-ok",     soft: "bg-ok-soft",    text: "text-ok" },
+  CANCELADO:        { label: "Cancelado",          icon: CircleX,      cls: "bg-danger-soft text-danger", dot: "bg-danger", soft: "bg-danger-soft", text: "text-danger" },
 };
 
 export function StatusBadge({ status }: { status: string }) {
-  const m = PEDIDO_STATUS[status] ?? { label: status, cls: "bg-surface-2 text-muted", dot: "bg-faint" };
+  const m = PEDIDO_STATUS[status] ?? { label: status, icon: FilePenLine, cls: "bg-surface-2 text-muted" };
+  const Icon = m.icon;
   return (
     <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold", m.cls)}>
-      <span className={cn("h-1.5 w-1.5 rounded-full", m.dot)} />
+      <Icon size={12} />
       {m.label}
     </span>
   );
+}
+
+/** Estado derivado do prazo de entrega — não é status novo, só uma leitura do `previsaoEntrega` para pedidos ainda abertos. */
+export function estadoEntrega(iso: string | null): { label: string; icon: React.ElementType; cls: string } | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  const hoje = new Date();
+  const dia = (x: Date) => Math.floor(new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime() / 86400000);
+  const diff = dia(d) - dia(hoje);
+  if (diff < 0) return { label: "Atrasado", icon: TriangleAlert, cls: "bg-danger-soft text-danger" };
+  if (diff === 0) return { label: "Chega hoje", icon: Truck, cls: "bg-brand-soft text-brand" };
+  if (diff === 1) return { label: "Previsto para amanhã", icon: CalendarClock, cls: "bg-surface-2 text-muted" };
+  return null;
 }
 
 export function relDia(iso: string | null): string {

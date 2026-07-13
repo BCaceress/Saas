@@ -363,6 +363,27 @@ async function syncSalesChannels(
   }
 }
 
+/** Substitui o fornecedor principal do produto (remove qualquer isPrincipal anterior). */
+async function syncPrincipalSupplier(
+  tid: string,
+  productId: string,
+  fornecedorPrincipalId: string | null | undefined,
+  custoFornecedor: number | null | undefined,
+) {
+  await db.productSupplier.deleteMany({ where: { productId, isPrincipal: true } });
+  if (fornecedorPrincipalId) {
+    await db.productSupplier.create({
+      data: {
+        tenantId: tid,
+        productId,
+        supplierId: fornecedorPrincipalId,
+        custoFornecedor: custoFornecedor ?? null,
+        isPrincipal: true,
+      },
+    });
+  }
+}
+
 /** Substitui o conjunto de embalagens de compra do produto (delete + recreate). */
 async function syncPackagings(
   tid: string,
@@ -570,6 +591,7 @@ export async function updateProduct(id: string, input: ProductInput) {
     });
     await syncSalesChannels(tid, id, d.salesChannels);
     await syncPackagings(tid, id, d.packagings);
+    await syncPrincipalSupplier(tid, id, d.fornecedorPrincipalId, d.custoFornecedor);
     ok();
   });
 }

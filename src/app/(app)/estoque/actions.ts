@@ -25,6 +25,7 @@ import {
   enviarPedidoCompra,
   marcarAguardandoPedido,
   cancelarPedidoCompra,
+  excluirPedidoCompra,
   receberPedidoCompra,
 } from "@/lib/estoque";
 
@@ -220,6 +221,13 @@ export async function marcarAguardandoPedidoAction(pedidoId: string) {
 export async function cancelarPedidoCompraAction(pedidoId: string) {
   return tx(async (tid) => {
     await cancelarPedidoCompra(tid, pedidoId);
+    ok();
+  });
+}
+
+export async function excluirPedidoCompraAction(pedidoId: string) {
+  return tx(async (tid) => {
+    await excluirPedidoCompra(tid, pedidoId);
     ok();
   });
 }

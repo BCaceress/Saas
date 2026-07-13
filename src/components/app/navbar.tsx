@@ -216,7 +216,7 @@ export function Navbar({
         </div>
 
         {/* Cadastro rápido */}
-        <QuickCreate />
+        <QuickCreate empresa={tenantNome} />
 
         {/* Alertas */}
         <NotificationBell />

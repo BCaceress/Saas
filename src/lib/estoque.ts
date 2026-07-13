@@ -320,6 +320,20 @@ export async function cancelarPedidoCompra(tenantId: string, pedidoId: string): 
   ]);
 }
 
+/** Apaga um pedido ainda em RASCUNHO (itens somem em cascata). */
+export async function excluirPedidoCompra(tenantId: string, pedidoId: string): Promise<void> {
+  const po = await basePrisma.purchaseOrder.findFirst({
+    where: { id: pedidoId, tenantId },
+    select: { status: true },
+  });
+  if (!po) throw new Error("Pedido não encontrado.");
+  if (po.status !== "RASCUNHO") throw new Error("Só pedidos em rascunho podem ser excluídos.");
+  await basePrisma.$transaction([
+    basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
+    basePrisma.purchaseOrder.delete({ where: { id: pedidoId } }),
+  ]);
+}
+
 // ── Recebimento de pedido de compra ──────────────────────────
 // Confere a mercadoria que chegou (pedido × recebido), gera a entrada no
 // estoque (Purchase + movimentos + custo médio) e atualiza qtdRecebida/status

@@ -22,12 +22,12 @@ import { maskCpf, maskDate, maskPhone, maskCnpj } from "@/lib/masks";
 import { createCustomer } from "@/app/(app)/clientes/actions";
 import { createSupplier } from "@/app/(app)/produtos/actions";
 import { loadComprasFormOptionsAction } from "@/app/(app)/estoque/actions";
-import { PedidoForm, type FormOptions } from "@/app/(app)/compras/_pedidos";
+import { PedidoFormSheet, type FormOptions } from "@/app/(app)/compras/_pedidos";
 import type { Sexo } from "@/generated/prisma";
 
 type Panel = "cliente" | "fornecedor" | "pedido" | null;
 
-export function QuickCreate() {
+export function QuickCreate({ empresa }: { empresa: string }) {
   const router = useRouter();
   const [panel, setPanel] = useState<Panel>(null);
   const close = () => setPanel(null);
@@ -77,7 +77,7 @@ export function QuickCreate() {
 
       <ClienteSheet open={panel === "cliente"} onClose={close} onDone={done} />
       <FornecedorSheet open={panel === "fornecedor"} onClose={close} onDone={done} />
-      <PedidoSheet open={panel === "pedido"} onClose={close} onDone={done} />
+      <PedidoSheet open={panel === "pedido"} onClose={close} onDone={done} empresa={empresa} />
     </>
   );
 }
@@ -413,10 +413,12 @@ function PedidoSheet({
   open,
   onClose,
   onDone,
+  empresa,
 }: {
   open: boolean;
   onClose: () => void;
   onDone: () => void;
+  empresa: string;
 }) {
   const [options, setOptions] = useState<FormOptions | null>(null);
   const [loading, setLoading] = useState(false);
@@ -433,6 +435,12 @@ function PedidoSheet({
       .finally(() => setLoading(false));
   }, [open, options, loading]);
 
+  // Enquanto as opções carregam (só na primeira abertura), um Sheet simples;
+  // depois disso o form assume o próprio Sheet (footer fixo, busca, etc.).
+  if (options) {
+    return open ? <PedidoFormSheet open onClose={onClose} mode="novo" formOptions={options} empresa={empresa} onDone={onDone} /> : null;
+  }
+
   return (
     <Sheet
       open={open}
@@ -448,9 +456,6 @@ function PedidoSheet({
       )}
       {error && (
         <p className="rounded-[var(--radius)] bg-danger-soft px-3 py-2.5 text-sm text-danger">{error}</p>
-      )}
-      {options && (
-        <PedidoForm mode="novo" formOptions={options} onDone={onDone} />
       )}
     </Sheet>
   );

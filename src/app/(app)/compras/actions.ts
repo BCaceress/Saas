@@ -25,6 +25,7 @@ const ok = () => {
 const reposicaoPedidoSchema = z.object({
   supplierId: z.string().min(1),
   previsaoEntrega: z.string().optional().nullable(), // yyyy-mm-dd
+  observacao: z.string().optional().nullable(),
   items: z
     .array(
       z.object({
@@ -56,7 +57,7 @@ export async function criarPedidosReposicaoAction(input: z.input<typeof reposica
           siteId: d.siteId,
           supplierId: pedido.supplierId,
           previsaoEntrega: pedido.previsaoEntrega ? new Date(`${pedido.previsaoEntrega}T00:00:00`) : null,
-          observacao: null,
+          observacao: pedido.observacao ?? null,
           items: pedido.items,
         },
         { enviar: d.enviar, createdBy: userId },

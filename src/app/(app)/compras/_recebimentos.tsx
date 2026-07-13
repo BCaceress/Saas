@@ -3,13 +3,11 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Building2,
   CalendarClock,
   CheckCheck,
   FileText,
   Loader2,
   PackageCheck,
-  Truck,
   Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -41,7 +39,7 @@ type Pedido = {
 };
 
 type TransferItem = { productId: string; nome: string; sku: string; imagemUrl: string | null; qtdExpedida: number };
-type Transfer = {
+export type Transfer = {
   id: string;
   origemNome: string;
   destinoNome: string;
@@ -50,93 +48,11 @@ type Transfer = {
   items: TransferItem[];
 };
 
-// ── Componente principal ──────────────────────────────────────
+// ── Conferência de pedido de fornecedor ───────────────────────
+// Renderizada dentro de um Sheet: pedido × recebendo agora, diferença
+// em destaque, resumo e o botão único "Gerar entrada".
 
-export function RecebimentosClient({
-  pedidos,
-  transferencias,
-}: {
-  pedidos: Pedido[];
-  transferencias: Transfer[];
-}) {
-  const [aba, setAba] = useState<"fornecedor" | "transferencia">(
-    pedidos.length === 0 && transferencias.length > 0 ? "transferencia" : "fornecedor",
-  );
-
-  const vazio = pedidos.length === 0 && transferencias.length === 0;
-
-  if (vazio) {
-    return (
-      <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-line bg-surface py-16 text-center">
-        <PackageCheck size={28} className="text-faint" />
-        <p className="text-sm font-medium text-muted">Nada para receber agora.</p>
-        <p className="text-xs text-faint">Pedidos de fornecedor e transferências em trânsito aparecem aqui.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      {/* Abas: origem */}
-      <div className="flex items-center gap-1 rounded-xl border border-line bg-surface-2 p-1">
-        {(
-          [
-            { key: "fornecedor" as const, label: "Fornecedores", icon: Building2, count: pedidos.length },
-            { key: "transferencia" as const, label: "Transferências", icon: Truck, count: transferencias.length },
-          ]
-        ).map(({ key, label, icon: Icon, count }) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setAba(key)}
-            className={cn(
-              "flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
-              aba === key ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink",
-            )}
-          >
-            <Icon size={15} />
-            {label}
-            <span className={cn("rounded-full px-1.5 py-px text-[10px] tabular-nums", aba === key ? "bg-brand/10 text-brand" : "bg-surface text-faint")}>
-              {count}
-            </span>
-          </button>
-        ))}
-      </div>
-
-      {aba === "fornecedor" ? (
-        pedidos.length === 0 ? (
-          <SectionEmpty icon={Building2} text="Nenhum pedido de fornecedor para conferir." />
-        ) : (
-          <div className="flex flex-col gap-3">
-            {pedidos.map((p) => <PedidoCard key={p.id} pedido={p} />)}
-          </div>
-        )
-      ) : transferencias.length === 0 ? (
-        <SectionEmpty icon={Truck} text="Nenhuma transferência em trânsito." />
-      ) : (
-        <div className="flex flex-col gap-3">
-          {transferencias.map((t) => <TransferCard key={t.id} transfer={t} />)}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SectionEmpty({ icon: Icon, text }: { icon: React.ElementType; text: string }) {
-  return (
-    <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-line bg-surface py-12 text-center">
-      <Icon size={26} className="text-faint" />
-      <p className="text-sm font-medium text-muted">{text}</p>
-    </div>
-  );
-}
-
-// ── Card de pedido de fornecedor ──────────────────────────────
-// Conferência item a item: pedido × recebendo agora, diferença em
-// destaque, resumo (completo/faltando, valor recebido/pendente) e o
-// botão único "Gerar entrada".
-
-function PedidoCard({ pedido }: { pedido: Pedido }) {
+export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () => void }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -178,6 +94,7 @@ function PedidoCard({ pedido }: { pedido: Pedido }) {
     startTransition(async () => {
       try {
         await receberPedidoCompraAction({ pedidoId: pedido.id, numeroNota: numeroNota || null, gerarFinanceiro, items });
+        onDone();
         router.refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao receber.");
@@ -186,43 +103,30 @@ function PedidoCard({ pedido }: { pedido: Pedido }) {
   }
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-(--shadow-1)">
-      {/* Cabeçalho */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface-2/50 px-4 py-3 sm:px-5">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
-            <Building2 size={16} />
-          </span>
-          <div className="min-w-0">
-            <p className="truncate font-display text-sm font-semibold text-ink">{pedido.supplierNome}</p>
-            <p className="flex items-center gap-2 font-mono text-[11px] text-faint">
-              {pedido.numero}
-              {parcial && <span className="rounded-full bg-brand-soft px-1.5 py-px font-sans text-[10px] font-semibold text-brand">parcial</span>}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1.5 text-xs text-muted">
-            <CalendarClock size={13} /> {previsaoLabel(pedido.previsaoEntrega)} · {pedido.siteNome}
-          </span>
-          <button
-            type="button"
-            onClick={receberTudo}
-            className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-2"
-          >
-            <CheckCheck size={13} className="text-ok" /> Chegou tudo
-          </button>
-        </div>
+    <div className="flex flex-col gap-4">
+      {/* Contexto do pedido */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 text-xs text-muted">
+          <CalendarClock size={13} /> {previsaoLabel(pedido.previsaoEntrega)} · {pedido.siteNome}
+          {parcial && <span className="rounded-full bg-brand-soft px-1.5 py-px text-[10px] font-semibold text-brand">parcial</span>}
+        </span>
+        <button
+          type="button"
+          onClick={receberTudo}
+          className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-2"
+        >
+          <CheckCheck size={13} className="text-ok" /> Chegou tudo
+        </button>
       </div>
 
       {/* Itens */}
-      <ul className="divide-y divide-line">
+      <ul className="divide-y divide-line rounded-xl border border-line">
         {pedido.items.map((it) => {
           const restante = Math.max(0, it.qtdPedida - it.qtdRecebida);
           const agora = recebido[it.productId] ?? 0;
           const dif = agora - restante;
           return (
-            <li key={it.productId} className="flex flex-wrap items-center gap-3 px-4 py-2.5 sm:px-5">
+            <li key={it.productId} className="flex flex-wrap items-center gap-3 px-3.5 py-2.5">
               <div className="flex min-w-0 flex-1 items-center gap-3">
                 <Thumb url={it.imagemUrl} nome={it.nome} size={36} />
                 <div className="min-w-0">
@@ -269,7 +173,7 @@ function PedidoCard({ pedido }: { pedido: Pedido }) {
       </ul>
 
       {/* Nota + financeiro */}
-      <div className="flex flex-wrap items-center gap-3 border-t border-line px-4 py-3 sm:px-5">
+      <div className="flex flex-wrap items-center gap-3">
         <label className="flex flex-1 items-center gap-2 text-xs font-medium text-muted">
           <FileText size={14} className="shrink-0 text-faint" />
           <input
@@ -285,10 +189,10 @@ function PedidoCard({ pedido }: { pedido: Pedido }) {
         </label>
       </div>
 
-      {error && <p className="mx-4 mb-3 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger sm:mx-5">{error}</p>}
+      {error && <p className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</p>}
 
       {/* Resumo + gerar entrada */}
-      <div className="flex flex-col gap-3 border-t border-line bg-surface-2/50 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+      <div className="flex flex-col gap-3 rounded-xl bg-surface-2/60 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
           <span className="text-muted">
             Completos <span className="font-semibold tabular-nums text-ok">{resumo.completos}</span>
@@ -319,9 +223,9 @@ function PedidoCard({ pedido }: { pedido: Pedido }) {
   );
 }
 
-// ── Card de transferência (CD → loja) ─────────────────────────
+// ── Conferência de transferência (CD → loja) ──────────────────
 
-function TransferCard({ transfer }: { transfer: Transfer }) {
+export function TransferReceber({ transfer, onDone }: { transfer: Transfer; onDone: () => void }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -339,6 +243,7 @@ function TransferCard({ transfer }: { transfer: Transfer }) {
     startTransition(async () => {
       try {
         await receberTransferenciaAction({ transferId: transfer.id, items });
+        onDone();
         router.refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao receber.");
@@ -347,13 +252,7 @@ function TransferCard({ transfer }: { transfer: Transfer }) {
   }
 
   return (
-    <div className="flex flex-col gap-3 rounded-2xl border border-line bg-surface p-5 shadow-(--shadow-1)">
-      <div className="flex items-center gap-2">
-        <Truck size={16} className="text-brand" />
-        <p className="text-sm font-medium text-ink">
-          De <span className="text-brand">{transfer.origemNome}</span> · em trânsito
-        </p>
-      </div>
+    <div className="flex flex-col gap-3">
       {transfer.observacao && <p className="text-xs text-faint">{transfer.observacao}</p>}
 
       <div className="flex flex-col gap-2">

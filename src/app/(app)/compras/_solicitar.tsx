@@ -40,6 +40,9 @@ export type GrupoEnvio = {
   telefone: string | null;
   email: string | null;
   leadTimeDias: number | null;
+  /** Previsão já escolhida pelo operador (yyyy-mm-dd) — sobrepõe o cálculo por leadTimeDias quando definida. */
+  previsaoEntrega?: string | null;
+  observacao?: string | null;
   itens: ItemEnvio[];
 };
 
@@ -54,7 +57,7 @@ const CANAIS: { key: Canal; icon: React.ElementType; titulo: string; desc: strin
 
 // ── Texto do pedido ───────────────────────────────────────────
 
-const totalGrupo = (g: GrupoEnvio) => g.itens.reduce((a, it) => a + it.qtd * (it.custoUnitCompra ?? 0), 0);
+export const totalGrupo = (g: GrupoEnvio) => g.itens.reduce((a, it) => a + it.qtd * (it.custoUnitCompra ?? 0), 0);
 
 const hojeMais = (dias: number) => new Date(Date.now() + dias * 864e5).toISOString().slice(0, 10);
 
@@ -63,7 +66,25 @@ const irPara = (url: string) => {
   window.location.href = url;
 };
 
-function textoPedido(g: GrupoEnvio, empresa: string, numero: string | null, negrito: boolean): string {
+/** navigator.clipboard não existe em contexto inseguro (http fora de localhost, ex.: lvh.me:3000) — cai pro execCommand. */
+export async function copiarTexto(texto: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(texto);
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = texto;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  const ok = document.execCommand("copy");
+  document.body.removeChild(ta);
+  if (!ok) throw new Error("Não foi possível copiar. Selecione e copie manualmente.");
+}
+
+export function textoPedido(g: GrupoEnvio, empresa: string, numero: string | null, negrito: boolean): string {
   const b = (s: string) => (negrito ? `*${s}*` : s);
   const linhas: string[] = [];
   linhas.push(b(`Pedido de compra${numero ? ` ${numero}` : ""} — ${empresa}`));
@@ -86,20 +107,20 @@ function textoPedido(g: GrupoEnvio, empresa: string, numero: string | null, negr
   return linhas.join("\n");
 }
 
-function urlWhatsApp(telefone: string, texto: string): string {
+export function urlWhatsApp(telefone: string, texto: string): string {
   const dig = telefone.replace(/\D/g, "");
   const fone = dig.length > 11 ? dig : `55${dig}`;
   return `https://wa.me/${fone}?text=${encodeURIComponent(texto)}`;
 }
 
-function urlEmail(email: string, empresa: string, numero: string | null, texto: string): string {
+export function urlEmail(email: string, empresa: string, numero: string | null, texto: string): string {
   const assunto = `Pedido de compra${numero ? ` ${numero}` : ""} — ${empresa}`;
   return `mailto:${email}?subject=${encodeURIComponent(assunto)}&body=${encodeURIComponent(texto)}`;
 }
 
 // ── PDF (janela de impressão) ─────────────────────────────────
 
-function escreverPdf(janela: Window, grupos: GrupoEnvio[], empresa: string, numeros: Map<string, string>) {
+export function escreverPdf(janela: Window, grupos: GrupoEnvio[], empresa: string, numeros: Map<string, string>) {
   const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const secoes = grupos
     .map((g) => {
@@ -209,7 +230,8 @@ export function SolicitarSheet({
         enviar: c !== "salvar",
         pedidos: grupos.map((g) => ({
           supplierId: g.supplierId,
-          previsaoEntrega: g.leadTimeDias != null ? hojeMais(g.leadTimeDias) : null,
+          previsaoEntrega: g.previsaoEntrega !== undefined ? g.previsaoEntrega : g.leadTimeDias != null ? hojeMais(g.leadTimeDias) : null,
+          observacao: g.observacao ?? null,
           items: g.itens.map((it) => ({
             productId: it.productId,
             packagingId: it.packagingId,
@@ -222,7 +244,7 @@ export function SolicitarSheet({
       setNumeros(nums);
 
       if (c === "copiar") {
-        await navigator.clipboard.writeText(textoTodos(nums, false));
+        await copiarTexto(textoTodos(nums, false));
         setCopiado(true);
       }
       if (c === "pdf") {
@@ -268,6 +290,7 @@ export function SolicitarSheet({
             ? `${grupos.length} fornecedores · ${totalItens} itens${totalGeral > 0 ? ` · ${fmtMoney(totalGeral)}` : ""}`
             : `${grupos[0].supplierNome} · ${totalItens} ${totalItens === 1 ? "item" : "itens"}${totalGeral > 0 ? ` · ${fmtMoney(totalGeral)}` : ""}`
       }
+      width="2xl"
     >
       {fase !== "pronto" ? (
         <div className="flex flex-col gap-4">
@@ -414,8 +437,12 @@ export function SolicitarSheet({
             <button
               type="button"
               onClick={async () => {
-                await navigator.clipboard.writeText(textoTodos(numeros, false));
-                setCopiado(true);
+                try {
+                  await copiarTexto(textoTodos(numeros, false));
+                  setCopiado(true);
+                } catch (e) {
+                  setErro(e instanceof Error ? e.message : "Não foi possível copiar.");
+                }
               }}
               className="flex items-center justify-center gap-2 rounded-full border border-line px-4 py-2.5 text-sm font-medium text-muted transition-colors hover:border-line-strong hover:text-ink"
             >
@@ -423,6 +450,8 @@ export function SolicitarSheet({
               {copiado ? "Lista copiada" : "Copiar lista"}
             </button>
           )}
+
+          {erro && <p className="rounded-xl bg-danger-soft px-4 py-3 text-sm text-danger">{erro}</p>}
 
           <button
             type="button"

@@ -83,6 +83,8 @@ export type EntradaRow = {
   supplierNome: string | null;
   numeroNota: string | null;
   numeroPedido: string | null;
+  pedidoCriadoEm: Date | null;
+  pedidoEnviadoEm: Date | null;
   data: Date;
   registradoPor: string | null;
   totalItems: number;
@@ -452,7 +454,7 @@ export async function loadEntradas(siteId: string | null): Promise<EntradaRow[]>
     where: siteId ? { siteId } : {},
     include: {
       supplier: { select: { razaoSocial: true, nomeFantasia: true } },
-      purchaseOrder: { select: { numero: true } },
+      purchaseOrder: { select: { numero: true, createdAt: true, enviadoEm: true } },
       items: { select: { id: true, productId: true, packagingId: true, quantidade: true, custoTotal: true } },
     },
     orderBy: { createdAt: "desc" },
@@ -486,6 +488,8 @@ export async function loadEntradas(siteId: string | null): Promise<EntradaRow[]>
     supplierNome: p.supplier ? (p.supplier.nomeFantasia ?? p.supplier.razaoSocial) : null,
     numeroNota: p.numeroNota,
     numeroPedido: p.purchaseOrder?.numero ?? null,
+    pedidoCriadoEm: p.purchaseOrder?.createdAt ?? null,
+    pedidoEnviadoEm: p.purchaseOrder?.enviadoEm ?? null,
     data: p.data,
     registradoPor: p.createdBy ? (userMap.get(p.createdBy) ?? null) : null,
     totalItems: p.items.length,
@@ -521,6 +525,8 @@ export type PedidoCompraView = {
   status: string;
   supplierId: string;
   supplierNome: string;
+  supplierTelefone: string | null;
+  supplierEmail: string | null;
   siteId: string;
   siteNome: string;
   previsaoEntrega: Date | null;
@@ -536,7 +542,7 @@ export type PedidoCompraView = {
 export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
   const pedidos = await db.purchaseOrder.findMany({
     include: {
-      supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+      supplier: { select: { razaoSocial: true, nomeFantasia: true, telefone: true, email: true } },
       site: { select: { nome: true } },
       items: true,
     },
@@ -561,6 +567,8 @@ export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
     status: p.status,
     supplierId: p.supplierId,
     supplierNome: p.supplier ? (p.supplier.nomeFantasia ?? p.supplier.razaoSocial) : "—",
+    supplierTelefone: p.supplier?.telefone ?? null,
+    supplierEmail: p.supplier?.email ?? null,
     siteId: p.siteId,
     siteNome: p.site.nome,
     previsaoEntrega: p.previsaoEntrega,
@@ -595,7 +603,7 @@ export async function loadPedidosAReceber(siteId: string | null): Promise<Pedido
 
 export async function loadComprasFormOptions() {
   const [suppliers, products, sites] = await Promise.all([
-    db.supplier.findMany({ where: { ativo: true }, orderBy: { razaoSocial: "asc" }, select: { id: true, razaoSocial: true, nomeFantasia: true } }),
+    db.supplier.findMany({ where: { ativo: true }, orderBy: { razaoSocial: "asc" }, select: { id: true, razaoSocial: true, nomeFantasia: true, telefone: true, email: true } }),
     db.product.findMany({
       where: { ativo: true, tipo: { in: ["SIMPLES", "INSUMO"] } },
       orderBy: { nome: "asc" },
@@ -639,7 +647,7 @@ export async function loadComprasFormOptions() {
 
 export type EntradaEvento = {
   id: string;
-  origem: "COMPRA" | "MANUAL" | "TRANSFERENCIA" | "AJUSTE" | "DEVOLUCAO_CLIENTE";
+  origem: "COMPRA" | "MANUAL" | "TRANSFERENCIA" | "AJUSTE" | "DEVOLUCAO_CLIENTE" | "PEDIDO";
   titulo: string;
   subtitulo: string | null;
   qtdItens: number | null; // documentos agrupados (compra, transferência)
@@ -647,6 +655,9 @@ export type EntradaEvento = {
   valor: number | null;
   data: Date;
   registradoPor: string | null;
+  pedidoCriadoEm: Date | null; // COMPRA: quando o pedido foi solicitado
+  pedidoEnviadoEm: Date | null; // COMPRA: quando o pedido foi enviado ao fornecedor
+  statusPedido: string | null; // origem PEDIDO: status atual do PurchaseOrder
 };
 
 export async function loadEntradasExtrato(siteId: string | null): Promise<EntradaEvento[]> {
@@ -664,6 +675,9 @@ export async function loadEntradasExtrato(siteId: string | null): Promise<Entrad
     valor: p.items.reduce((s, i) => s + i.custoTotal, 0),
     data: p.data,
     registradoPor: p.registradoPor,
+    pedidoCriadoEm: p.pedidoCriadoEm,
+    pedidoEnviadoEm: p.pedidoEnviadoEm,
+    statusPedido: null,
   }));
 
   // 2. Movimentos de entrada que não são compra (ENTRADA já coberta acima).
@@ -711,6 +725,9 @@ export async function loadEntradasExtrato(siteId: string | null): Promise<Entrad
         valor: null,
         data: m.createdAt,
         registradoPor: null,
+        pedidoCriadoEm: null,
+        pedidoEnviadoEm: null,
+        statusPedido: null,
       });
     } else if ((m.tipo as string) === "DEVOLUCAO_CLIENTE") {
       eventos.push({
@@ -723,6 +740,9 @@ export async function loadEntradasExtrato(siteId: string | null): Promise<Entrad
         valor: null,
         data: m.createdAt,
         registradoPor: null,
+        pedidoCriadoEm: null,
+        pedidoEnviadoEm: null,
+        statusPedido: null,
       });
     }
   }
@@ -739,6 +759,49 @@ export async function loadEntradasExtrato(siteId: string | null): Promise<Entrad
       valor: null,
       data: a.data,
       registradoPor: null,
+      pedidoCriadoEm: null,
+      pedidoEnviadoEm: null,
+      statusPedido: null,
+    });
+  }
+
+  // 3. Pedidos de compra ainda não recebidos — rascunho/enviado/aguardando/cancelado.
+  // RECEBIDO e RECEBIDO_PARCIAL já aparecem via Purchase (item 1), na hora em que a
+  // mercadoria efetivamente entrou — aqui é só o que ainda não virou entrada.
+  const pedidos = await db.purchaseOrder.findMany({
+    where: {
+      ...(siteId ? { siteId } : {}),
+      status: { in: ["RASCUNHO", "ENVIADO", "AGUARDANDO", "CANCELADO"] },
+    },
+    include: {
+      supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+      items: { select: { id: true } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+
+  const pedidoUserIds = [...new Set(pedidos.flatMap((p) => (p.createdBy ? [p.createdBy] : [])))];
+  const pedidoUsers = pedidoUserIds.length
+    ? await basePrisma.user.findMany({ where: { id: { in: pedidoUserIds } }, select: { id: true, name: true, email: true } })
+    : [];
+  const pedidoUserMap = new Map(pedidoUsers.map((u) => [u.id, u.name ?? u.email ?? null]));
+
+  for (const p of pedidos) {
+    const data = p.status === "CANCELADO" ? (p.canceladoEm ?? p.createdAt) : p.status === "RASCUNHO" ? p.createdAt : (p.enviadoEm ?? p.createdAt);
+    eventos.push({
+      id: `pedido:${p.id}`,
+      origem: "PEDIDO",
+      titulo: `Pedido ${p.numero}`,
+      subtitulo: p.supplier ? (p.supplier.nomeFantasia ?? p.supplier.razaoSocial) : null,
+      qtdItens: p.items.length,
+      detalhe: null,
+      valor: n(p.valorTotal),
+      data,
+      registradoPor: p.createdBy ? (pedidoUserMap.get(p.createdBy) ?? null) : null,
+      pedidoCriadoEm: null,
+      pedidoEnviadoEm: null,
+      statusPedido: p.status,
     });
   }
 
