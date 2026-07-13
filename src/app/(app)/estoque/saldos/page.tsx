@@ -1,39 +1,17 @@
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
-import { loadSaldos, loadEntradaFormOptions } from "../_data";
+import { loadSaldos } from "../_data";
 import { Layers } from "lucide-react";
 import { SaldosView } from "./_client";
 
 export default async function SaldosPage() {
   const ctx = await requireActiveTenant();
-  const [siteId, saldos, formOptions] = await withTenant(ctx, async () => {
+  // Opções do form de reposição são carregadas sob demanda no client
+  // (fetchEntradaFormDataAction) — a página só precisa dos saldos.
+  const [siteId, saldos] = await withTenant(ctx, async () => {
     const sid = await getActiveSiteId();
-    const [s, opts] = await Promise.all([loadSaldos(sid), loadEntradaFormOptions()]);
-    return [sid, s, opts] as const;
+    return [sid, await loadSaldos(sid)] as const;
   });
-
-  const formProps = {
-    products: formOptions.products.map((p) => ({
-      id: p.id,
-      nome: p.nome,
-      sku: p.sku,
-      imagemUrl: p.imagemUrl,
-      packagings: p.packagings.map((pk) => ({
-        id: pk.id,
-        nome: pk.nome,
-        fatorConversao: Number(pk.fatorConversao),
-        isCompraDefault: pk.isCompraDefault,
-      })),
-      suppliers: p.suppliers.map((sup) => ({ supplierId: sup.supplierId })),
-      brand: p.brand ? { nome: p.brand.nome } : null,
-    })),
-    suppliers: formOptions.suppliers.map((s) => ({
-      id: s.id,
-      razaoSocial: s.razaoSocial,
-      nomeFantasia: s.nomeFantasia,
-    })),
-    sites: formOptions.sites.map((s) => ({ id: s.id, nome: s.nome, tipo: s.tipo })),
-  };
 
   if (saldos.length === 0) {
     return (
@@ -45,5 +23,5 @@ export default async function SaldosPage() {
     );
   }
 
-  return <SaldosView saldos={saldos} formOptions={formProps} siteId={siteId} />;
+  return <SaldosView saldos={saldos} siteId={siteId} />;
 }

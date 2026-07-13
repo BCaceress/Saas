@@ -1,13 +1,16 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Lock, X, Delete, Loader2, MonitorSmartphone } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { PaymentMethod } from "@/generated/prisma";
 import type { ProdutoVenda } from "@/app/(app)/vendas/_data";
-import { verifyTotemPinAction } from "./actions";
+import { verifyTotemPinAction, registrarTerminalAction, type TerminalStatus } from "./actions";
 import { TotemVenda } from "./_totem";
+
+const DEVICE_KEY = "nohub.totem.deviceId";
+const HEARTBEAT_MS = 45_000;
 
 const MAX_ERROS = 5;
 const COOLDOWN_MS = 30_000;
@@ -34,6 +37,31 @@ export function TotemKiosk({
   const router = useRouter();
   const [iniciado, setIniciado] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
+  const [terminal, setTerminal] = useState<TerminalStatus | null>(null);
+
+  // Registro + heartbeat do terminal (identifica o aparelho na fila do PDV e
+  // informa se há caixa aberto — sem caixa, novas vendas ficam bloqueadas).
+  useEffect(() => {
+    if (!siteId) return;
+    let vivo = true;
+    async function ping() {
+      try {
+        const salvo = window.localStorage.getItem(DEVICE_KEY);
+        const st = await registrarTerminalAction({ siteId: siteId!, deviceId: salvo });
+        if (!vivo) return;
+        window.localStorage.setItem(DEVICE_KEY, st.id);
+        setTerminal(st);
+      } catch {
+        // rede/sessão instável: mantém o último estado conhecido
+      }
+    }
+    ping();
+    const t = window.setInterval(ping, HEARTBEAT_MS);
+    return () => {
+      vivo = false;
+      window.clearInterval(t);
+    };
+  }, [siteId]);
 
   function iniciar() {
     // Best-effort: iPhone Safari não tem a API; o container fixed cobre a tela.
@@ -90,6 +118,9 @@ export function TotemKiosk({
         tenantLogoUrl={tenantLogoUrl}
         controleIdade={controleIdade}
         maisVendidos={maisVendidos}
+        totemDeviceId={terminal?.id ?? null}
+        terminalNome={terminal?.nome ?? null}
+        caixaAberto={terminal?.caixaAberto ?? true}
       />
       {/* Saída discreta do quiosque */}
       <button

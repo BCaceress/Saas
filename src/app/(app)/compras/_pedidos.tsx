@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus,
@@ -17,6 +17,8 @@ import {
   CalendarClock,
   Building2,
   Store,
+  ArrowDownRight,
+  ArrowUpRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
@@ -27,6 +29,7 @@ import {
   marcarAguardandoPedidoAction,
   cancelarPedidoCompraAction,
 } from "../estoque/actions";
+import { fmtMoney, fmtQtd, previsaoLabel, Stepper, Thumb } from "./_ui";
 
 // ── Tipos ─────────────────────────────────────────────────────
 
@@ -34,6 +37,7 @@ type ItemView = {
   productId: string;
   nome: string;
   sku: string;
+  imagemUrl: string | null;
   packagingNome: string | null;
   qtdPedida: number;
   qtdRecebida: number;
@@ -59,35 +63,26 @@ type PedidoView = {
 };
 
 type Packaging = { id: string; nome: string; fatorConversao: number; isCompraDefault: boolean };
-type Product = { id: string; nome: string; sku: string; custoMedio: number | null; supplierIds: string[]; packagings: Packaging[] };
+type Product = {
+  id: string;
+  nome: string;
+  sku: string;
+  imagemUrl: string | null;
+  custoMedio: number | null;
+  supplierIds: string[];
+  packagings: Packaging[];
+};
 type Supplier = { id: string; razaoSocial: string; nomeFantasia: string | null };
 type Site = { id: string; nome: string; tipo: string };
 export type FormOptions = { suppliers: Supplier[]; sites: Site[]; products: Product[] };
 
-// ── Helpers ───────────────────────────────────────────────────
-
-const fmtMoney = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-const fmt = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
-
-function previsaoLabel(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  const hoje = new Date();
-  const dia = (x: Date) => Math.floor(new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime() / 86400000);
-  const diff = dia(d) - dia(hoje);
-  if (diff === 0) return "Hoje";
-  if (diff === 1) return "Amanhã";
-  if (diff === -1) return "Ontem";
-  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
-}
-
 const STATUS: Record<string, { label: string; cls: string; dot: string }> = {
-  RASCUNHO:         { label: "Em elaboração",       cls: "bg-surface-2 text-muted",  dot: "bg-faint" },
-  ENVIADO:          { label: "Enviado",             cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500" },
-  AGUARDANDO:       { label: "Aguardando entrega",  cls: "bg-warn-soft text-warn",   dot: "bg-warn" },
-  RECEBIDO_PARCIAL: { label: "Recebido parcial",    cls: "bg-brand-soft text-brand", dot: "bg-brand" },
-  RECEBIDO:         { label: "Recebido",            cls: "bg-ok-soft text-ok",       dot: "bg-ok" },
-  CANCELADO:        { label: "Cancelado",           cls: "bg-danger-soft text-danger", dot: "bg-danger" },
+  RASCUNHO:         { label: "Em elaboração",      cls: "bg-surface-2 text-muted",  dot: "bg-faint" },
+  ENVIADO:          { label: "Enviado",            cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500" },
+  AGUARDANDO:       { label: "Aguardando entrega", cls: "bg-warn-soft text-warn",   dot: "bg-warn" },
+  RECEBIDO_PARCIAL: { label: "Recebido parcial",   cls: "bg-brand-soft text-brand", dot: "bg-brand" },
+  RECEBIDO:         { label: "Recebido",           cls: "bg-ok-soft text-ok",       dot: "bg-ok" },
+  CANCELADO:        { label: "Cancelado",          cls: "bg-danger-soft text-danger", dot: "bg-danger" },
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -191,13 +186,9 @@ export function ComprasClient({ pedidos, formOptions }: { pedidos: PedidoView[];
             {q || filtro !== "todos" ? "Nenhum pedido para este filtro." : "Nenhum pedido de compra ainda."}
           </p>
           {!q && filtro === "todos" && (
-            <button
-              type="button"
-              onClick={() => setForm({ mode: "novo" })}
-              className="flex items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-            >
-              <Plus size={15} /> Criar primeiro pedido
-            </button>
+            <p className="max-w-sm text-xs text-faint">
+              Dica: a aba <strong>Reposição</strong> monta os pedidos sozinha a partir do estoque — aqui você só precisa criar pedidos avulsos.
+            </p>
           )}
         </div>
       ) : (
@@ -272,7 +263,7 @@ export function ComprasClient({ pedidos, formOptions }: { pedidos: PedidoView[];
         open={form !== null}
         onClose={() => setForm(null)}
         title={form?.mode === "editar" ? `Editar ${form.pedido?.numero}` : "Novo pedido de compra"}
-        description="Monte o pedido ao fornecedor. A entrada no estoque só acontece no recebimento."
+        description="Busque, toque para adicionar e ajuste a quantidade. A entrada no estoque acontece no recebimento."
         width="xl"
       >
         {form && (
@@ -349,15 +340,20 @@ function PedidoDrawer({
                 {p.items.map((it) => (
                   <tr key={it.productId}>
                     <td className="px-3 py-2">
-                      <p className="font-medium text-ink">{it.nome}</p>
-                      <p className="font-mono text-[11px] text-faint">
-                        {it.sku}{it.packagingNome ? ` · ${it.packagingNome}` : ""}
-                      </p>
+                      <div className="flex items-center gap-2.5">
+                        <Thumb url={it.imagemUrl} nome={it.nome} size={32} />
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-ink">{it.nome}</p>
+                          <p className="font-mono text-[11px] text-faint">
+                            {it.sku}{it.packagingNome ? ` · ${it.packagingNome}` : ""}
+                          </p>
+                        </div>
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-ink">
-                      {fmt(it.qtdPedida)}
+                      {fmtQtd(it.qtdPedida)}
                       {it.qtdRecebida > 0 && (
-                        <span className="block text-[11px] text-ok">recebido {fmt(it.qtdRecebida)}</span>
+                        <span className="block text-[11px] text-ok">recebido {fmtQtd(it.qtdRecebida)}</span>
                       )}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-muted">{fmtMoney(it.custoUnitario)}</td>
@@ -384,7 +380,7 @@ function PedidoDrawer({
           {(p.status === "ENVIADO" || p.status === "AGUARDANDO" || p.status === "RECEBIDO_PARCIAL") && (
             <div className="flex items-start gap-2 rounded-lg border border-brand/30 bg-brand-soft/60 px-3 py-2.5 text-xs text-brand">
               <Truck size={14} className="mt-px shrink-0" />
-              <span>Quando o caminhão chegar, confira a mercadoria na aba <strong>Recebimentos</strong> para gerar a entrada no estoque.</span>
+              <span>Quando o caminhão chegar, confira a mercadoria na aba <strong>A receber</strong> para gerar a entrada no estoque.</span>
             </div>
           )}
 
@@ -420,9 +416,16 @@ function PedidoDrawer({
   );
 }
 
-// ── Form novo/editar pedido ───────────────────────────────────
+// ── Form novo/editar pedido — fluxo de seleção ────────────────
+// Sem formulário grande: busca instantânea, toque para adicionar,
+// stepper de quantidade e custo pré-preenchido pelo histórico.
 
-type Row = { productId: string; packagingId: string | null; qtd: string; custo: string };
+type CartItem = {
+  productId: string;
+  packagingId: string | null;
+  qtd: number;
+  custo: string; // editável — mantém como string p/ digitação com vírgula
+};
 
 export function PedidoForm({
   mode,
@@ -437,56 +440,78 @@ export function PedidoForm({
 }) {
   const router = useRouter();
   const { suppliers, sites, products } = formOptions;
+  const buscaRef = useRef<HTMLInputElement>(null);
 
   const [supplierId, setSupplierId] = useState(pedido?.supplierId ?? "");
   const [siteId, setSiteId] = useState(pedido?.siteId ?? sites[0]?.id ?? "");
   const [previsao, setPrevisao] = useState(pedido?.previsaoEntrega ? pedido.previsaoEntrega.slice(0, 10) : "");
   const [observacao, setObservacao] = useState(pedido?.observacao ?? "");
-  const [rows, setRows] = useState<Row[]>(
+  const [busca, setBusca] = useState("");
+  const [cart, setCart] = useState<CartItem[]>(
     pedido
       ? pedido.items.map((it) => {
           const prod = products.find((p) => p.id === it.productId);
           const pkg = prod?.packagings.find((pk) => pk.nome === it.packagingNome);
-          return { productId: it.productId, packagingId: pkg?.id ?? null, qtd: String(it.qtdPedida), custo: String(it.custoUnitario) };
+          return { productId: it.productId, packagingId: pkg?.id ?? null, qtd: it.qtdPedida, custo: String(it.custoUnitario) };
         })
-      : [{ productId: "", packagingId: null, qtd: "1", custo: "" }],
+      : [],
   );
   const [pending, setPending] = useState<"rascunho" | "enviar" | null>(null);
   const [erro, setErro] = useState<string | null>(null);
 
-  function setRow(i: number, patch: Partial<Row>) {
-    setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  const prodMap = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+  const noCart = useMemo(() => new Set(cart.map((c) => c.productId)), [cart]);
+
+  // Busca instantânea — produtos do fornecedor selecionado primeiro.
+  const resultados = useMemo(() => {
+    const termo = busca.trim().toLowerCase();
+    if (!termo) return [];
+    const acha = products.filter((p) => `${p.nome} ${p.sku}`.toLowerCase().includes(termo));
+    if (!supplierId) return acha.slice(0, 8);
+    return [
+      ...acha.filter((p) => p.supplierIds.includes(supplierId)),
+      ...acha.filter((p) => !p.supplierIds.includes(supplierId)),
+    ].slice(0, 8);
+  }, [busca, products, supplierId]);
+
+  function custoSugerido(prod: Product, pkg: Packaging | null): string {
+    if (prod.custoMedio == null) return "";
+    const v = pkg ? prod.custoMedio * pkg.fatorConversao : prod.custoMedio;
+    return String(Number(v.toFixed(2)));
   }
 
-  function onProduto(i: number, productId: string) {
-    const prod = products.find((p) => p.id === productId);
-    const padrao = prod?.packagings.find((pk) => pk.isCompraDefault) ?? prod?.packagings[0];
-    const custoUn = prod?.custoMedio != null && padrao ? prod.custoMedio * padrao.fatorConversao : prod?.custoMedio ?? null;
-    setRow(i, {
-      productId,
-      packagingId: padrao?.id ?? null,
-      custo: custoUn != null ? String(Number(custoUn.toFixed(2))) : "",
-    });
+  function addProduto(prod: Product) {
+    if (noCart.has(prod.id)) {
+      setBusca("");
+      return;
+    }
+    const pkg = prod.packagings.find((pk) => pk.isCompraDefault) ?? prod.packagings[0] ?? null;
+    setCart((c) => [...c, { productId: prod.id, packagingId: pkg?.id ?? null, qtd: 1, custo: custoSugerido(prod, pkg) }]);
+    // Auto-seleciona o fornecedor quando o primeiro produto só tem um.
+    if (!supplierId && prod.supplierIds.length === 1) setSupplierId(prod.supplierIds[0]);
+    setBusca("");
+    buscaRef.current?.focus();
   }
 
-  function addRow() {
-    setRows((rs) => [...rs, { productId: "", packagingId: null, qtd: "1", custo: "" }]);
+  function setItem(productId: string, patch: Partial<CartItem>) {
+    setCart((c) => c.map((it) => (it.productId === productId ? { ...it, ...patch } : it)));
   }
-  function removeRow(i: number) {
-    setRows((rs) => (rs.length === 1 ? rs : rs.filter((_, idx) => idx !== i)));
+
+  function removeItem(productId: string) {
+    setCart((c) => c.filter((it) => it.productId !== productId));
   }
 
   const num = (s: string) => Number(s.replace(",", ".")) || 0;
-  const total = rows.reduce((acc, r) => acc + num(r.qtd) * num(r.custo), 0);
-  const valido = supplierId && siteId && rows.some((r) => r.productId && num(r.qtd) > 0);
+  const total = cart.reduce((acc, it) => acc + it.qtd * num(it.custo), 0);
+  const valido = supplierId && siteId && cart.some((it) => it.qtd > 0);
 
   async function salvar(enviar: boolean) {
     if (!valido) return;
     setPending(enviar ? "enviar" : "rascunho");
     setErro(null);
-    const items = rows
-      .filter((r) => r.productId && num(r.qtd) > 0)
-      .map((r) => ({ productId: r.productId, packagingId: r.packagingId, qtdPedida: num(r.qtd), custoUnitario: num(r.custo) }));
+    const items = cart
+      .filter((it) => it.qtd > 0)
+      .map((it) => ({ productId: it.productId, packagingId: it.packagingId, qtdPedida: it.qtd, custoUnitario: num(it.custo) }));
     const payload = { siteId, supplierId, previsaoEntrega: previsao || null, observacao: observacao || null, items };
     try {
       if (mode === "editar" && pedido) {
@@ -507,7 +532,7 @@ export function PedidoForm({
   return (
     <div className="flex flex-col gap-5">
       {/* Cabeçalho do pedido */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <label className="flex flex-col gap-1 text-xs font-medium text-muted">
           <span className="flex items-center gap-1"><Building2 size={12} /> Fornecedor</span>
           <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} className={selectCls}>
@@ -531,65 +556,136 @@ export function PedidoForm({
         </label>
       </div>
 
-      {/* Itens */}
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <p className="text-sm font-semibold text-ink">Itens do pedido</p>
-          <button type="button" onClick={addRow} className="flex items-center gap-1 text-sm font-medium text-brand hover:text-brand-strong">
-            <Plus size={14} /> Adicionar
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          {rows.map((r, i) => {
-            const prod = products.find((p) => p.id === r.productId);
-            return (
-              <div key={i} className="flex flex-col gap-2 rounded-xl border border-line bg-surface-2/40 p-3 sm:flex-row sm:items-end">
-                <label className="flex flex-1 flex-col gap-1 text-[11px] font-medium text-muted">
-                  Produto
-                  <select value={r.productId} onChange={(e) => onProduto(i, e.target.value)} className={selectCls}>
-                    <option value="">Selecione…</option>
-                    {products.map((p) => (
-                      <option key={p.id} value={p.id}>{p.nome}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="flex w-full flex-col gap-1 text-[11px] font-medium text-muted sm:w-32">
-                  Embalagem
-                  <select
-                    value={r.packagingId ?? ""}
-                    onChange={(e) => setRow(i, { packagingId: e.target.value || null })}
-                    disabled={!prod || prod.packagings.length === 0}
-                    className={selectCls}
+      {/* Busca instantânea */}
+      <div className="relative">
+        <Search size={15} className="absolute left-3.5 top-3 text-faint" />
+        <input
+          ref={buscaRef}
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && resultados.length > 0) {
+              e.preventDefault();
+              addProduto(resultados[0]);
+            }
+          }}
+          placeholder="Buscar produto por nome ou SKU… (Enter adiciona o primeiro)"
+          className="w-full rounded-xl border border-line bg-surface py-2.5 pl-10 pr-3 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+        />
+        {resultados.length > 0 && (
+          <ul className="absolute inset-x-0 top-full z-10 mt-1 overflow-hidden rounded-xl border border-line bg-surface shadow-(--shadow-2)">
+            {resultados.map((p) => {
+              const ja = noCart.has(p.id);
+              const doFornecedor = supplierId && p.supplierIds.includes(supplierId);
+              return (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    onClick={() => addProduto(p)}
+                    disabled={ja}
+                    className="flex w-full items-center gap-3 px-3.5 py-2 text-left transition-colors hover:bg-surface-2 disabled:opacity-50"
                   >
-                    <option value="">Unidade</option>
-                    {prod?.packagings.map((pk) => (
-                      <option key={pk.id} value={pk.id}>{pk.nome}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="flex w-full flex-col gap-1 text-[11px] font-medium text-muted sm:w-20">
-                  Qtd
-                  <input inputMode="decimal" value={r.qtd} onChange={(e) => setRow(i, { qtd: e.target.value })} className={cn(selectCls, "tabular-nums")} />
-                </label>
-                <label className="flex w-full flex-col gap-1 text-[11px] font-medium text-muted sm:w-28">
-                  Custo un.
-                  <input inputMode="decimal" value={r.custo} onChange={(e) => setRow(i, { custo: e.target.value })} placeholder="0,00" className={cn(selectCls, "tabular-nums")} />
-                </label>
-                <button
-                  type="button"
-                  onClick={() => removeRow(i)}
-                  disabled={rows.length === 1}
-                  className="grid h-9 w-9 shrink-0 place-items-center self-end rounded-lg border border-line text-faint hover:bg-danger-soft hover:text-danger disabled:opacity-40"
-                  aria-label="Remover item"
-                >
-                  <Trash2 size={15} />
-                </button>
-              </div>
+                    <Thumb url={p.imagemUrl} nome={p.nome} size={32} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-ink">{p.nome}</p>
+                      <p className="font-mono text-[11px] text-faint">{p.sku}</p>
+                    </div>
+                    {ja ? (
+                      <span className="shrink-0 text-[11px] font-medium text-ok">no pedido</span>
+                    ) : doFornecedor ? (
+                      <span className="shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-semibold text-brand">deste fornecedor</span>
+                    ) : (
+                      <Plus size={15} className="shrink-0 text-faint" />
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      {/* Itens do pedido */}
+      {cart.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-line py-10 text-center">
+          <ShoppingCart size={24} className="text-faint" />
+          <p className="text-sm text-muted">Busque um produto acima para começar o pedido.</p>
+        </div>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {cart.map((it) => {
+            const prod = prodMap.get(it.productId);
+            if (!prod) return null;
+            const pkg = prod.packagings.find((pk) => pk.id === it.packagingId) ?? null;
+            const custoAtual = prod.custoMedio != null ? (pkg ? prod.custoMedio * pkg.fatorConversao : prod.custoMedio) : null;
+            const custoNum = num(it.custo);
+            const difPct = custoAtual && custoAtual > 0 && custoNum > 0 ? ((custoNum - custoAtual) / custoAtual) * 100 : null;
+            return (
+              <li key={it.productId} className="flex flex-col gap-2.5 rounded-xl border border-line bg-surface-2/40 p-3">
+                <div className="flex items-center gap-3">
+                  <Thumb url={prod.imagemUrl} nome={prod.nome} size={36} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-ink">{prod.nome}</p>
+                    <p className="font-mono text-[11px] text-faint">{prod.sku}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeItem(it.productId)}
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-line text-faint hover:bg-danger-soft hover:text-danger"
+                    aria-label={`Remover ${prod.nome}`}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-end gap-3">
+                  {prod.packagings.length > 0 && (
+                    <label className="flex flex-col gap-1 text-[11px] font-medium text-muted">
+                      Embalagem
+                      <select
+                        value={it.packagingId ?? ""}
+                        onChange={(e) => {
+                          const novoPkg = prod.packagings.find((pk) => pk.id === e.target.value) ?? null;
+                          setItem(it.productId, { packagingId: e.target.value || null, custo: custoSugerido(prod, novoPkg) });
+                        }}
+                        className={cn(selectCls, "w-36 py-1.5")}
+                      >
+                        <option value="">Unidade</option>
+                        {prod.packagings.map((pk) => (
+                          <option key={pk.id} value={pk.id}>{pk.nome} ×{fmtQtd(pk.fatorConversao)}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <div className="flex flex-col gap-1 text-[11px] font-medium text-muted">
+                    Quantidade
+                    <Stepper value={it.qtd} onChange={(v) => setItem(it.productId, { qtd: v })} min={0} />
+                  </div>
+                  <label className="flex flex-col gap-1 text-[11px] font-medium text-muted">
+                    Custo un.
+                    <input
+                      inputMode="decimal"
+                      value={it.custo}
+                      onChange={(e) => setItem(it.productId, { custo: e.target.value })}
+                      placeholder="0,00"
+                      className={cn(selectCls, "w-24 py-1.5 tabular-nums")}
+                    />
+                  </label>
+                  <div className="ml-auto flex flex-col items-end gap-0.5 text-right">
+                    {custoAtual != null && difPct != null && Math.abs(difPct) >= 0.5 && (
+                      <span className={cn("flex items-center gap-0.5 text-[11px] font-medium tabular-nums", difPct > 0 ? "text-danger" : "text-ok")}>
+                        {difPct > 0 ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+                        {difPct > 0 ? "+" : ""}{difPct.toFixed(0)}% vs custo atual ({fmtMoney(custoAtual)})
+                      </span>
+                    )}
+                    <span className="text-sm font-semibold tabular-nums text-ink">{fmtMoney(it.qtd * custoNum)}</span>
+                  </div>
+                </div>
+              </li>
             );
           })}
-        </div>
-      </div>
+        </ul>
+      )}
 
       <label className="flex flex-col gap-1 text-xs font-medium text-muted">
         Observação

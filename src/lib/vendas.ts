@@ -91,27 +91,13 @@ export type NovoPagamento = {
   status?: "PENDENTE" | "CONFIRMADO";
 };
 
-export async function criarVenda(
-  tenantId: string,
-  input: {
-    siteId: string;
-    origem: "PDV" | "TOTEM" | "APP";
-    cashSessionId?: string | null;
-    operatorUserId?: string | null;
-    customerId?: string | null;
-    items: NovoItemVenda[];
-    descontoVenda?: number;
-    maiorIdadeConfirmada?: boolean;
-    pagamentos?: NovoPagamento[];
-    /** Totem/self-service: gera 1 pagamento PENDENTE pelo total calculado. */
-    pagamentoIntegralPendente?: PaymentMethod;
-  }
-): Promise<string> {
-  if (input.items.length === 0) throw new Error("Adicione ao menos um item.");
+/** Resolve preço/total de cada item no servidor (não confia no cliente). */
+async function resolverItensVenda(tenantId: string, items: NovoItemVenda[]) {
+  if (items.length === 0) throw new Error("Adicione ao menos um item.");
 
-  const productIds = [...new Set(input.items.map((i) => i.productId))];
-  const variantIds = input.items.map((i) => i.variantId).filter(Boolean) as string[];
-  const selecaoIds = [...new Set(input.items.flatMap((i) => i.selecoes ?? []))];
+  const productIds = [...new Set(items.map((i) => i.productId))];
+  const variantIds = items.map((i) => i.variantId).filter(Boolean) as string[];
+  const selecaoIds = [...new Set(items.flatMap((i) => i.selecoes ?? []))];
 
   const [products, variants, selComps] = await Promise.all([
     basePrisma.product.findMany({
@@ -143,7 +129,7 @@ export async function criarVenda(
     acrescimoMap.set(`${c.parentProductId}:${c.componentProductId}`, num(c.acrescimoPreco));
   }
 
-  const itensResolvidos = input.items.map((i) => {
+  const itensResolvidos = items.map((i) => {
     const p = prodMap.get(i.productId);
     if (!p) throw new Error("Produto da venda não encontrado.");
     const v = i.variantId ? varMap.get(i.variantId) ?? null : null;
@@ -167,6 +153,27 @@ export async function criarVenda(
   });
 
   const subtotal = itensResolvidos.reduce((s, i) => s + i.total, 0);
+  return { itensResolvidos, subtotal };
+}
+
+export async function criarVenda(
+  tenantId: string,
+  input: {
+    siteId: string;
+    origem: "PDV" | "TOTEM" | "APP";
+    cashSessionId?: string | null;
+    operatorUserId?: string | null;
+    customerId?: string | null;
+    totemDeviceId?: string | null;
+    items: NovoItemVenda[];
+    descontoVenda?: number;
+    maiorIdadeConfirmada?: boolean;
+    pagamentos?: NovoPagamento[];
+    /** Totem/self-service: gera 1 pagamento PENDENTE pelo total calculado. */
+    pagamentoIntegralPendente?: PaymentMethod;
+  }
+): Promise<string> {
+  const { itensResolvidos, subtotal } = await resolverItensVenda(tenantId, input.items);
   const descontoVenda = input.descontoVenda ?? 0;
   const total = Math.max(0, subtotal - descontoVenda);
 
@@ -186,6 +193,7 @@ export async function criarVenda(
         cashSessionId: input.cashSessionId ?? null,
         operatorUserId: input.operatorUserId ?? null,
         customerId: input.customerId ?? null,
+        totemDeviceId: input.totemDeviceId ?? null,
         subtotal,
         desconto: descontoVenda,
         total,
@@ -386,6 +394,62 @@ export async function confirmarPagamentoVenda(
 
   await finalizarVenda(tenantId, saleId, createdBy);
   return { already: false };
+}
+
+// ── Recebimento no caixa de venda do autoatendimento (Modo B) ──
+// O cliente montou o carrinho no totem e escolheu pagar no caixa; o operador
+// confere (pode ajustar itens) e recebe. Reprecifica no servidor, vincula a
+// venda ao caixa/operador, registra os pagamentos e finaliza (baixa + fiscal).
+export async function receberVendaTotem(
+  tenantId: string,
+  input: {
+    saleId: string;
+    cashSessionId: string;
+    operatorUserId: string;
+    customerId?: string | null;
+    items: NovoItemVenda[];
+    maiorIdadeConfirmada?: boolean;
+    pagamentos: NovoPagamento[];
+  }
+): Promise<void> {
+  const sale = await basePrisma.sale.findFirst({
+    where: { id: input.saleId, tenantId },
+    select: { id: true, status: true, origem: true },
+  });
+  if (!sale) throw new Error("Venda não encontrada.");
+  if (sale.status !== "ABERTA") throw new Error("Esta venda já foi recebida ou cancelada.");
+  if (sale.origem === "PDV") throw new Error("Venda não é do autoatendimento.");
+
+  const { itensResolvidos, subtotal } = await resolverItensVenda(tenantId, input.items);
+
+  await basePrisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`;
+    await tx.saleItem.deleteMany({ where: { saleId: input.saleId, tenantId } });
+    await tx.payment.deleteMany({ where: { saleId: input.saleId, tenantId, status: "PENDENTE" } });
+    await tx.sale.update({
+      where: { id: input.saleId },
+      data: {
+        cashSessionId: input.cashSessionId,
+        operatorUserId: input.operatorUserId,
+        customerId: input.customerId ?? undefined,
+        subtotal,
+        total: subtotal,
+        maiorIdadeConfirmada: input.maiorIdadeConfirmada ?? false,
+        items: { create: itensResolvidos.map((i) => ({ tenantId, ...i })) },
+        payments: {
+          create: input.pagamentos.map((p) => ({
+            tenantId,
+            metodo: p.metodo,
+            valor: p.valor,
+            troco: p.troco ?? null,
+            status: "CONFIRMADO",
+          })),
+        },
+      },
+    });
+  });
+
+  await finalizarVenda(tenantId, input.saleId, input.operatorUserId);
 }
 
 // ── Cancelamento / estorno (§9) ─────────────────────────────

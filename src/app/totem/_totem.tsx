@@ -6,7 +6,7 @@ import {
   Plus, Minus, Trash2, Loader2, ShoppingCart, QrCode, CheckCircle2,
   User, UserPlus, ArrowRight, ArrowLeft, Star, RotateCcw,
   Sparkles, Flame, Delete, X, Award, Wallet, Banknote, CreditCard,
-  ShieldCheck, ImageIcon, Check,
+  ShieldCheck, ImageIcon, Check, Lock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { criarVendaTotemAction } from "@/app/(app)/vendas/actions";
@@ -29,7 +29,7 @@ type CartItem = {
   detalhe: string | null; // rótulo das escolhas ("Vodka, Gelo, Limão")
 };
 
-type Etapa = "boas-vindas" | "cpf" | "cadastro" | "compra" | "revisao" | "idade" | "pagamento" | "confirmado";
+type Etapa = "boas-vindas" | "cpf" | "cadastro" | "compra" | "revisao" | "idade" | "pagamento" | "confirmado" | "enviado";
 
 const precoBase = (p: ProdutoVenda) => p.variants[0]?.preco ?? p.preco;
 const volumeBase = (p: ProdutoVenda) => fmtVolume(p.variants[0]?.volumeMl);
@@ -41,6 +41,7 @@ function CatIcon({ nome, size, className }: { nome: string | null | undefined; s
 
 export function TotemVenda({
   siteId, produtos, metodosAtivos, tenantNome, tenantLogoUrl, controleIdade, maisVendidos,
+  totemDeviceId, terminalNome, caixaAberto,
 }: {
   siteId: string | null;
   produtos: ProdutoVenda[];
@@ -49,6 +50,9 @@ export function TotemVenda({
   tenantLogoUrl: string | null;
   controleIdade: boolean;
   maisVendidos: string[];
+  totemDeviceId: string | null;
+  terminalNome: string | null;
+  caixaAberto: boolean;
 }) {
   const router = useRouter();
   const [etapa, setEtapa] = useState<Etapa>("boas-vindas");
@@ -141,7 +145,7 @@ export function TotemVenda({
     startTransition(async () => {
       try {
         const id = await criarVendaTotemAction({
-          siteId, origem: "TOTEM", customerId: cliente?.id ?? null,
+          siteId, origem: "TOTEM", customerId: cliente?.id ?? null, totemDeviceId,
           items: cart.map((i) => ({ productId: i.productId, variantId: i.variantId, quantidade: i.quantidade, selecoes: i.selecoes })),
           maiorIdadeConfirmada: maiorIdade || !precisaIdade,
           metodo: m as "PIX" | "CARTAO_CREDITO" | "CARTAO_DEBITO" | "DINHEIRO",
@@ -150,6 +154,26 @@ export function TotemVenda({
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao iniciar pagamento.");
         setMetodo(null);
+      }
+    });
+  }
+
+  // Modo B: envia a venda para a fila do PDV e o cliente paga no caixa.
+  function pagarNoCaixa() {
+    if (!siteId) { setError("Site não configurado."); return; }
+    setError(null);
+    startTransition(async () => {
+      try {
+        const id = await criarVendaTotemAction({
+          siteId, origem: "TOTEM", customerId: cliente?.id ?? null, totemDeviceId,
+          items: cart.map((i) => ({ productId: i.productId, variantId: i.variantId, quantidade: i.quantidade, selecoes: i.selecoes })),
+          maiorIdadeConfirmada: maiorIdade || !precisaIdade,
+          pagarNoCaixa: true,
+        });
+        setSaleId(id);
+        setEtapa("enviado");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Erro ao enviar para o caixa.");
       }
     });
   }
@@ -172,6 +196,10 @@ export function TotemVenda({
   }
 
   // ─────────────────────── TELAS ───────────────────────
+  // Sem caixa aberto na loja, o terminal não inicia novas vendas.
+  if (etapa === "boas-vindas" && !caixaAberto)
+    return <TerminalIndisponivel tenantNome={tenantNome} terminalNome={terminalNome} />;
+
   if (etapa === "boas-vindas")
     return <BoasVindas tenantNome={tenantNome} tenantLogoUrl={tenantLogoUrl}
       onCpf={() => { setError(null); setEtapa("cpf"); }}
@@ -207,12 +235,16 @@ export function TotemVenda({
   if (etapa === "pagamento")
     return <Pagamento total={total} metodosAtivos={metodosAtivos} metodo={metodo} saleId={saleId}
       pending={pending} error={error}
-      onEscolher={iniciarPagamento} onConfirmar={confirmarPagamento}
+      onEscolher={iniciarPagamento} onConfirmar={confirmarPagamento} onPagarNoCaixa={pagarNoCaixa}
       onVoltar={() => (saleId ? (setMetodo(null), setSaleId(null)) : setEtapa("compra"))} />;
 
   if (etapa === "confirmado")
     return <Confirmado tenantNome={tenantNome} total={total} resultado={resultado}
       cliente={cliente} onNova={reiniciar} />;
+
+  if (etapa === "enviado")
+    return <EnviadoAoCaixa numero={saleId ? "#" + saleId.slice(-4).toUpperCase() : null}
+      total={total} numItens={numItens} onNova={reiniciar} />;
 
   if (etapa === "revisao" && cart.length > 0)
     return (
@@ -1317,14 +1349,14 @@ const METODO_INFO: Record<string, { label: string; icone: React.ReactNode }> = {
 };
 
 function Pagamento({
-  total, metodosAtivos, metodo, saleId, pending, error, onEscolher, onConfirmar, onVoltar,
+  total, metodosAtivos, metodo, saleId, pending, error, onEscolher, onConfirmar, onPagarNoCaixa, onVoltar,
 }: {
   total: number; metodosAtivos: PaymentMethod[]; metodo: PaymentMethod | null; saleId: string | null;
   pending: boolean; error: string | null;
-  onEscolher: (m: PaymentMethod) => void; onConfirmar: () => void; onVoltar: () => void;
+  onEscolher: (m: PaymentMethod) => void; onConfirmar: () => void; onPagarNoCaixa: () => void; onVoltar: () => void;
 }) {
-  // Totem só processa PIX/cartão/dinheiro (OUTRO exige atendente).
-  const suportados = metodosAtivos.filter((m) => m !== "OUTRO");
+  // Totem só processa PIX/cartão (dinheiro e OUTRO viram "pagar no caixa").
+  const suportados = metodosAtivos.filter((m) => m !== "OUTRO" && m !== "DINHEIRO");
   const metodos = suportados.length ? suportados : (["PIX"] as PaymentMethod[]);
 
   // Escolha do método.
@@ -1344,6 +1376,17 @@ function Pagamento({
             </button>
           ))}
         </div>
+        {/* Modo B — o caixa recebe a venda na hora */}
+        <button disabled={pending} onClick={onPagarNoCaixa}
+          className="flex w-full max-w-md items-center gap-4 rounded-2xl border-2 border-accent/50 bg-accent-soft p-5 text-left transition-all hover:border-accent disabled:opacity-50 active:scale-[0.98]">
+          <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-surface text-accent">
+            {pending ? <Loader2 size={28} className="animate-spin" /> : <Banknote size={28} />}
+          </span>
+          <span className="min-w-0">
+            <span className="block font-display text-lg font-bold text-ink">Pagar no caixa</span>
+            <span className="block text-sm text-muted">Enviamos seu pedido — é só se dirigir ao caixa.</span>
+          </span>
+        </button>
         <BotaoSecundario onClick={onVoltar} className="max-w-md"><ArrowLeft size={18} /> Voltar ao carrinho</BotaoSecundario>
       </Centro>
     );
@@ -1432,6 +1475,56 @@ function Confirmado({ tenantNome, total, resultado, cliente, onNova }: {
 
       <p className="text-sm text-muted">Obrigado por comprar na {tenantNome}.</p>
       <BotaoGrande onClick={onNova} className="max-w-xs">Nova compra</BotaoGrande>
+    </Centro>
+  );
+}
+
+/* ═══════════════════ ENVIADO AO CAIXA (Modo B) ═══════════════════ */
+function EnviadoAoCaixa({ numero, total, numItens, onNova }: {
+  numero: string | null; total: number; numItens: number; onNova: () => void;
+}) {
+  useEffect(() => {
+    const t = setTimeout(onNova, 12000);
+    return () => clearTimeout(t);
+  }, [onNova]);
+  return (
+    <Centro>
+      <span className="grid h-24 w-24 place-items-center rounded-full bg-accent-soft text-accent motion-safe:animate-in motion-safe:zoom-in">
+        <Wallet size={52} />
+      </span>
+      <h2 className="font-display text-4xl font-bold text-ink">Pedido enviado ao caixa</h2>
+      <p className="max-w-md text-lg text-muted">Dirija-se ao caixa e informe o número do pedido para pagar.</p>
+
+      <div className="grid w-full max-w-sm gap-2">
+        <div className="flex items-center justify-between rounded-2xl border border-line bg-surface px-5 py-4">
+          <span className="text-muted">Pedido</span>
+          <span className="font-mono text-2xl font-bold text-ink">{numero ?? "—"}</span>
+        </div>
+        <div className="flex items-center justify-between rounded-2xl border border-line bg-surface px-5 py-4">
+          <span className="text-muted">{numItens} {numItens === 1 ? "item" : "itens"}</span>
+          <span className="font-display text-xl font-bold tabular-nums text-accent">{brl(total)}</span>
+        </div>
+      </div>
+
+      <BotaoGrande onClick={onNova} className="max-w-xs">Concluir</BotaoGrande>
+    </Centro>
+  );
+}
+
+/* ═══════════════════ TERMINAL INDISPONÍVEL ═══════════════════ */
+function TerminalIndisponivel({ tenantNome, terminalNome }: {
+  tenantNome: string; terminalNome: string | null;
+}) {
+  return (
+    <Centro>
+      <span className="grid h-24 w-24 place-items-center rounded-full bg-surface-2 text-faint"><Lock size={48} /></span>
+      <h2 className="font-display text-3xl font-bold text-ink">Terminal indisponível</h2>
+      <p className="max-w-md text-lg text-muted">
+        O caixa da {tenantNome} está fechado no momento. Procure um atendente para ser atendido.
+      </p>
+      {terminalNome && (
+        <p className="font-mono text-xs uppercase tracking-widest text-faint">{terminalNome}</p>
+      )}
     </Centro>
   );
 }

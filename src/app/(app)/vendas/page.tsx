@@ -28,6 +28,7 @@ export default async function VendasPage() {
         defaultSiteId={siteId}
         produtos={produtos}
         metodosAtivos={metodosAtivos}
+        operador={ctx.user.name ?? ctx.user.email ?? "Operador"}
         caixa={
           sessao
             ? {

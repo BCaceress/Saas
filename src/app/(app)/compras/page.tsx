@@ -7,6 +7,7 @@ import {
   loadTransferenciasAReceber,
   loadEntradasExtrato,
 } from "../estoque/_data";
+import { loadSugestoesReposicao } from "./_data";
 import { SiteSelector } from "@/components/app/site-selector";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
@@ -23,7 +24,8 @@ export default async function ComprasPage() {
   const ctx = await requireActiveTenant();
   const data = await withTenant(ctx, async () => {
     const activeSiteId = await getActiveSiteId();
-    const [pedidos, formOptions, aReceber, pedidosReceber, eventos, sites] = await Promise.all([
+    const [sugestoes, pedidos, formOptions, aReceber, pedidosReceber, eventos, sites] = await Promise.all([
+      loadSugestoesReposicao(activeSiteId),
       loadPedidosCompra(),
       loadComprasFormOptions(),
       loadTransferenciasAReceber(activeSiteId),
@@ -31,7 +33,7 @@ export default async function ComprasPage() {
       loadEntradasExtrato(activeSiteId),
       listSites(),
     ]);
-    return { pedidos, formOptions, aReceber, pedidosReceber, eventos, sites, activeSiteId };
+    return { sugestoes, pedidos, formOptions, aReceber, pedidosReceber, eventos, sites, activeSiteId };
   });
 
   const pedidosSerial = data.pedidos.map(serialPedido);
@@ -47,11 +49,12 @@ export default async function ComprasPage() {
       <PageHeader
         title="Compras"
         icon={navIcon("/compras")}
-        description="Do pedido ao fornecedor até a entrada no estoque — pedidos, recebimentos e histórico."
+        description="O sistema sugere o que repor — você revisa e envia ao fornecedor."
         innerClassName="max-w-none"
         actions={<SiteSelector sites={data.sites} activeSiteId={data.activeSiteId} />}
       />
       <ComprasHub
+        reposicao={{ grupos: data.sugestoes, siteId: data.activeSiteId, empresa: ctx.tenant.nome }}
         compras={{ pedidos: pedidosSerial, formOptions: data.formOptions }}
         receber={{ pedidos: pedidosReceberSerial, transferencias: transfersSerial }}
         eventos={eventosSerial}

@@ -774,6 +774,7 @@ model Site {
   sales              Sale[]
   cashSessions       CashSession[]
   paymentMethods     SitePaymentMethod[]
+  totemDevices       TotemDevice[]
 
   @@unique([tenantId, nome])
   @@index([tenantId])
@@ -1053,6 +1054,7 @@ model Sale {
   cashSessionId  String? // só PDV
   operatorUserId String? // só PDV
   customerId     String? // cliente identificado (fidelização) — opcional
+  totemDeviceId  String? // terminal de autoatendimento que originou a venda
 
   subtotal Decimal @default(0) @db.Decimal(12, 2)
   desconto Decimal @default(0) @db.Decimal(12, 2)
@@ -1066,6 +1068,7 @@ model Sale {
   site        Site         @relation(fields: [siteId], references: [id])
   cashSession CashSession? @relation(fields: [cashSessionId], references: [id])
   customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  totemDevice TotemDevice? @relation(fields: [totemDeviceId], references: [id], onDelete: SetNull)
   items       SaleItem[]
   payments    Payment[]
 
@@ -1073,8 +1076,27 @@ model Sale {
   @@index([siteId])
   @@index([cashSessionId])
   @@index([customerId])
+  @@index([totemDeviceId])
   @@index([status])
   @@index([createdAt])
+}
+
+// Terminal físico de autoatendimento. Registrado pelo quiosque no primeiro
+// uso (id fica no localStorage do aparelho); heartbeat mantém lastSeenAt —
+// "ativo" = visto nos últimos 2 minutos (fila do PDV).
+model TotemDevice {
+  id         String   @id @default(cuid())
+  tenantId   String
+  siteId     String
+  nome       String // "Terminal 01"
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  site  Site   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  sales Sale[]
+
+  @@index([tenantId])
+  @@index([siteId])
 }
 
 model SaleItem {

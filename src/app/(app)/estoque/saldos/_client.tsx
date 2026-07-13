@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect, useId, type ComponentProps } from "react";
+import { useMemo, useState, useEffect, useId, useRef, type ComponentProps } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -36,7 +36,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { NovaEntradaForm, type Item } from "../entradas/nova/_client";
 import type { SaldoRow } from "../_data";
-import { fetchHistoricoProductAction, registrarAjusteAction } from "../actions";
+import { fetchHistoricoProductAction, registrarAjusteAction, fetchEntradaFormDataAction } from "../actions";
 
 const fmt = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 const fmt1 = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
@@ -230,11 +230,9 @@ type Tab = "resumo" | "historico";
 
 export function SaldosView({
   saldos,
-  formOptions,
   siteId,
 }: {
   saldos: SaldoRow[];
-  formOptions: FormOptions;
   siteId: string | null;
 }) {
   const router = useRouter();
@@ -242,9 +240,24 @@ export function SaldosView({
   const [filtro, setFiltro] = useState<Filtro>("todos");
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
   const [reporItems, setReporItems] = useState<Item[] | null>(null);
+  const [reporLoading, setReporLoading] = useState(false);
   const [detalhe, setDetalhe] = useState<{ row: SaldoRow; tab: Tab } | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+
+  // Opções do form de reposição: carregadas sob demanda (1ª vez) e cacheadas —
+  // evita puxar todos os produtos/fornecedores no carregamento da página.
+  const [formOptions, setFormOptions] = useState<FormOptions | null>(null);
+  const formOptionsPromise = useRef<Promise<FormOptions> | null>(null);
+  function ensureFormOptions(): Promise<FormOptions> {
+    if (!formOptionsPromise.current) {
+      formOptionsPromise.current = fetchEntradaFormDataAction().then((d) => {
+        setFormOptions(d);
+        return d;
+      });
+    }
+    return formOptionsPromise.current;
+  }
 
   const abrir = (row: SaldoRow, tab: Tab = "resumo") => setDetalhe({ row, tab });
 
@@ -325,25 +338,31 @@ export function SaldosView({
     );
   }
 
-  function abrirReposicao(scope: SaldoRow[]) {
-    const productIds = new Set(formOptions.products.map((p) => p.id));
-    const items: Item[] = scope
-      .filter((s) => precisaRepor(s) && productIds.has(s.productId))
-      .map((s) => {
-        const deficit = s.estoqueIdeal - s.estoqueFechado;
-        const prod = formOptions.products.find((p) => p.id === s.productId);
-        const padrao = prod?.packagings.find((pk) => pk.isCompraDefault);
-        return {
-          productId: s.productId,
-          quantidade: deficit > 0 ? deficit : 1,
-          custoTotal: 0,
-          custoDisplay: "",
-          packagingId: padrao?.id ?? null,
-        };
-      });
-    setReporItems(items.length > 0 ? items : [
-      { productId: "", quantidade: 1, custoTotal: 0, custoDisplay: "", packagingId: null },
-    ]);
+  async function abrirReposicao(scope: SaldoRow[]) {
+    setReporLoading(true);
+    try {
+      const opts = await ensureFormOptions();
+      const productIds = new Set(opts.products.map((p) => p.id));
+      const items: Item[] = scope
+        .filter((s) => precisaRepor(s) && productIds.has(s.productId))
+        .map((s) => {
+          const deficit = s.estoqueIdeal - s.estoqueFechado;
+          const prod = opts.products.find((p) => p.id === s.productId);
+          const padrao = prod?.packagings.find((pk) => pk.isCompraDefault);
+          return {
+            productId: s.productId,
+            quantidade: deficit > 0 ? deficit : 1,
+            custoTotal: 0,
+            custoDisplay: "",
+            packagingId: padrao?.id ?? null,
+          };
+        });
+      setReporItems(items.length > 0 ? items : [
+        { productId: "", quantidade: 1, custoTotal: 0, custoDisplay: "", packagingId: null },
+      ]);
+    } finally {
+      setReporLoading(false);
+    }
   }
 
   type Pill = { key: Filtro; label: string; count: number; tone: "neutral" | "danger" | "warn" | "brand" };
@@ -568,7 +587,7 @@ export function SaldosView({
         saldo={detalhe?.row ?? null}
         initialTab={detalhe?.tab ?? "resumo"}
         siteId={siteId}
-        canRepor={detalhe ? formOptions.products.some((p) => p.id === detalhe.row.productId) : false}
+        canRepor={detalhe ? ["SIMPLES", "INSUMO"].includes(detalhe.row.tipo) : false}
         onClose={() => setDetalhe(null)}
         onEditar={(id) => router.push(`/produtos/${id}/editar`)}
         onRepor={(s) => { setDetalhe(null); abrirReposicao([s]); }}
@@ -577,19 +596,23 @@ export function SaldosView({
 
       {/* ── Sidepanel — reposição ── */}
       <Sheet
-        open={reporItems !== null}
+        open={reporItems !== null || reporLoading}
         onClose={() => setReporItems(null)}
         title="Repor estoque"
         description="Itens abaixo do ideal já carregados. Ajuste quantidades e custos."
         width="xl"
       >
-        {reporItems && (
+        {reporItems && formOptions ? (
           <NovaEntradaForm
             {...formOptions}
             embedded
             initialItems={reporItems}
             onDone={() => setReporItems(null)}
           />
+        ) : (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 size={20} className="animate-spin text-faint" />
+          </div>
         )}
       </Sheet>
     </div>

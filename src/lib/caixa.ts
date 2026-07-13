@@ -19,6 +19,15 @@ export async function sessaoAtual(tenantId: string, siteId: string, operatorUser
   });
 }
 
+/** Existe caixa aberto no site, de qualquer operador? Gate do autoatendimento. */
+export async function caixaAbertoNoSite(tenantId: string, siteId: string): Promise<boolean> {
+  const aberta = await basePrisma.cashSession.findFirst({
+    where: { tenantId, siteId, status: "ABERTA" },
+    select: { id: true },
+  });
+  return !!aberta;
+}
+
 /** Caixa aberto do operador em qualquer site do tenant (p/ bloquear logout e abrir o painel). */
 export async function caixaAbertoDoOperador(tenantId: string, operatorUserId: string) {
   return basePrisma.cashSession.findFirst({

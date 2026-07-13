@@ -6,6 +6,7 @@ import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { confirmarPagamentoVenda } from "@/lib/vendas";
+import { caixaAbertoNoSite } from "@/lib/caixa";
 import { tierFromGasto, TIERS } from "@/lib/customers";
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
@@ -13,6 +14,47 @@ const soDigitos = (s: string) => s.replace(/\D/g, "");
 
 /** Só vendas efetivadas contam para fidelização/histórico. */
 const PAGA = { status: "PAGA" as const };
+
+// ── Terminal (aparelho físico) ───────────────────────────────
+// O quiosque se registra no primeiro uso (id fica no localStorage do aparelho)
+// e envia heartbeat periódico. O retorno também informa se há caixa aberto no
+// site — sem caixa responsável, o terminal não inicia novas vendas.
+export type TerminalStatus = { id: string; nome: string; caixaAberto: boolean };
+
+export async function registrarTerminalAction(input: {
+  siteId: string;
+  deviceId: string | null;
+}): Promise<TerminalStatus> {
+  const ctx = await requireActiveTenant();
+  return runWithTenant(ctx.tenant.id, async () => {
+    let device = input.deviceId
+      ? await db.totemDevice.findFirst({
+          where: { id: input.deviceId, siteId: input.siteId },
+          select: { id: true, nome: true },
+        })
+      : null;
+
+    if (device) {
+      await db.totemDevice.update({
+        where: { id: device.id },
+        data: { lastSeenAt: new Date() },
+      });
+    } else {
+      const total = await db.totemDevice.count({ where: { siteId: input.siteId } });
+      device = await db.totemDevice.create({
+        data: {
+          tenantId: ctx.tenant.id,
+          siteId: input.siteId,
+          nome: `Terminal ${String(total + 1).padStart(2, "0")}`,
+        },
+        select: { id: true, nome: true },
+      });
+    }
+
+    const caixaAberto = await caixaAbertoNoSite(ctx.tenant.id, input.siteId);
+    return { ...device, caixaAberto };
+  });
+}
 
 /** Verifica o PIN de saída do quiosque. Sem PIN configurado, a saída é livre. */
 export async function verifyTotemPinAction(pin: string): Promise<boolean> {
