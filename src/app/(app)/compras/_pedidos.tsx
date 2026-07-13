@@ -29,7 +29,7 @@ import {
   marcarAguardandoPedidoAction,
   cancelarPedidoCompraAction,
 } from "../estoque/actions";
-import { fmtMoney, fmtQtd, previsaoLabel, Stepper, Thumb } from "./_ui";
+import { fmtMoney, fmtQtd, previsaoLabel, Stepper, Thumb, StatusBadge } from "./_ui";
 
 // ── Tipos ─────────────────────────────────────────────────────
 
@@ -76,31 +76,20 @@ type Supplier = { id: string; razaoSocial: string; nomeFantasia: string | null }
 type Site = { id: string; nome: string; tipo: string };
 export type FormOptions = { suppliers: Supplier[]; sites: Site[]; products: Product[] };
 
-const STATUS: Record<string, { label: string; cls: string; dot: string }> = {
-  RASCUNHO:         { label: "Em elaboração",      cls: "bg-surface-2 text-muted",  dot: "bg-faint" },
-  ENVIADO:          { label: "Enviado",            cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500" },
-  AGUARDANDO:       { label: "Aguardando entrega", cls: "bg-warn-soft text-warn",   dot: "bg-warn" },
-  RECEBIDO_PARCIAL: { label: "Recebido parcial",   cls: "bg-brand-soft text-brand", dot: "bg-brand" },
-  RECEBIDO:         { label: "Recebido",           cls: "bg-ok-soft text-ok",       dot: "bg-ok" },
-  CANCELADO:        { label: "Cancelado",          cls: "bg-danger-soft text-danger", dot: "bg-danger" },
-};
-
-function StatusBadge({ status }: { status: string }) {
-  const m = STATUS[status] ?? { label: status, cls: "bg-surface-2 text-muted", dot: "bg-faint" };
-  return (
-    <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold", m.cls)}>
-      <span className={cn("h-1.5 w-1.5 rounded-full", m.dot)} />
-      {m.label}
-    </span>
-  );
-}
-
 const supplierLabel = (s: Supplier) => s.nomeFantasia ?? s.razaoSocial;
 
 // ── Componente principal ──────────────────────────────────────
 
-export function ComprasClient({ pedidos, formOptions }: { pedidos: PedidoView[]; formOptions: FormOptions }) {
-  const [q, setQ] = useState("");
+export function ComprasClient({
+  pedidos,
+  formOptions,
+  initialQuery,
+}: {
+  pedidos: PedidoView[];
+  formOptions: FormOptions;
+  initialQuery?: string;
+}) {
+  const [q, setQ] = useState(initialQuery ?? "");
   const [filtro, setFiltro] = useState<string>("todos");
   const [form, setForm] = useState<{ mode: "novo" | "editar"; pedido?: PedidoView } | null>(null);
   const [detalhe, setDetalhe] = useState<PedidoView | null>(null);

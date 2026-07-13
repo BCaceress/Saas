@@ -18,13 +18,17 @@ export function ComprasHub({
   compras,
   receber,
   eventos,
+  initialTab,
+  initialQuery,
 }: {
   reposicao: { grupos: GrupoReposicao[]; siteId: string | null; empresa: string };
   compras: ComponentProps<typeof ComprasClient>;
   receber: ComponentProps<typeof RecebimentosClient>;
   eventos: ComponentProps<typeof ExtratoEntradas>["eventos"];
+  initialTab?: SubTab;
+  initialQuery?: string;
 }) {
-  const [tab, setTab] = useState<SubTab>("reposicao");
+  const [tab, setTab] = useState<SubTab>(initialTab ?? "reposicao");
   const [reposFiltro, setReposFiltro] = useState<StatusRepo | "todos">("todos");
 
   // ── Situação da reposição em números (deriva das props) ──
@@ -134,7 +138,7 @@ export function ComprasHub({
           onFiltro={setReposFiltro}
         />
       )}
-      {tab === "pedidos" && <ComprasClient {...compras} />}
+      {tab === "pedidos" && <ComprasClient {...compras} initialQuery={initialQuery} />}
       {tab === "receber" && <RecebimentosClient {...receber} />}
       {tab === "historico" && <ExtratoEntradas eventos={eventos} />}
     </div>

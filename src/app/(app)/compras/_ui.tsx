@@ -8,6 +8,26 @@ import { cn } from "@/lib/utils";
 export const fmtMoney = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 export const fmtQtd = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 
+/** Status do pedido de compra — cores/label únicas, usadas em toda tela que referencia um PurchaseOrder. */
+export const PEDIDO_STATUS: Record<string, { label: string; cls: string; dot: string; soft: string; text: string }> = {
+  RASCUNHO:         { label: "Em elaboração",      cls: "bg-surface-2 text-muted",  dot: "bg-faint",  soft: "bg-surface-2",  text: "text-muted" },
+  ENVIADO:          { label: "Enviado",            cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500", soft: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400" },
+  AGUARDANDO:       { label: "Aguardando entrega", cls: "bg-warn-soft text-warn",   dot: "bg-warn",   soft: "bg-warn-soft",  text: "text-warn" },
+  RECEBIDO_PARCIAL: { label: "Recebido parcial",   cls: "bg-brand-soft text-brand", dot: "bg-brand",  soft: "bg-brand-soft", text: "text-brand" },
+  RECEBIDO:         { label: "Recebido",           cls: "bg-ok-soft text-ok",       dot: "bg-ok",     soft: "bg-ok-soft",    text: "text-ok" },
+  CANCELADO:        { label: "Cancelado",          cls: "bg-danger-soft text-danger", dot: "bg-danger", soft: "bg-danger-soft", text: "text-danger" },
+};
+
+export function StatusBadge({ status }: { status: string }) {
+  const m = PEDIDO_STATUS[status] ?? { label: status, cls: "bg-surface-2 text-muted", dot: "bg-faint" };
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold", m.cls)}>
+      <span className={cn("h-1.5 w-1.5 rounded-full", m.dot)} />
+      {m.label}
+    </span>
+  );
+}
+
 export function relDia(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);

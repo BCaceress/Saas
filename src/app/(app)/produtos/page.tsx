@@ -7,8 +7,13 @@ import type { ProductRow, BrandOpt, SubcategoryFilterOpt } from "./_types";
 
 export const metadata = { title: "Produtos — NoHub Market" };
 
-export default async function ProdutosPage() {
+export default async function ProdutosPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string>>;
+}) {
   const ctx = await requireActiveTenant();
+  const sp = await searchParams;
 
   const data = await runWithTenant(ctx.tenant.id, async () => {
     const [products, categories, brands] = await Promise.all([
@@ -43,5 +48,11 @@ export default async function ProdutosPage() {
     return { rows, subOpts, brandOpts };
   });
 
-  return <ProdutosClient {...data} />;
+  return (
+    <ProdutosClient
+      {...data}
+      initialFornecedorId={sp.fornecedorId}
+      initialFornecedorNome={sp.fornecedorNome}
+    />
+  );
 }

@@ -2,11 +2,12 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   Plus, Search, MoreVertical, Pencil, Archive, ArchiveRestore, Users,
-  Cake, AlertTriangle, Send, Star, ChevronRight,
+  Cake, AlertTriangle, Send, Star, ChevronRight, Award,
 } from "lucide-react";
-import { Sheet } from "@/components/ui/sheet";
+import { Sheet, Modal } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
@@ -14,7 +15,8 @@ import { Field, Badge } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
 import { cn, brl } from "@/lib/utils";
 import { maskCpf, maskDate, maskPhone } from "@/lib/masks";
-import { tierFromGasto, fmtDataUTC, fmtDiasAtras } from "@/lib/customers";
+import { tierFromGasto, fmtDataUTC, fmtDiasAtras, tiersFromThresholds } from "@/lib/customers";
+import type { TierThresholds } from "@/lib/customers";
 import { CustomerSidePanel } from "@/components/app/customer-side-panel";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
@@ -49,12 +51,13 @@ function formFromRow(c: CustomerRow): CustomerForm {
 }
 
 export function ClientesClient({
-  rows, candidates, cupomAutomatico, cupomDiasRisco,
+  rows, candidates, cupomAutomatico, cupomDiasRisco, tierThresholds,
 }: {
   rows: CustomerRow[];
   candidates: CouponCandidate[];
   cupomAutomatico: boolean;
   cupomDiasRisco: number;
+  tierThresholds: TierThresholds;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -62,6 +65,7 @@ export function ClientesClient({
   const [form, setForm] = useState<CustomerForm | null>(null);
   const [modalError, setModalError] = useState<string>();
   const [selected, setSelected] = useState<CustomerRow | null>(null);
+  const [showTiers, setShowTiers] = useState(false);
 
   const refresh = () => router.refresh();
 
@@ -116,12 +120,20 @@ export function ClientesClient({
         description={`Fidelize quem compra com você. ${rows.length} ${rows.length === 1 ? "cliente" : "clientes"}.`}
         innerClassName="max-w-none"
         actions={
-          <button
-            onClick={() => { setModalError(undefined); setForm(emptyForm()); }}
-            className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-          >
-            <Plus size={16} /> Adicionar
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowTiers(true)}
+              className="flex cursor-pointer items-center gap-2 rounded-full border border-line-strong px-4 py-2 text-sm font-medium text-ink-2 transition-colors hover:bg-surface-2"
+            >
+              <Award size={16} /> Níveis
+            </button>
+            <button
+              onClick={() => { setModalError(undefined); setForm(emptyForm()); }}
+              className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+            >
+              <Plus size={16} /> Adicionar
+            </button>
+          </div>
         }
       />
 
@@ -158,7 +170,7 @@ export function ClientesClient({
       ) : (
         <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
           {list.map((c, idx) => {
-            const tier = tierFromGasto(c.totalGasto);
+            const tier = tierFromGasto(c.totalGasto, tierThresholds);
             const iniciais = c.nome.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
             return (
               <div
@@ -180,7 +192,11 @@ export function ClientesClient({
                       {c.nome}
                     </p>
                     <p className="flex items-center gap-1.5 text-xs text-faint">
-                      <Star size={10} className={cn("fill-current", tier.text)} />
+                      <span className={cn("flex items-center gap-0.5", tier.text)}>
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <Star key={i} size={10} className={i < tier.estrelas ? "fill-current" : "opacity-25"} />
+                        ))}
+                      </span>
                       <span className={tier.text}>{tier.label.replace("Cliente ", "")}</span>
                       {c.whatsapp && <span>· {maskPhone(c.whatsapp)}</span>}
                     </p>
@@ -227,6 +243,7 @@ export function ClientesClient({
           key={selected.id}
           customer={selected}
           diasRisco={cupomDiasRisco}
+          tierThresholds={tierThresholds}
           onClose={() => setSelected(null)}
           onEdit={() => { setModalError(undefined); setForm(formFromRow(selected)); setSelected(null); }}
         />
@@ -274,6 +291,46 @@ export function ClientesClient({
         )}
         {modalError && <p className="mt-3 text-sm text-danger">{modalError}</p>}
       </Sheet>
+
+      {/* Níveis de fidelização — como funciona */}
+      <Modal
+        open={showTiers}
+        onClose={() => setShowTiers(false)}
+        title="Níveis de fidelização"
+        description="O nível sobe sozinho conforme o total gasto acumulado do cliente."
+        width="md"
+      >
+        <div className="divide-y divide-line">
+          {tiersFromThresholds(tierThresholds).map((t) => (
+            <div key={t.key} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+              <span className={cn("flex shrink-0 items-center gap-0.5", t.text)}>
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Star key={i} size={13} className={i < t.estrelas ? "fill-current" : "opacity-25"} />
+                ))}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className={cn("text-sm font-semibold", t.text)}>{t.label}</p>
+                <p className="text-[12px] text-muted">
+                  {t.minGasto === 0
+                    ? "Nível inicial — todo cliente novo começa aqui."
+                    : `A partir de ${brl(t.minGasto)} em compras acumuladas.`}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 text-[12px] text-faint">
+          Estes são os valores padrão — ajuste em{" "}
+          <Link
+            href="/configuracoes/fidelizacao"
+            onClick={() => setShowTiers(false)}
+            className="font-medium text-brand hover:text-brand-strong"
+          >
+            Configurações → Fidelização
+          </Link>
+          .
+        </p>
+      </Modal>
     </div>
   );
 }

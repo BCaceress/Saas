@@ -11,6 +11,18 @@ import {
   ArchiveRestore,
   Truck,
   MapPin,
+  Package,
+  CalendarClock,
+  ShoppingCart,
+  Boxes,
+  Phone,
+  Wallet,
+  History,
+  Send,
+  Clock,
+  PackageCheck,
+  CheckCircle2,
+  Ban,
 } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
@@ -19,14 +31,46 @@ import { Input, Select } from "@/components/ui/input";
 import { Field, Badge } from "@/components/ui/misc";
 import { cn } from "@/lib/utils";
 import { maskCnpj, maskPhone } from "@/lib/masks";
+import { fmtData } from "@/lib/customers";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
+import { relDia, previsaoLabel, fmtMoney, PEDIDO_STATUS, StatusBadge } from "../compras/_ui";
 import {
   createSupplier,
   updateSupplier,
   setSupplierActive,
 } from "../produtos/actions";
 import type { SupplierRow } from "../produtos/_types";
+
+/** Ícone por status — cores vêm de PEDIDO_STATUS (compras/_ui), mesma fonte da tela de Compras. */
+const PEDIDO_ICON: Record<string, React.ReactNode> = {
+  RASCUNHO: <Pencil size={14} />,
+  ENVIADO: <Send size={14} />,
+  AGUARDANDO: <Clock size={14} />,
+  RECEBIDO_PARCIAL: <PackageCheck size={14} />,
+  RECEBIDO: <CheckCircle2 size={14} />,
+  CANCELADO: <Ban size={14} />,
+};
+
+function StatCell({
+  icon, label, value, sub, className,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub?: string;
+  className?: string;
+}) {
+  return (
+    <div className={cn("p-3.5", className)}>
+      <div className="flex items-center gap-1.5 text-[11px] font-medium text-faint">
+        {icon} {label}
+      </div>
+      <div className="mt-1 truncate text-[15px] font-semibold text-ink">{value}</div>
+      {sub && <div className="mt-0.5 truncate text-[12px] text-muted">{sub}</div>}
+    </div>
+  );
+}
 
 type SupplierForm = {
   id?: string;
@@ -114,10 +158,10 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
   const [error, setError] = useState<string>();
   const [q, setQ] = useState("");
 
-  const [cnpj, setCnpj] = useState("");
   const [form, setForm] = useState<SupplierForm | null>(null);
   const [modalNote, setModalNote] = useState<string>();
   const [modalError, setModalError] = useState<string>();
+  const [resumo, setResumo] = useState<SupplierRow | null>(null);
 
   function refresh() {
     router.refresh();
@@ -125,7 +169,7 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
 
   async function buscarCnpj() {
     setError(undefined);
-    const digits = cnpj.replace(/\D/g, "");
+    const digits = (form?.cnpj ?? "").replace(/\D/g, "");
     if (digits.length !== 14) return setError("CNPJ precisa de 14 dígitos.");
     setLoadingCnpj(true);
     setModalNote(undefined);
@@ -135,7 +179,7 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
       const d = await res.json();
       if (res.ok) {
         setForm({
-          ...emptyForm(maskCnpj(cnpj)),
+          ...emptyForm(maskCnpj(digits)),
           razaoSocial: d.razaoSocial || "",
           nomeFantasia: d.nomeFantasia || "",
           email: d.email || "",
@@ -150,7 +194,7 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
         });
         setModalNote("Confira os dados e complete o que faltar.");
       } else if (res.status === 404) {
-        setForm(emptyForm(maskCnpj(cnpj)));
+        setForm(emptyForm(maskCnpj(digits)));
         setModalNote("CNPJ não encontrado na Receita — preencha manualmente.");
       } else {
         setError(d.error ?? "Consulta indisponível. Tente de novo.");
@@ -190,7 +234,6 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
         if (form.id) await updateSupplier(form.id, payload);
         else await createSupplier(payload);
         setForm(null);
-        setCnpj("");
         refresh();
       } catch (e) {
         setModalError(
@@ -237,7 +280,6 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
               setModalNote(undefined);
               setModalError(undefined);
               setError(undefined);
-              setCnpj("");
               setForm(emptyForm());
             }}
             className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
@@ -272,12 +314,19 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
           {list.map((s, idx) => (
             <div
               key={s.id}
+              onClick={() => setResumo(s)}
               className={cn(
-                "flex items-center gap-3 px-5 py-3.5 transition-colors hover:bg-surface-2",
+                "flex cursor-pointer items-center gap-3 px-5 py-3.5 transition-colors hover:bg-surface-2",
                 idx !== 0 && "border-t border-line",
+                !s.ativo && "opacity-60",
               )}
             >
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
+              <span
+                className={cn(
+                  "grid h-9 w-9 shrink-0 place-items-center rounded-xl",
+                  s.ativo ? "bg-brand-soft text-brand" : "bg-surface-2 text-faint",
+                )}
+              >
                 <Truck size={16} />
               </span>
               <div className="min-w-0 flex-1">
@@ -322,46 +371,48 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
                 </p>
               </div>
               {!s.ativo && <Badge>Inativo</Badge>}
-              <Menu
-                align="end"
-                trigger={
-                  <button
-                    type="button"
-                    aria-label="Ações do fornecedor"
-                    title="Ações do fornecedor"
-                    className="cursor-pointer rounded-[var(--radius-sm)] p-1.5 text-muted hover:bg-surface-2 hover:text-ink"
-                  >
-                    <MoreVertical size={16} />
-                  </button>
-                }
-              >
-                <MenuItem
-                  icon={<Pencil size={15} />}
-                  onClick={() => {
-                    setModalNote(undefined);
-                    setModalError(undefined);
-                    setForm(formFromRow(s));
-                  }}
-                >
-                  Editar
-                </MenuItem>
-                {enderecoMapsUrl(s) && (
-                  <MenuItem
-                    icon={<MapPin size={15} />}
-                    onClick={() => window.open(enderecoMapsUrl(s)!, "_blank", "noopener,noreferrer")}
-                  >
-                    Ver endereço no Maps
-                  </MenuItem>
-                )}
-                <MenuItem
-                  icon={
-                    s.ativo ? <Archive size={15} /> : <ArchiveRestore size={15} />
+              <div onClick={(e) => e.stopPropagation()}>
+                <Menu
+                  align="end"
+                  trigger={
+                    <button
+                      type="button"
+                      aria-label="Ações do fornecedor"
+                      title="Ações do fornecedor"
+                      className="cursor-pointer rounded-[var(--radius-sm)] p-1.5 text-muted hover:bg-surface-2 hover:text-ink"
+                    >
+                      <MoreVertical size={16} />
+                    </button>
                   }
-                  onClick={() => toggleActive(s)}
                 >
-                  {s.ativo ? "Inativar" : "Reativar"}
-                </MenuItem>
-              </Menu>
+                  <MenuItem
+                    icon={<Pencil size={15} />}
+                    onClick={() => {
+                      setModalNote(undefined);
+                      setModalError(undefined);
+                      setForm(formFromRow(s));
+                    }}
+                  >
+                    Editar
+                  </MenuItem>
+                  {enderecoMapsUrl(s) && (
+                    <MenuItem
+                      icon={<MapPin size={15} />}
+                      onClick={() => window.open(enderecoMapsUrl(s)!, "_blank", "noopener,noreferrer")}
+                    >
+                      Ver endereço no Maps
+                    </MenuItem>
+                  )}
+                  <MenuItem
+                    icon={
+                      s.ativo ? <Archive size={15} /> : <ArchiveRestore size={15} />
+                    }
+                    onClick={() => toggleActive(s)}
+                  >
+                    {s.ativo ? "Inativar" : "Reativar"}
+                  </MenuItem>
+                </Menu>
+              </div>
             </div>
           ))}
         </div>
@@ -388,8 +439,8 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
           <div className="flex gap-2">
             <Input
               id="cnpj"
-              value={cnpj}
-              onChange={(e) => setCnpj(maskCnpj(e.target.value))}
+              value={form?.cnpj ?? ""}
+              onChange={(e) => upd("cnpj", maskCnpj(e.target.value))}
               placeholder="00.000.000/0000-00"
               inputMode="numeric"
               maxLength={18}
@@ -471,6 +522,160 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
           </div>
         )}
         {modalError && <p className="mt-2 text-sm text-danger">{modalError}</p>}
+      </Sheet>
+
+      <Sheet
+        open={!!resumo}
+        onClose={() => setResumo(null)}
+        title={resumo ? (resumo.nomeFantasia || resumo.razaoSocial) : ""}
+        description={resumo?.createdAt ? `Fornecedor desde ${fmtData(resumo.createdAt)}` : undefined}
+        width="md"
+        footer={
+          resumo && (
+            <div className="flex flex-col gap-2 sm:flex-row ">
+              <Button
+                variant="secondary"
+                className="flex-1 gap-1.5 "
+                onClick={() =>
+                  router.push(
+                    `/compras?tab=pedidos&q=${encodeURIComponent(resumo.nomeFantasia || resumo.razaoSocial)}`,
+                  )
+                }
+              >
+                <ShoppingCart size={15} /> Ver pedidos
+              </Button>
+              <Button
+                variant="secondary"
+                className="flex-1 gap-1.5"
+                onClick={() =>
+                  router.push(
+                    `/produtos?fornecedorId=${resumo.id}&fornecedorNome=${encodeURIComponent(resumo.nomeFantasia || resumo.razaoSocial)}`,
+                  )
+                }
+              >
+                <Boxes size={15} /> Ver produtos
+              </Button>
+            </div>
+          )
+        }
+      >
+        {resumo && (
+          <div className="flex flex-col gap-5">
+            {/* Identificação */}
+            <div className="flex items-start gap-3">
+              <span
+                className={cn(
+                  "grid h-11 w-11 shrink-0 place-items-center rounded-full",
+                  resumo.ativo ? "bg-brand-soft text-brand" : "bg-surface-2 text-faint",
+                )}
+              >
+                <Truck size={18} />
+              </span>
+              <div className="min-w-0 flex-1 pt-0.5">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+                  <span className={cn("flex items-center gap-1.5 font-medium", resumo.ativo ? "text-ok" : "text-faint")}>
+                    <span className={cn("h-1.5 w-1.5 rounded-full", resumo.ativo ? "bg-ok" : "bg-faint")} />
+                    {resumo.ativo ? "Ativo" : "Inativo"}
+                  </span>
+                  {resumo.cnpj && (
+                    <>
+                      <span className="text-faint">·</span>
+                      <span className="font-mono text-muted">{maskCnpj(resumo.cnpj)}</span>
+                    </>
+                  )}
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted">
+                  {resumo.telefone && (
+                    <a
+                      href={whatsappUrl(resumo.telefone)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Abrir no WhatsApp"
+                      className="flex items-center gap-1 hover:text-brand hover:underline"
+                    >
+                      <Phone size={11} /> {maskPhone(resumo.telefone)}
+                    </a>
+                  )}
+                  {resumo.nomeContatoPrincipal && <span>{resumo.nomeContatoPrincipal}</span>}
+                </div>
+              </div>
+            </div>
+
+            {!resumo.ativo && (
+              <p className="rounded-[var(--radius-sm)] bg-surface-2 px-3 py-2 text-xs font-medium text-muted">
+                Fornecedor inativo — reative para voltar a receber sugestões de compra.
+              </p>
+            )}
+
+            {/* Resumo — indicadores em bloco único */}
+            <div className="rounded-[var(--radius-lg)] border border-line bg-surface-2/60">
+              <div className="grid grid-cols-2">
+                <StatCell
+                  className="border-r border-b border-line"
+                  icon={<Package size={13} />}
+                  label="Produtos fornecidos"
+                  value={String(resumo.totalProdutos ?? 0)}
+                />
+                <StatCell
+                  className="border-b border-line"
+                  icon={<Wallet size={13} />}
+                  label="Comprado (30d)"
+                  value={fmtMoney(resumo.totalComprado30d ?? 0)}
+                />
+                <StatCell
+                  className="border-r border-line"
+                  icon={<History size={13} />}
+                  label="Última solicitação"
+                  value={resumo.ultimaSolicitacao ? relDia(resumo.ultimaSolicitacao.data) : "—"}
+                  sub={resumo.ultimaSolicitacao?.numero}
+                />
+                <StatCell
+                  icon={<CalendarClock size={13} />}
+                  label="Próxima entrega"
+                  value={previsaoLabel(resumo.proximaEntrega ?? null)}
+                />
+              </div>
+            </div>
+
+            {/* Últimos pedidos */}
+            <div>
+              <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
+                <ShoppingCart size={12} /> Últimos pedidos
+              </h3>
+              {resumo.ultimosPedidos && resumo.ultimosPedidos.length > 0 ? (
+                <div className="divide-y divide-line rounded-[var(--radius-lg)] border border-line">
+                  {resumo.ultimosPedidos.map((p) => {
+                    const st = PEDIDO_STATUS[p.status] ?? PEDIDO_STATUS.RASCUNHO;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() =>
+                          router.push(`/compras?tab=pedidos&q=${encodeURIComponent(p.numero)}`)
+                        }
+                        className="flex w-full cursor-pointer items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2"
+                      >
+                        <span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg", st.soft, st.text)}>
+                          {PEDIDO_ICON[p.status] ?? PEDIDO_ICON.RASCUNHO}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="font-mono text-[13px] font-semibold text-ink">{p.numero}</p>
+                          <p className="text-[12px] text-muted">{relDia(p.data)}</p>
+                        </div>
+                        <span className="shrink-0 font-mono text-[13px] font-semibold text-ink tnum">
+                          {fmtMoney(p.valorTotal)}
+                        </span>
+                        <StatusBadge status={p.status} />
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[13px] text-muted">Nenhum pedido registrado ainda.</p>
+              )}
+            </div>
+          </div>
+        )}
       </Sheet>
     </div>
   );

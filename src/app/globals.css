@@ -14,6 +14,7 @@
   --surface-2: #f5f6f8;
   --line: #eceef1;
   --line-strong: #dfe2e7;
+  --line-button: #8a909a; /* borda dos botões (secondary/outline) — cinza mais forte que line-strong */
 
   /* Tinta — preto/cinza */
   --ink: #111827;
@@ -40,6 +41,14 @@
   --danger: #dc2626;
   --danger-soft: #fde4e4;
 
+  /* Níveis de fidelização — cores fora da escala laranja (metal/gema real) */
+  --tier-gold: #a16207;
+  --tier-gold-soft: #fef3c7;
+  --tier-silver: #64748b;
+  --tier-silver-soft: #f1f5f9;
+  --tier-diamond: #7c3aed;
+  --tier-diamond-soft: #f3edfe;
+
   /* Forma — cantos totalmente arredondados (premium floating)
      inputs 16px · cards 24px · modais 32px · botões/pílulas 999px */
   --radius-sm: 0.75rem; /* 12px — chips, ícones */
@@ -63,6 +72,7 @@
     --surface-2: #1b1f25;
     --line: #262b32;
     --line-strong: #353b44;
+    --line-button: #78818f;
 
     --ink: #ededef;
     --ink-2: #c7cace;
@@ -85,6 +95,13 @@
     --danger: #f87171;
     --danger-soft: #2a1414;
 
+    --tier-gold: #eab308;
+    --tier-gold-soft: #3f2d05;
+    --tier-silver: #94a3b8;
+    --tier-silver-soft: #1e2530;
+    --tier-diamond: #a78bfa;
+    --tier-diamond-soft: #241a38;
+
     --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-2: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
   }
@@ -96,6 +113,7 @@
   --surface-2: #1b1f25;
   --line: #262b32;
   --line-strong: #353b44;
+  --line-button: #78818f;
 
   --ink: #ededef;
   --ink-2: #c7cace;
@@ -118,6 +136,13 @@
   --danger: #f87171;
   --danger-soft: #2a1414;
 
+  --tier-gold: #eab308;
+  --tier-gold-soft: #3f2d05;
+  --tier-silver: #94a3b8;
+  --tier-silver-soft: #1e2530;
+  --tier-diamond: #a78bfa;
+  --tier-diamond-soft: #241a38;
+
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
 }
@@ -128,6 +153,7 @@
   --color-surface-2: var(--surface-2);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
+  --color-line-button: var(--line-button);
 
   --color-ink: var(--ink);
   --color-ink-2: var(--ink-2);
@@ -149,6 +175,13 @@
   --color-warn-soft: var(--warn-soft);
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
+
+  --color-tier-gold: var(--tier-gold);
+  --color-tier-gold-soft: var(--tier-gold-soft);
+  --color-tier-silver: var(--tier-silver);
+  --color-tier-silver-soft: var(--tier-silver-soft);
+  --color-tier-diamond: var(--tier-diamond);
+  --color-tier-diamond-soft: var(--tier-diamond-soft);
 
   --radius-DEFAULT: var(--radius);
   --radius-sm: var(--radius-sm);

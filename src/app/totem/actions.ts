@@ -7,10 +7,25 @@ import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { confirmarPagamentoVenda } from "@/lib/vendas";
 import { caixaAbertoNoSite } from "@/lib/caixa";
-import { tierFromGasto, TIERS } from "@/lib/customers";
+import { tierFromGasto, tiersFromThresholds } from "@/lib/customers";
+import type { TierThresholds } from "@/lib/customers";
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const soDigitos = (s: string) => s.replace(/\D/g, "");
+
+function thresholdsOf(tenant: {
+  tierBronzeMin: number;
+  tierPrataMin: number;
+  tierOuroMin: number;
+  tierDiamanteMin: number;
+}): TierThresholds {
+  return {
+    bronze: tenant.tierBronzeMin,
+    prata: tenant.tierPrataMin,
+    ouro: tenant.tierOuroMin,
+    diamante: tenant.tierDiamanteMin,
+  };
+}
 
 /** Só vendas efetivadas contam para fidelização/histórico. */
 const PAGA = { status: "PAGA" as const };
@@ -77,11 +92,10 @@ export type PerfilTotem = {
   comprarNovamente: string[]; // productIds da última compra
 };
 
-async function montarPerfil(customer: {
-  id: string;
-  nome: string;
-  pontos: number;
-}): Promise<PerfilTotem> {
+async function montarPerfil(
+  customer: { id: string; nome: string; pontos: number },
+  tierThresholds: TierThresholds,
+): Promise<PerfilTotem> {
   const [sales, favAgg] = await Promise.all([
     db.sale.findMany({
       where: { ...PAGA, customerId: customer.id },
@@ -99,10 +113,10 @@ async function montarPerfil(customer: {
 
   const totalGasto = sales.reduce((s, v) => s + num(v.total), 0);
   const ultima = sales[0] ?? null;
-  const tier = tierFromGasto(totalGasto);
+  const tier = tierFromGasto(totalGasto, tierThresholds);
 
   // Próxima meta = próximo tier acima na escada (menor minGasto ainda não atingido).
-  const acima = [...TIERS].reverse().find((t) => t.minGasto > totalGasto);
+  const acima = [...tiersFromThresholds(tierThresholds)].reverse().find((t) => t.minGasto > totalGasto);
   const proximaMeta = acima?.minGasto ?? null;
 
   // "Comprar novamente" = itens da última venda paga.
@@ -147,7 +161,7 @@ export async function identificarClienteAction(cpfRaw: string): Promise<PerfilTo
       select: { id: true, nome: true, pontos: true },
     });
     if (!customer) return null;
-    return montarPerfil(customer);
+    return montarPerfil(customer, thresholdsOf(ctx.tenant));
   });
 }
 
@@ -184,7 +198,7 @@ export async function cadastroRapidoAction(input: z.input<typeof cadastroSchema>
       if (existente.ativo) throw new Error("CPF já cadastrado. Toque em Voltar e use “Já sou cliente”.");
       // Cliente desativado: reativa em vez de duplicar o cadastro.
       await db.customer.update({ where: { id: existente.id }, data: { ativo: true } });
-      return montarPerfil(existente);
+      return montarPerfil(existente, thresholdsOf(ctx.tenant));
     }
     const telEmUso = await db.customer.findFirst({
       where: { whatsapp: d.telefone, ativo: true },
@@ -195,7 +209,7 @@ export async function cadastroRapidoAction(input: z.input<typeof cadastroSchema>
       data: { tenantId: ctx.tenant.id, nome: d.nome, cpf: d.cpf, whatsapp: d.telefone },
       select: { id: true, nome: true, pontos: true },
     });
-    return montarPerfil(criado);
+    return montarPerfil(criado, thresholdsOf(ctx.tenant));
   });
 }
 

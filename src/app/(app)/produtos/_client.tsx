@@ -36,8 +36,10 @@ export function ProdutosClient(props: {
   rows: ProductRow[];
   subOpts: SubcategoryFilterOpt[];
   brandOpts: BrandOpt[];
+  initialFornecedorId?: string;
+  initialFornecedorNome?: string;
 }) {
-  const { rows, subOpts, brandOpts } = props;
+  const { rows, subOpts, brandOpts, initialFornecedorId, initialFornecedorNome } = props;
   const router = useRouter();
   const [, start] = useTransition();
 
@@ -59,7 +61,8 @@ export function ProdutosClient(props: {
   const [fTipo, setFTipo] = useState("");
   const [fSub, setFSub] = useState("");
   const [fMarca, setFMarca] = useState("");
-  const [fStatus, setFStatus] = useState("ativos");
+  const [fStatus, setFStatus] = useState(initialFornecedorId ? "todos" : "ativos");
+  const [fFornecedorId, setFFornecedorId] = useState(initialFornecedorId ?? "");
   const [porPagina, setPorPagina] = useState(50);
   const [pagina, setPagina] = useState(1);
 
@@ -70,16 +73,17 @@ export function ProdutosClient(props: {
       if (fTipo && p.tipo !== fTipo) return false;
       if (fSub && p.subcategoryId !== fSub) return false;
       if (fMarca && p.brandId !== fMarca) return false;
+      if (fFornecedorId && !p.fornecedores.some((f) => f.id === fFornecedorId)) return false;
       if (fStatus === "ativos" && !p.ativo) return false;
       if (fStatus === "arquivados" && p.ativo) return false;
       return true;
     });
-  }, [rows, q, fTipo, fSub, fMarca, fStatus]);
+  }, [rows, q, fTipo, fSub, fMarca, fFornecedorId, fStatus]);
 
   // Volta pra primeira página quando filtro/tamanho muda
   useEffect(() => {
     setPagina(1);
-  }, [q, fTipo, fSub, fMarca, fStatus, porPagina]);
+  }, [q, fTipo, fSub, fMarca, fFornecedorId, fStatus, porPagina]);
 
   const totalPaginas = Math.max(1, Math.ceil(filtered.length / porPagina));
   const paginaAtual = Math.min(pagina, totalPaginas);
@@ -148,6 +152,20 @@ export function ProdutosClient(props: {
       />
 
       <div className="w-full rounded-[var(--radius-lg)] bg-surface p-3 shadow-[var(--shadow-float)] sm:p-4">
+        {fFornecedorId && (
+          <div className="mb-2 flex items-center gap-2 rounded-full border border-brand/30 bg-brand-soft px-3 py-1.5 text-xs font-medium text-brand-strong">
+            <Truck size={13} />
+            Filtrando por fornecedor: {initialFornecedorNome || "selecionado"}
+            <button
+              type="button"
+              onClick={() => setFFornecedorId("")}
+              className="ml-auto cursor-pointer rounded-full p-0.5 hover:bg-brand/15"
+              aria-label="Remover filtro de fornecedor"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        )}
         {temProdutos && (
           <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius)] border border-line bg-surface-2 p-2">
             <div className="relative min-w-56 flex-1">

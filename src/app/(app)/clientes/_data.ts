@@ -1,7 +1,7 @@
 import "server-only";
 import { db } from "@/lib/prisma";
 import type { Customer } from "@/generated/prisma";
-import type { CustomerRow, CustomerInsights, CouponCandidate } from "./_types";
+import type { CustomerRow, CustomerInsights, CouponCandidate, ComprasPorDia } from "./_types";
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const DIA = 86_400_000;
@@ -55,18 +55,17 @@ function toCustomerRow(
 
 /** Métricas ao vivo de um cliente. Assume contexto de tenant ativo. */
 export async function computeInsights(customerId: string): Promise<CustomerInsights> {
-  const [sales, favAgg] = await Promise.all([
+  const [sales, recentSales] = await Promise.all([
     db.sale.findMany({
       where: { ...PAGA, customerId },
       select: { total: true, paidAt: true },
       orderBy: { paidAt: "desc" },
     }),
-    db.saleItem.groupBy({
-      by: ["productId"],
-      where: { sale: { ...PAGA, customerId } },
-      _sum: { quantidade: true },
-      orderBy: { _sum: { quantidade: "desc" } },
-      take: 4,
+    db.sale.findMany({
+      where: { ...PAGA, customerId },
+      select: { paidAt: true, items: { select: { productId: true, quantidade: true } } },
+      orderBy: { paidAt: "desc" },
+      take: 8,
     }),
   ]);
 
@@ -74,17 +73,43 @@ export async function computeInsights(customerId: string): Promise<CustomerInsig
   const visitas = sales.length;
   const ticketMedio = visitas > 0 ? totalGasto / visitas : 0;
   const ultimaCompra = sales[0]?.paidAt ?? null;
+  const valorUltimaCompra = sales[0] ? num(sales[0].total) : null;
 
   const inicioMes = new Date();
   inicioMes.setDate(1);
   inicioMes.setHours(0, 0, 0, 0);
-  const visitasMes = sales.filter((s) => s.paidAt && s.paidAt >= inicioMes).length;
+  const inicioMesAnterior = new Date(inicioMes);
+  inicioMesAnterior.setMonth(inicioMesAnterior.getMonth() - 1);
+
+  const vendasMes = sales.filter((s) => s.paidAt && s.paidAt >= inicioMes);
+  const vendasMesAnterior = sales.filter(
+    (s) => s.paidAt && s.paidAt >= inicioMesAnterior && s.paidAt < inicioMes,
+  );
+  const visitasMes = vendasMes.length;
+  const visitasMesAnterior = vendasMesAnterior.length;
+  const gastoMes = vendasMes.reduce((s, v) => s + num(v.total), 0);
+  const gastoMesAnterior = vendasMesAnterior.length
+    ? vendasMesAnterior.reduce((s, v) => s + num(v.total), 0)
+    : null;
 
   const diasSemComprar = ultimaCompra
     ? Math.floor((Date.now() - ultimaCompra.getTime()) / DIA)
     : null;
 
-  const prodIds = favAgg.map((f) => f.productId);
+  const datasOrdenadas = sales
+    .map((s) => s.paidAt)
+    .filter((d): d is Date => d != null)
+    .sort((a, b) => a.getTime() - b.getTime());
+  const frequenciaMediaDias =
+    datasOrdenadas.length >= 2
+      ? Math.round(
+          (datasOrdenadas[datasOrdenadas.length - 1].getTime() - datasOrdenadas[0].getTime()) /
+            DIA /
+            (datasOrdenadas.length - 1),
+        )
+      : null;
+
+  const prodIds = [...new Set(recentSales.flatMap((s) => s.items.map((i) => i.productId)))];
   const prods = prodIds.length
     ? await db.product.findMany({
         where: { id: { in: prodIds } },
@@ -92,19 +117,35 @@ export async function computeInsights(customerId: string): Promise<CustomerInsig
       })
     : [];
   const nomeById = new Map(prods.map((p) => [p.id, p.nome]));
-  const produtosFavoritos = favAgg.map((f) => ({
-    nome: nomeById.get(f.productId) ?? "Produto",
-    vezes: Math.round(num(f._sum.quantidade)),
-  }));
+
+  const porDia = new Map<string, ComprasPorDia>();
+  for (const s of recentSales) {
+    if (!s.paidAt) continue;
+    const chave = s.paidAt.toISOString().slice(0, 10);
+    const grupo = porDia.get(chave) ?? { data: s.paidAt.toISOString(), itens: [] };
+    for (const item of s.items) {
+      const nome = nomeById.get(item.productId) ?? "Produto";
+      const existente = grupo.itens.find((i) => i.nome === nome);
+      if (existente) existente.vezes += Math.round(num(item.quantidade));
+      else grupo.itens.push({ nome, vezes: Math.round(num(item.quantidade)) });
+    }
+    porDia.set(chave, grupo);
+  }
+  const comprasRecentes = [...porDia.values()].slice(0, 4);
 
   return {
     totalGasto,
     ticketMedio,
     visitas,
     visitasMes,
+    visitasMesAnterior,
     ultimaCompra: ultimaCompra ? ultimaCompra.toISOString() : null,
+    valorUltimaCompra,
     diasSemComprar,
-    produtosFavoritos,
+    gastoMes,
+    gastoMesAnterior,
+    frequenciaMediaDias,
+    comprasRecentes,
   };
 }
 

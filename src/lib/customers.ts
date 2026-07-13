@@ -16,17 +16,47 @@ export type Tier = {
   soft: string;
 };
 
-/** Escada de fidelidade — do maior para o menor (avaliada em ordem). */
-export const TIERS: Tier[] = [
-  { key: "diamante", label: "Cliente Diamante", estrelas: 5, minGasto: 5000, text: "text-brand", soft: "bg-brand-soft" },
-  { key: "ouro", label: "Cliente Ouro", estrelas: 4, minGasto: 2000, text: "text-accent", soft: "bg-accent-soft" },
-  { key: "prata", label: "Cliente Prata", estrelas: 3, minGasto: 500, text: "text-muted", soft: "bg-surface-2" },
-  { key: "bronze", label: "Cliente Bronze", estrelas: 2, minGasto: 200, text: "text-warn", soft: "bg-warn-soft" },
-  { key: "cobre", label: "Cliente Cobre", estrelas: 1, minGasto: 0, text: "text-faint", soft: "bg-surface-2" },
-];
+/** Limites (R$) dos níveis acima do base — ajustáveis em Configurações → Fidelização. */
+export type TierThresholds = {
+  bronze: number;
+  prata: number;
+  ouro: number;
+  diamante: number;
+};
 
-export function tierFromGasto(totalGasto: number): Tier {
-  return TIERS.find((t) => totalGasto >= t.minGasto) ?? TIERS[TIERS.length - 1];
+/** Valores de fábrica — usados até o operador ajustar (Tenant.tier*Min). */
+export const DEFAULT_TIER_THRESHOLDS: TierThresholds = {
+  bronze: 200,
+  prata: 500,
+  ouro: 2000,
+  diamante: 5000,
+};
+
+const TIER_META: Record<TierKey, Omit<Tier, "minGasto">> = {
+  diamante: { key: "diamante", label: "Cliente Diamante", estrelas: 5, text: "text-tier-diamond", soft: "bg-tier-diamond-soft" },
+  ouro: { key: "ouro", label: "Cliente Ouro", estrelas: 4, text: "text-tier-gold", soft: "bg-tier-gold-soft" },
+  prata: { key: "prata", label: "Cliente Prata", estrelas: 3, text: "text-tier-silver", soft: "bg-tier-silver-soft" },
+  bronze: { key: "bronze", label: "Cliente Bronze", estrelas: 2, text: "text-warn", soft: "bg-warn-soft" },
+  cobre: { key: "cobre", label: "Cliente Cobre", estrelas: 1, text: "text-faint", soft: "bg-surface-2" },
+};
+
+/** Escada de fidelidade — do maior para o menor (avaliada em ordem). Cobre é sempre R$ 0. */
+export function tiersFromThresholds(t: TierThresholds = DEFAULT_TIER_THRESHOLDS): Tier[] {
+  return [
+    { ...TIER_META.diamante, minGasto: t.diamante },
+    { ...TIER_META.ouro, minGasto: t.ouro },
+    { ...TIER_META.prata, minGasto: t.prata },
+    { ...TIER_META.bronze, minGasto: t.bronze },
+    { ...TIER_META.cobre, minGasto: 0 },
+  ];
+}
+
+/** Escada com os limites padrão de fábrica — usar quando o tenant ainda não foi carregado. */
+export const TIERS: Tier[] = tiersFromThresholds();
+
+export function tierFromGasto(totalGasto: number, thresholds?: TierThresholds): Tier {
+  const escada = thresholds ? tiersFromThresholds(thresholds) : TIERS;
+  return escada.find((t) => totalGasto >= t.minGasto) ?? escada[escada.length - 1];
 }
 
 /** dd/mm/aaaa a partir de ISO (fuso local) — para timestamps. "—" se nulo. */
@@ -66,3 +96,17 @@ export const SEXO_LABEL: Record<string, string> = {
   FEMININO: "Feminino",
   OUTRO: "Outro",
 };
+
+export type StatusTone = "ok" | "warn" | "muted" | "faint";
+
+/** Status comportamental do cliente, derivado do histórico de compras. */
+export function statusCliente(
+  insights: { diasSemComprar: number | null; visitasMes: number },
+  diasRisco: number,
+): { label: string; tone: StatusTone } {
+  if (insights.diasSemComprar == null) return { label: "Sem compras ainda", tone: "faint" };
+  if (insights.diasSemComprar >= diasRisco)
+    return { label: `Não compra há ${insights.diasSemComprar} dias`, tone: "warn" };
+  if (insights.visitasMes >= 3) return { label: "Cliente frequente", tone: "ok" };
+  return { label: "Ativo", tone: "muted" };
+}

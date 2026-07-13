@@ -115,6 +115,13 @@ model Tenant {
   cupomAutomatico  Boolean @default(false)
   cupomDiasRisco   Int     @default(25) // dias sem comprar → cliente em risco
 
+  // Níveis do cliente por total gasto acumulado (Cobre é o nível-base, sempre
+  // R$ 0 — não configurável). Ajustável em Configurações → Fidelização.
+  tierBronzeMin   Int @default(200)
+  tierPrataMin    Int @default(500)
+  tierOuroMin     Int @default(2000)
+  tierDiamanteMin Int @default(5000)
+
   // Estoque (Configurações → Estoque e alertas)
   estoqueMinimoPadrao Int @default(0) // pré-preenche o mínimo ao cadastrar produto
   produtoParadoDias   Int @default(45) // dias sem movimentação → alerta "parado"

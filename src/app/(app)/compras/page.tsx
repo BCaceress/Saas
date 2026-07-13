@@ -20,8 +20,13 @@ const serialPedido = <T extends { previsaoEntrega: Date | null; createdAt: Date;
   enviadoEm: p.enviadoEm?.toISOString() ?? null,
 });
 
-export default async function ComprasPage() {
+export default async function ComprasPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string>>;
+}) {
   const ctx = await requireActiveTenant();
+  const sp = await searchParams;
   const data = await withTenant(ctx, async () => {
     const activeSiteId = await getActiveSiteId();
     const [sugestoes, pedidos, formOptions, aReceber, pedidosReceber, eventos, sites] = await Promise.all([
@@ -58,6 +63,8 @@ export default async function ComprasPage() {
         compras={{ pedidos: pedidosSerial, formOptions: data.formOptions }}
         receber={{ pedidos: pedidosReceberSerial, transferencias: transfersSerial }}
         eventos={eventosSerial}
+        initialTab={sp.tab === "pedidos" ? "pedidos" : undefined}
+        initialQuery={sp.q}
       />
     </div>
   );

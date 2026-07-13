@@ -111,6 +111,12 @@ export type SupplierRow = {
   municipio: string | null;
   uf: string | null;
   ativo: boolean;
+  createdAt?: string; // ISO
+  totalProdutos?: number;
+  proximaEntrega?: string | null; // ISO
+  ultimaSolicitacao?: { numero: string; status: string; data: string } | null; // data ISO
+  ultimosPedidos?: Array<{ id: string; numero: string; status: string; data: string; valorTotal: number }>;
+  totalComprado30d?: number;
 };
 export type FiscalOpt = {
   id: string;

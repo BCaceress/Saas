@@ -19,6 +19,10 @@ export default async function FidelizacaoPage() {
       <FidelizacaoClient
         cupomAutomatico={ctx.tenant.cupomAutomatico}
         cupomDiasRisco={ctx.tenant.cupomDiasRisco}
+        tierBronzeMin={ctx.tenant.tierBronzeMin}
+        tierPrataMin={ctx.tenant.tierPrataMin}
+        tierOuroMin={ctx.tenant.tierOuroMin}
+        tierDiamanteMin={ctx.tenant.tierDiamanteMin}
       />
     </div>
   );

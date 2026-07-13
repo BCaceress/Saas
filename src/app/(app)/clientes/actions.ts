@@ -168,3 +168,23 @@ export async function updateCupomConfig(input: z.input<typeof cupomConfigSchema>
     revalidatePath("/configuracoes", "layout");
   });
 }
+
+const tierConfigSchema = z.object({
+  tierBronzeMin: z.number().int().min(0),
+  tierPrataMin: z.number().int().min(0),
+  tierOuroMin: z.number().int().min(0),
+  tierDiamanteMin: z.number().int().min(0),
+});
+
+/** Limites (R$) dos níveis de fidelização — Cobre é sempre o nível-base, R$ 0. */
+export async function updateTierConfig(input: z.input<typeof tierConfigSchema>) {
+  return tx(async ({ tid }) => {
+    const d = tierConfigSchema.parse(input);
+    if (!(d.tierBronzeMin < d.tierPrataMin && d.tierPrataMin < d.tierOuroMin && d.tierOuroMin < d.tierDiamanteMin)) {
+      throw new Error("Cada nível deve exigir um valor maior que o anterior.");
+    }
+    await db.tenant.update({ where: { id: tid }, data: d });
+    revalidatePath("/clientes");
+    revalidatePath("/configuracoes", "layout");
+  });
+}

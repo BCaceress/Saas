@@ -22,6 +22,12 @@ export default async function ClientesPage() {
       candidates={data.candidates}
       cupomAutomatico={ctx.tenant.cupomAutomatico}
       cupomDiasRisco={ctx.tenant.cupomDiasRisco}
+      tierThresholds={{
+        bronze: ctx.tenant.tierBronzeMin,
+        prata: ctx.tenant.tierPrataMin,
+        ouro: ctx.tenant.tierOuroMin,
+        diamante: ctx.tenant.tierDiamanteMin,
+      }}
     />
   );
 }
