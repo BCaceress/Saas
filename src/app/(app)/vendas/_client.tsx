@@ -84,6 +84,7 @@ export function PdvClient({
   const [suspensa, setSuspensa] = useState<VendaSuspensa | null>(null);
   const [conflito, setConflito] = useState<VendaTotemFila | null>(null);
   const [confirmaCancelar, setConfirmaCancelar] = useState(false);
+  const [confirmaRemoverCliente, setConfirmaRemoverCliente] = useState(false);
   const [carregando, setCarregando] = useState(false);
   const [bump, setBump] = useState(0);
 
@@ -698,14 +699,14 @@ export function PdvClient({
                         size={15}
                         className="shrink-0 self-center text-brand"
                       />
-                      <span className="truncate text-[15px] font-medium text-ink">
+                      <span className="truncate text-lg font-medium text-ink">
                         {cliente.nome}
                       </span>
-                      <span className="shrink-0 font-mono text-[13px] text-muted">
+                      <span className="shrink-0 font-mono text-[15px] text-muted">
                         {mascararCpf(cliente.cpf)}
                       </span>
                       <button
-                        onClick={() => setCliente(null)}
+                        onClick={() => setConfirmaRemoverCliente(true)}
                         aria-label="Remover cliente"
                         title="Remover cliente identificado"
                         className="grid h-6 w-6 shrink-0 cursor-pointer place-items-center self-center rounded-full border border-danger/50 text-danger transition-colors hover:bg-danger-soft"
@@ -858,6 +859,48 @@ export function PdvClient({
                 className="flex min-h-[2.75rem] cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] bg-danger text-sm font-semibold text-on-brand transition-opacity hover:opacity-90"
               >
                 <X size={14} /> Cancelar venda
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmação da remoção do cliente identificado */}
+      {confirmaRemoverCliente && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Remover cliente"
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+        >
+          <div
+            className="absolute inset-0 bg-ink/50 backdrop-blur-[3px]"
+            onClick={() => setConfirmaRemoverCliente(false)}
+            aria-hidden
+          />
+          <div className="relative z-10 w-full max-w-sm rounded-[var(--radius-lg)] border border-line bg-surface p-5 shadow-[var(--shadow-2)]">
+            <p className="text-sm font-semibold text-ink">
+              Remover cliente identificado?
+            </p>
+            <p className="mt-1 text-[13px] text-muted">
+              {cliente?.nome} deixará de estar vinculado a esta venda.
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                onClick={() => setConfirmaRemoverCliente(false)}
+                autoFocus
+                className="min-h-[2.75rem] cursor-pointer rounded-[var(--radius)] border border-line text-sm font-semibold text-ink hover:bg-surface-2"
+              >
+                Manter cliente
+              </button>
+              <button
+                onClick={() => {
+                  setCliente(null);
+                  setConfirmaRemoverCliente(false);
+                }}
+                className="flex min-h-[2.75rem] cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] bg-danger text-sm font-semibold text-on-brand transition-opacity hover:opacity-90"
+              >
+                <UserX size={14} /> Remover cliente
               </button>
             </div>
           </div>
