@@ -4,34 +4,33 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Building2,
+  Check,
   ChevronDown,
-  Clock,
+  CircleAlert,
   Info,
   Loader2,
+  PackageCheck,
   PartyPopper,
+  RotateCcw,
   Send,
-  Sparkles,
-  TrendingUp,
-  Truck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import type { GrupoReposicao, SugestaoRow, HistoricoCompraProduto } from "./_data";
 import { fetchHistoricoCompraProdutoAction } from "./actions";
 import { SolicitarSheet, type GrupoEnvio } from "./_solicitar";
-import { CoberturaBar, fmtMoney, fmtQtd, relDia, StatusDot, Stepper, STATUS_REPO, Thumb } from "./_ui";
+import { fmtMoney, fmtQtd, previsaoLabel, relDia, Stepper, Thumb } from "./_ui";
 
-// ── Revisar reposição — fluxo focado, sem abas nem etapas ─────
-// Lista única ordenada por urgência; o fornecedor aparece discreto em
-// cada produto e o rodapé fixo mostra em quantos pedidos a revisão
-// vai virar. Nasce tudo marcado com a quantidade sugerida: o operador
-// só ajusta e confirma.
+// ── Revisar reposição — uma página só, organizada por prioridade ──
+// Precisa de atenção → Repor em breve → Já sendo repostos (recolhida).
+// Cada linha separa claramente sugestão do sistema × decisão do operador.
 
-type Sel = { on: boolean; qtd: number };
+type Sel = { on: boolean; qtd: number; supplierId: string | null };
 
-const PESO: Record<SugestaoRow["status"], number> = { ruptura: 0, critico: 1, abaixo: 2 };
+const PESO: Record<SugestaoRow["status"], number> = { ruptura: 0, critico: 1, abaixo: 2, monitorar: 3 };
 
-/** SugestaoRow com o fornecedor do grupo colado — a lista aqui é plana. */
+/** SugestaoRow com o fornecedor padrão do grupo colado — a lista aqui é plana. */
 type Linha = SugestaoRow & {
   supplierId: string | null;
   supplierNome: string;
@@ -39,6 +38,15 @@ type Linha = SugestaoRow & {
   supplierEmail: string | null;
   leadTimeDias: number | null;
 };
+
+type Efetivo = { nome: string; custo: number | null; leadTime: number | null; telefone: string | null; email: string | null };
+
+/** Resolve nome/custo/prazo do fornecedor efetivamente escolhido pro item (pode ter sido trocado no popover). */
+function fornecedorEfetivo(l: Linha, supplierId: string | null): Efetivo {
+  const f = supplierId ? l.fornecedores.find((x) => x.supplierId === supplierId) : null;
+  if (f) return { nome: f.nome, custo: f.custoUnitCompra, leadTime: f.leadTimeDias, telefone: f.telefone, email: f.email };
+  return { nome: l.supplierNome, custo: l.custoUnitCompra, leadTime: l.leadTimeDias, telefone: l.supplierTelefone, email: l.supplierEmail };
+}
 
 export function RevisarClient({
   grupos,
@@ -68,10 +76,10 @@ export function RevisarClient({
 
   const [sel, setSel] = useState<Record<string, Sel>>(() => {
     const s: Record<string, Sel> = {};
-    for (const l of linhas) s[l.productId] = { on: l.qtdSugerida > 0 && l.supplierId !== null, qtd: Math.max(l.qtdSugerida, 1) };
+    for (const l of linhas) s[l.productId] = { on: l.qtdSugerida > 0 && l.supplierId !== null, qtd: Math.max(l.qtdSugerida, 1), supplierId: l.supplierId };
     return s;
   });
-  const [expandido, setExpandido] = useState<string | null>(null);
+  const [jaRepostosAberto, setJaRepostosAberto] = useState(false);
   const [historico, setHistorico] = useState<Linha | null>(null);
   const [solicitar, setSolicitar] = useState<GrupoEnvio[] | null>(null);
   const [concluido, setConcluido] = useState(false);
@@ -79,13 +87,19 @@ export function RevisarClient({
   const setItem = (productId: string, patch: Partial<Sel>) =>
     setSel((s) => ({ ...s, [productId]: { ...s[productId], ...patch } }));
 
-  // Ordenação única por urgência — sem abas: só títulos separadores.
-  const ordenadas = useMemo(
-    () => [...linhas].sort((a, b) => PESO[a.status] - PESO[b.status] || (a.coberturaDias ?? 99) - (b.coberturaDias ?? 99) || a.nome.localeCompare(b.nome)),
+  // Separa quem já está coberto por pedido a caminho (não é mais sugestão) do resto.
+  const jaRepostos = useMemo(
+    () => linhas.filter((l) => l.qtdSugerida === 0 && l.pendente > 0),
     [linhas],
   );
-  const atencao = ordenadas.filter((l) => l.status !== "abaixo");
-  const breve = ordenadas.filter((l) => l.status === "abaixo");
+  const ativas = useMemo(
+    () => linhas.filter((l) => !(l.qtdSugerida === 0 && l.pendente > 0)),
+    [linhas],
+  );
+  const ordenar = (rows: Linha[]) =>
+    [...rows].sort((a, b) => PESO[a.status] - PESO[b.status] || (a.coberturaDias ?? 99) - (b.coberturaDias ?? 99) || a.nome.localeCompare(b.nome));
+  const agora = useMemo(() => ordenar(ativas.filter((l) => l.status === "ruptura" || l.status === "critico")), [ativas]);
+  const breve = useMemo(() => ordenar(ativas.filter((l) => l.status === "abaixo" || l.status === "monitorar")), [ativas]);
 
   // ── Resumo vivo: o que a revisão atual vira ──
   const resumo = useMemo(() => {
@@ -95,31 +109,36 @@ export function RevisarClient({
     let total = 0;
     for (const l of linhas) {
       const s = sel[l.productId];
-      if (!s?.on || s.qtd <= 0 || l.supplierId === null) continue;
+      if (!s?.on || s.qtd <= 0 || !s.supplierId) continue;
+      const eff = fornecedorEfetivo(l, s.supplierId);
       produtos += 1;
       unidades += s.qtd * l.fatorConversao;
-      const sub = s.qtd * (l.custoUnitCompra ?? 0);
+      const sub = s.qtd * (eff.custo ?? 0);
       total += sub;
-      const f = porFornecedor.get(l.supplierId) ?? { nome: l.supplierNome, produtos: 0, total: 0 };
+      const f = porFornecedor.get(s.supplierId) ?? { nome: eff.nome, produtos: 0, total: 0 };
       f.produtos += 1;
       f.total += sub;
-      porFornecedor.set(l.supplierId, f);
+      porFornecedor.set(s.supplierId, f);
     }
     return { produtos, unidades, total, fornecedores: [...porFornecedor.values()] };
   }, [linhas, sel]);
+
+  const nPedidos = resumo.fornecedores.length;
+  const nSugestoes = agora.length + breve.length;
 
   // Congela a revisão em grupos de envio — o sheet pergunta só COMO solicitar.
   function abrirSolicitar() {
     const porFornecedor = new Map<string, GrupoEnvio>();
     for (const l of linhas) {
       const s = sel[l.productId];
-      if (!s?.on || s.qtd <= 0 || l.supplierId === null) continue;
-      const g = porFornecedor.get(l.supplierId) ?? {
-        supplierId: l.supplierId,
-        supplierNome: l.supplierNome,
-        telefone: l.supplierTelefone,
-        email: l.supplierEmail,
-        leadTimeDias: l.leadTimeDias,
+      if (!s?.on || s.qtd <= 0 || !s.supplierId) continue;
+      const eff = fornecedorEfetivo(l, s.supplierId);
+      const g = porFornecedor.get(s.supplierId) ?? {
+        supplierId: s.supplierId,
+        supplierNome: eff.nome,
+        telefone: eff.telefone,
+        email: eff.email,
+        leadTimeDias: eff.leadTime,
         itens: [],
       };
       g.itens.push({
@@ -129,9 +148,9 @@ export function RevisarClient({
         qtd: s.qtd,
         packagingNome: l.packagingNome,
         fatorConversao: l.fatorConversao,
-        custoUnitCompra: l.custoUnitCompra,
+        custoUnitCompra: eff.custo,
       });
-      porFornecedor.set(l.supplierId, g);
+      porFornecedor.set(s.supplierId, g);
     }
     const envio = [...porFornecedor.values()];
     if (envio.length > 0) setSolicitar(envio);
@@ -153,46 +172,136 @@ export function RevisarClient({
         <PartyPopper size={32} className="text-ok" />
         <p className="text-sm font-semibold text-ink">Estoque em dia — nada para repor.</p>
         <p className="max-w-sm text-xs text-muted">
-          Quando um produto ficar abaixo do mínimo ou o ritmo de venda indicar que o estoque vai acabar, a sugestão aparece aqui.
+          Quando um produto ficar abaixo do mínimo, do ideal, ou o ritmo de venda indicar que o estoque vai acabar, a sugestão aparece aqui.
         </p>
       </div>
     );
   }
 
-  const nPedidos = resumo.fornecedores.length;
+  const resumoTexto = [
+    `${nSugestoes} ${nSugestoes === 1 ? "sugestão" : "sugestões"}`,
+    agora.length > 0 ? `${agora.length} ${agora.length === 1 ? "urgente" : "urgentes"}` : null,
+    `${resumo.produtos} ${resumo.produtos === 1 ? "selecionada" : "selecionadas"}`,
+    resumo.total > 0 ? fmtMoney(resumo.total) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Lista única, títulos separadores no lugar de abas */}
-      {atencao.length > 0 && (
-        <SecaoLista titulo="Precisam de atenção agora" tom="danger">
-          {atencao.map((l) => (
-            <ItemRow key={l.productId} linha={l} sel={sel[l.productId]} setItem={setItem} expandido={expandido} setExpandido={setExpandido} onHistorico={setHistorico} />
+      <p className="-mt-1 px-1 text-sm text-muted">{resumoTexto}</p>
+
+      {agora.length > 0 && (
+        <SecaoLista titulo="Precisa de atenção" tom="danger" icon={CircleAlert} count={agora.length}>
+          {agora.map((l) => (
+            <ItemRow key={l.productId} linha={l} sel={sel[l.productId]} setItem={setItem} onHistorico={setHistorico} />
           ))}
         </SecaoLista>
       )}
       {breve.length > 0 && (
-        <SecaoLista titulo="Para repor em breve" tom="warn">
+        <SecaoLista titulo="Repor em breve" tom="warn" icon={CircleAlert} count={breve.length}>
           {breve.map((l) => (
-            <ItemRow key={l.productId} linha={l} sel={sel[l.productId]} setItem={setItem} expandido={expandido} setExpandido={setExpandido} onHistorico={setHistorico} />
+            <ItemRow key={l.productId} linha={l} sel={sel[l.productId]} setItem={setItem} onHistorico={setHistorico} />
           ))}
         </SecaoLista>
+      )}
+
+      {jaRepostos.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => setJaRepostosAberto((v) => !v)}
+            aria-expanded={jaRepostosAberto}
+            className="flex w-full items-center justify-between rounded-lg px-1 py-1 text-left transition-colors hover:bg-surface-2/60"
+          >
+            <span className="flex items-center gap-2 text-sm font-semibold text-ok">
+              <PackageCheck size={15} />
+              Já sendo repostos
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="text-sm font-semibold tabular-nums text-muted">{jaRepostos.length}</span>
+              <ChevronDown size={15} className={cn("text-muted transition-transform", jaRepostosAberto && "rotate-180")} />
+            </span>
+          </button>
+          {jaRepostosAberto && (
+            <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface">
+              {jaRepostos.map((l) => {
+                const pedido = l.pedidosPendentes[0] ?? null;
+                return (
+                  <li key={l.productId} className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Thumb url={l.imagemUrl} nome={l.nome} />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-ink">{l.nome}</p>
+                        <p className="text-xs text-muted">
+                          {fmtQtd(l.estoque)} disponíveis · {fmtQtd(l.pendente)} a caminho
+                        </p>
+                        <p className="text-xs text-ok">A reposição atual já cobre a necessidade.</p>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-3 pl-13 sm:pl-0">
+                      {pedido && (
+                        <span className="text-xs text-faint">
+                          {pedido.numero}
+                          {pedido.previsaoEntrega && ` · previsto para ${previsaoLabel(pedido.previsaoEntrega).toLowerCase()}`}
+                        </span>
+                      )}
+                      <a
+                        href={`/compras?q=${encodeURIComponent(pedido?.numero ?? l.supplierNome)}`}
+                        className="shrink-0 text-xs font-semibold text-brand hover:underline"
+                      >
+                        Ver pedido →
+                      </a>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
       )}
 
       {/* ── Rodapé fixo: agrupamento automático por fornecedor ── */}
       <div className="sticky bottom-0 z-40 -mx-1 rounded-[var(--radius-lg)] border-t border-line bg-surface/95 backdrop-blur supports-[backdrop-filter]:bg-surface/80 sm:-mx-2">
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 sm:px-6">
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-ink">
-              {resumo.produtos === 0
-                ? "Nenhum produto selecionado"
-                : `${resumo.produtos} ${resumo.produtos === 1 ? "produto selecionado" : "produtos selecionados"} · ${fmtMoney(resumo.total)}`}
-            </p>
-            {nPedidos > 0 && (
-              <p className="truncate text-xs text-muted">
-                {nPedidos === 1 ? "1 pedido será criado" : `${nPedidos} pedidos serão criados`} —{" "}
-                {resumo.fornecedores.map((f) => `${f.nome} · ${f.produtos} ${f.produtos === 1 ? "produto" : "produtos"}`).join("  ·  ")}
-              </p>
+            {resumo.produtos === 0 ? (
+              <>
+                <p className="text-sm font-semibold text-ink">Nenhum produto selecionado</p>
+                <p className="text-xs text-muted">Selecione ao menos um produto para criar um pedido.</p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-semibold text-ink">
+                  {resumo.produtos} {resumo.produtos === 1 ? "produto" : "produtos"} ·{" "}
+                  {nPedidos > 1 ? (
+                    <Menu
+                      align="start"
+                      trigger={
+                        <button type="button" className="underline decoration-dotted underline-offset-2 hover:text-brand">
+                          {nPedidos} fornecedores
+                        </button>
+                      }
+                    >
+                      <div className="w-64 p-1">
+                        <p className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-faint">Pedidos que serão criados</p>
+                        {resumo.fornecedores.map((f) => (
+                          <div key={f.nome} className="flex items-center justify-between gap-3 px-2 py-1.5">
+                            <span className="min-w-0 truncate text-sm text-ink">{f.nome}</span>
+                            <span className="shrink-0 text-xs tabular-nums text-muted">
+                              {f.produtos} {f.produtos === 1 ? "produto" : "produtos"} · {fmtMoney(f.total)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </Menu>
+                  ) : (
+                    `${nPedidos} fornecedor`
+                  )}{" "}
+                  · {fmtMoney(resumo.total)}
+                </p>
+                <p className="text-xs text-muted">{fmtQtd(resumo.unidades)} unidades no total</p>
+              </>
             )}
           </div>
           <button
@@ -224,75 +333,162 @@ export function RevisarClient({
   );
 }
 
-function SecaoLista({ titulo, tom, children }: { titulo: string; tom: "danger" | "warn"; children: React.ReactNode }) {
+const TOM_TEXT: Record<"danger" | "warn", string> = { danger: "text-danger", warn: "text-warn" };
+
+function SecaoLista({
+  titulo,
+  tom,
+  icon: Icon,
+  count,
+  children,
+}: {
+  titulo: string;
+  tom: "danger" | "warn";
+  icon: React.ElementType;
+  count: number;
+  children: React.ReactNode;
+}) {
   return (
     <section className="flex flex-col gap-2">
-      <h2 className={cn("flex items-center gap-2 text-xs font-semibold uppercase tracking-wide", tom === "danger" ? "text-danger" : "text-warn")}>
-        <span className={cn("h-1.5 w-1.5 rounded-full", tom === "danger" ? "bg-danger" : "bg-warn")} />
-        {titulo}
-      </h2>
+      <div className="flex items-center justify-between px-1">
+        <h2 className={cn("flex items-center gap-2 text-sm font-semibold", TOM_TEXT[tom])}>
+          <Icon size={15} />
+          {titulo}
+        </h2>
+        <span className="text-sm font-semibold tabular-nums text-muted">{count}</span>
+      </div>
       <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface shadow-(--shadow-1)">{children}</ul>
     </section>
   );
 }
 
-// ── Linha de produto — fornecedor discreto, sem etapa própria ──
+// ── Situação do estoque — texto claro, sem barra decorativa ───
+
+function Situacao({ l }: { l: Linha }) {
+  const idealShow = l.estoqueIdeal > 0 ? l.estoqueIdeal : l.alvoReposicao;
+  const coberturaTxt = l.coberturaDias != null ? `≈${fmtQtd(l.coberturaDias)} ${l.coberturaDias === 1 ? "dia" : "dias"} de cobertura` : null;
+  const faltamTxt =
+    l.pendente > 0 && l.qtdSugerida > 0 ? (
+      <p className="text-xs text-brand">
+        +{fmtQtd(l.pendente)} a caminho · faltam {fmtQtd(l.necessidadeBase)} p/ a cobertura recomendada
+      </p>
+    ) : null;
+
+  if (l.status === "ruptura") {
+    return (
+      <div className="flex flex-col gap-0.5">
+        <p className="flex items-center gap-1.5 text-sm font-semibold text-danger">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger" /> Sem estoque
+        </p>
+        <p className="text-xs text-muted">0 disponíveis{l.estoqueMinimo > 0 && <> · mínimo {fmtQtd(l.estoqueMinimo)}</>}</p>
+        {faltamTxt}
+      </div>
+    );
+  }
+
+  if (l.status === "critico") {
+    return (
+      <div className="flex flex-col gap-0.5">
+        <p className="flex items-center gap-1.5 text-sm font-semibold text-danger">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger" /> Risco de ruptura
+        </p>
+        <p className="text-xs text-muted">
+          {fmtQtd(l.estoque)} disponíveis · mín. {fmtQtd(l.estoqueMinimo)} · ideal {fmtQtd(idealShow)}
+        </p>
+        {faltamTxt ?? (coberturaTxt && <p className="text-xs text-muted">{coberturaTxt}</p>)}
+      </div>
+    );
+  }
+
+  // abaixo | monitorar — "Repor em breve": preventivo, âmbar discreto
+  return (
+    <div className="flex flex-col gap-0.5">
+      <p className="flex items-center gap-1.5 text-sm font-medium text-ink">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn" /> {fmtQtd(l.estoque)} disponíveis
+      </p>
+      <p className="text-xs text-muted">
+        {l.estoqueMinimo > 0 && <>mín. {fmtQtd(l.estoqueMinimo)} · </>}ideal {fmtQtd(idealShow)}
+      </p>
+      {faltamTxt ?? <p className="text-xs text-muted">{coberturaTxt ?? "Reposição recomendada em breve"}</p>}
+    </div>
+  );
+}
+
+// ── Linha de produto — quatro grupos: produto · situação · compra · total ──
 
 function ItemRow({
   linha: l,
   sel,
   setItem,
-  expandido,
-  setExpandido,
   onHistorico,
 }: {
   linha: Linha;
   sel: Sel | undefined;
   setItem: (productId: string, patch: Partial<Sel>) => void;
-  expandido: string | null;
-  setExpandido: (id: string | null) => void;
   onHistorico: (l: Linha) => void;
 }) {
   const semFornecedor = l.supplierId === null;
-  const aCaminho = l.qtdSugerida === 0 && l.pendente > 0;
-  const s = sel ?? { on: false, qtd: Math.max(l.qtdSugerida, 1) };
+  const s = sel ?? { on: false, qtd: Math.max(l.qtdSugerida, 1), supplierId: l.supplierId };
+  const eff = fornecedorEfetivo(l, s.supplierId);
   const qtd = s.qtd;
-  const subtotal = qtd * (l.custoUnitCompra ?? 0);
-  const aberto = expandido === l.productId;
+  const subtotal = qtd * (eff.custo ?? 0);
+  const restaurar = qtd !== l.qtdSugerida;
+  const unidade = l.packagingNome ?? "unidades";
 
   return (
-    <li className={cn("transition-colors", s.on && !semFornecedor && "bg-brand-soft/25")}>
-      <div className="flex flex-col gap-3 px-4 py-3 sm:px-5 lg:grid lg:grid-cols-[auto_minmax(0,2.4fr)_minmax(0,1.3fr)_auto_auto] lg:items-center lg:gap-4">
-        <input
-          type="checkbox"
-          checked={s.on && !semFornecedor}
-          disabled={semFornecedor || aCaminho}
-          onChange={(e) => setItem(l.productId, { on: e.target.checked })}
-          className="h-4.5 w-4.5 shrink-0 accent-brand"
-          aria-label={`Incluir ${l.nome} no pedido`}
-        />
+    <li className={cn("transition-opacity", !s.on && "opacity-60")}>
+      <div className="flex flex-col gap-3 px-4 py-3 sm:px-5 lg:grid lg:grid-cols-[auto_minmax(0,2.2fr)_minmax(0,1.5fr)_auto_minmax(0,1.1fr)] lg:items-center lg:gap-4">
+        <label className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center">
+          <input
+            type="checkbox"
+            checked={s.on && !semFornecedor}
+            disabled={semFornecedor}
+            onChange={(e) => setItem(l.productId, { on: e.target.checked })}
+            className="h-4.5 w-4.5 accent-brand"
+            aria-label={`Incluir ${l.nome} no pedido`}
+          />
+        </label>
 
-        {/* Produto + fornecedor discreto */}
+        {/* Produto: imagem, nome (destaque), fornecedor + prazo (secundário) */}
         <div className="flex min-w-0 items-center gap-3">
           <Thumb url={l.imagemUrl} nome={l.nome} />
           <div className="min-w-0">
-            <button type="button" onClick={() => onHistorico(l)} className="flex max-w-full items-center gap-1.5 text-left">
-              <StatusDot status={l.status} />
-              <span className="truncate text-sm font-medium text-ink underline-offset-2 hover:underline">{l.nome}</span>
+            <button
+              type="button"
+              onClick={() => onHistorico(l)}
+              className="block max-w-full truncate text-left text-[15px] font-semibold text-ink underline-offset-2 hover:underline"
+            >
+              {l.nome}
             </button>
-            <p className="truncate text-[11px] text-muted">
+            <p className="truncate text-xs text-muted">
               {semFornecedor ? (
                 <span className="text-warn">
                   Sem fornecedor — vincule em <a href="/produtos" className="font-semibold underline underline-offset-2">Produtos</a>
                 </span>
               ) : (
                 <>
-                  <Building2 size={10} className="mr-1 inline align-[-1px] text-faint" />
-                  {l.supplierNome}
-                  {l.custoUnitCompra != null && (
-                    <span className="tabular-nums"> · {fmtMoney(l.custoUnitCompra)}/{l.packagingNome?.toLowerCase() ?? "un"}</span>
+                  <Building2 size={11} className="mr-1 inline align-[-1px] text-faint" />
+                  {l.fornecedores.length > 1 ? (
+                    <Menu
+                      align="start"
+                      trigger={
+                        <button type="button" className="inline-flex items-center gap-0.5 font-medium text-ink-2 hover:text-brand hover:underline">
+                          {eff.nome}
+                          <ChevronDown size={11} />
+                        </button>
+                      }
+                    >
+                      <FornecedorPicker linha={l} atual={s.supplierId} onSelect={(id) => setItem(l.productId, { supplierId: id })} />
+                    </Menu>
+                  ) : (
+                    eff.nome
                   )}
-                  {l.leadTimeDias != null && <span> · entrega ~{l.leadTimeDias}d</span>}
+                  {eff.leadTime != null && (
+                    <span>
+                      {" "}
+                      · entrega em ~{eff.leadTime} {eff.leadTime === 1 ? "dia" : "dias"}
+                    </span>
+                  )}
                 </>
               )}
             </p>
@@ -300,136 +496,160 @@ function ItemRow({
         </div>
 
         {/* Situação */}
-        <div className="flex min-w-0 flex-col gap-1">
+        <Situacao l={l} />
+
+        {/* Compra: sugestão do sistema × decisão do operador */}
+        <div className="flex flex-col gap-1.5 lg:items-end">
           <p className="text-xs text-muted">
-            <span className={cn("font-semibold tabular-nums", STATUS_REPO[l.status].text)}>{fmtQtd(l.estoque)}</span> em estoque
-            {l.estoqueMinimo > 0 && <span className="text-faint"> / mín {fmtQtd(l.estoqueMinimo)}</span>}
-            {l.pendente > 0 && <span className="text-brand"> · +{fmtQtd(l.pendente)} a caminho</span>}
+            Sugerido: <span className="font-semibold text-ink">{fmtQtd(l.qtdSugerida)} {unidade}</span>
           </p>
-          <CoberturaBar dias={l.coberturaDias} status={l.status} />
+          <div className="flex flex-col gap-1 lg:items-end">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-faint">Comprar</span>
+            <div className="flex items-center gap-2">
+              <Stepper value={qtd} onChange={(v) => setItem(l.productId, { qtd: v })} disabled={semFornecedor || !s.on} min={0} />
+              <span className="text-xs text-muted">{unidade}</span>
+            </div>
+            {l.packagingNome && l.fatorConversao !== 1 && (
+              <span className="text-[11px] text-faint">{fmtQtd(qtd * l.fatorConversao)} unidades no total</span>
+            )}
+          </div>
+          {restaurar && (
+            <button
+              type="button"
+              onClick={() => setItem(l.productId, { qtd: l.qtdSugerida })}
+              className="flex items-center gap-1 text-[11px] font-medium text-brand hover:underline"
+            >
+              <RotateCcw size={11} /> Restaurar sugestão
+            </button>
+          )}
         </div>
 
-        {/* Quantidade */}
-        {aCaminho ? (
-          <span className="flex items-center gap-1.5 rounded-full bg-brand-soft px-3 py-1.5 text-xs font-semibold text-brand lg:justify-self-center">
-            <Truck size={13} /> Pedido a caminho
-          </span>
-        ) : (
-          <div className="flex items-center gap-2 lg:justify-self-center">
-            <Stepper value={qtd} onChange={(v) => setItem(l.productId, { qtd: v, on: v > 0 })} disabled={semFornecedor} min={0} />
-            <span className="w-20 text-[11px] leading-tight text-muted">
-              {l.packagingNome ? (
-                <>
-                  {l.packagingNome} ×{fmtQtd(l.fatorConversao)}
-                  <span className="block text-faint">= {fmtQtd(qtd * l.fatorConversao)} un</span>
-                </>
-              ) : (
-                "unidades"
-              )}
-            </span>
-          </div>
-        )}
-
-        {/* Subtotal + por quê */}
-        <div className="flex items-center justify-between gap-3 lg:justify-end">
-          <div className="text-right">
-            <p className="text-sm font-semibold tabular-nums text-ink">{l.custoUnitCompra != null ? fmtMoney(subtotal) : "—"}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setExpandido(aberto ? null : l.productId)}
-            aria-expanded={aberto}
-            className={cn(
-              "flex shrink-0 items-center gap-1 rounded-lg border border-line px-2 py-1.5 text-[11px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-ink",
-              aberto && "bg-surface-2 text-ink",
+        {/* Total + por quê */}
+        <div className="flex items-center justify-between gap-3 lg:flex-col lg:items-end lg:justify-center lg:gap-1.5">
+          <div className="lg:text-right">
+            <p className="text-base font-semibold tabular-nums text-ink">{eff.custo != null ? fmtMoney(subtotal) : "—"}</p>
+            {eff.custo != null && (
+              <p className="text-[11px] tabular-nums text-muted">
+                {fmtMoney(eff.custo)}/{l.packagingNome?.toLowerCase() ?? "un"}
+              </p>
             )}
+          </div>
+          <Menu
+            align="end"
+            className="rounded-2xl p-0"
+            trigger={
+              <button
+                type="button"
+                className="flex shrink-0 items-center gap-1 rounded-lg border border-line px-2 py-1.5 text-[11px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+              >
+                <Info size={12} /> Por quê?
+              </button>
+            }
           >
-            Por que {aCaminho ? "?" : `${qtd}?`}
-            <ChevronDown size={13} className={cn("transition-transform", aberto && "rotate-180")} />
-          </button>
+            <PorQuePopover l={l} eff={eff} />
+          </Menu>
         </div>
       </div>
-
-      {aberto && <MotivoBox linha={l} qtd={qtd} />}
     </li>
   );
 }
 
-// ── Caixa "por que comprar" ───────────────────────────────────
+// ── Popover: escolher fornecedor ──────────────────────────────
 
-function MotivoBox({ linha: l, qtd }: { linha: Linha; qtd: number }) {
-  const meta = STATUS_REPO[l.status];
-  const aposCompra = l.mediaDia > 0 ? Math.floor((l.estoque + l.pendente + qtd * l.fatorConversao) / l.mediaDia) : null;
-
-  const motivos: { icon: React.ElementType; texto: React.ReactNode }[] = [];
-
-  motivos.push({
-    icon: Info,
-    texto:
-      l.status === "ruptura" ? (
-        <>Estoque <strong>zerado</strong> — venda parada até chegar mercadoria.</>
-      ) : l.estoqueMinimo > 0 && l.estoque < l.estoqueMinimo ? (
-        <>Estoque em <strong>{fmtQtd(l.estoque)} un</strong>, abaixo do mínimo de <strong>{fmtQtd(l.estoqueMinimo)}</strong>.</>
-      ) : (
-        <>Estoque em <strong>{fmtQtd(l.estoque)} un</strong>, perto de acabar no ritmo atual.</>
-      ),
-  });
-
-  if (l.consumo7 > 0 || l.consumo30 > 0) {
-    motivos.push({
-      icon: TrendingUp,
-      texto: (
-        <>
-          Vendeu <strong>{fmtQtd(l.consumo7)} un nos últimos 7 dias</strong>
-          {l.consumo30 > 0 && <> ({fmtQtd(l.consumo30)} em 30 dias — média {l.mediaDia.toFixed(1)}/dia)</>}.
-        </>
-      ),
-    });
-  }
-
-  if (l.coberturaDias != null) {
-    motivos.push({
-      icon: Clock,
-      texto: <>No ritmo atual, o estoque dura <strong>~{Math.max(0, l.coberturaDias)} {l.coberturaDias === 1 ? "dia" : "dias"}</strong>.</>,
-    });
-  }
-
-  if (l.leadTimeDias != null) {
-    motivos.push({
-      icon: Truck,
-      texto: <>{l.supplierNome} costuma entregar em <strong>~{l.leadTimeDias} {l.leadTimeDias === 1 ? "dia" : "dias"}</strong>.</>,
-    });
-  }
-
-  if (qtd > 0 && aposCompra != null) {
-    motivos.push({
-      icon: Sparkles,
-      texto: (
-        <>
-          Comprando <strong>{qtd} {l.packagingNome ? `${l.packagingNome.toLowerCase()}(s)` : "un"}</strong>
-          {l.fatorConversao !== 1 && <> ({fmtQtd(qtd * l.fatorConversao)} un)</>}, o estoque cobre <strong>~{aposCompra} dias</strong> de venda.
-        </>
-      ),
-    });
-  }
+function FornecedorPicker({
+  linha: l,
+  atual,
+  onSelect,
+}: {
+  linha: Linha;
+  atual: string | null;
+  onSelect: (supplierId: string) => void;
+}) {
+  const custos = l.fornecedores.map((f) => f.custoUnitCompra).filter((v): v is number => v != null);
+  const menorPreco = custos.length > 1 ? Math.min(...custos) : null;
+  const leads = l.fornecedores.map((f) => f.leadTimeDias).filter((v): v is number => v != null);
+  const menorLead = leads.length > 1 ? Math.min(...leads) : null;
 
   return (
-    <div className="mx-4 mb-3 flex flex-col gap-2.5 rounded-xl border border-line bg-surface-2/60 p-4 sm:mx-5">
-      <p className={cn("text-xs font-semibold uppercase tracking-wide", meta.text)}>Por que comprar</p>
-      <ul className="flex flex-col gap-1.5">
-        {motivos.map((m, i) => (
-          <li key={i} className="flex items-start gap-2 text-sm text-ink-2">
-            <m.icon size={14} className="mt-0.5 shrink-0 text-muted" />
-            <span>{m.texto}</span>
-          </li>
+    <div className="w-72">
+      <p className="px-2.5 py-2 text-xs font-semibold uppercase tracking-wide text-faint">Escolher fornecedor</p>
+      {l.fornecedores.map((f) => (
+        <MenuItem
+          key={f.supplierId}
+          icon={f.supplierId === atual ? <Check size={14} className="text-brand" /> : <span className="inline-block w-3.5" />}
+          onClick={() => onSelect(f.supplierId)}
+          trailing={
+            <span className="flex flex-col items-end gap-0.5">
+              {f.custoUnitCompra === menorPreco && <span className="rounded-full bg-ok-soft px-1.5 py-0.5 text-[10px] font-semibold text-ok">Menor preço</span>}
+              {f.leadTimeDias === menorLead && <span className="rounded-full bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">Entrega mais rápida</span>}
+            </span>
+          }
+        >
+          <span className="block font-medium text-ink">{f.nome}</span>
+          <span className="block text-xs text-muted">
+            {f.custoUnitCompra != null ? `${fmtMoney(f.custoUnitCompra)}${l.packagingNome ? `/${l.packagingNome.toLowerCase()}` : ""}` : "sem custo"}
+            {f.leadTimeDias != null && ` · entrega ~${f.leadTimeDias}d`}
+          </span>
+        </MenuItem>
+      ))}
+    </div>
+  );
+}
+
+// ── Popover: por que recomendamos essa quantidade ─────────────
+
+function PorQuePopover({ l, eff }: { l: Linha; eff: Efetivo }) {
+  const idealShow = l.estoqueIdeal > 0 ? l.estoqueIdeal : l.alvoReposicao;
+  const linhas: [string, string][] = [["Estoque atual", `${fmtQtd(l.estoque)} un`]];
+  if (l.estoqueMinimo > 0) linhas.push(["Estoque mínimo", `${fmtQtd(l.estoqueMinimo)} un`]);
+  linhas.push(["Estoque ideal", `${fmtQtd(idealShow)} un`]);
+  if (l.mediaDia > 0) linhas.push(["Venda média", `${l.mediaDia.toFixed(1)}/dia`]);
+  linhas.push(["Cobertura atual", l.coberturaDias != null ? `${Math.max(0, l.coberturaDias)} ${l.coberturaDias === 1 ? "dia" : "dias"}` : "sem giro"]);
+  if (eff.leadTime != null) linhas.push(["Prazo do fornecedor", `~${eff.leadTime} ${eff.leadTime === 1 ? "dia" : "dias"}`]);
+  if (l.pendente > 0) linhas.push(["Já a caminho", `${fmtQtd(l.pendente)} un`]);
+
+  const temAdicional = l.pendente > 0 && l.qtdSugerida > 0;
+
+  return (
+    <div className="flex w-72 flex-col gap-3 p-3.5">
+      <p className="text-xs font-semibold uppercase tracking-wide text-faint">
+        Por que recomendamos {fmtQtd(l.qtdSugerida)} {l.packagingNome ?? "unidades"}?
+      </p>
+      <dl className="flex flex-col gap-1.5 text-sm">
+        {linhas.map(([k, v]) => (
+          <div key={k} className="flex items-center justify-between gap-3">
+            <dt className="text-muted">{k}</dt>
+            <dd className="font-medium tabular-nums text-ink">{v}</dd>
+          </div>
         ))}
-      </ul>
-      {l.ultimaCompraEm && (
-        <p className="border-t border-line pt-2 text-xs text-muted">
-          Última compra {relDia(l.ultimaCompraEm)}
-          {l.ultimoCustoUn != null && <> por <span className="font-medium tabular-nums text-ink">{fmtMoney(l.ultimoCustoUn)}</span>/{l.packagingNome ?? "un"}</>}.
-        </p>
-      )}
+      </dl>
+      <div className="border-t border-line pt-2.5">
+        {temAdicional ? (
+          <dl className="flex flex-col gap-1.5 text-sm">
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted">Necessidade calculada</dt>
+              <dd className="font-medium tabular-nums text-ink">{fmtQtd(l.necessidadeBase + l.pendente)} un</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted">Já a caminho</dt>
+              <dd className="font-medium tabular-nums text-ink">{fmtQtd(l.pendente)} un</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="font-semibold text-brand">Sugestão adicional</dt>
+              <dd className="font-semibold tabular-nums text-brand">
+                {fmtQtd(l.qtdSugerida)} {l.packagingNome ?? "un"}
+              </dd>
+            </div>
+          </dl>
+        ) : (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold text-ink">Sugestão</p>
+            <p className="text-sm font-semibold tabular-nums text-brand">
+              {fmtQtd(l.qtdSugerida)} {l.packagingNome ?? "unidades"}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

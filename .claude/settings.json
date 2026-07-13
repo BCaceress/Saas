@@ -18,7 +18,9 @@
       "PowerShell(npx eslint \"src/components/app/nav-config.ts\" \"src/components/app/sidebar.tsx\" \"src/components/app/page-header.tsx\" \"src/app/\\(app\\)/fornecedores/page.tsx\" \"src/app/\\(app\\)/fornecedores/_client.tsx\" \"src/app/\\(app\\)/inicio/page.tsx\" \"src/app/\\(app\\)/vendas/caixa/page.tsx\" \"src/app/\\(app\\)/configuracoes/classificacao-fiscal/page.tsx\" \"src/app/\\(app\\)/configuracoes/metodos-pagamento/page.tsx\" \"src/app/\\(app\\)/configuracoes/sites/page.tsx\" \"src/app/\\(app\\)/configuracoes/fidelizacao/page.tsx\"; \"lint exit=$LASTEXITCODE\")",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" --max-time 60 http://lvh.me:3000/totem)",
       "Bash(taskkill //PID 17756 //F)",
-      "Bash(curl -s -o /dev/null -w \"%{http_code}\" --max-time 90 http://lvh.me:3000/totem)"
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" --max-time 90 http://lvh.me:3000/totem)",
+      "Bash(cp \"C:/Users/DESENV~1/AppData/Local/Temp/claude/d--Saas/59fac1a1-0f86-4ed6-964d-afcb7c67f67c/scratchpad/check-historico.mjs\" \"d:/Saas/scratch-check-historico.mjs\")",
+      "Bash(node scratch-check-historico.mjs)"
     ],
     "additionalDirectories": [
       "\\tmp"

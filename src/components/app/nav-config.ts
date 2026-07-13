@@ -54,7 +54,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/clientes", label: "Clientes", icon: Users, enabled: true },
       { href: "/fornecedores", label: "Fornecedores", icon: Factory, enabled: true },
       { href: "/estoque", label: "Estoque", icon: Warehouse, enabled: true },
-      { href: "/compras", label: "Compras", icon: ShoppingBag, enabled: true },
+      { href: "/compras", label: "Reposições", icon: ShoppingBag, enabled: true },
     ],
   },
   {

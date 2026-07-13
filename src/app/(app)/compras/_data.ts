@@ -8,7 +8,7 @@ const n = (v: Decimal | null | undefined) => (v == null ? 0 : Number(v));
 // ideal × ritmo de venda e responde "o que precisa ser comprado", já
 // agrupado por fornecedor e com quantidade/custo sugeridos.
 
-export type SugestaoStatus = "ruptura" | "critico" | "abaixo";
+export type SugestaoStatus = "ruptura" | "critico" | "abaixo" | "monitorar";
 
 export type SugestaoRow = {
   productId: string;
@@ -26,7 +26,11 @@ export type SugestaoRow = {
   mediaDia: number; // vendas/dia (janela 30d, fallback 7d)
   coberturaDias: number | null; // estoque ÷ média — null sem vendas
   pendente: number; // já pedido e não recebido (un base)
+  pedidosPendentes: { numero: string; previsaoEntrega: string | null }[]; // pedidos que geram o `pendente`
   status: SugestaoStatus;
+  // Meta de reposição — sempre presente quando há sugestão, mesmo sem ideal configurado.
+  alvoReposicao: number; // un base — ideal configurado, ou o suficiente p/ ALVO_DIAS, ou 2× mínimo
+  necessidadeBase: number; // un base ainda faltando p/ alvo (alvo − estoque − pendente, antes de arredondar p/ embalagem)
   // Sugestão de compra
   packagingId: string | null;
   packagingNome: string | null;
@@ -36,6 +40,15 @@ export type SugestaoRow = {
   // Referências de preço
   ultimoCustoUn: number | null; // por unidade de compra, na última entrada
   ultimaCompraEm: string | null; // ISO
+  // Outros fornecedores vinculados ao produto — p/ permitir trocar sem poluir a tela.
+  fornecedores: {
+    supplierId: string;
+    nome: string;
+    telefone: string | null;
+    email: string | null;
+    custoUnitCompra: number | null; // já convertido p/ unidade de compra
+    leadTimeDias: number | null;
+  }[];
 };
 
 export type GrupoReposicao = {
@@ -70,7 +83,6 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
           packagings: { select: { id: true, nome: true, fatorConversao: true, isCompraDefault: true } },
           suppliers: {
             orderBy: { isPrincipal: "desc" },
-            take: 1,
             select: {
               custoFornecedor: true,
               supplier: { select: { id: true, razaoSocial: true, nomeFantasia: true, telefone: true, email: true } },
@@ -102,7 +114,13 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
         productId: { in: productIds },
         purchaseOrder: { status: { in: ["ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"] }, ...whereSite },
       },
-      select: { productId: true, packagingId: true, qtdPedida: true, qtdRecebida: true },
+      select: {
+        productId: true,
+        packagingId: true,
+        qtdPedida: true,
+        qtdRecebida: true,
+        purchaseOrder: { select: { numero: true, previsaoEntrega: true } },
+      },
     }),
     // Última entrada por produto (preço de referência).
     db.stockMovement.findMany({
@@ -138,11 +156,17 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
     : [];
   const pendFator = new Map(pendPkgs.map((p) => [p.id, n(p.fatorConversao)]));
   const pendenteMap = new Map<string, number>();
+  const pedidosPendentesMap = new Map<string, { numero: string; previsaoEntrega: string | null }[]>();
   for (const p of pendentes) {
     const rest = Math.max(0, n(p.qtdPedida) - n(p.qtdRecebida));
     if (rest <= 0) continue;
     const fator = p.packagingId ? (pendFator.get(p.packagingId) ?? 1) : 1;
     pendenteMap.set(p.productId, (pendenteMap.get(p.productId) ?? 0) + rest * fator);
+    const lista = pedidosPendentesMap.get(p.productId) ?? [];
+    if (!lista.some((x) => x.numero === p.purchaseOrder.numero)) {
+      lista.push({ numero: p.purchaseOrder.numero, previsaoEntrega: p.purchaseOrder.previsaoEntrega?.toISOString() ?? null });
+    }
+    pedidosPendentesMap.set(p.productId, lista);
   }
 
   // Última entrada por produto (movimentos já vêm desc)
@@ -192,6 +216,10 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
     if (estoque <= 0) status = "ruptura";
     else if ((minimo > 0 && estoque < minimo * 0.5) || (cobertura != null && cobertura <= 3)) status = "critico";
     else if ((minimo > 0 && estoque < minimo) || (cobertura != null && cobertura <= 7)) status = "abaixo";
+    // Ainda acima do mínimo, mas abaixo do ideal ou com giro que projeta
+    // queda pra baixo do alvo dentro da janela de reposição — no radar,
+    // sem urgência de compra imediata.
+    else if ((ideal > 0 && estoque < ideal) || (cobertura != null && cobertura <= ALVO_DIAS)) status = "monitorar";
     if (!status) continue;
 
     // Alvo: ideal configurado, senão o suficiente p/ ALVO_DIAS de venda, senão 2× mínimo.
@@ -204,11 +232,23 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
 
     const ult = ultimaEntrada.get(s.productId);
     const vinc = s.product.suppliers[0] ?? null;
-    const custoBase =
+    const custoGenerico =
       ult?.custo ??
       (s.product.custoMedio ? n(s.product.custoMedio) : null) ??
-      (s.product.custo ? n(s.product.custo) : null) ??
-      (vinc?.custoFornecedor ? n(vinc.custoFornecedor) : null);
+      (s.product.custo ? n(s.product.custo) : null);
+    const custoBase = custoGenerico ?? (vinc?.custoFornecedor ? n(vinc.custoFornecedor) : null);
+
+    const fornecedores = s.product.suppliers.map((f) => {
+      const custo = f.custoFornecedor != null ? n(f.custoFornecedor) : custoGenerico;
+      return {
+        supplierId: f.supplier.id,
+        nome: f.supplier.nomeFantasia ?? f.supplier.razaoSocial,
+        telefone: f.supplier.telefone,
+        email: f.supplier.email,
+        custoUnitCompra: custo != null ? Number((custo * fator).toFixed(2)) : null,
+        leadTimeDias: leadTime.get(f.supplier.id) ?? null,
+      };
+    });
 
     rows.push({
       productId: s.productId,
@@ -225,7 +265,10 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
       mediaDia,
       coberturaDias: cobertura != null ? Math.floor(cobertura) : null,
       pendente,
+      pedidosPendentes: pedidosPendentesMap.get(s.productId) ?? [],
       status,
+      alvoReposicao: alvo,
+      necessidadeBase,
       packagingId: pkg?.id ?? null,
       packagingNome: pkg?.nome ?? null,
       fatorConversao: fator,
@@ -233,6 +276,7 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
       custoUnitCompra: custoBase != null ? Number((custoBase * fator).toFixed(2)) : null,
       ultimoCustoUn: ult?.custo != null ? Number((ult.custo * fator).toFixed(2)) : null,
       ultimaCompraEm: ult?.em.toISOString() ?? null,
+      fornecedores,
       supplierId: vinc?.supplier.id ?? null,
       supplierNome: vinc ? (vinc.supplier.nomeFantasia ?? vinc.supplier.razaoSocial) : "Sem fornecedor",
       supplierTelefone: vinc?.supplier.telefone ?? null,
@@ -242,7 +286,7 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
 
   // Agrupa por fornecedor — mais urgente primeiro dentro do grupo,
   // grupos ordenados por gravidade (nº de rupturas) e valor.
-  const peso: Record<SugestaoStatus, number> = { ruptura: 0, critico: 1, abaixo: 2 };
+  const peso: Record<SugestaoStatus, number> = { ruptura: 0, critico: 1, abaixo: 2, monitorar: 3 };
   const grupos = new Map<string, GrupoReposicao>();
   for (const r of rows) {
     const key = r.supplierId ?? "__sem__";

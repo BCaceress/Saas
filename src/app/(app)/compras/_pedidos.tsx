@@ -19,6 +19,7 @@ import {
   Store,
   ArrowDownRight,
   ArrowUpRight,
+  FilePenLine,
 } from "lucide-react";
 import { cn, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
@@ -32,7 +33,7 @@ import {
 } from "../estoque/actions";
 import { SolicitarSheet, type GrupoEnvio } from "./_solicitar";
 import { ReenviarSheet } from "./_reenviar";
-import { estadoEntrega, fmtMoney, fmtQtd, previsaoLabel, Stepper, Thumb, StatusBadge } from "./_ui";
+import { estadoEntrega, fmtMoney, fmtQtd, previsaoLabel, relDiaHora, Stepper, Thumb, StatusBadge } from "./_ui";
 
 // ── Tipos ─────────────────────────────────────────────────────
 
@@ -63,6 +64,9 @@ export type PedidoView = {
   financeiroGerado: boolean;
   createdAt: string;
   enviadoEm: string | null;
+  recebidoEm: string | null;
+  canceladoEm: string | null;
+  operador: string | null;
   totalItems: number;
   items: ItemView[];
 };
@@ -142,6 +146,14 @@ export function PedidoDrawer({
                 <CalendarClock size={14} /> Previsão: <span className="font-medium text-ink">{previsaoLabel(p.previsaoEntrega)}</span>
               </span>
             )}
+          </div>
+
+          {/* Resumo */}
+          <div className="grid grid-cols-2 gap-3 rounded-xl bg-surface-2/60 p-4 sm:grid-cols-4">
+            <MiniStat rotulo="Produtos" valor={String(p.totalItems)} />
+            <MiniStat rotulo="Unidades" valor={fmtQtd(p.items.reduce((a, it) => a + it.qtdPedida, 0))} />
+            <MiniStat rotulo="Criado em" valor={relDiaHora(p.createdAt)} />
+            <MiniStat rotulo="Operador" valor={p.operador ?? "—"} />
           </div>
 
           {/* Itens */}
@@ -252,6 +264,15 @@ export function PedidoDrawer({
             {p.status === "RECEBIDO" && (
               <span className="flex items-center gap-1.5 text-sm font-medium text-ok"><PackageCheck size={15} /> Pedido recebido e lançado no estoque.</span>
             )}
+          </div>
+
+          {/* Histórico do pedido — timeline completa fica só no detalhe */}
+          <div className="flex flex-col gap-1 border-t border-line pt-4">
+            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-faint">Histórico do pedido</p>
+            <TimelineEvento icon={FilePenLine} titulo="Pedido criado" quando={p.createdAt} />
+            {p.enviadoEm && <TimelineEvento icon={Send} titulo="Pedido enviado" quando={p.enviadoEm} />}
+            {p.recebidoEm && <TimelineEvento icon={PackageCheck} titulo="Pedido recebido" quando={p.recebidoEm} />}
+            {p.canceladoEm && <TimelineEvento icon={CircleX} titulo="Pedido cancelado" quando={p.canceladoEm} tom="danger" />}
           </div>
         </div>
       )}
@@ -690,5 +711,34 @@ export function PedidoFormSheet({
         />
       )}
     </Sheet>
+  );
+}
+
+function MiniStat({ rotulo, valor }: { rotulo: string; valor: string }) {
+  return (
+    <div>
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">{rotulo}</p>
+      <p className="truncate text-sm font-semibold text-ink">{valor}</p>
+    </div>
+  );
+}
+
+function TimelineEvento({
+  icon: Icon,
+  titulo,
+  quando,
+  tom,
+}: {
+  icon: React.ElementType;
+  titulo: string;
+  quando: string;
+  tom?: "danger";
+}) {
+  return (
+    <div className="flex items-center gap-2.5 py-1 text-sm">
+      <Icon size={14} className={cn("shrink-0", tom === "danger" ? "text-danger" : "text-muted")} />
+      <span className="text-ink-2">{titulo}</span>
+      <span className="text-faint">· {relDiaHora(quando)}</span>
+    </div>
   );
 }

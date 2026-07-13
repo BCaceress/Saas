@@ -66,31 +66,6 @@ export type MovimentacaoRow = {
   createdAt: Date;
 };
 
-export type EntradaItemRow = {
-  id: string;
-  productNome: string;
-  productSku: string;
-  productTipo: string;
-  packagingNome: string | null;
-  packagingFator: number | null;
-  quantidade: number;
-  custoTotal: number;
-};
-
-export type EntradaRow = {
-  id: string;
-  tipo: string;
-  supplierNome: string | null;
-  numeroNota: string | null;
-  numeroPedido: string | null;
-  pedidoCriadoEm: Date | null;
-  pedidoEnviadoEm: Date | null;
-  data: Date;
-  registradoPor: string | null;
-  totalItems: number;
-  items: EntradaItemRow[];
-};
-
 export type ReposicaoRow = {
   productId: string;
   sku: string;
@@ -447,65 +422,6 @@ function resolveOrigem(
   }
 }
 
-// ── Entradas ─────────────────────────────────────────────────
-
-export async function loadEntradas(siteId: string | null): Promise<EntradaRow[]> {
-  const purchases = await db.purchase.findMany({
-    where: siteId ? { siteId } : {},
-    include: {
-      supplier: { select: { razaoSocial: true, nomeFantasia: true } },
-      purchaseOrder: { select: { numero: true, createdAt: true, enviadoEm: true } },
-      items: { select: { id: true, productId: true, packagingId: true, quantidade: true, custoTotal: true } },
-    },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-  });
-
-  const allProductIds = [...new Set(purchases.flatMap((p) => p.items.map((i) => i.productId)))];
-  const allPackagingIds = [...new Set(purchases.flatMap((p) => p.items.flatMap((i) => i.packagingId ? [i.packagingId] : [])))];
-  const allUserIds = [...new Set(purchases.flatMap((p) => p.createdBy ? [p.createdBy] : []))];
-
-  const [products, packagings, users] = await Promise.all([
-    allProductIds.length > 0
-      ? db.product.findMany({ where: { id: { in: allProductIds } }, select: { id: true, nome: true, sku: true, tipo: true } })
-      : Promise.resolve([]),
-    allPackagingIds.length > 0
-      ? db.productPackaging.findMany({ where: { id: { in: allPackagingIds } }, select: { id: true, nome: true, fatorConversao: true } })
-      : Promise.resolve([]),
-    // User mora nas tabelas de auth (não tenant-scoped): usa basePrisma.
-    allUserIds.length > 0
-      ? basePrisma.user.findMany({ where: { id: { in: allUserIds } }, select: { id: true, name: true, email: true } })
-      : Promise.resolve([]),
-  ]);
-
-  const prodMap = new Map(products.map((p) => [p.id, p]));
-  const pkgMap = new Map(packagings.map((pk) => [pk.id, pk]));
-  const userMap = new Map(users.map((u) => [u.id, u.name ?? u.email ?? null]));
-
-  return purchases.map((p) => ({
-    id: p.id,
-    tipo: p.tipo,
-    supplierNome: p.supplier ? (p.supplier.nomeFantasia ?? p.supplier.razaoSocial) : null,
-    numeroNota: p.numeroNota,
-    numeroPedido: p.purchaseOrder?.numero ?? null,
-    pedidoCriadoEm: p.purchaseOrder?.createdAt ?? null,
-    pedidoEnviadoEm: p.purchaseOrder?.enviadoEm ?? null,
-    data: p.data,
-    registradoPor: p.createdBy ? (userMap.get(p.createdBy) ?? null) : null,
-    totalItems: p.items.length,
-    items: p.items.map((item) => ({
-      id: item.id,
-      productNome: prodMap.get(item.productId)?.nome ?? item.productId,
-      productSku: prodMap.get(item.productId)?.sku ?? "",
-      productTipo: prodMap.get(item.productId)?.tipo ?? "",
-      packagingNome: item.packagingId ? (pkgMap.get(item.packagingId)?.nome ?? null) : null,
-      packagingFator: item.packagingId ? (Number(pkgMap.get(item.packagingId)?.fatorConversao) || null) : null,
-      quantidade: Number(item.quantidade),
-      custoTotal: Number(item.custoTotal),
-    })),
-  }));
-}
-
 // ── Pedidos de compra (PurchaseOrder) ─────────────────────────
 
 export type PedidoCompraItemView = {
@@ -535,6 +451,9 @@ export type PedidoCompraView = {
   financeiroGerado: boolean;
   createdAt: Date;
   enviadoEm: Date | null;
+  recebidoEm: Date | null;
+  canceladoEm: Date | null;
+  operador: string | null;
   totalItems: number;
   items: PedidoCompraItemView[];
 };
@@ -552,14 +471,20 @@ export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
 
   const productIds = [...new Set(pedidos.flatMap((p) => p.items.map((i) => i.productId)))];
   const packagingIds = [...new Set(pedidos.flatMap((p) => p.items.flatMap((i) => (i.packagingId ? [i.packagingId] : []))))];
+  const userIds = [...new Set(pedidos.flatMap((p) => (p.createdBy ? [p.createdBy] : [])))];
 
-  const [products, packagings] = await Promise.all([
+  const [products, packagings, users] = await Promise.all([
     mapProdutos(productIds),
     packagingIds.length > 0
       ? db.productPackaging.findMany({ where: { id: { in: packagingIds } }, select: { id: true, nome: true } })
       : Promise.resolve([]),
+    // User mora nas tabelas de auth (não tenant-scoped): usa basePrisma.
+    userIds.length > 0
+      ? basePrisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true, email: true } })
+      : Promise.resolve([]),
   ]);
   const pkgMap = new Map(packagings.map((pk) => [pk.id, pk.nome]));
+  const userMap = new Map(users.map((u) => [u.id, u.name ?? u.email ?? null]));
 
   return pedidos.map((p) => ({
     id: p.id,
@@ -577,6 +502,9 @@ export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
     financeiroGerado: p.financeiroGerado,
     createdAt: p.createdAt,
     enviadoEm: p.enviadoEm,
+    recebidoEm: p.recebidoEm,
+    canceladoEm: p.canceladoEm,
+    operador: p.createdBy ? (userMap.get(p.createdBy) ?? null) : null,
     totalItems: p.items.length,
     items: p.items.map((i) => ({
       productId: i.productId,
@@ -638,174 +566,6 @@ export async function loadComprasFormOptions() {
       })),
     })),
   };
-}
-
-// ── Extrato de entradas (feed multi-origem, read-only) ────────
-// Tudo que aumentou o estoque, agrupado por documento/origem:
-// compra (fornecedor/manual), transferência recebida, ajuste (inventário/
-// manual), devolução de cliente.
-
-export type EntradaEvento = {
-  id: string;
-  origem: "COMPRA" | "MANUAL" | "TRANSFERENCIA" | "AJUSTE" | "DEVOLUCAO_CLIENTE" | "PEDIDO";
-  titulo: string;
-  subtitulo: string | null;
-  qtdItens: number | null; // documentos agrupados (compra, transferência)
-  detalhe: string | null; // linha única (ajuste, devolução): "+2 Brahma"
-  valor: number | null;
-  data: Date;
-  registradoPor: string | null;
-  pedidoCriadoEm: Date | null; // COMPRA: quando o pedido foi solicitado
-  pedidoEnviadoEm: Date | null; // COMPRA: quando o pedido foi enviado ao fornecedor
-  statusPedido: string | null; // origem PEDIDO: status atual do PurchaseOrder
-};
-
-export async function loadEntradasExtrato(siteId: string | null): Promise<EntradaEvento[]> {
-  const fmtN = (v: number) => `${v > 0 ? "+" : ""}${v.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}`;
-
-  // 1. Compras (Purchase) — já agrupadas por documento.
-  const purchases = await loadEntradas(siteId);
-  const eventos: EntradaEvento[] = purchases.map((p) => ({
-    id: `purchase:${p.id}`,
-    origem: p.tipo === "FORNECEDOR" ? "COMPRA" : "MANUAL",
-    titulo: p.tipo === "FORNECEDOR" ? (p.supplierNome ?? "Fornecedor") : "Entrada manual",
-    subtitulo: p.numeroPedido ? `Pedido ${p.numeroPedido}` : p.numeroNota ? `NF ${p.numeroNota}` : null,
-    qtdItens: p.totalItems,
-    detalhe: null,
-    valor: p.items.reduce((s, i) => s + i.custoTotal, 0),
-    data: p.data,
-    registradoPor: p.registradoPor,
-    pedidoCriadoEm: p.pedidoCriadoEm,
-    pedidoEnviadoEm: p.pedidoEnviadoEm,
-    statusPedido: null,
-  }));
-
-  // 2. Movimentos de entrada que não são compra (ENTRADA já coberta acima).
-  const movs = await basePrisma.stockMovement.findMany({
-    where: {
-      ...(siteId ? { siteId } : {}),
-      tipo: { in: ["AJUSTE", "TRANSFERENCIA", "DEVOLUCAO_CLIENTE"] },
-      OR: [{ deltaFechado: { gt: 0 } }, { deltaAberto: { gt: 0 } }],
-    },
-    orderBy: { createdAt: "desc" },
-    take: 200,
-  });
-
-  const prodMap = await mapProdutos([...new Set(movs.map((m) => m.productId))]);
-
-  const transferIds = [...new Set(movs.flatMap((m) => (m.tipo === "TRANSFERENCIA" && m.transferId ? [m.transferId] : [])))];
-  const transfers = transferIds.length
-    ? await db.transfer.findMany({
-        where: { id: { in: transferIds } },
-        include: { origem: { select: { nome: true } }, destino: { select: { nome: true } } },
-      })
-    : [];
-  const transferMap = new Map(transfers.map((t) => [t.id, t]));
-
-  // Transferências recebidas: agrupa por transferId (1 evento, N itens).
-  const transferAgg = new Map<string, { ids: Set<string>; data: Date }>();
-
-  for (const m of movs) {
-    const nome = prodMap.get(m.productId)?.nome ?? m.productId;
-    const qtd = Number(m.deltaFechado) || Number(m.deltaAberto);
-
-    if (m.tipo === "TRANSFERENCIA" && m.transferId) {
-      const a = transferAgg.get(m.transferId) ?? { ids: new Set<string>(), data: m.createdAt };
-      a.ids.add(m.productId);
-      transferAgg.set(m.transferId, a);
-    } else if (m.tipo === "AJUSTE") {
-      const inv = m.observacao?.toLowerCase().includes("inventário");
-      eventos.push({
-        id: `mov:${m.id}`,
-        origem: "AJUSTE",
-        titulo: inv ? "Ajuste de inventário" : "Ajuste manual",
-        subtitulo: null,
-        qtdItens: null,
-        detalhe: `${fmtN(qtd)} ${nome}`,
-        valor: null,
-        data: m.createdAt,
-        registradoPor: null,
-        pedidoCriadoEm: null,
-        pedidoEnviadoEm: null,
-        statusPedido: null,
-      });
-    } else if ((m.tipo as string) === "DEVOLUCAO_CLIENTE") {
-      eventos.push({
-        id: `mov:${m.id}`,
-        origem: "DEVOLUCAO_CLIENTE",
-        titulo: "Devolução de cliente",
-        subtitulo: null,
-        qtdItens: null,
-        detalhe: `${fmtN(qtd)} ${nome}`,
-        valor: null,
-        data: m.createdAt,
-        registradoPor: null,
-        pedidoCriadoEm: null,
-        pedidoEnviadoEm: null,
-        statusPedido: null,
-      });
-    }
-  }
-
-  for (const [tid, a] of transferAgg) {
-    const t = transferMap.get(tid);
-    eventos.push({
-      id: `transfer:${tid}`,
-      origem: "TRANSFERENCIA",
-      titulo: "Transferência recebida",
-      subtitulo: t ? `${t.origem.nome} → ${t.destino.nome}` : null,
-      qtdItens: a.ids.size,
-      detalhe: null,
-      valor: null,
-      data: a.data,
-      registradoPor: null,
-      pedidoCriadoEm: null,
-      pedidoEnviadoEm: null,
-      statusPedido: null,
-    });
-  }
-
-  // 3. Pedidos de compra ainda não recebidos — rascunho/enviado/aguardando/cancelado.
-  // RECEBIDO e RECEBIDO_PARCIAL já aparecem via Purchase (item 1), na hora em que a
-  // mercadoria efetivamente entrou — aqui é só o que ainda não virou entrada.
-  const pedidos = await db.purchaseOrder.findMany({
-    where: {
-      ...(siteId ? { siteId } : {}),
-      status: { in: ["RASCUNHO", "ENVIADO", "AGUARDANDO", "CANCELADO"] },
-    },
-    include: {
-      supplier: { select: { razaoSocial: true, nomeFantasia: true } },
-      items: { select: { id: true } },
-    },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-  });
-
-  const pedidoUserIds = [...new Set(pedidos.flatMap((p) => (p.createdBy ? [p.createdBy] : [])))];
-  const pedidoUsers = pedidoUserIds.length
-    ? await basePrisma.user.findMany({ where: { id: { in: pedidoUserIds } }, select: { id: true, name: true, email: true } })
-    : [];
-  const pedidoUserMap = new Map(pedidoUsers.map((u) => [u.id, u.name ?? u.email ?? null]));
-
-  for (const p of pedidos) {
-    const data = p.status === "CANCELADO" ? (p.canceladoEm ?? p.createdAt) : p.status === "RASCUNHO" ? p.createdAt : (p.enviadoEm ?? p.createdAt);
-    eventos.push({
-      id: `pedido:${p.id}`,
-      origem: "PEDIDO",
-      titulo: `Pedido ${p.numero}`,
-      subtitulo: p.supplier ? (p.supplier.nomeFantasia ?? p.supplier.razaoSocial) : null,
-      qtdItens: p.items.length,
-      detalhe: null,
-      valor: n(p.valorTotal),
-      data,
-      registradoPor: p.createdBy ? (pedidoUserMap.get(p.createdBy) ?? null) : null,
-      pedidoCriadoEm: null,
-      pedidoEnviadoEm: null,
-      statusPedido: p.status,
-    });
-  }
-
-  return eventos.sort((a, b) => b.data.getTime() - a.data.getTime()).slice(0, 100);
 }
 
 // ── Form options for entrada ──────────────────────────────────

@@ -23,7 +23,7 @@ export default async function RevisarReposicaoPage() {
         title="Revisar reposição"
         icon={ListChecks}
         backHref="/compras"
-        description="Confira as sugestões antes de criar seus pedidos — o sistema agrupa por fornecedor sozinho."
+        description="Confira as sugestões e ajuste as quantidades antes de criar os pedidos. Os produtos serão agrupados automaticamente por fornecedor."
         innerClassName="max-w-none"
       />
       <RevisarClient grupos={data.sugestoes} siteId={data.activeSiteId} empresa={ctx.tenant.nome} />

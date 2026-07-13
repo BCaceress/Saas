@@ -23,12 +23,12 @@ export const fmtQtd = (v: number) => v.toLocaleString("pt-BR", { maximumFraction
 
 /** Status do pedido de compra — ícone/cores/label únicos, usados em toda tela que referencia um PurchaseOrder. */
 export const PEDIDO_STATUS: Record<string, { label: string; icon: React.ElementType; cls: string; dot: string; soft: string; text: string }> = {
-  RASCUNHO:         { label: "Em elaboração",      icon: FilePenLine,   cls: "bg-surface-2 text-muted",  dot: "bg-faint",  soft: "bg-surface-2",  text: "text-muted" },
-  ENVIADO:          { label: "Enviado",            icon: Send,         cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500", soft: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400" },
-  AGUARDANDO:       { label: "Aguardando entrega", icon: Clock3,       cls: "bg-warn-soft text-warn",   dot: "bg-warn",   soft: "bg-warn-soft",  text: "text-warn" },
-  RECEBIDO_PARCIAL: { label: "Recebido parcial",   icon: PackageCheck, cls: "bg-brand-soft text-brand", dot: "bg-brand",  soft: "bg-brand-soft", text: "text-brand" },
-  RECEBIDO:         { label: "Recebido",           icon: CircleCheck,  cls: "bg-ok-soft text-ok",       dot: "bg-ok",     soft: "bg-ok-soft",    text: "text-ok" },
-  CANCELADO:        { label: "Cancelado",          icon: CircleX,      cls: "bg-danger-soft text-danger", dot: "bg-danger", soft: "bg-danger-soft", text: "text-danger" },
+  RASCUNHO:         { label: "Rascunho",              icon: FilePenLine,   cls: "bg-surface-2 text-muted",  dot: "bg-faint",  soft: "bg-surface-2",  text: "text-muted" },
+  ENVIADO:          { label: "Enviado",               icon: Send,         cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500", soft: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400" },
+  AGUARDANDO:       { label: "Aguardando entrega",    icon: Clock3,       cls: "bg-warn-soft text-warn",   dot: "bg-warn",   soft: "bg-warn-soft",  text: "text-warn" },
+  RECEBIDO_PARCIAL: { label: "Recebido parcialmente", icon: PackageCheck, cls: "bg-brand-soft text-brand", dot: "bg-brand",  soft: "bg-brand-soft", text: "text-brand" },
+  RECEBIDO:         { label: "Recebido",              icon: CircleCheck,  cls: "bg-ok-soft text-ok",       dot: "bg-ok",     soft: "bg-ok-soft",    text: "text-ok" },
+  CANCELADO:        { label: "Cancelado",             icon: CircleX,      cls: "bg-danger-soft text-danger", dot: "bg-danger", soft: "bg-danger-soft", text: "text-danger" },
 };
 
 export function StatusBadge({ status }: { status: string }) {
@@ -49,10 +49,36 @@ export function estadoEntrega(iso: string | null): { label: string; icon: React.
   const hoje = new Date();
   const dia = (x: Date) => Math.floor(new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime() / 86400000);
   const diff = dia(d) - dia(hoje);
-  if (diff < 0) return { label: "Atrasado", icon: TriangleAlert, cls: "bg-danger-soft text-danger" };
-  if (diff === 0) return { label: "Chega hoje", icon: Truck, cls: "bg-brand-soft text-brand" };
+  if (diff < 0) {
+    const dias = -diff;
+    return { label: `Atrasado há ${dias} ${dias === 1 ? "dia" : "dias"}`, icon: TriangleAlert, cls: "bg-danger-soft text-danger" };
+  }
+  if (diff === 0) return { label: "Previsto para hoje", icon: Truck, cls: "bg-brand-soft text-brand" };
   if (diff === 1) return { label: "Previsto para amanhã", icon: CalendarClock, cls: "bg-surface-2 text-muted" };
   return null;
+}
+
+/** 0 = atrasado, 1 = previsto p/ hoje, null = sem urgência de prazo — usado só para ordenar a fila de "Em andamento". */
+export function urgenciaEntrega(iso: string | null): 0 | 1 | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  const hoje = new Date();
+  const dia = (x: Date) => Math.floor(new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime() / 86400000);
+  const diff = dia(d) - dia(hoje);
+  if (diff < 0) return 0;
+  if (diff === 0) return 1;
+  return null;
+}
+
+/** Cabeçalho de grupo de dia — "Hoje" / "Ontem" / data completa. */
+export function diaLabel(iso: string): string {
+  const d = new Date(iso);
+  const hoje = new Date();
+  const dia = (x: Date) => Math.floor(new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime() / 86400000);
+  const diff = dia(hoje) - dia(d);
+  if (diff === 0) return "Hoje";
+  if (diff === 1) return "Ontem";
+  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
 }
 
 export function relDia(iso: string | null): string {
@@ -65,6 +91,15 @@ export function relDia(iso: string | null): string {
   if (diff === 1) return "ontem";
   if (diff < 30) return `há ${diff} dias`;
   return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" });
+}
+
+export const fmtHora = (iso: string) => new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+/** "hoje às 15:38" / "13/07 às 14:34" — usado no histórico e na timeline do pedido. */
+export function relDiaHora(iso: string): string {
+  const rel = relDia(iso);
+  const base = rel === "hoje" || rel === "ontem" ? rel : new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+  return `${base} às ${fmtHora(iso)}`;
 }
 
 export function previsaoLabel(iso: string | null): string {
@@ -109,6 +144,7 @@ export const STATUS_REPO = {
   ruptura: { label: "Ruptura", dot: "bg-danger", text: "text-danger", soft: "bg-danger-soft" },
   critico: { label: "Crítico", dot: "bg-warn", text: "text-warn", soft: "bg-warn-soft" },
   abaixo: { label: "Abaixo do mínimo", dot: "bg-accent", text: "text-accent", soft: "bg-accent-soft" },
+  monitorar: { label: "Abaixo do ideal", dot: "bg-brand", text: "text-brand", soft: "bg-brand-soft" },
 } as const;
 
 export type StatusRepo = keyof typeof STATUS_REPO;

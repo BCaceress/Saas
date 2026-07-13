@@ -5,26 +5,23 @@ import Link from "next/link";
 import {
   ArrowRight,
   Building2,
-  ChevronRight,
-  CircleCheck,
   PackageCheck,
-  PartyPopper,
   Pencil,
   Truck,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
-import type { GrupoReposicao, SugestaoRow } from "./_data";
+import type { GrupoReposicao } from "./_data";
 import { PedidoDrawer, PedidoFormSheet, type FormOptions, type PedidoView } from "./_pedidos";
 import { PedidoReceber, TransferReceber, type Transfer } from "./_recebimentos";
-import { eventoMeta, eventoStatusLabel, type Evento } from "./_historico";
-import { estadoEntrega, fmtMoney, fmtQtd, previsaoLabel, relDia, StatusDot, Thumb, PEDIDO_STATUS, STATUS_REPO } from "./_ui";
+import { estadoEntrega, fmtMoney, fmtQtd, previsaoLabel, relDia, urgenciaEntrega, PEDIDO_STATUS } from "./_ui";
 
 // ── Inbox operacional de Compras ──────────────────────────────
 // Sem abas: a tela responde "o que precisa da minha atenção agora?"
-// em três blocos verticais — Reposição (a decisão), Em andamento
-// (processos vivos) e Últimas atividades (contexto recente).
+// em dois blocos verticais — Reposição (a decisão) e Em andamento
+// (processos vivos).
 
 const ATIVOS = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"];
 
@@ -32,7 +29,6 @@ export function ComprasInbox({
   grupos,
   pedidos,
   transferencias,
-  eventos,
   formOptions,
   empresa,
   initialQuery,
@@ -40,7 +36,6 @@ export function ComprasInbox({
   grupos: GrupoReposicao[];
   pedidos: PedidoView[];
   transferencias: Transfer[];
-  eventos: Evento[];
   formOptions: FormOptions;
   empresa: string;
   initialQuery?: string;
@@ -56,20 +51,19 @@ export function ComprasInbox({
   const stats = useMemo(() => {
     let urgentes = 0;
     let repor = 0;
+    let noRadar = 0;
     let estimado = 0;
     for (const g of grupos) {
       for (const it of g.itens) {
         if (it.qtdSugerida <= 0) continue;
-        if (it.status === "abaixo") repor += 1;
+        if (it.status === "monitorar") noRadar += 1;
+        else if (it.status === "abaixo") repor += 1;
         else urgentes += 1;
         estimado += it.qtdSugerida * (it.custoUnitCompra ?? 0);
       }
     }
-    const aCaminho =
-      pedidos.filter((p) => ["ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"].includes(p.status)).length +
-      transferencias.length;
-    return { urgentes, repor, aCaminho, estimado };
-  }, [grupos, pedidos, transferencias]);
+    return { urgentes, repor, noRadar, estimado };
+  }, [grupos]);
 
   // ── Em andamento: ordenado pela próxima ação, não pelo status ──
   const andamento = useMemo(() => {
@@ -88,7 +82,7 @@ export function ComprasInbox({
     );
   }, [pedidos, transferencias, filtro]);
 
-  const totalReposicao = stats.urgentes + stats.repor;
+  const totalReposicao = stats.urgentes + stats.repor + stats.noRadar;
 
   return (
     <div className="flex flex-col gap-6">
@@ -106,16 +100,26 @@ export function ComprasInbox({
       )}
 
       {/* ── Reposição: o foco da tela ── */}
-      {!filtro && <ReposicaoBloco grupos={grupos} total={totalReposicao} urgentes={stats.urgentes} estimado={stats.estimado} />}
+      {!filtro && (
+        <ReposicaoBloco
+          total={totalReposicao}
+          urgentes={stats.urgentes}
+          noRadar={stats.noRadar}
+          estimado={stats.estimado}
+        />
+      )}
 
       {/* ── Em andamento ── */}
       <section className="flex flex-col gap-2.5">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-faint">
-          {filtro ? "Pedidos encontrados" : "Pedidos enviados ou a caminho"}
+        <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-faint">
+          {filtro ? "Pedidos encontrados" : "Em andamento"}
+          {!filtro && andamento.length > 0 && (
+            <span className="rounded-full bg-surface-2 px-1.5 py-px text-[11px] font-semibold tabular-nums text-muted">{andamento.length}</span>
+          )}
         </h2>
         {andamento.length === 0 ? (
           <p className="rounded-xl border border-dashed border-line px-4 py-6 text-center text-sm text-muted">
-            {filtro ? "Nenhum pedido com esse termo." : "Nenhum pedido em andamento — os pedidos criados aparecem aqui até a entrada no estoque."}
+            {filtro ? "Nenhum pedido com esse termo." : "Nenhum pedido em andamento."}
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
@@ -136,35 +140,6 @@ export function ComprasInbox({
           </ul>
         )}
       </section>
-
-      {/* ── Últimas atividades ── */}
-      {!filtro && eventos.length > 0 && (
-        <section className="flex flex-col gap-2.5">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-faint">Últimas atividades</h2>
-          <ul className="flex flex-col divide-y divide-line rounded-2xl border border-line bg-surface shadow-(--shadow-1)">
-            {eventos.slice(0, 3).map((e) => {
-              const meta = eventoMeta(e);
-              const pendente = e.origem === "PEDIDO";
-              return (
-                <li key={e.id} className="flex items-center gap-3 px-4 py-2.5">
-                  <span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg", pendente ? meta.cls : "bg-ok-soft text-ok")}>
-                    {pendente ? <meta.icon size={15} /> : <CircleCheck size={15} />}
-                  </span>
-                  <p className="min-w-0 flex-1 truncate text-sm text-ink-2">
-                    <span className="font-medium text-ink">{e.titulo}</span>
-                    {e.subtitulo && <span className="text-muted"> · {e.subtitulo}</span>}
-                    <span className={cn("ml-1.5 rounded-full px-1.5 py-px align-middle text-[10px] font-semibold", pendente ? meta.cls : "bg-ok-soft text-ok")}>
-                      {eventoStatusLabel(e)}
-                    </span>
-                    <span className="text-faint"> · {relDia(e.data)}</span>
-                  </p>
-                  {e.valor != null && <span className="shrink-0 text-sm font-medium tabular-nums text-ink">{fmtMoney(e.valor)}</span>}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      )}
 
       {/* ── Sobreposições ── */}
       <PedidoDrawer
@@ -217,102 +192,66 @@ export function ComprasInbox({
 }
 
 // ── Bloco Reposição ───────────────────────────────────────────
-// Comunica necessidade + urgência + ação principal. Os controles de
-// compra ficam no fluxo focado (/compras/revisar).
+// Comunica só a necessidade + urgência + ação principal — os produtos
+// ficam no fluxo focado (/compras/revisar), não aqui.
 
 function ReposicaoBloco({
-  grupos,
   total,
   urgentes,
+  noRadar,
   estimado,
 }: {
-  grupos: GrupoReposicao[];
   total: number;
   urgentes: number;
+  noRadar: number;
   estimado: number;
 }) {
-  const peso: Record<SugestaoRow["status"], number> = { ruptura: 0, critico: 1, abaixo: 2 };
-  const preview = grupos
-    .flatMap((g) => g.itens.filter((it) => it.qtdSugerida > 0))
-    .sort((a, b) => peso[a.status] - peso[b.status] || (a.coberturaDias ?? 99) - (b.coberturaDias ?? 99))
-    .slice(0, 3);
-
   if (total === 0) {
     return (
-      <section className="flex items-center gap-3 rounded-2xl border border-line bg-surface px-5 py-4 shadow-(--shadow-1)">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-ok-soft text-ok">
-          <PartyPopper size={18} />
+      <section className="flex items-center gap-3 rounded-2xl border border-ok/15 bg-ok-soft/40 px-5 py-4">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ok-soft text-lg" aria-hidden>
+          🎉
         </span>
         <div>
-          <p className="text-sm font-semibold text-ink">Estoque em dia — nada para repor.</p>
-          <p className="text-xs text-muted">
-            Quando um produto ficar abaixo do mínimo ou o ritmo de venda indicar risco, a sugestão aparece aqui.
-          </p>
+          <p className="text-sm font-semibold text-ink">Estoque em dia</p>
+          <p className="text-xs text-muted">Nenhum produto precisa de reposição no momento.</p>
         </div>
       </section>
     );
   }
 
-  const restantes = total - preview.length;
-
   return (
-    <section className="overflow-hidden rounded-2xl border border-line bg-surface shadow-(--shadow-1)">
-      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 px-5 py-4">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-faint">Reposição</p>
-          <h2 className="mt-1 font-display text-lg font-semibold leading-snug text-ink">
-            {total === 1 ? "1 produto precisa de reposição" : `${total} produtos precisam de reposição`}
-          </h2>
+    <section className="flex flex-wrap items-center gap-4 rounded-2xl border border-warn/20 bg-warn-soft/30 px-5 py-4">
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-warn-soft text-warn">
+        <TriangleAlert size={18} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <h2 className="font-display text-base font-semibold leading-snug text-ink">
+          {total === 1 ? "1 produto precisa de reposição" : `${total} produtos precisam de reposição`}
+        </h2>
+        <p className="mt-0.5 text-xs text-muted">
           {urgentes > 0 && (
-            <p className="mt-0.5 text-sm text-danger">
-              {urgentes === 1 ? "1 está com risco de venda e precisa de atenção primeiro." : `${urgentes} estão com risco de venda e precisam de atenção primeiro.`}
-            </p>
-          )}
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          {estimado > 0 && (
-            <p className="text-xs text-muted">
-              <span className="font-display text-base font-semibold tabular-nums text-ink">{fmtMoney(estimado)}</span> estimados
-            </p>
-          )}
-          <Link
-            href="/compras/revisar"
-            className="flex items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-          >
-            Revisar reposição <ArrowRight size={15} />
-          </Link>
-        </div>
-      </div>
-
-      <ul className="divide-y divide-line border-t border-line">
-        {preview.map((it) => (
-          <li key={it.productId} className="flex items-center gap-3 px-5 py-2.5">
-            <StatusDot status={it.status} />
-            <Thumb url={it.imagemUrl} nome={it.nome} size={32} />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-ink">{it.nome}</p>
-              <p className="text-[11px] text-muted">
-                <span className={cn("font-semibold tabular-nums", STATUS_REPO[it.status].text)}>{fmtQtd(it.estoque)}</span> em estoque
-                {it.mediaDia > 0 && <> · vende ~{it.mediaDia < 1 ? it.mediaDia.toFixed(1) : Math.round(it.mediaDia)}/dia</>}
-              </p>
-            </div>
-            <span className="shrink-0 text-sm font-medium tabular-nums text-ink">
-              Comprar {it.qtdSugerida}
-              {it.packagingNome ? <span className="text-xs text-muted"> {it.packagingNome.toLowerCase()}</span> : null}
+            <span className="font-medium text-danger">
+              {urgentes === 1 ? "1 com risco de ruptura" : `${urgentes} com risco de ruptura`}
             </span>
-          </li>
-        ))}
-      </ul>
-
-      {restantes > 0 && (
-        <Link
-          href="/compras/revisar"
-          className="flex items-center justify-between border-t border-line px-5 py-2.5 text-sm text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-        >
-          + {restantes} {restantes === 1 ? "outro produto" : "outros produtos"}
-          <ChevronRight size={15} className="text-faint" />
-        </Link>
-      )}
+          )}
+          {urgentes > 0 && noRadar > 0 && " · "}
+          {noRadar > 0 && (
+            <span className="font-medium text-brand">
+              {noRadar === 1 ? "1 abaixo do ideal" : `${noRadar} abaixo do ideal`}
+            </span>
+          )}
+          {(urgentes > 0 || noRadar > 0) && estimado > 0 && " · "}
+          {estimado > 0 && <span className="font-medium tabular-nums text-ink">{fmtMoney(estimado)}</span>}
+          {estimado > 0 && " estimados"}
+        </p>
+      </div>
+      <Link
+        href="/compras/revisar"
+        className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+      >
+        Revisar reposição <ArrowRight size={15} />
+      </Link>
     </section>
   );
 }
@@ -325,17 +264,25 @@ type AndamentoItem =
 
 type AcaoPedido = { peso: number; cta: string; acao: "receber" | "detalhe"; primaria: boolean };
 
-/** Ordena pela necessidade de ação: receber > rascunho > acompanhar. */
+/**
+ * Ordena pela necessidade de ação, não pelo status: atrasados e previstos
+ * para hoje sempre no topo, mesmo que o status "oficial" seja outro.
+ */
 function acaoPedido(p: PedidoView): AcaoPedido {
+  const aberto = ["ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"].includes(p.status);
+  const urgencia = aberto ? urgenciaEntrega(p.previsaoEntrega) : null;
+
   switch (p.status) {
     case "RECEBIDO_PARCIAL":
-      return { peso: 0, cta: "Continuar recebimento", acao: "receber", primaria: true };
+      return { peso: urgencia === 0 ? 0 : urgencia === 1 ? 1 : 2, cta: "Continuar recebimento", acao: "receber", primaria: true };
     case "AGUARDANDO":
-      return { peso: 1, cta: "Receber pedido", acao: "receber", primaria: true };
+      return { peso: urgencia === 0 ? 0 : urgencia === 1 ? 1 : 3, cta: "Receber pedido", acao: "receber", primaria: true };
+    case "ENVIADO":
+      return { peso: urgencia === 0 ? 0 : urgencia === 1 ? 1 : 4, cta: "Ver pedido", acao: "detalhe", primaria: false };
     case "RASCUNHO":
-      return { peso: 3, cta: "Continuar pedido", acao: "detalhe", primaria: false };
-    default: // ENVIADO e (com filtro externo) recebidos/cancelados
-      return { peso: 4, cta: "Ver pedido", acao: "detalhe", primaria: false };
+      return { peso: 5, cta: "Continuar pedido", acao: "detalhe", primaria: false };
+    default: // recebidos/cancelados (só aparecem com filtro externo)
+      return { peso: 6, cta: "Ver pedido", acao: "detalhe", primaria: false };
   }
 }
 
