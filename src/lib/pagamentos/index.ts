@@ -1,12 +1,13 @@
 import "server-only";
 import { basePrisma } from "@/lib/prisma";
+import { onlyDigits } from "@/lib/normalize";
 import { finalizarVenda, cancelarVenda } from "@/lib/vendas";
 import { mercadoPagoProvider } from "./mercadopago";
 import { stoneProvider } from "./stone";
 import { pagseguroProvider } from "./pagseguro";
 import { simuladoProvider } from "./simulado";
 import type { PagamentoProvider, StatusCobranca, TerminalInfo } from "./types";
-import type { PaymentProviderKind, PaymentStatus } from "@/generated/prisma";
+import type { PaymentAmbiente, PaymentProviderKind, PaymentStatus } from "@/generated/prisma";
 
 // ============================================================
 // Payment Service (orquestração). Segue o padrão de lib/vendas.ts:
@@ -27,6 +28,7 @@ function buildProvider(cfg: {
   provider: PaymentProviderKind;
   accessToken: string;
   partnerRef: string | null;
+  ambiente?: PaymentAmbiente;
 }): PagamentoProvider {
   switch (cfg.provider) {
     case "MERCADO_PAGO":
@@ -34,9 +36,35 @@ function buildProvider(cfg: {
     case "STONE":
       return stoneProvider(cfg.accessToken, cfg.partnerRef);
     case "PAGSEGURO":
-      return pagseguroProvider(cfg.accessToken);
+      return pagseguroProvider(cfg.accessToken, cfg.ambiente);
     case "SIMULADO":
       return simuladoProvider();
+  }
+}
+
+/** Testa um token sem salvar — leitura pura no PSP, nunca volta a credencial. */
+export async function testarCredenciaisProvedor(input: {
+  provider: Exclude<PaymentProviderKind, "SIMULADO">;
+  accessToken: string;
+  partnerRef?: string | null;
+  ambiente?: PaymentAmbiente;
+}): Promise<{ ok: boolean; suportado: boolean; mensagem?: string }> {
+  const provider = buildProvider({
+    provider: input.provider,
+    accessToken: input.accessToken,
+    partnerRef: input.partnerRef ?? null,
+    ambiente: input.ambiente,
+  });
+  if (!provider.validarCredenciais) return { ok: false, suportado: false };
+  try {
+    await provider.validarCredenciais();
+    return { ok: true, suportado: true };
+  } catch (e) {
+    return {
+      ok: false,
+      suportado: true,
+      mensagem: e instanceof Error ? e.message : "Não foi possível validar as credenciais.",
+    };
   }
 }
 
@@ -49,6 +77,8 @@ export type ConfigPagamentoPublica = {
   temWebhookSecret: boolean;
   /** Stone Connect: código do Programa de Parcerias (não é credencial secreta). */
   partnerRef: string | null;
+  /** PagBank: produção x sandbox — só relevante para PAGSEGURO. */
+  ambiente: PaymentAmbiente;
 };
 
 export async function getConfigPagamento(
@@ -65,6 +95,7 @@ export async function getConfigPagamento(
     cartaoIntegrado: cfg.cartaoIntegrado,
     temWebhookSecret: !!cfg.webhookSecret,
     partnerRef: cfg.partnerRef,
+    ambiente: cfg.ambiente,
   };
 }
 
@@ -122,21 +153,36 @@ export async function criarCobrancaPixVenda(
 
   const payment = await basePrisma.payment.findFirst({
     where: { saleId, tenantId, metodo: "PIX", status: "PENDENTE" },
-    select: { id: true, valor: true },
+    select: {
+      id: true,
+      valor: true,
+      sale: { select: { customer: { select: { cpf: true } } } },
+    },
   });
   if (!payment) throw new Error("Pagamento PIX pendente não encontrado na venda.");
 
   const tenant = await basePrisma.tenant.findUnique({
     where: { id: tenantId },
-    select: { emailContato: true, nome: true },
+    select: { emailContato: true, nome: true, cnpj: true },
   });
+
+  // PagBank exige customer.tax_id. PDV é anônimo na maioria das vendas —
+  // usa o CPF do cliente vinculado (fidelização) quando existir, senão cai
+  // pro CNPJ da própria empresa (não é o pagador de verdade, mas satisfaz
+  // a API sem exigir cadastro de documento no fechamento do caixa).
+  const payerDocument =
+    onlyDigits(payment.sale.customer?.cpf ?? "") || onlyDigits(tenant?.cnpj ?? "") || undefined;
 
   const cobranca = await ctx.provider.criarCobrancaPix({
     valor: num(payment.valor),
     descricao: `Venda ${saleId.slice(-4).toUpperCase()} — ${tenant?.nome ?? "PDV"}`,
-    referencia: `${tenantId}:${saleId}:${payment.id}`,
+    // Só rótulo informativo no PSP — nunca usado de volta pra lookup (o
+    // webhook resolve pelo externalId do PSP). PagBank limita a 64 chars,
+    // então não concatena tenantId/saleId — o payment.id já é único.
+    referencia: payment.id,
     idempotencyKey: payment.id,
     payerEmail: tenant?.emailContato ?? "cliente@nohub.market",
+    payerDocument,
   });
 
   await basePrisma.$transaction([
@@ -192,7 +238,10 @@ export async function criarIntencaoCartaoVenda(
     valor: num(payment.valor),
     tipo: input.tipo,
     parcelas: input.parcelas,
-    referencia: `${tenantId}:${saleId}:${payment.id}`,
+    // Só rótulo informativo no PSP — nunca usado de volta pra lookup (o
+    // webhook resolve pelo externalId do PSP). PagBank limita a 64 chars,
+    // então não concatena tenantId/saleId — o payment.id já é único.
+    referencia: payment.id,
   });
 
   await basePrisma.$transaction([

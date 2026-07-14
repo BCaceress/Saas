@@ -1,20 +1,29 @@
 "use server";
 
+import { randomBytes } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
+import { rootUrl } from "@/lib/urls";
 import { listSitePaymentMethods } from "@/lib/vendas";
 import {
   listarTerminaisDoProvedor,
   prepararTerminalNoProvedor,
+  testarCredenciaisProvedor,
   type TerminalInfo,
 } from "@/lib/pagamentos";
 
 async function tx<T>(fn: (tid: string) => Promise<T>): Promise<T> {
   const ctx = await requireActiveTenant();
   return runWithTenant(ctx.tenant.id, () => fn(ctx.tenant.id));
+}
+
+// Token colado do painel pode vir com espaços/quebra de linha ou "Bearer "
+// duplicado — normaliza antes de salvar/testar (evita erro de parse no PSP).
+function limparToken(token: string): string {
+  return token.replace(/\s+/g, "").replace(/^bearer/i, "");
 }
 
 const schema = z.object({
@@ -54,6 +63,8 @@ const provedorSchema = z.object({
   webhookSecret: z.string().optional().default(""),
   /** Stone Connect: código do Programa de Parcerias (ServiceRefererName). */
   partnerRef: z.string().optional().default(""),
+  /** PagBank: produção x sandbox — hosts de API diferentes. */
+  ambiente: z.enum(["PRODUCAO", "SANDBOX"]).default("PRODUCAO"),
   ativo: z.boolean().default(true),
   pixAutomatico: z.boolean().default(true),
   cartaoIntegrado: z.boolean().default(false),
@@ -66,7 +77,7 @@ export async function salvarProvedorPagamentoAction(input: z.input<typeof proved
       select: { id: true, accessToken: true, webhookSecret: true, partnerRef: true },
     });
 
-    const accessToken = d.accessToken.trim() || existing?.accessToken || "";
+    const accessToken = limparToken(d.accessToken) || existing?.accessToken || "";
     if (d.provider !== "SIMULADO" && !accessToken) {
       throw new Error(
         d.provider === "STONE"
@@ -92,6 +103,7 @@ export async function salvarProvedorPagamentoAction(input: z.input<typeof proved
       accessToken,
       webhookSecret: d.webhookSecret.trim() || existing?.webhookSecret || null,
       partnerRef,
+      ambiente: d.ambiente,
       ativo: d.ativo,
       pixAutomatico: d.pixAutomatico,
       cartaoIntegrado: d.cartaoIntegrado,
@@ -102,6 +114,80 @@ export async function salvarProvedorPagamentoAction(input: z.input<typeof proved
       await db.paymentProviderConfig.create({ data: { tenantId: tid, ...data } });
     }
     revalidatePath("/configuracoes/metodos-pagamento");
+  });
+}
+
+// ── Testar token — valida a credencial no PSP antes de salvar ──
+const testarTokenSchema = z.object({
+  provider: z.enum(["MERCADO_PAGO", "STONE", "PAGSEGURO"]),
+  accessToken: z.string().optional().default(""),
+  partnerRef: z.string().optional().default(""),
+  ambiente: z.enum(["PRODUCAO", "SANDBOX"]).default("PRODUCAO"),
+});
+
+export type TesteTokenResultado = {
+  ok: boolean;
+  /** PSP não expõe validação sem efeito colateral (ex.: Stone). */
+  suportado: boolean;
+  mensagem?: string;
+};
+
+export async function testarTokenPagamentoAction(
+  input: z.input<typeof testarTokenSchema>
+): Promise<TesteTokenResultado> {
+  return tx(async () => {
+    const d = testarTokenSchema.parse(input);
+    const existing = await db.paymentProviderConfig.findFirst({
+      select: { provider: true, accessToken: true },
+    });
+    const token =
+      limparToken(d.accessToken) ||
+      (existing?.provider === d.provider ? existing.accessToken : "");
+    if (!token) {
+      return { ok: false, suportado: true, mensagem: "Cole o token antes de testar." };
+    }
+    return testarCredenciaisProvedor({
+      provider: d.provider,
+      accessToken: token,
+      partnerRef: d.partnerRef.trim() || null,
+      ambiente: d.ambiente,
+    });
+  });
+}
+
+// ── Segredo do webhook — gerado pelo sistema, nunca digitado à mão ──
+const WEBHOOK_PATH: Record<string, string> = {
+  MERCADO_PAGO: "/api/webhooks/mercadopago",
+  STONE: "/api/webhooks/stone",
+  PAGSEGURO: "/api/webhooks/pagseguro",
+};
+
+export async function gerarSegredoWebhookAction(): Promise<void> {
+  return tx(async () => {
+    const existing = await db.paymentProviderConfig.findFirst({ select: { id: true } });
+    if (!existing) throw new Error("Conecte um provedor antes de configurar o webhook.");
+    const segredo = randomBytes(24).toString("hex");
+    await db.paymentProviderConfig.update({
+      where: { id: existing.id },
+      data: { webhookSecret: segredo },
+    });
+    revalidatePath("/configuracoes/metodos-pagamento");
+  });
+}
+
+/**
+ * Monta a URL de notificação já com o segredo — só existe no momento da
+ * cópia (não fica em nenhum estado de tela nem é reenviada depois).
+ */
+export async function obterUrlWebhookAction(): Promise<string> {
+  return tx(async () => {
+    const cfg = await db.paymentProviderConfig.findFirst({
+      select: { provider: true, webhookSecret: true },
+    });
+    const path = cfg && WEBHOOK_PATH[cfg.provider];
+    if (!cfg || !path) throw new Error("Configure o provedor antes de gerar a URL de notificação.");
+    if (!cfg.webhookSecret) throw new Error("Gere o segredo do webhook antes de copiar a URL.");
+    return `${rootUrl(path)}?token=${cfg.webhookSecret}`;
   });
 }
 
@@ -145,7 +231,15 @@ export type TesteConexaoResultado = { ok: boolean; itens: TesteConexaoItem[] };
 export async function testarConexaoPagamentoAction(): Promise<TesteConexaoResultado> {
   return tx(async (tid) => {
     const cfg = await db.paymentProviderConfig.findFirst({
-      select: { provider: true, webhookSecret: true, partnerRef: true, pixAutomatico: true, cartaoIntegrado: true },
+      select: {
+        provider: true,
+        accessToken: true,
+        webhookSecret: true,
+        partnerRef: true,
+        ambiente: true,
+        pixAutomatico: true,
+        cartaoIntegrado: true,
+      },
     });
     if (!cfg) {
       return {
@@ -203,12 +297,16 @@ export async function testarConexaoPagamentoAction(): Promise<TesteConexaoResult
         });
       }
     } else {
-      // PagSeguro não expõe verificação sem criar cobrança real
-      itens.push({
-        rotulo: "Credenciais",
-        status: "warn",
-        detalhe: "O PagSeguro não permite validar a credencial sem criar uma cobrança — confirme com uma venda de teste.",
+      const r = await testarCredenciaisProvedor({
+        provider: "PAGSEGURO",
+        accessToken: cfg.accessToken,
+        ambiente: cfg.ambiente,
       });
+      itens.push(
+        r.ok
+          ? { rotulo: "Credenciais", status: "ok", detalhe: "Conexão estabelecida com o PagBank." }
+          : { rotulo: "Credenciais", status: "erro", detalhe: r.mensagem ?? "Não foi possível validar o token." }
+      );
     }
 
     itens.push(
@@ -218,11 +316,11 @@ export async function testarConexaoPagamentoAction(): Promise<TesteConexaoResult
     );
     itens.push(
       cfg.webhookSecret
-        ? { rotulo: "Webhook", status: "ok", detalhe: "Assinatura configurada — confirmação em tempo real." }
+        ? { rotulo: "Notificações", status: "ok", detalhe: "Webhook configurado — confirmação em tempo real." }
         : {
-            rotulo: "Webhook",
+            rotulo: "Notificações",
             status: "warn",
-            detalhe: "Sem webhook — o Pix pode demorar até 3 segundos para confirmar (consulta periódica).",
+            detalhe: "Sem webhook — o sistema confirma por verificação automática de segurança.",
           }
     );
 

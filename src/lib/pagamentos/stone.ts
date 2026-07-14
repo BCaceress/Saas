@@ -23,6 +23,12 @@ import type {
 
 const API = "https://api.pagar.me/core/v5";
 
+// Chave colada do painel pode vir com espaços/quebra de linha — normaliza
+// antes de montar o header (evita 401/erro de parse no Basic auth).
+function limparToken(token: string): string {
+  return token.replace(/\s+/g, "");
+}
+
 async function pagarme<T>(
   secretKey: string,
   path: string,
@@ -32,7 +38,7 @@ async function pagarme<T>(
     ...init,
     headers: {
       // Basic auth: secret key como usuário, senha vazia
-      Authorization: `Basic ${Buffer.from(`${secretKey}:`).toString("base64")}`,
+      Authorization: `Basic ${Buffer.from(`${limparToken(secretKey)}:`).toString("base64")}`,
       "Content-Type": "application/json",
       ...(init?.idempotencyKey ? { "Idempotency-Key": init.idempotencyKey } : {}),
       // Stone Connect (POS): identifica o parceiro para rotear ao terminal

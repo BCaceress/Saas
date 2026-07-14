@@ -17,6 +17,12 @@ import type {
 
 const API = "https://api.mercadopago.com";
 
+// Token colado do painel pode vir com espaços/quebra de linha ou "Bearer "
+// duplicado — normaliza antes de montar o header (evita 401/erro de parse).
+function limparToken(token: string): string {
+  return token.replace(/\s+/g, "").replace(/^bearer/i, "");
+}
+
 async function mp<T>(
   token: string,
   path: string,
@@ -25,7 +31,7 @@ async function mp<T>(
   const res = await fetch(`${API}${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${limparToken(token)}`,
       "Content-Type": "application/json",
       ...(init?.idempotencyKey ? { "X-Idempotency-Key": init.idempotencyKey } : {}),
       ...init?.headers,
@@ -85,6 +91,11 @@ export function mercadoPagoProvider(accessToken: string): PagamentoProvider {
   return {
     slug: "MERCADO_PAGO",
     suportaCartaoIntegrado: true,
+
+    // GET /users/me é leitura pura e exige Access Token válido.
+    async validarCredenciais(): Promise<void> {
+      await mp(accessToken, "/users/me");
+    },
 
     async criarCobrancaPix(input): Promise<CobrancaPix> {
       const expiraEm = new Date(

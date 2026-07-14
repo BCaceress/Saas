@@ -40,17 +40,29 @@ export type TerminalInfo = {
 export interface PagamentoProvider {
   slug: PaymentProviderKind;
 
+  /**
+   * Chamada leve, sem efeito colateral, que só passa se o token for válido.
+   * Ausente quando o PSP não expõe endpoint de leitura barato (ex.: Stone).
+   */
+  validarCredenciais?(): Promise<void>;
+
   // ── PIX dinâmico ──
   criarCobrancaPix(input: {
     /** Valor em reais. */
     valor: number;
     descricao: string;
-    /** external_reference no PSP: "tenantId:saleId:paymentId". */
+    /** external_reference no PSP — o payment.id (só rótulo, nunca usado de volta pra lookup). */
     referencia: string;
     /** Chave de idempotência (usamos o paymentId). */
     idempotencyKey: string;
     /** E-mail do pagador exigido por alguns PSPs (placeholder no PDV). */
     payerEmail: string;
+    /**
+     * CPF/CNPJ do pagador (só dígitos), exigido pelo PagBank (customer.tax_id).
+     * PDV é anônimo na maioria das vendas — cai pro CNPJ da empresa quando não
+     * há Customer com CPF vinculado à venda. Ignorado por MP/Stone.
+     */
+    payerDocument?: string;
     expiraEmSegundos?: number;
   }): Promise<CobrancaPix>;
   consultarCobranca(externalId: string): Promise<StatusCobranca>;

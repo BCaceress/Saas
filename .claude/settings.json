@@ -35,7 +35,13 @@
       "WebFetch(domain:connect-stone.stone.com.br)",
       "PowerShell(npm run db:push -- --skip-generate; $c = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue; if \\($c\\) { Stop-Process -Id $c[0].OwningProcess -Force; Start-Sleep -Seconds 1 }; npx prisma generate)",
       "Bash(node -e \"const d=JSON.parse\\(require\\('fs'\\).readFileSync\\(0,'utf8'\\)\\);for\\(const f of d\\){for\\(const m of f.messages\\){console.log\\(f.filePath.split\\(/[\\\\\\\\\\\\\\\\/]/\\).pop\\(\\)+':'+m.line+':'+m.column+' '+m.ruleId\\)}}\")",
-      "Bash(taskkill //F //IM node.exe)"
+      "Bash(taskkill //F //IM node.exe)",
+      "Bash(gh api *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3000/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://lvh.me:3000/)",
+      "Bash(curl -s -o /tmp/resp.html -w \"HTTP %{http_code}\\\\n\" \"http://lvh.me:3000/configuracoes/metodos-pagamento\")"
     ],
     "additionalDirectories": [
       "\\tmp"

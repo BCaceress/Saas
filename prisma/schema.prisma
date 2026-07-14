@@ -380,6 +380,11 @@ enum PaymentProviderKind {
   SIMULADO // dev: aprova sozinho após alguns segundos
 }
 
+enum PaymentAmbiente {
+  PRODUCAO
+  SANDBOX // testes com token/API sandbox do PagBank — host de API diferente
+}
+
 enum CashSessionStatus {
   ABERTA
   FECHADA
@@ -1183,6 +1188,7 @@ model PaymentProviderConfig {
   accessToken   String // token privado do PSP (Mercado Pago: Access Token de produção; Stone: sk_ Pagar.me)
   webhookSecret String? // assinatura de webhook (Mercado Pago: secret do painel; Stone: Basic Auth "usuario:senha")
   partnerRef    String? // Stone Connect: ServiceRefererName (código do Programa de Parcerias) — exigido p/ cartão no POS
+  ambiente      PaymentAmbiente @default(PRODUCAO) // PagBank: produção x sandbox — hosts de API diferentes
 
   pixAutomatico    Boolean @default(true) // PIX gera QR dinâmico e confirma sozinho
   cartaoIntegrado  Boolean @default(false) // envia valor à maquininha via API
