@@ -13,6 +13,14 @@ import {
 } from "@/lib/vendas";
 import { sessaoAtual, caixaAbertoNoSite } from "@/lib/caixa";
 import { db } from "@/lib/prisma";
+import {
+  criarCobrancaPixVenda,
+  criarIntencaoCartaoVenda,
+  sincronizarPagamentoIntegrado,
+  cancelarPagamentoIntegrado,
+  integracaoPdv,
+} from "@/lib/pagamentos";
+import type { PaymentStatus } from "@/generated/prisma";
 
 async function tx<T>(fn: (tid: string, userId: string) => Promise<T>): Promise<T> {
   const ctx = await requireActiveTenant();
@@ -68,6 +76,102 @@ export async function finalizarVendaPdvAction(input: z.input<typeof finalizarPdv
     await finalizarVenda(tid, saleId, userId);
     ok();
     return saleId;
+  });
+}
+
+// ============================================================
+// Pagamento integrado no PDV (PIX dinâmico + maquininha via API).
+// Fluxo: cria a venda ABERTA com pagamento PENDENTE → cria a cobrança/
+// intenção no PSP → o modal faz polling até CONFIRMADO → a venda
+// finaliza sozinha (baixa + fiscal). NUNCA finaliza só porque o QR
+// foi gerado — apenas após confirmação do provedor.
+// ============================================================
+
+const iniciarIntegradoSchema = finalizarPdvSchema.omit({ pagamentos: true }).extend({
+  metodo: z.enum(["PIX", "CARTAO_CREDITO", "CARTAO_DEBITO"]),
+  parcelas: z.number().int().min(1).max(12).default(1),
+  terminalId: z.string().optional().nullable(),
+});
+
+export type InicioPagamentoIntegrado =
+  | { integrado: false }
+  | {
+      integrado: true;
+      tipo: "PIX";
+      saleId: string;
+      paymentId: string;
+      copiaECola: string;
+      qrCodeBase64: string | null;
+      expiraEm: string | null;
+    }
+  | { integrado: true; tipo: "CARTAO"; saleId: string; paymentId: string };
+
+export async function iniciarPagamentoIntegradoAction(
+  input: z.input<typeof iniciarIntegradoSchema>
+): Promise<InicioPagamentoIntegrado> {
+  return tx(async (tid, userId) => {
+    const d = iniciarIntegradoSchema.parse(input);
+
+    const sessao = await sessaoAtual(tid, d.siteId, userId);
+    if (!sessao) throw new Error("Caixa fechado — abra o caixa para vender.");
+
+    const integracao = await integracaoPdv(tid, d.siteId);
+    const ehPix = d.metodo === "PIX";
+    if (ehPix && !integracao.pixAutomatico) return { integrado: false };
+    if (!ehPix && !integracao.cartaoIntegrado) return { integrado: false };
+
+    const saleId = await criarVenda(tid, {
+      siteId: d.siteId,
+      origem: "PDV",
+      cashSessionId: sessao.id,
+      operatorUserId: userId,
+      customerId: d.customerId ?? null,
+      items: d.items,
+      descontoVenda: d.descontoVenda,
+      maiorIdadeConfirmada: d.maiorIdadeConfirmada,
+      pagamentoIntegralPendente: d.metodo,
+    });
+
+    try {
+      if (ehPix) {
+        const cobranca = await criarCobrancaPixVenda(tid, saleId);
+        if (!cobranca) throw new Error("Provedor de PIX indisponível.");
+        return { integrado: true, tipo: "PIX", saleId, ...cobranca };
+      }
+      const terminalId = d.terminalId ?? integracao.terminais[0]?.id;
+      if (!terminalId) throw new Error("Nenhuma maquininha vinculada a esta loja.");
+      const intencao = await criarIntencaoCartaoVenda(tid, saleId, {
+        terminalId,
+        tipo: d.metodo === "CARTAO_CREDITO" ? "CREDITO" : "DEBITO",
+        parcelas: d.parcelas,
+      });
+      if (!intencao) throw new Error("Provedor de cartão indisponível.");
+      return { integrado: true, tipo: "CARTAO", saleId, paymentId: intencao.paymentId };
+    } catch (e) {
+      // cobrança não saiu — não deixa venda ABERTA órfã para trás
+      await cancelarVenda(tid, saleId, userId).catch(() => {});
+      throw e;
+    }
+  });
+}
+
+export async function statusPagamentoIntegradoAction(
+  paymentId: string
+): Promise<{ status: PaymentStatus; erroFinalizacao?: string }> {
+  return tx(async (tid, userId) => {
+    const r = await sincronizarPagamentoIntegrado(tid, paymentId, userId);
+    if (r.status === "CONFIRMADO") ok();
+    return r;
+  });
+}
+
+export async function cancelarPagamentoIntegradoAction(paymentId: string) {
+  return tx(async (tid, userId) => {
+    await cancelarPagamentoIntegrado(tid, paymentId, {
+      cancelarVendaTambem: true,
+      createdBy: userId,
+    });
+    ok();
   });
 }
 

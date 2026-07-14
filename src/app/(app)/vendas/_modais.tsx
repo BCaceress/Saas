@@ -28,9 +28,19 @@ import {
   UserPlus,
   UserCheck,
   Delete,
+  Copy,
+  Smartphone,
+  XCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { PixQr } from "@/components/app/pix-qr";
 import { searchCustomers, createCustomer } from "../clientes/actions";
+import {
+  statusPagamentoIntegradoAction,
+  cancelarPagamentoIntegradoAction,
+  type InicioPagamentoIntegrado,
+} from "./actions";
+import type { IntegracaoPdv } from "@/lib/pagamentos";
 import type { ComponentGroupVenda, ProdutoVenda } from "./_data";
 import type { PaymentMethod } from "@/generated/prisma";
 import type { CustomerRow } from "../clientes/_types";
@@ -74,15 +84,62 @@ const inputCls =
 type ModalMetodo = PaymentMethod | "MISTO";
 type MistoLinha = { metodo: PaymentMethod; valor: number };
 
+// Fluxo de pagamento integrado (PIX dinâmico / maquininha via API).
+// A venda só conclui quando o PROVEDOR confirma — nunca ao gerar o QR.
+type FluxoIntegrado = {
+  tipo: "PIX" | "CARTAO";
+  fase: "iniciando" | "aguardando" | "confirmado" | "falha";
+  paymentId?: string;
+  copiaECola?: string;
+  qrCodeBase64?: string | null;
+  falhaMsg?: string;
+};
+
+const FALHA_LABEL: Record<string, string> = {
+  RECUSADO: "Pagamento recusado pela operadora.",
+  EXPIRADO: "A cobrança PIX expirou sem pagamento.",
+  CANCELADO: "Cobrança cancelada.",
+  ESTORNADO: "Pagamento estornado no provedor.",
+};
+
+// navigator.clipboard só existe em contexto seguro (https/localhost);
+// em dev via lvh.me cai no fallback com execCommand.
+async function copiarTexto(texto: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(texto);
+      return true;
+    } catch {
+      // segue pro fallback
+    }
+  }
+  const ta = document.createElement("textarea");
+  ta.value = texto;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    ta.remove();
+  }
+}
+
 export function PagamentoModal({
   total,
   numItens,
   cliente,
   origemTotem,
   metodosAtivos,
+  integracao,
   pending,
   onClose,
   onReceber,
+  onIniciarIntegrado,
+  onConcluidoIntegrado,
 }: {
   total: number;
   numItens: number;
@@ -90,11 +147,18 @@ export function PagamentoModal({
   /** Rótulo discreto quando a venda veio do autoatendimento. */
   origemTotem?: string | null;
   metodosAtivos: PaymentMethod[];
+  /** Pagamento integrado (null = só fluxo manual, ex.: venda do totem). */
+  integracao?: IntegracaoPdv | null;
   pending: boolean;
   onClose: () => void;
   onReceber: (
     pagamentos: { metodo: PaymentMethod; valor: number; troco?: number | null }[],
   ) => Promise<boolean>;
+  onIniciarIntegrado?: (
+    metodo: "PIX" | "CARTAO_CREDITO" | "CARTAO_DEBITO",
+    opts: { parcelas?: number; terminalId?: string | null },
+  ) => Promise<InicioPagamentoIntegrado>;
+  onConcluidoIntegrado?: () => void;
 }) {
   const [metodo, setMetodo] = useState<ModalMetodo | null>(null);
   const [recebido, setRecebido] = useState("");
@@ -114,7 +178,25 @@ export function PagamentoModal({
   const mistoPago = misto.reduce((s, l) => s + l.valor, 0);
   const mistoFalta = Math.max(0, total - mistoPago);
 
+  // ── Pagamento integrado ──
+  const [fluxo, setFluxo] = useState<FluxoIntegrado | null>(null);
+  const pixIntegrado = !!(integracao?.pixAutomatico && onIniciarIntegrado);
+  const cartaoIntegrado = !!(
+    integracao?.cartaoIntegrado &&
+    (integracao?.terminais.length ?? 0) > 0 &&
+    onIniciarIntegrado
+  );
+  const ehIntegrado = (m: ModalMetodo | null) =>
+    (m === "PIX" && pixIntegrado) ||
+    ((m === "CARTAO_CREDITO" || m === "CARTAO_DEBITO") && cartaoIntegrado);
+  // trava troca de método/fechamento enquanto há cobrança viva
+  const fluxoTravado =
+    fluxo?.fase === "iniciando" ||
+    fluxo?.fase === "aguardando" ||
+    fluxo?.fase === "confirmado";
+
   const pronto = (() => {
+    if (ehIntegrado(metodo)) return false; // conclui sozinho na confirmação
     if (metodo === "DINHEIRO") return recebidoNum >= total - 0.005;
     if (metodo === "CARTAO_CREDITO") return !!bandeira;
     if (metodo === "CARTAO_DEBITO") return true;
@@ -122,6 +204,96 @@ export function PagamentoModal({
     if (metodo === "MISTO") return mistoPago >= total - 0.005;
     return false;
   })();
+
+  async function iniciarFluxo(
+    m: "PIX" | "CARTAO_CREDITO" | "CARTAO_DEBITO",
+    opts: { parcelas?: number; terminalId?: string | null },
+  ) {
+    if (!onIniciarIntegrado || fluxoTravado) return;
+    const tipo = m === "PIX" ? ("PIX" as const) : ("CARTAO" as const);
+    setFluxo({ tipo, fase: "iniciando" });
+    try {
+      const r = await onIniciarIntegrado(m, opts);
+      if (!r.integrado) {
+        setFluxo(null); // provedor desligado — painéis manuais assumem
+        return;
+      }
+      setFluxo({
+        tipo: r.tipo,
+        fase: "aguardando",
+        paymentId: r.paymentId,
+        copiaECola: r.tipo === "PIX" ? r.copiaECola : undefined,
+        qrCodeBase64: r.tipo === "PIX" ? r.qrCodeBase64 : null,
+      });
+    } catch (e) {
+      setFluxo({
+        tipo,
+        fase: "falha",
+        falhaMsg: e instanceof Error ? e.message : "Erro ao iniciar o pagamento.",
+      });
+    }
+  }
+
+  // polling: consulta o status a cada 3s até estado final (o webhook do
+  // provedor pode confirmar antes — a consulta só lê e sincroniza)
+  const fluxoFase = fluxo?.fase;
+  const fluxoPaymentId = fluxo?.paymentId;
+  useEffect(() => {
+    if (fluxoFase !== "aguardando" || !fluxoPaymentId) return;
+    let ativo = true;
+    let consultando = false;
+    const tick = async () => {
+      if (consultando) return;
+      consultando = true;
+      try {
+        const r = await statusPagamentoIntegradoAction(fluxoPaymentId);
+        if (!ativo) return;
+        if (r.status === "CONFIRMADO") {
+          if (r.erroFinalizacao) {
+            setFluxo((f) =>
+              f && {
+                ...f,
+                fase: "falha",
+                falhaMsg: `Pagamento aprovado, mas a venda não finalizou: ${r.erroFinalizacao}`,
+              },
+            );
+          } else {
+            setFluxo((f) => f && { ...f, fase: "confirmado" });
+            window.setTimeout(() => onConcluidoIntegrado?.(), 900);
+          }
+        } else if (FALHA_LABEL[r.status]) {
+          setFluxo((f) => f && { ...f, fase: "falha", falhaMsg: FALHA_LABEL[r.status] });
+        }
+      } catch {
+        // rede oscilou — tenta no próximo tick
+      } finally {
+        consultando = false;
+      }
+    };
+    const t0 = window.setTimeout(tick, 1200);
+    const id = window.setInterval(tick, 3000);
+    return () => {
+      ativo = false;
+      window.clearTimeout(t0);
+      window.clearInterval(id);
+    };
+  }, [fluxoFase, fluxoPaymentId, onConcluidoIntegrado]);
+
+  function cancelarFluxo() {
+    const pid = fluxo?.paymentId;
+    setFluxo(null);
+    setMetodo(null);
+    if (pid) cancelarPagamentoIntegradoAction(pid).catch(() => {});
+  }
+
+  // fechar o modal com cobrança viva cancela a cobrança junto
+  function fechar() {
+    if (fluxo?.fase === "iniciando" || fluxo?.fase === "confirmado") return;
+    if (fluxo?.fase === "aguardando" && fluxo.paymentId) {
+      cancelarPagamentoIntegradoAction(fluxo.paymentId).catch(() => {});
+    }
+    onClose();
+  }
 
   function receber() {
     if (!pronto || pending) return;
@@ -145,7 +317,7 @@ export function PagamentoModal({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        fechar();
         return;
       }
       const map: Record<string, ModalMetodo> = {
@@ -157,7 +329,9 @@ export function PagamentoModal({
       };
       const m = map[e.key];
       if (m && (m === "MISTO" || metodosAtivos.includes(m))) {
+        if (fluxoTravado) return;
         e.preventDefault();
+        setFluxo(null);
         setMetodo(m);
         return;
       }
@@ -187,7 +361,7 @@ export function PagamentoModal({
     >
       <div
         className="absolute inset-0 bg-ink/50 backdrop-blur-[3px]"
-        onClick={onClose}
+        onClick={fechar}
         aria-hidden
       />
       <div className="relative z-10 flex max-h-[94dvh] w-full flex-col overflow-hidden rounded-[var(--radius-xl)] border border-line bg-surface shadow-[var(--shadow-2)] sm:w-[70vw] sm:max-w-4xl">
@@ -214,7 +388,7 @@ export function PagamentoModal({
               </p>
             </div>
             <button
-              onClick={onClose}
+              onClick={fechar}
               aria-label="Fechar"
               className="grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
             >
@@ -235,9 +409,14 @@ export function PagamentoModal({
               return (
                 <button
                   key={m}
-                  onClick={() => setMetodo(m)}
+                  onClick={() => {
+                    if (fluxoTravado) return;
+                    setFluxo(null);
+                    setMetodo(m);
+                  }}
+                  disabled={fluxoTravado && !sel}
                   className={cn(
-                    "flex min-h-[5.5rem] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-[var(--radius)] border-2 px-2 py-3 transition-all duration-150",
+                    "flex min-h-[5.5rem] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-[var(--radius)] border-2 px-2 py-3 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40",
                     sel
                       ? "border-brand bg-brand text-on-brand"
                       : "border-line bg-surface text-ink hover:border-brand hover:bg-brand-soft hover:text-brand",
@@ -279,31 +458,66 @@ export function PagamentoModal({
               />
             )}
 
-            {metodo === "CARTAO_CREDITO" && (
-              <CreditoPanel
-                bandeira={bandeira}
-                setBandeira={setBandeira}
-                parcelas={parcelas}
-                setParcelas={setParcelas}
-                total={total}
-              />
-            )}
+            {metodo === "CARTAO_CREDITO" &&
+              (cartaoIntegrado ? (
+                <CartaoIntegradoPanel
+                  tipo="CREDITO"
+                  total={total}
+                  terminais={integracao!.terminais}
+                  fluxo={fluxo?.tipo === "CARTAO" ? fluxo : null}
+                  onEnviar={(terminalId, p) =>
+                    iniciarFluxo("CARTAO_CREDITO", { terminalId, parcelas: p })
+                  }
+                  onCancelar={cancelarFluxo}
+                  onTentarDeNovo={() => setFluxo(null)}
+                />
+              ) : (
+                <CreditoPanel
+                  bandeira={bandeira}
+                  setBandeira={setBandeira}
+                  parcelas={parcelas}
+                  setParcelas={setParcelas}
+                  total={total}
+                />
+              ))}
 
-            {metodo === "CARTAO_DEBITO" && (
-              <ConfirmacaoPanel
-                icon={<Landmark size={28} />}
-                titulo="Cartão de débito"
-                texto="Insira ou aproxime o cartão na maquininha e conclua a venda."
-              />
-            )}
+            {metodo === "CARTAO_DEBITO" &&
+              (cartaoIntegrado ? (
+                <CartaoIntegradoPanel
+                  tipo="DEBITO"
+                  total={total}
+                  terminais={integracao!.terminais}
+                  fluxo={fluxo?.tipo === "CARTAO" ? fluxo : null}
+                  onEnviar={(terminalId) =>
+                    iniciarFluxo("CARTAO_DEBITO", { terminalId })
+                  }
+                  onCancelar={cancelarFluxo}
+                  onTentarDeNovo={() => setFluxo(null)}
+                />
+              ) : (
+                <ConfirmacaoPanel
+                  icon={<Landmark size={28} />}
+                  titulo="Cartão de débito"
+                  texto="Insira ou aproxime o cartão na maquininha e conclua a venda."
+                />
+              ))}
 
-            {metodo === "PIX" && (
-              <PixPanel
-                total={total}
-                confirmado={pixConfirmado}
-                onConfirmar={() => setPixConfirmado(true)}
-              />
-            )}
+            {metodo === "PIX" &&
+              (pixIntegrado ? (
+                <PixIntegradoPanel
+                  total={total}
+                  fluxo={fluxo?.tipo === "PIX" ? fluxo : null}
+                  onGerar={() => iniciarFluxo("PIX", {})}
+                  onCancelar={cancelarFluxo}
+                  onTentarDeNovo={() => setFluxo(null)}
+                />
+              ) : (
+                <PixPanel
+                  total={total}
+                  confirmado={pixConfirmado}
+                  onConfirmar={() => setPixConfirmado(true)}
+                />
+              ))}
 
             {metodo === "MISTO" && (
               <MistoPanel
@@ -321,7 +535,7 @@ export function PagamentoModal({
         {/* Rodapé */}
         <div className="flex items-center justify-between gap-3 border-t border-line px-6 py-4">
           <button
-            onClick={onClose}
+            onClick={fechar}
             className="min-h-[3rem] cursor-pointer rounded-[var(--radius)] border border-line px-6 text-sm font-semibold text-muted hover:bg-surface-2 hover:text-ink"
           >
             Cancelar
@@ -589,6 +803,249 @@ function PixPanel({
           </button>
         </>
       )}
+    </div>
+  );
+}
+
+// ── Painéis do pagamento integrado ──────────────────────────
+
+function FluxoConfirmado() {
+  return (
+    <div className="flex flex-col items-center gap-3 py-10 text-center">
+      <span className="grid h-16 w-16 place-items-center rounded-full bg-ok-soft text-ok">
+        <CheckCircle2 size={32} />
+      </span>
+      <p className="font-display text-lg font-bold text-ok">Pagamento recebido</p>
+      <p className="text-sm text-muted">Finalizando a venda…</p>
+    </div>
+  );
+}
+
+function FluxoFalha({
+  msg,
+  onTentarDeNovo,
+}: {
+  msg: string | undefined;
+  onTentarDeNovo: () => void;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-3 py-8 text-center">
+      <span className="grid h-14 w-14 place-items-center rounded-full bg-danger-soft text-danger">
+        <XCircle size={28} />
+      </span>
+      <p className="max-w-sm text-sm font-semibold text-danger">
+        {msg ?? "O pagamento não foi concluído."}
+      </p>
+      <button
+        onClick={onTentarDeNovo}
+        className="min-h-[3rem] cursor-pointer rounded-[var(--radius)] border border-line bg-surface px-6 text-sm font-semibold text-ink hover:border-brand hover:text-brand"
+      >
+        Tentar de novo
+      </button>
+    </div>
+  );
+}
+
+function PixIntegradoPanel({
+  total,
+  fluxo,
+  onGerar,
+  onCancelar,
+  onTentarDeNovo,
+}: {
+  total: number;
+  fluxo: FluxoIntegrado | null;
+  onGerar: () => void;
+  onCancelar: () => void;
+  onTentarDeNovo: () => void;
+}) {
+  const [copiado, setCopiado] = useState(false);
+
+  if (fluxo?.fase === "confirmado") return <FluxoConfirmado />;
+  if (fluxo?.fase === "falha")
+    return <FluxoFalha msg={fluxo.falhaMsg} onTentarDeNovo={onTentarDeNovo} />;
+
+  if (fluxo?.fase === "iniciando") {
+    return (
+      <div className="flex flex-col items-center gap-3 py-12 text-center">
+        <Loader2 size={28} className="animate-spin text-brand" />
+        <p className="text-sm text-muted">Criando a cobrança PIX…</p>
+      </div>
+    );
+  }
+
+  if (fluxo?.fase === "aguardando") {
+    return (
+      <div className="flex flex-col items-center gap-4 py-2 text-center">
+        <PixQr
+          payload={fluxo.copiaECola}
+          imagemBase64={fluxo.qrCodeBase64}
+          size={208}
+          className="h-52 w-52 rounded-[var(--radius-lg)] border border-line bg-white p-2"
+        />
+        <p className="font-display text-2xl font-bold tabular-nums text-brand">
+          {brl(total)}
+        </p>
+        <p className="flex items-center gap-2 text-sm text-muted">
+          <Loader2 size={14} className="animate-spin" /> Aguardando pagamento…
+        </p>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {fluxo.copiaECola && (
+            <button
+              onClick={async () => {
+                if (await copiarTexto(fluxo.copiaECola!)) {
+                  setCopiado(true);
+                  window.setTimeout(() => setCopiado(false), 2000);
+                }
+              }}
+              className="flex min-h-[2.75rem] cursor-pointer items-center gap-2 rounded-[var(--radius)] border border-line bg-surface px-5 text-sm font-semibold text-ink hover:border-brand hover:text-brand"
+            >
+              {copiado ? <Check size={15} className="text-ok" /> : <Copy size={15} />}
+              {copiado ? "Copiado!" : "Copiar código PIX"}
+            </button>
+          )}
+          <button
+            onClick={onCancelar}
+            className="min-h-[2.75rem] cursor-pointer rounded-[var(--radius)] px-5 text-sm font-semibold text-muted hover:text-danger"
+          >
+            Cancelar cobrança
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ainda não gerou
+  return (
+    <div className="flex flex-col items-center gap-4 py-6 text-center">
+      <span className="grid h-16 w-16 place-items-center rounded-full bg-brand-soft text-brand">
+        <QrCode size={30} />
+      </span>
+      <p className="font-display text-2xl font-bold tabular-nums text-brand">
+        {brl(total)}
+      </p>
+      <p className="max-w-sm text-sm text-muted">
+        Gere o QR Code — o cliente paga pelo celular e a venda finaliza sozinha
+        quando o pagamento cair.
+      </p>
+      <button
+        onClick={onGerar}
+        className="flex min-h-[3.25rem] cursor-pointer items-center gap-2 rounded-[var(--radius)] bg-brand px-8 text-base font-bold text-on-brand hover:bg-brand-strong"
+      >
+        <QrCode size={18} /> Gerar QR Code PIX
+      </button>
+    </div>
+  );
+}
+
+function CartaoIntegradoPanel({
+  tipo,
+  total,
+  terminais,
+  fluxo,
+  onEnviar,
+  onCancelar,
+  onTentarDeNovo,
+}: {
+  tipo: "CREDITO" | "DEBITO";
+  total: number;
+  terminais: { id: string; nome: string }[];
+  fluxo: FluxoIntegrado | null;
+  onEnviar: (terminalId: string, parcelas?: number) => void;
+  onCancelar: () => void;
+  onTentarDeNovo: () => void;
+}) {
+  const [terminalId, setTerminalId] = useState(terminais[0]?.id ?? "");
+  const [parcelas, setParcelas] = useState(1);
+
+  if (fluxo?.fase === "confirmado") return <FluxoConfirmado />;
+  if (fluxo?.fase === "falha")
+    return <FluxoFalha msg={fluxo.falhaMsg} onTentarDeNovo={onTentarDeNovo} />;
+
+  if (fluxo?.fase === "iniciando" || fluxo?.fase === "aguardando") {
+    return (
+      <div className="flex flex-col items-center gap-4 py-8 text-center">
+        <span className="grid h-16 w-16 animate-pulse place-items-center rounded-full bg-brand-soft text-brand">
+          <Smartphone size={30} />
+        </span>
+        <p className="font-display text-2xl font-bold tabular-nums text-brand">
+          {brl(total)}
+        </p>
+        <p className="max-w-sm text-sm text-muted">
+          {fluxo.fase === "iniciando"
+            ? "Enviando o valor para a maquininha…"
+            : "Valor na maquininha — aguardando o cliente inserir ou aproximar o cartão."}
+        </p>
+        {fluxo.fase === "aguardando" && (
+          <button
+            onClick={onCancelar}
+            className="min-h-[2.75rem] cursor-pointer rounded-[var(--radius)] px-5 text-sm font-semibold text-muted hover:text-danger"
+          >
+            Cancelar na maquininha
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // ainda não enviou
+  return (
+    <div className="flex flex-col gap-5">
+      {tipo === "CREDITO" && (
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+            Parcelamento
+          </p>
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+            {[1, 2, 3, 4, 5, 6].map((n) => (
+              <button
+                key={n}
+                onClick={() => setParcelas(n)}
+                className={cn(
+                  "min-h-[3.25rem] cursor-pointer rounded-[var(--radius)] border-2 px-2 text-sm font-semibold transition-colors",
+                  parcelas === n
+                    ? "border-brand bg-brand text-on-brand"
+                    : "border-line bg-surface text-ink hover:border-brand hover:text-brand",
+                )}
+              >
+                {n}x{n === 1 ? "" : ` ${brl(total / n)}`}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {terminais.length > 1 && (
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted">
+            Maquininha
+          </span>
+          <select
+            value={terminalId}
+            onChange={(e) => setTerminalId(e.target.value)}
+            className={cn(inputCls, "cursor-pointer")}
+          >
+            {terminais.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.nome}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      <div className="flex flex-col items-center gap-3 py-2 text-center">
+        <button
+          onClick={() => terminalId && onEnviar(terminalId, parcelas)}
+          disabled={!terminalId}
+          className="flex min-h-[3.25rem] cursor-pointer items-center gap-2 rounded-[var(--radius)] bg-brand px-8 text-base font-bold text-on-brand hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Smartphone size={18} /> Enviar {brl(total)} para a maquininha
+        </button>
+        <p className="text-xs text-muted">
+          O valor aparece na tela da maquininha — sem digitação manual.
+        </p>
+      </div>
     </div>
   );
 }

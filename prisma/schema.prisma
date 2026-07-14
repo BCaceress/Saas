@@ -153,6 +153,7 @@ model Tenant {
   customers        Customer[]
   comodatoAssets   ComodatoAsset[]
   containerTypes   ContainerType[]
+  paymentProvider  PaymentProviderConfig?
 
   @@index([status])
 }
@@ -363,8 +364,20 @@ enum PaymentMethod {
 
 enum PaymentStatus {
   PENDENTE // aguardando confirmação (PIX/totem)
+  PROCESSANDO // enviado ao terminal de cartão — aguardando adquirente
   CONFIRMADO
+  RECUSADO // adquirente recusou (cartão)
+  EXPIRADO // cobrança PIX expirou sem pagamento
+  CANCELADO // operador cancelou antes da confirmação
   ESTORNADO
+}
+
+// Provedor de pagamento integrado (PIX dinâmico / maquininha).
+enum PaymentProviderKind {
+  MERCADO_PAGO
+  STONE // PIX via Pagar.me (grupo Stone); cartão continua manual (sem API cloud de terminal)
+  PAGSEGURO // PIX via API Pedidos PagBank; cartão continua manual (sem API cloud de terminal)
+  SIMULADO // dev: aprova sozinho após alguns segundos
 }
 
 enum CashSessionStatus {
@@ -782,6 +795,7 @@ model Site {
   cashSessions       CashSession[]
   paymentMethods     SitePaymentMethod[]
   totemDevices       TotemDevice[]
+  paymentTerminals   PaymentTerminal[]
 
   @@unique([tenantId, nome])
   @@index([tenantId])
@@ -1135,15 +1149,69 @@ model Payment {
   status     PaymentStatus @default(CONFIRMADO)
   valor      Decimal       @db.Decimal(12, 2)
   troco      Decimal?      @db.Decimal(10, 2) // dinheiro
-  gateway    String?
-  externalId String? // ref PIX/cartão
-  createdAt  DateTime      @default(now())
+  gateway    String? // slug do provedor (MERCADO_PAGO, SIMULADO) — null = manual
+  externalId String? // id da cobrança/intenção no provedor (webhook faz lookup)
 
-  sale Sale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  // PIX dinâmico — preenchidos ao criar a cobrança no provedor
+  pixCopiaECola String?   @db.Text
+  pixQrCode     String?   @db.Text // imagem base64 (png) retornada pelo provedor
+  expiraEm      DateTime?
+
+  // Cartão integrado — terminal que recebeu a intenção de pagamento
+  terminalId String?
+
+  createdAt DateTime @default(now())
+
+  sale     Sale             @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  terminal PaymentTerminal? @relation(fields: [terminalId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
   @@index([saleId])
   @@index([status])
+  @@index([externalId])
+}
+
+// ── Pagamento integrado (Payment Service) ──────────────────
+// Config por tenant: qual provedor processa PIX dinâmico e maquininha.
+// Credenciais só no servidor — nunca expostas ao browser.
+model PaymentProviderConfig {
+  id       String              @id @default(cuid())
+  tenantId String              @unique
+  provider PaymentProviderKind
+  ativo    Boolean             @default(true)
+
+  accessToken   String // token privado do PSP (Mercado Pago: Access Token de produção; Stone: sk_ Pagar.me)
+  webhookSecret String? // assinatura de webhook (Mercado Pago: secret do painel; Stone: Basic Auth "usuario:senha")
+  partnerRef    String? // Stone Connect: ServiceRefererName (código do Programa de Parcerias) — exigido p/ cartão no POS
+
+  pixAutomatico    Boolean @default(true) // PIX gera QR dinâmico e confirma sozinho
+  cartaoIntegrado  Boolean @default(false) // envia valor à maquininha via API
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+// Maquininha vinculada a um site/caixa (Mercado Pago Point: device_id).
+model PaymentTerminal {
+  id         String              @id @default(cuid())
+  tenantId   String
+  siteId     String
+  nome       String // "Point Caixa 01"
+  provider   PaymentProviderKind
+  externalId String // device_id no provedor
+  ativo      Boolean             @default(true)
+  createdAt  DateTime            @default(now())
+
+  site     Site      @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  payments Payment[]
+
+  @@unique([tenantId, externalId])
+  @@index([tenantId])
+  @@index([siteId])
 }
 
 model CashSession {

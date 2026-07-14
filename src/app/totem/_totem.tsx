@@ -14,8 +14,10 @@ import type { ProdutoVenda, ComponentGroupVenda } from "@/app/(app)/vendas/_data
 import type { PaymentMethod } from "@/generated/prisma";
 import {
   identificarClienteAction, cadastroRapidoAction, cadastroDisponivelAction, finalizarTotemAction,
-  type PerfilTotem, type ResultadoTotem,
+  iniciarPixTotemAction, statusPixTotemAction, cancelarPixTotemAction,
+  type PerfilTotem, type ResultadoTotem, type PixTotem,
 } from "./actions";
+import { PixQr } from "@/components/app/pix-qr";
 import { iconeCategoria, termosSugeridos, fmtVolume, norm } from "./_catalog";
 
 const brl = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -62,6 +64,7 @@ export function TotemVenda({
   const [maiorIdade, setMaiorIdade] = useState(false);
   const [saleId, setSaleId] = useState<string | null>(null);
   const [metodo, setMetodo] = useState<PaymentMethod | null>(null);
+  const [pix, setPix] = useState<PixTotem | null>(null); // cobrança PIX integrada (QR dinâmico)
   const [resultado, setResultado] = useState<ResultadoTotem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -151,12 +154,48 @@ export function TotemVenda({
           metodo: m as "PIX" | "CARTAO_CREDITO" | "CARTAO_DEBITO" | "DINHEIRO",
         });
         setSaleId(id);
+        // PIX com provedor integrado: cria a cobrança e mostra o QR real.
+        // Sem provedor, retorna null e a tela cai no fluxo manual antigo.
+        if (m === "PIX") setPix(await iniciarPixTotemAction(id));
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao iniciar pagamento.");
         setMetodo(null);
       }
     });
   }
+
+  // Polling do PIX integrado: consulta a cada 3s até confirmar/expirar.
+  useEffect(() => {
+    if (etapa !== "pagamento" || !pix || !saleId) return;
+    let ativo = true;
+    let consultando = false;
+    const tick = async () => {
+      if (consultando) return;
+      consultando = true;
+      try {
+        const r = await statusPixTotemAction(saleId, pix.paymentId);
+        if (!ativo) return;
+        if (r.status === "CONFIRMADO") {
+          setResultado(r.resultado ?? null);
+          setPix(null);
+          setEtapa("confirmado");
+        } else if (r.status === "EXPIRADO" || r.status === "RECUSADO" || r.status === "CANCELADO") {
+          setError(
+            r.status === "EXPIRADO"
+              ? "O QR Code expirou. Escolha a forma de pagamento de novo."
+              : "O pagamento não foi concluído. Tente de novo.",
+          );
+          setPix(null); setMetodo(null); setSaleId(null);
+        }
+      } catch {
+        // rede oscilou — tenta no próximo tick
+      } finally {
+        consultando = false;
+      }
+    };
+    const id = window.setInterval(tick, 3000);
+    return () => { ativo = false; window.clearInterval(id); };
+  }, [etapa, pix, saleId]);
 
   // Modo B: envia a venda para a fila do PDV e o cliente paga no caixa.
   function pagarNoCaixa() {
@@ -190,7 +229,7 @@ export function TotemVenda({
   }
 
   function reiniciar() {
-    setCart([]); setCliente(null); setSaleId(null); setMetodo(null); setResultado(null);
+    setCart([]); setCliente(null); setSaleId(null); setMetodo(null); setPix(null); setResultado(null);
     setCatAtiva(null); setMaiorIdade(false); setError(null); setEtapa("boas-vindas");
     router.refresh();
   }
@@ -234,9 +273,14 @@ export function TotemVenda({
 
   if (etapa === "pagamento")
     return <Pagamento total={total} metodosAtivos={metodosAtivos} metodo={metodo} saleId={saleId}
-      pending={pending} error={error}
+      pix={pix} pending={pending} error={error}
       onEscolher={iniciarPagamento} onConfirmar={confirmarPagamento} onPagarNoCaixa={pagarNoCaixa}
-      onVoltar={() => (saleId ? (setMetodo(null), setSaleId(null)) : setEtapa("compra"))} />;
+      onVoltar={() => {
+        // trocar de método com cobrança PIX viva cancela cobrança + venda
+        if (pix) cancelarPixTotemAction(pix.paymentId).catch(() => {});
+        if (saleId) { setPix(null); setMetodo(null); setSaleId(null); }
+        else setEtapa("compra");
+      }} />;
 
   if (etapa === "confirmado")
     return <Confirmado tenantNome={tenantNome} total={total} resultado={resultado}
@@ -1349,10 +1393,10 @@ const METODO_INFO: Record<string, { label: string; icone: React.ReactNode }> = {
 };
 
 function Pagamento({
-  total, metodosAtivos, metodo, saleId, pending, error, onEscolher, onConfirmar, onPagarNoCaixa, onVoltar,
+  total, metodosAtivos, metodo, saleId, pix, pending, error, onEscolher, onConfirmar, onPagarNoCaixa, onVoltar,
 }: {
   total: number; metodosAtivos: PaymentMethod[]; metodo: PaymentMethod | null; saleId: string | null;
-  pending: boolean; error: string | null;
+  pix: PixTotem | null; pending: boolean; error: string | null;
   onEscolher: (m: PaymentMethod) => void; onConfirmar: () => void; onPagarNoCaixa: () => void; onVoltar: () => void;
 }) {
   // Totem só processa PIX/cartão (dinheiro e OUTRO viram "pagar no caixa").
@@ -1401,9 +1445,18 @@ function Pagamento({
       </h2>
       {isPix ? (
         <>
-          <div className="grid h-60 w-60 place-items-center rounded-3xl border-4 border-dashed border-line bg-surface-2 text-faint">
-            <QrCode size={130} />
-          </div>
+          {pix ? (
+            <PixQr
+              payload={pix.copiaECola}
+              imagemBase64={pix.qrCodeBase64}
+              size={240}
+              className="h-60 w-60 rounded-3xl border border-line bg-white p-3"
+            />
+          ) : (
+            <div className="grid h-60 w-60 place-items-center rounded-3xl border-4 border-dashed border-line bg-surface-2 text-faint">
+              <QrCode size={130} />
+            </div>
+          )}
           <PixTimer />
           <p className="max-w-sm text-lg text-muted">Aponte a câmera do celular para o QR Code e confirme o pagamento no app do banco.</p>
         </>
@@ -1418,9 +1471,12 @@ function Pagamento({
       <p className="font-display text-4xl font-bold tabular-nums text-accent">{brl(total)}</p>
       {error && <Erro>{error}</Erro>}
       <div className="flex w-full max-w-md flex-col gap-3">
-        <BotaoGrande disabled={pending} onClick={onConfirmar}>
-          {pending ? <Loader2 className="animate-spin" /> : <CheckCircle2 />} Confirmar pagamento
-        </BotaoGrande>
+        {/* PIX integrado confirma sozinho (polling) — sem botão manual */}
+        {!(isPix && pix) && (
+          <BotaoGrande disabled={pending} onClick={onConfirmar}>
+            {pending ? <Loader2 className="animate-spin" /> : <CheckCircle2 />} Confirmar pagamento
+          </BotaoGrande>
+        )}
         <BotaoSecundario onClick={onVoltar}><ArrowLeft size={18} /> Trocar forma de pagamento</BotaoSecundario>
       </div>
     </Centro>

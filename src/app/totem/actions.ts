@@ -6,7 +6,13 @@ import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { confirmarPagamentoVenda } from "@/lib/vendas";
+import {
+  criarCobrancaPixVenda,
+  sincronizarPagamentoIntegrado,
+  cancelarPagamentoIntegrado,
+} from "@/lib/pagamentos";
 import { caixaAbertoNoSite } from "@/lib/caixa";
+import type { PaymentStatus } from "@/generated/prisma";
 import { tierFromGasto, tiersFromThresholds } from "@/lib/customers";
 import type { TierThresholds } from "@/lib/customers";
 
@@ -247,4 +253,74 @@ export async function finalizarTotemAction(saleId: string): Promise<ResultadoTot
 
     return { numero: saleId.slice(-6).toUpperCase(), pontosGanhos, saldoPontos };
   });
+}
+
+// ── PIX integrado no totem (QR dinâmico do provedor) ─────────
+// Sem provedor configurado retorna null e o totem cai no fluxo manual
+// (confirmação pelo webhook antigo ou pelo botão).
+
+export type PixTotem = {
+  paymentId: string;
+  copiaECola: string;
+  qrCodeBase64: string | null;
+  expiraEm: string | null;
+};
+
+export async function iniciarPixTotemAction(saleId: string): Promise<PixTotem | null> {
+  const ctx = await requireActiveTenant();
+  return runWithTenant(ctx.tenant.id, () => criarCobrancaPixVenda(ctx.tenant.id, saleId));
+}
+
+/**
+ * Polling do totem. Quando o provedor confirma, a venda finaliza na
+ * sincronização; a transição ABERTA→PAGA observada AQUI credita os
+ * pontos (o webhook nunca credita — sem risco de duplicar).
+ */
+export async function statusPixTotemAction(
+  saleId: string,
+  paymentId: string
+): Promise<{ status: PaymentStatus; resultado?: ResultadoTotem }> {
+  const ctx = await requireActiveTenant();
+  return runWithTenant(ctx.tenant.id, async () => {
+    const antes = await db.sale.findFirst({
+      where: { id: saleId },
+      select: { status: true, total: true, customerId: true },
+    });
+    if (!antes) throw new Error("Venda não encontrada.");
+
+    const r = await sincronizarPagamentoIntegrado(ctx.tenant.id, paymentId);
+    if (r.status !== "CONFIRMADO") return { status: r.status };
+
+    const depois = await db.sale.findFirst({
+      where: { id: saleId },
+      select: { status: true },
+    });
+
+    let pontosGanhos = 0;
+    let saldoPontos = 0;
+    if (antes.customerId) {
+      if (antes.status !== "PAGA" && depois?.status === "PAGA") {
+        pontosGanhos = Math.floor(num(antes.total));
+      }
+      const c = await db.customer.update({
+        where: { id: antes.customerId },
+        data: pontosGanhos > 0 ? { pontos: { increment: pontosGanhos } } : {},
+        select: { pontos: true },
+      });
+      saldoPontos = c.pontos;
+    }
+
+    return {
+      status: "CONFIRMADO",
+      resultado: { numero: saleId.slice(-6).toUpperCase(), pontosGanhos, saldoPontos },
+    };
+  });
+}
+
+/** Cliente desistiu/trocou de método: cancela a cobrança E a venda. */
+export async function cancelarPixTotemAction(paymentId: string): Promise<void> {
+  const ctx = await requireActiveTenant();
+  return runWithTenant(ctx.tenant.id, () =>
+    cancelarPagamentoIntegrado(ctx.tenant.id, paymentId, { cancelarVendaTambem: true })
+  );
 }

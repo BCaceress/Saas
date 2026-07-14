@@ -33,8 +33,11 @@ import {
   finalizarVendaPdvAction,
   carregarVendaTotemAction,
   receberVendaTotemAction,
+  iniciarPagamentoIntegradoAction,
   type VendaTotemFila,
+  type InicioPagamentoIntegrado,
 } from "./actions";
+import type { IntegracaoPdv } from "@/lib/pagamentos";
 import type { ProdutoVenda } from "./_data";
 import type { PaymentMethod } from "@/generated/prisma";
 import { brl, mascararCpf, type CartItem, type ClienteSel } from "./_shared";
@@ -56,6 +59,7 @@ export function PdvClient({
   defaultSiteId,
   produtos,
   metodosAtivos,
+  integracao,
   caixa,
   operador,
   fundoTrocoPadrao,
@@ -65,6 +69,7 @@ export function PdvClient({
   defaultSiteId: string | null;
   produtos: ProdutoVenda[];
   metodosAtivos: PaymentMethod[];
+  integracao: IntegracaoPdv;
   caixa: CaixaInfo | null;
   operador: string;
   fundoTrocoPadrao?: number | null;
@@ -384,6 +389,40 @@ export function PdvClient({
         }
       });
     });
+  }
+
+  // ── Pagamento integrado (PIX dinâmico / maquininha) ─────────
+  // Cria a venda ABERTA + cobrança no provedor; o modal acompanha por
+  // polling e chama concluirIntegrado quando o provedor confirmar.
+  async function iniciarIntegrado(
+    metodo: "PIX" | "CARTAO_CREDITO" | "CARTAO_DEBITO",
+    opts: { parcelas?: number; terminalId?: string | null },
+  ): Promise<InicioPagamentoIntegrado> {
+    const items = cart.map((i) => ({
+      productId: i.productId,
+      variantId: i.variantId,
+      quantidade: i.quantidade,
+      selecoes: i.selecoes,
+    }));
+    return iniciarPagamentoIntegradoAction({
+      siteId,
+      customerId: cliente?.id ?? null,
+      items,
+      descontoVenda: 0,
+      maiorIdadeConfirmada: maiorIdade,
+      metodo,
+      parcelas: opts.parcelas ?? 1,
+      terminalId: opts.terminalId ?? null,
+    });
+  }
+
+  function concluirIntegrado() {
+    toast.success("Venda concluída!", brl(total));
+    setPagamentoOpen(false);
+    limpar();
+    setBump((b) => b + 1);
+    router.refresh();
+    window.setTimeout(() => buscaRef.current?.focus(), 60);
   }
 
   // Atalhos de balcão na tela principal.
@@ -986,9 +1025,12 @@ export function PdvClient({
               : null
           }
           metodosAtivos={metodosAtivos}
+          integracao={vendaTotem ? null : integracao}
           pending={pending}
           onClose={() => setPagamentoOpen(false)}
           onReceber={finalizar}
+          onIniciarIntegrado={iniciarIntegrado}
+          onConcluidoIntegrado={concluirIntegrado}
         />
       )}
 

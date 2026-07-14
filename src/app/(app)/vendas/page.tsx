@@ -3,6 +3,7 @@ import { runWithTenant } from "@/lib/tenant-context";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { sessaoAtual, relatorioCaixa } from "@/lib/caixa";
 import { listSitePaymentMethods } from "@/lib/vendas";
+import { integracaoPdv } from "@/lib/pagamentos";
 import { loadProdutosVenda } from "./_data";
 import { PdvClient } from "./_client";
 
@@ -11,11 +12,14 @@ export default async function VendasPage() {
 
   return runWithTenant(ctx.tenant.id, async () => {
     const siteId = await getActiveSiteId();
-    const [sites, produtos, sessao, metodos] = await Promise.all([
+    const [sites, produtos, sessao, metodos, integracao] = await Promise.all([
       listSites(),
       loadProdutosVenda(siteId),
       siteId ? sessaoAtual(ctx.tenant.id, siteId, ctx.user.id ?? "") : Promise.resolve(null),
       siteId ? listSitePaymentMethods(ctx.tenant.id, siteId) : Promise.resolve([]),
+      siteId
+        ? integracaoPdv(ctx.tenant.id, siteId)
+        : Promise.resolve({ pixAutomatico: false, cartaoIntegrado: false, terminais: [] }),
     ]);
 
     const metodosAtivos = metodos.filter((m) => m.ativo).map((m) => m.metodo);
@@ -28,6 +32,7 @@ export default async function VendasPage() {
         defaultSiteId={siteId}
         produtos={produtos}
         metodosAtivos={metodosAtivos}
+        integracao={integracao}
         operador={ctx.user.name ?? ctx.user.email ?? "Operador"}
         caixa={
           sessao

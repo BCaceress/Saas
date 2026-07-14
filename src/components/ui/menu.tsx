@@ -26,7 +26,22 @@ export function Menu({
   const [open, setOpen] = React.useState(false);
   const [coords, setCoords] = React.useState<{ top: number; left: number; right: number } | null>(null);
   const triggerRef = React.useRef<HTMLSpanElement>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
   const close = React.useCallback(() => setOpen(false), []);
+
+  // Se o dropdown estourar a base da viewport, vira para cima do gatilho.
+  // Mede depois de montar e ajusta o style direto (sem re-render).
+  React.useLayoutEffect(() => {
+    if (!open) return;
+    const el = menuRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.bottom > window.innerHeight - 8) {
+      const trig = (triggerRef.current?.firstElementChild ?? triggerRef.current)?.getBoundingClientRect();
+      const top = Math.max(8, (trig ? trig.top : r.top) - 4 - r.height);
+      el.style.top = `${top}px`;
+    }
+  }, [open, coords]);
 
   const place = React.useCallback(() => {
     const el = triggerRef.current?.firstElementChild ?? triggerRef.current;
@@ -63,6 +78,7 @@ export function Menu({
           <>
             <div className="fixed inset-0 z-[100]" aria-hidden onClick={close} />
             <div
+              ref={menuRef}
               role="menu"
               style={{ position: "fixed", top: coords.top, ...(align === "end" ? { right: coords.right } : { left: coords.left }) }}
               className={cn(
