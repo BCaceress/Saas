@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import {
   Search,
   Download,
@@ -10,17 +12,21 @@ import {
   ArrowLeftRight,
   ChevronLeft,
   ChevronRight,
-  Cog,
   Pencil,
   ClipboardList,
   PackageMinus,
   Undo2,
-  Wine,
+  BottleWine,
+  Martini,
+  ShoppingCart,
   X,
   Calendar,
+  History,
+  ExternalLink,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/app/page-header";
 import { Sheet } from "@/components/ui/sheet";
 import type { MovimentacaoRow } from "../_data";
 
@@ -30,11 +36,11 @@ type TipoConfig = { label: string; icon: LucideIcon; badge: string; dot: string 
 
 const TIPO: Record<string, TipoConfig> = {
   ENTRADA: { label: "Entrada", icon: ArrowDownLeft, badge: "bg-ok-soft text-ok", dot: "bg-ok" },
-  ABERTURA: { label: "Abertura", icon: Wine, badge: "bg-surface-2 text-muted", dot: "bg-muted" },
+  ABERTURA: { label: "Abertura", icon: BottleWine, badge: "bg-surface-2 text-muted", dot: "bg-muted" },
   SAIDA: { label: "Saída", icon: ArrowUpRight, badge: "bg-danger-soft text-danger", dot: "bg-danger" },
   TRANSFERENCIA: { label: "Transferência", icon: ArrowLeftRight, badge: "bg-brand-soft text-brand", dot: "bg-brand" },
-  PRODUCAO: { label: "Produção", icon: Cog, badge: "bg-accent-soft text-accent", dot: "bg-accent" },
-  AJUSTE: { label: "Ajuste", icon: Pencil, badge: "bg-warn-soft text-warn", dot: "bg-warn" },
+  PRODUCAO: { label: "Produção", icon: Martini, badge: "bg-violet-soft text-violet", dot: "bg-violet" },
+  AJUSTE: { label: "Ajuste", icon: Pencil, badge: "bg-info-soft text-info", dot: "bg-info" },
   PERDA: { label: "Perda", icon: PackageMinus, badge: "bg-danger-soft text-danger", dot: "bg-danger" },
   DEVOLUCAO_CLIENTE: { label: "Devolução", icon: Undo2, badge: "bg-ok-soft text-ok", dot: "bg-ok" },
   DEVOLUCAO_FORNECEDOR: { label: "Devolução", icon: Undo2, badge: "bg-danger-soft text-danger", dot: "bg-danger" },
@@ -43,25 +49,51 @@ const TIPO: Record<string, TipoConfig> = {
 const tipoOf = (t: string): TipoConfig =>
   TIPO[t] ?? { label: t, icon: Pencil, badge: "bg-surface-2 text-muted", dot: "bg-muted" };
 
-// ── Chips (grupos de tipo) ─────────────────────────────────────
+// Saída originada de venda ganha badge próprio — "Saída" fica só para a manual.
+const VENDA_CFG: TipoConfig = { label: "Venda", icon: ShoppingCart, badge: "bg-accent-soft text-accent", dot: "bg-accent" };
 
-const CHIPS: { id: string; label: string; tipos: string[] | null }[] = [
-  { id: "todos", label: "Todos", tipos: null },
-  { id: "entradas", label: "Entradas", tipos: ["ENTRADA", "DEVOLUCAO_CLIENTE"] },
-  { id: "saidas", label: "Saídas", tipos: ["SAIDA", "PERDA", "DEVOLUCAO_FORNECEDOR"] },
-  { id: "transferencias", label: "Transferências", tipos: ["TRANSFERENCIA"] },
-  { id: "producao", label: "Produção", tipos: ["PRODUCAO"] },
-  { id: "ajustes", label: "Ajustes", tipos: ["AJUSTE"] },
+const tipoDe = (r: MovimentacaoRow): TipoConfig =>
+  r.tipo === "SAIDA" && r.origem.startsWith("Venda") ? VENDA_CFG : tipoOf(r.tipo);
+
+// ── Filtros (espelham os ids resolvidos no servidor em _data.ts) ──
+
+const CHIPS: { id: string; label: string }[] = [
+  { id: "todos", label: "Todos" },
+  { id: "entradas", label: "Entradas" },
+  { id: "vendas", label: "Vendas" },
+  { id: "saidas", label: "Saídas" },
+  { id: "transferencias", label: "Transferências" },
+  { id: "producao", label: "Produção" },
+  { id: "ajustes", label: "Ajustes" },
 ];
 
-const PERIODOS: { id: string; label: string; dias: number | null }[] = [
-  { id: "tudo", label: "Todo período", dias: null },
-  { id: "hoje", label: "Hoje", dias: 0 },
-  { id: "7", label: "Últimos 7 dias", dias: 7 },
-  { id: "30", label: "Últimos 30 dias", dias: 30 },
+const PERIODOS: { id: string; label: string }[] = [
+  { id: "tudo", label: "Todo período" },
+  { id: "0", label: "Hoje" },
+  { id: "7", label: "Últimos 7 dias" },
+  { id: "30", label: "Últimos 30 dias" },
+  { id: "90", label: "Últimos 90 dias" },
 ];
 
-const POR_PAGINA = [25, 50, 100, 200];
+const ORIGENS: { id: string; label: string }[] = [
+  { id: "compra", label: "Entrada por compra" },
+  { id: "entrada_manual", label: "Entrada manual" },
+  { id: "venda_pdv", label: "Venda no PDV" },
+  { id: "venda_totem", label: "Venda no autoatendimento" },
+  { id: "venda_app", label: "Venda pelo app" },
+  { id: "saida_manual", label: "Saída manual" },
+  { id: "abertura", label: "Abertura de garrafa" },
+  { id: "transferencia", label: "Transferência" },
+  { id: "producao", label: "Produção" },
+  { id: "ajuste_manual", label: "Ajuste manual" },
+  { id: "ajuste_inventario", label: "Ajuste por inventário" },
+  { id: "estorno_venda", label: "Estorno de venda" },
+  { id: "perda", label: "Perda / quebra" },
+  { id: "devolucao_cliente", label: "Devolução de cliente" },
+  { id: "devolucao_fornecedor", label: "Devolução ao fornecedor" },
+];
+
+const POR_PAGINA = [25, 50, 100, 250];
 
 // ── Formatação ─────────────────────────────────────────────────
 
@@ -86,14 +118,9 @@ function dateParts(d: Date): { label: string; time: string } {
   const time = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
   if (sameDay(d, now)) return { label: "Hoje", time };
   if (sameDay(d, ontem)) return { label: "Ontem", time };
-  const mesmoAno = d.getFullYear() === now.getFullYear();
   return {
     label: d
-      .toLocaleDateString("pt-BR", {
-        day: "2-digit",
-        month: "short",
-        ...(mesmoAno ? {} : { year: "numeric" }),
-      })
+      .toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })
       .replace(".", ""),
     time,
   };
@@ -104,61 +131,84 @@ const fmtDateTime = (d: Date) =>
 
 // ── Componente principal ───────────────────────────────────────
 
-export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
-  const [busca, setBusca] = useState("");
-  const [chip, setChip] = useState("todos");
-  const [periodo, setPeriodo] = useState("7");
-  const [avancado, setAvancado] = useState(false);
-  const [origemFiltro, setOrigemFiltro] = useState("");
-  const [responsavelFiltro, setResponsavelFiltro] = useState("");
+export type MovFiltros = {
+  q: string;
+  tipo: string;
+  periodo: string;
+  origem: string;
+  resp: string;
+};
+
+export function MovimentacoesView({
+  rows,
+  total,
+  pagina,
+  porPagina,
+  responsaveis,
+  filtros,
+}: {
+  rows: MovimentacaoRow[];
+  total: number;
+  pagina: number;
+  porPagina: number;
+  responsaveis: { id: string; nome: string }[];
+  filtros: MovFiltros;
+}) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const [pending, startTransition] = useTransition();
+
+  const [busca, setBusca] = useState(filtros.q);
+  const [avancado, setAvancado] = useState(!!filtros.origem || !!filtros.resp);
   const [selected, setSelected] = useState<MovimentacaoRow | null>(null);
-  const [porPagina, setPorPagina] = useState(100);
-  const [pagina, setPagina] = useState(1);
 
-  const origens = useMemo(() => [...new Set(rows.map((r) => r.origem))].sort(), [rows]);
-  const responsaveis = useMemo(
-    () => [...new Set(rows.map((r) => r.responsavel).filter((v): v is string => !!v))].sort(),
-    [rows],
-  );
-
-  const filtered = useMemo(() => {
-    const q = busca.trim().toLowerCase();
-    const tipos = CHIPS.find((c) => c.id === chip)?.tipos ?? null;
-    const dias = PERIODOS.find((p) => p.id === periodo)?.dias ?? null;
-    const limite = dias != null ? new Date() : null;
-    if (limite && dias != null) {
-      if (dias === 0) limite.setHours(0, 0, 0, 0);
-      else limite.setDate(limite.getDate() - dias);
-    }
-
-    return rows.filter((r) => {
-      if (tipos && !tipos.includes(r.tipo)) return false;
-      if (limite && new Date(r.createdAt) < limite) return false;
-      if (origemFiltro && r.origem !== origemFiltro) return false;
-      if (responsavelFiltro && r.responsavel !== responsavelFiltro) return false;
-      if (q) {
-        const hay = `${r.productNome} ${r.productSku} ${r.origem} ${r.documento ?? ""} ${r.responsavel ?? ""}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
+  // Filtros vivem na URL: recarregar/compartilhar/voltar preserva o extrato.
+  function setParams(patch: Record<string, string>, opts: { resetPagina?: boolean } = { resetPagina: true }) {
+    const params = new URLSearchParams({
+      q: filtros.q,
+      tipo: filtros.tipo,
+      periodo: filtros.periodo,
+      origem: filtros.origem,
+      resp: filtros.resp,
+      pp: String(porPagina),
+      pagina: String(pagina),
     });
-  }, [rows, busca, chip, periodo, origemFiltro, responsavelFiltro]);
+    for (const [k, v] of Object.entries(patch)) params.set(k, v);
+    if (opts.resetPagina !== false) params.set("pagina", "1");
+    // Defaults ficam fora da URL para ela permanecer limpa.
+    if (params.get("q") === "") params.delete("q");
+    if (params.get("tipo") === "todos") params.delete("tipo");
+    if (params.get("periodo") === "7") params.delete("periodo");
+    if (params.get("origem") === "") params.delete("origem");
+    if (params.get("resp") === "") params.delete("resp");
+    if (params.get("pp") === "100") params.delete("pp");
+    if (params.get("pagina") === "1") params.delete("pagina");
+    const qs = params.toString();
+    startTransition(() => {
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    });
+  }
 
-  // Volta pra primeira página quando filtro/tamanho muda
+  // Busca com debounce — digitação não dispara uma navegação por tecla.
+  const buscaRef = useRef(filtros.q);
   useEffect(() => {
-    setPagina(1);
-  }, [busca, chip, periodo, origemFiltro, responsavelFiltro, porPagina]);
+    if (busca === buscaRef.current) return;
+    const t = setTimeout(() => {
+      buscaRef.current = busca;
+      setParams({ q: busca });
+    }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busca]);
 
-  const totalPaginas = Math.max(1, Math.ceil(filtered.length / porPagina));
-  const paginaAtual = Math.min(pagina, totalPaginas);
-  const inicio = (paginaAtual - 1) * porPagina;
-  const paged = filtered.slice(inicio, inicio + porPagina);
+  const totalPaginas = Math.max(1, Math.ceil(total / porPagina));
+  const inicio = (pagina - 1) * porPagina;
 
   function exportar() {
     const head = ["Tipo", "Produto", "SKU", "Origem", "Documento", "Movimento", "Saldo", "Custo un.", "Valor total", "Responsável", "Data"];
-    const lines = filtered.map((r) =>
+    const lines = rows.map((r) =>
       [
-        tipoOf(r.tipo).label,
+        tipoDe(r).label,
         r.productNome,
         r.productSku,
         r.origem,
@@ -183,10 +233,20 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
     URL.revokeObjectURL(url);
   }
 
-  const temFiltro = chip !== "todos" || periodo !== "tudo" || !!busca || !!origemFiltro || !!responsavelFiltro;
+  const temFiltro =
+    filtros.tipo !== "todos" || filtros.periodo !== "tudo" || !!filtros.q || !!filtros.origem || !!filtros.resp;
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        title="Movimentações"
+        icon={History}
+        description="Histórico auditável de tudo que entrou, saiu ou foi ajustado no estoque."
+        backHref="/estoque"
+        innerClassName="max-w-none"
+        className="pb-3"
+      />
+
       {/* ── Barra de controles ── */}
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -196,7 +256,7 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
             <input
               value={busca}
               onChange={(e) => setBusca(e.target.value)}
-              placeholder="Buscar produto, SKU, documento…"
+              placeholder="Buscar produto, SKU, observação…"
               className="h-9 w-full rounded-full border border-line bg-surface pl-9 pr-8 text-sm text-ink placeholder:text-faint focus:border-brand focus:outline-none focus:ring-2 focus:ring-(--ring)"
             />
             {busca && (
@@ -214,8 +274,8 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
           <div className="relative">
             <Calendar size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
             <select
-              value={periodo}
-              onChange={(e) => setPeriodo(e.target.value)}
+              value={filtros.periodo}
+              onChange={(e) => setParams({ periodo: e.target.value })}
               className="h-9 cursor-pointer appearance-none rounded-full border border-line bg-surface pl-8 pr-8 text-sm font-medium text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-(--ring)"
             >
               {PERIODOS.map((p) => (
@@ -231,7 +291,7 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
             onClick={() => setAvancado((v) => !v)}
             className={cn(
               "flex h-9 cursor-pointer items-center gap-1.5 rounded-full border px-3.5 text-sm font-medium transition-colors",
-              avancado || origemFiltro || responsavelFiltro
+              avancado || filtros.origem || filtros.resp
                 ? "border-brand bg-brand-soft text-brand"
                 : "border-line bg-surface text-ink hover:bg-surface-2",
             )}
@@ -240,7 +300,7 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
             Filtros
           </button>
 
-          {/* Exportar */}
+          {/* Exportar (página atual) */}
           <button
             onClick={exportar}
             className="flex h-9 cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
@@ -255,10 +315,10 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
           {CHIPS.map((c) => (
             <button
               key={c.id}
-              onClick={() => setChip(c.id)}
+              onClick={() => setParams({ tipo: c.id })}
               className={cn(
                 "h-7 cursor-pointer rounded-full px-3 text-xs font-semibold transition-colors",
-                chip === c.id
+                filtros.tipo === c.id
                   ? "bg-ink text-surface"
                   : "border border-line bg-surface text-muted hover:bg-surface-2 hover:text-ink",
               )}
@@ -274,14 +334,14 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
             <label className="flex flex-col gap-1 text-xs font-medium text-muted">
               Origem
               <select
-                value={origemFiltro}
-                onChange={(e) => setOrigemFiltro(e.target.value)}
+                value={filtros.origem}
+                onChange={(e) => setParams({ origem: e.target.value })}
                 className="h-8 cursor-pointer rounded-lg border border-line bg-surface px-2 text-sm text-ink focus:border-brand focus:outline-none"
               >
                 <option value="">Todas</option>
-                {origens.map((o) => (
-                  <option key={o} value={o}>
-                    {o}
+                {ORIGENS.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.label}
                   </option>
                 ))}
               </select>
@@ -289,24 +349,22 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
             <label className="flex flex-col gap-1 text-xs font-medium text-muted">
               Responsável
               <select
-                value={responsavelFiltro}
-                onChange={(e) => setResponsavelFiltro(e.target.value)}
+                value={filtros.resp}
+                onChange={(e) => setParams({ resp: e.target.value })}
                 className="h-8 cursor-pointer rounded-lg border border-line bg-surface px-2 text-sm text-ink focus:border-brand focus:outline-none"
               >
                 <option value="">Todos</option>
                 {responsaveis.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
+                  <option key={r.id} value={r.id}>
+                    {r.nome}
                   </option>
                 ))}
+                <option value="__sistema">Sistema</option>
               </select>
             </label>
-            {(origemFiltro || responsavelFiltro) && (
+            {(filtros.origem || filtros.resp) && (
               <button
-                onClick={() => {
-                  setOrigemFiltro("");
-                  setResponsavelFiltro("");
-                }}
+                onClick={() => setParams({ origem: "", resp: "" })}
                 className="h-8 cursor-pointer rounded-lg px-2 text-xs font-medium text-muted hover:text-ink"
               >
                 Limpar
@@ -317,7 +375,7 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
       </div>
 
       {/* ── Tabela ── */}
-      {filtered.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="flex flex-col items-center gap-2 rounded-[var(--radius-xl)] border border-line bg-surface py-16 text-center">
           <ClipboardList size={32} className="text-faint" />
           <p className="text-sm font-medium text-muted">
@@ -327,10 +385,8 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
             <button
               onClick={() => {
                 setBusca("");
-                setChip("todos");
-                setPeriodo("tudo");
-                setOrigemFiltro("");
-                setResponsavelFiltro("");
+                buscaRef.current = "";
+                setParams({ q: "", tipo: "todos", periodo: "tudo", origem: "", resp: "" });
               }}
               className="cursor-pointer text-xs font-semibold text-brand hover:underline"
             >
@@ -339,7 +395,12 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
           )}
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-[var(--radius-lg)] border border-line bg-surface">
+        <div
+          className={cn(
+            "overflow-x-auto rounded-[var(--radius-lg)] border border-line bg-surface transition-opacity",
+            pending && "pointer-events-none opacity-60",
+          )}
+        >
           <table className="w-full min-w-[680px] text-sm">
             <thead>
               <tr className="border-b border-line text-left text-[11px] font-semibold uppercase tracking-wide text-faint">
@@ -353,72 +414,22 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
               </tr>
             </thead>
             <tbody>
-              {paged.map((r) => {
-                const cfg = tipoOf(r.tipo);
+              {rows.map((r, i) => {
+                const cfg = tipoDe(r);
                 const Icon = cfg.icon;
                 const d = dateParts(new Date(r.createdAt));
+                const dAnterior = i > 0 ? dateParts(new Date(rows[i - 1].createdAt)) : null;
+                const novoDia = !dAnterior || dAnterior.label !== d.label;
                 return (
-                  <tr
+                  <FragmentRow
                     key={r.id}
+                    separador={novoDia ? d.label : null}
+                    row={r}
+                    cfg={cfg}
+                    Icon={Icon}
+                    time={d.time}
                     onClick={() => setSelected(r)}
-                    className="group h-[54px] cursor-pointer border-b border-line/60 transition-colors last:border-0 hover:bg-surface-2"
-                  >
-                    {/* Tipo */}
-                    <td className="px-4">
-                      <span className={cn("inline-flex items-center gap-1.5 rounded-full py-1 pl-1.5 pr-2.5 text-[11px] font-semibold", cfg.badge)}>
-                        <Icon size={16} className="shrink-0" />
-                        {cfg.label}
-                      </span>
-                    </td>
-
-                    {/* Produto */}
-                    <td className="px-4">
-                      <p className="max-w-90 truncate font-medium leading-tight text-ink">{r.productNome}</p>
-                      {r.productSku && (
-                        <p className="font-mono text-[11px] leading-tight text-faint">SKU {r.productSku}</p>
-                      )}
-                    </td>
-
-                    {/* Origem */}
-                    <td className="hidden px-4 md:table-cell">
-                      <span className="block max-w-72 truncate text-xs text-muted" title={r.origem}>
-                        {r.origem}
-                      </span>
-                    </td>
-
-                    {/* Movimento */}
-                    <td
-                      className={cn(
-                        "px-4 text-right font-mono text-sm font-semibold tabular-nums",
-                        r.deltaFechado > 0 ? "text-ok" : r.deltaFechado < 0 ? "text-danger" : "text-muted",
-                      )}
-                    >
-                      {movimentoStr(r.deltaFechado)}
-                    </td>
-
-                    {/* Saldo */}
-                    <td className="px-4 text-right font-mono text-sm tabular-nums text-ink">
-                      {r.saldoDepois != null ? (
-                        <>
-                          {numFmt(r.saldoDepois)}
-                          <span className="ml-1 text-[11px] text-faint">un</span>
-                        </>
-                      ) : (
-                        <span className="text-faint">—</span>
-                      )}
-                    </td>
-
-                    {/* Responsável */}
-                    <td className="hidden px-4 lg:table-cell">
-                      <span className="text-xs text-muted">{r.responsavel ?? "Sistema"}</span>
-                    </td>
-
-                    {/* Data */}
-                    <td className="whitespace-nowrap px-4 text-right">
-                      <span className="text-xs font-medium text-ink">{d.label}</span>
-                      <span className="ml-1.5 font-mono text-[11px] text-faint">{d.time}</span>
-                    </td>
-                  </tr>
+                  />
                 );
               })}
             </tbody>
@@ -427,19 +438,18 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
       )}
 
       {/* ── Paginação ── */}
-      {filtered.length > 0 && (
+      {rows.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 px-1">
           <div className="flex items-center gap-2 text-xs text-faint">
             <span>
-              {inicio + 1}–{Math.min(inicio + porPagina, filtered.length)} de {filtered.length}
-              {temFiltro && rows.length !== filtered.length ? ` (${rows.length} no total)` : ""}
+              {inicio + 1}–{Math.min(inicio + rows.length, total)} de {total}
             </span>
             <span className="text-line">·</span>
             <label className="flex items-center gap-1.5">
               Exibir
               <select
                 value={porPagina}
-                onChange={(e) => setPorPagina(Number(e.target.value))}
+                onChange={(e) => setParams({ pp: e.target.value })}
                 className="h-7 cursor-pointer appearance-none rounded-lg border border-line bg-surface px-2 text-xs font-medium text-ink focus:border-brand focus:outline-none"
               >
                 {POR_PAGINA.map((n) => (
@@ -455,19 +465,19 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
           {totalPaginas > 1 && (
             <div className="flex items-center gap-1.5">
               <button
-                onClick={() => setPagina((p) => Math.max(1, p - 1))}
-                disabled={paginaAtual <= 1}
+                onClick={() => setParams({ pagina: String(pagina - 1) }, { resetPagina: false })}
+                disabled={pagina <= 1 || pending}
                 className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border border-line bg-surface text-ink transition-colors hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-40"
                 aria-label="Página anterior"
               >
                 <ChevronLeft size={16} />
               </button>
               <span className="min-w-20 text-center text-xs font-medium text-muted">
-                Página {paginaAtual} de {totalPaginas}
+                Página {pagina} de {totalPaginas}
               </span>
               <button
-                onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))}
-                disabled={paginaAtual >= totalPaginas}
+                onClick={() => setParams({ pagina: String(pagina + 1) }, { resetPagina: false })}
+                disabled={pagina >= totalPaginas || pending}
                 className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border border-line bg-surface text-ink transition-colors hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-40"
                 aria-label="Próxima página"
               >
@@ -484,12 +494,121 @@ export function MovimentacoesView({ rows }: { rows: MovimentacaoRow[] }) {
   );
 }
 
+// ── Linha (com separador de dia opcional) ──────────────────────
+
+function FragmentRow({
+  separador,
+  row: r,
+  cfg,
+  Icon,
+  time,
+  onClick,
+}: {
+  separador: string | null;
+  row: MovimentacaoRow;
+  cfg: TipoConfig;
+  Icon: LucideIcon;
+  time: string;
+  onClick: () => void;
+}) {
+  return (
+    <>
+      {separador && (
+        <tr aria-hidden className="border-b border-line/60 bg-surface-2/60">
+          <td colSpan={7} className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
+            {separador}
+          </td>
+        </tr>
+      )}
+      <tr
+        onClick={onClick}
+        className="group h-[54px] cursor-pointer border-b border-line/60 transition-colors last:border-0 hover:bg-surface-2"
+      >
+        {/* Tipo */}
+        <td className="px-4">
+          <span className={cn("inline-flex items-center gap-1.5 rounded-full py-1 pl-1.5 pr-2.5 text-[11px] font-semibold", cfg.badge)}>
+            <Icon size={16} className="shrink-0" />
+            {cfg.label}
+          </span>
+        </td>
+
+        {/* Produto */}
+        <td className="px-4">
+          <p className="max-w-90 truncate font-medium leading-tight text-ink">{r.productNome}</p>
+          {r.productSku && (
+            <p className="font-mono text-[11px] leading-tight text-faint">SKU {r.productSku}</p>
+          )}
+        </td>
+
+        {/* Origem + documento */}
+        <td className="hidden px-4 md:table-cell">
+          <span className="block max-w-72 truncate text-xs text-muted" title={r.origem}>
+            {r.origem}
+          </span>
+          {r.documento && (
+            <span className="block max-w-72 truncate font-mono text-[11px] leading-tight text-faint">
+              {r.documento}
+            </span>
+          )}
+        </td>
+
+        {/* Movimento */}
+        <td
+          className={cn(
+            "px-4 text-right font-mono text-sm font-semibold tabular-nums",
+            r.deltaFechado > 0 ? "text-ok" : r.deltaFechado < 0 ? "text-danger" : "text-muted",
+          )}
+        >
+          {movimentoStr(r.deltaFechado)}
+        </td>
+
+        {/* Saldo */}
+        <td className="px-4 text-right font-mono text-sm tabular-nums text-ink">
+          {r.saldoDepois != null ? (
+            <>
+              {numFmt(r.saldoDepois)}
+              <span className="ml-1 text-[11px] text-faint">un</span>
+            </>
+          ) : (
+            <span className="text-faint">—</span>
+          )}
+        </td>
+
+        {/* Responsável */}
+        <td className="hidden px-4 lg:table-cell">
+          <span className="text-xs text-muted">{r.responsavel ?? "Sistema"}</span>
+        </td>
+
+        {/* Data */}
+        <td className="whitespace-nowrap px-4 text-right">
+          <span className="font-mono text-xs text-muted">{time}</span>
+        </td>
+      </tr>
+    </>
+  );
+}
+
 // ── Painel de detalhes ─────────────────────────────────────────
 
+// Destino navegável do registro vinculado, quando existe tela para ele.
+function linkVinculo(row: MovimentacaoRow): { href: string; label: string } | null {
+  if (row.origem === "Entrada por pedido de compra" && row.documento) {
+    return { href: `/compras?q=${encodeURIComponent(row.documento)}`, label: "Ver pedido de compra" };
+  }
+  if (row.tipo === "TRANSFERENCIA") {
+    return { href: "/estoque/transferencias", label: "Ver transferências" };
+  }
+  if (row.origem === "Ajuste por inventário") {
+    return { href: "/estoque/inventario", label: "Ver inventários" };
+  }
+  return null;
+}
+
 function DetalhePanel({ row, onClose }: { row: MovimentacaoRow | null; onClose: () => void }) {
-  const cfg = row ? tipoOf(row.tipo) : null;
+  const cfg = row ? tipoDe(row) : null;
   const Icon = cfg?.icon;
   const saldoAntes = row && row.saldoDepois != null ? row.saldoDepois - row.deltaFechado : null;
+  const vinculo = row ? linkVinculo(row) : null;
 
   return (
     <Sheet open={!!row} onClose={onClose} title="Movimentação" description={row ? cfg?.label : undefined} width="md">
@@ -550,6 +669,17 @@ function DetalhePanel({ row, onClose }: { row: MovimentacaoRow | null; onClose: 
               <p className="text-[11px] font-semibold uppercase tracking-wide text-faint">Observações</p>
               <p className="rounded-[var(--radius-lg)] border border-line bg-surface-2 px-3 py-2.5 text-sm text-ink">{row.observacao}</p>
             </div>
+          )}
+
+          {/* Registro vinculado */}
+          {vinculo && (
+            <Link
+              href={vinculo.href}
+              className="flex items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+            >
+              <ExternalLink size={14} className="text-muted" />
+              {vinculo.label}
+            </Link>
           )}
         </div>
       )}

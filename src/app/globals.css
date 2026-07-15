@@ -40,6 +40,10 @@
   --warn-soft: #fbecd9;
   --danger: #dc2626;
   --danger-soft: #fde4e4;
+  --info: #2563eb;
+  --info-soft: #e5edfc;
+  --violet: #7c3aed;
+  --violet-soft: #f3edfe;
 
   /* Níveis de fidelização — cores fora da escala laranja (metal/gema real) */
   --tier-gold: #a16207;
@@ -94,6 +98,10 @@
     --warn-soft: #2a2011;
     --danger: #f87171;
     --danger-soft: #2a1414;
+    --info: #60a5fa;
+    --info-soft: #14213a;
+    --violet: #a78bfa;
+    --violet-soft: #241a38;
 
     --tier-gold: #eab308;
     --tier-gold-soft: #3f2d05;
@@ -135,6 +143,10 @@
   --warn-soft: #2a2011;
   --danger: #f87171;
   --danger-soft: #2a1414;
+  --info: #60a5fa;
+  --info-soft: #14213a;
+  --violet: #a78bfa;
+  --violet-soft: #241a38;
 
   --tier-gold: #eab308;
   --tier-gold-soft: #3f2d05;
@@ -175,6 +187,10 @@
   --color-warn-soft: var(--warn-soft);
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-violet: var(--violet);
+  --color-violet-soft: var(--violet-soft);
 
   --color-tier-gold: var(--tier-gold);
   --color-tier-gold-soft: var(--tier-gold-soft);

@@ -131,9 +131,9 @@ export function EstoqueHeader({
   const [panel, setPanel] = useState<PanelId>(null);
   const [pending, startTransition] = useTransition();
 
-  // Inventários tem cabeçalho próprio (PageHeader com voltar) — o header
-  // geral de Estoque não aparece nessa rota.
-  if (pathname.startsWith("/estoque/inventario")) return null;
+  // Inventários e Movimentações têm cabeçalho próprio (PageHeader com voltar)
+  // — o header geral de Estoque não aparece nessas rotas.
+  if (pathname.startsWith("/estoque/inventario") || pathname.startsWith("/estoque/movimentacoes")) return null;
 
   const activeSite = sites.find((s) => s.id === activeSiteId) ?? sites[0];
   const entradaMotivo = panel?.startsWith("entrada:") ? (panel.split(":")[1] as Motivo) : null;

@@ -253,33 +253,178 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
 
 // ── Movimentações ────────────────────────────────────────────
 
+// Filtros estruturados — resolvidos no banco (não sobre uma janela de N linhas),
+// para o extrato ser confiável em qualquer período/página.
+export type MovimentacoesFiltro = {
+  q?: string;
+  chip?: string; // todos | entradas | vendas | saidas | transferencias | producao | ajustes
+  dias?: number | null; // null = todo período; 0 = hoje
+  origem?: string; // id de ORIGEM (venda_totem, ajuste_inventario, …)
+  responsavel?: string; // userId · "__sistema" = sem responsável
+  pagina?: number;
+  porPagina?: number;
+};
+
+export type MovimentacoesResult = {
+  rows: MovimentacaoRow[];
+  total: number;
+  pagina: number;
+  porPagina: number;
+  responsaveis: { id: string; nome: string }[];
+};
+
+export const MOV_POR_PAGINA_MAX = 250;
+
+type MovWhere = Record<string, unknown>;
+
+const CHIP_WHERE: Record<string, MovWhere | undefined> = {
+  entradas: { tipo: { in: ["ENTRADA", "DEVOLUCAO_CLIENTE"] } },
+  vendas: { saleId: { not: null }, tipo: { in: ["SAIDA", "ABERTURA"] } },
+  saidas: { OR: [{ tipo: "SAIDA", saleId: null }, { tipo: { in: ["PERDA", "DEVOLUCAO_FORNECEDOR"] } }] },
+  transferencias: { tipo: "TRANSFERENCIA" },
+  producao: { tipo: "PRODUCAO" },
+  ajustes: { tipo: "AJUSTE" },
+};
+
+// Cada origem exibida na tela tem uma condição equivalente no banco — o filtro
+// devolve exatamente as linhas que receberiam aquele rótulo em resolveOrigem.
+function origemWhere(id: string): MovWhere | "venda" | null {
+  switch (id) {
+    case "compra":
+      return { tipo: "ENTRADA", purchaseId: { not: null } };
+    case "entrada_manual":
+      return { tipo: "ENTRADA", purchaseId: null };
+    case "venda_pdv":
+    case "venda_totem":
+    case "venda_app":
+      return "venda"; // precisa de subconsulta em Sale (canal)
+    case "saida_manual":
+      return { tipo: "SAIDA", saleId: null };
+    case "abertura":
+      return { tipo: "ABERTURA" };
+    case "transferencia":
+      return { tipo: "TRANSFERENCIA" };
+    case "producao":
+      return { tipo: "PRODUCAO" };
+    case "ajuste_manual":
+      return { tipo: "AJUSTE", saleId: null, NOT: { observacao: { startsWith: "Inventário" } } };
+    case "ajuste_inventario":
+      return { tipo: "AJUSTE", observacao: { startsWith: "Inventário" } };
+    case "estorno_venda":
+      return { tipo: "AJUSTE", saleId: { not: null } };
+    case "perda":
+      return { tipo: "PERDA" };
+    case "devolucao_cliente":
+      return { tipo: "DEVOLUCAO_CLIENTE" };
+    case "devolucao_fornecedor":
+      return { tipo: "DEVOLUCAO_FORNECEDOR" };
+    default:
+      return null;
+  }
+}
+
 export async function loadMovimentacoes(
   siteId: string | null,
-  filters: { productId?: string; tipo?: string; limit?: number }
-): Promise<MovimentacaoRow[]> {
-  const movements = await basePrisma.stockMovement.findMany({
-    where: {
-      ...(siteId ? { siteId } : {}),
-      ...(filters.productId ? { productId: filters.productId } : {}),
-      ...(filters.tipo ? { tipo: filters.tipo as never } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    take: filters.limit ?? 100,
+  filtro: MovimentacoesFiltro = {}
+): Promise<MovimentacoesResult> {
+  const porPagina = Math.min(Math.max(filtro.porPagina ?? 100, 10), MOV_POR_PAGINA_MAX);
+  const paginaPedida = Math.max(filtro.pagina ?? 1, 1);
+
+  const and: MovWhere[] = [];
+  if (siteId) and.push({ siteId });
+
+  const chipWhere = filtro.chip ? CHIP_WHERE[filtro.chip] : undefined;
+  if (chipWhere) and.push(chipWhere);
+
+  if (filtro.dias != null) {
+    const limite = new Date();
+    if (filtro.dias === 0) limite.setHours(0, 0, 0, 0);
+    else limite.setDate(limite.getDate() - filtro.dias);
+    and.push({ createdAt: { gte: limite } });
+  }
+
+  if (filtro.origem) {
+    const ow = origemWhere(filtro.origem);
+    if (ow === "venda") {
+      const canal = filtro.origem === "venda_totem" ? "TOTEM" : filtro.origem === "venda_app" ? "APP" : "PDV";
+      const vendas = await db.sale.findMany({
+        where: { origem: canal as never, ...(siteId ? { siteId } : {}) },
+        select: { id: true },
+      });
+      and.push({ tipo: { in: ["SAIDA", "ABERTURA"] }, saleId: { in: vendas.map((v) => v.id) } });
+    } else if (ow) {
+      and.push(ow);
+    }
+  }
+
+  if (filtro.responsavel === "__sistema") and.push({ createdBy: null });
+  else if (filtro.responsavel) and.push({ createdBy: filtro.responsavel });
+
+  const q = filtro.q?.trim();
+  if (q) {
+    const prods = await db.product.findMany({
+      where: {
+        OR: [
+          { nome: { contains: q, mode: "insensitive" } },
+          { sku: { contains: q, mode: "insensitive" } },
+          { ean: { contains: q } },
+        ],
+      },
+      select: { id: true },
+      take: 1000,
+    });
+    and.push({
+      OR: [
+        { productId: { in: prods.map((p) => p.id) } },
+        { observacao: { contains: q, mode: "insensitive" } },
+      ],
+    });
+  }
+
+  const where = and.length ? { AND: and } : {};
+
+  // Responsáveis distintos (para o filtro) — só do site ativo.
+  const [total, distinctBy] = await Promise.all([
+    db.stockMovement.count({ where: where as never }),
+    db.stockMovement.findMany({
+      where: siteId ? { siteId } : {},
+      distinct: ["createdBy"],
+      select: { createdBy: true },
+    }),
+  ]);
+
+  const totalPaginas = Math.max(1, Math.ceil(total / porPagina));
+  const pagina = Math.min(paginaPedida, totalPaginas);
+
+  const movements = await db.stockMovement.findMany({
+    where: where as never,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    skip: (pagina - 1) * porPagina,
+    take: porPagina,
   });
+
+  const respIds = distinctBy.flatMap((d) => (d.createdBy ? [d.createdBy] : []));
+  const respUsers = respIds.length
+    ? await basePrisma.user.findMany({ where: { id: { in: respIds } }, select: { id: true, name: true, email: true } })
+    : [];
+  const responsaveis = respUsers
+    .map((u) => ({ id: u.id, nome: u.name ?? u.email ?? u.id }))
+    .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
 
   const productIds = [...new Set(movements.map((m) => m.productId))];
   const purchaseIds = [...new Set(movements.flatMap((m) => (m.purchaseId ? [m.purchaseId] : [])))];
   const productionIds = [...new Set(movements.flatMap((m) => (m.productionId ? [m.productionId] : [])))];
+  const saleIds = [...new Set(movements.flatMap((m) => (m.saleId ? [m.saleId] : [])))];
   const userIds = [...new Set(movements.flatMap((m) => (m.createdBy ? [m.createdBy] : [])))];
 
-  const [products, stocks, purchases, productions, users, sites] = await Promise.all([
+  const [products, stocks, purchases, productions, sales, users, sites] = await Promise.all([
     productIds.length
       ? db.product.findMany({ where: { id: { in: productIds } }, select: { id: true, nome: true, sku: true, ean: true } })
       : Promise.resolve([]),
     productIds.length
       ? db.stock.findMany({
           where: { productId: { in: productIds }, ...(siteId ? { siteId } : {}) },
-          select: { productId: true, estoqueFechado: true },
+          select: { productId: true, siteId: true, estoqueFechado: true },
         })
       : Promise.resolve([]),
     purchaseIds.length
@@ -288,6 +433,7 @@ export async function loadMovimentacoes(
           select: {
             id: true,
             tipo: true,
+            motivo: true,
             numeroNota: true,
             purchaseOrder: { select: { numero: true } },
             supplier: { select: { razaoSocial: true, nomeFantasia: true } },
@@ -296,6 +442,9 @@ export async function loadMovimentacoes(
       : Promise.resolve([]),
     productionIds.length
       ? db.production.findMany({ where: { id: { in: productionIds } }, select: { id: true, productId: true } })
+      : Promise.resolve([]),
+    saleIds.length
+      ? db.sale.findMany({ where: { id: { in: saleIds } }, select: { id: true, origem: true } })
       : Promise.resolve([]),
     // User mora nas tabelas de auth (não tenant-scoped): usa basePrisma.
     userIds.length
@@ -313,26 +462,45 @@ export async function loadMovimentacoes(
   const productionMap = new Map(productions.map((p) => [p.id, prodOutputMap.get(p.productId) ?? null]));
 
   const prodMap = new Map(products.map((p) => [p.id, p]));
-  const balMap = new Map(stocks.map((s) => [s.productId, n(s.estoqueFechado)]));
+  const balMap = new Map(stocks.map((s) => [`${s.productId}:${s.siteId}`, n(s.estoqueFechado)]));
   const purchaseMap = new Map(purchases.map((p) => [p.id, p]));
+  const saleMap = new Map(sales.map((s) => [s.id, s.origem]));
   const userMap = new Map(users.map((u) => [u.id, u.name ?? u.email ?? null]));
   const siteMap = new Map(sites.map((s) => [s.id, s.nome]));
 
-  // Saldo corrente por produto = saldoDepois da movimentação mais recente.
-  // Caminhamos do topo (mais recente) subtraindo o delta p/ reconstruir cada linha.
-  const running = new Map<string, number>();
+  // ── Saldo após cada movimentação ─────────────────────────────
+  // Com filtros/paginação a página não é mais um trecho contíguo do razão, então
+  // o "caminhar subtraindo deltas" não fecha. Reconstruímos exato: para cada
+  // linha, saldoDepois = saldo atual − Σ deltas de TODAS as movimentações mais
+  // recentes do mesmo produto+site (buscadas à parte, sem filtro).
+  const saldoPorLinha = new Map<string, number>();
+  if (movements.length) {
+    const maisAntiga = movements[movements.length - 1].createdAt;
+    const stream = await db.stockMovement.findMany({
+      where: {
+        productId: { in: productIds },
+        ...(siteId ? { siteId } : {}),
+        createdAt: { gte: maisAntiga },
+      },
+      select: { id: true, productId: true, siteId: true, deltaFechado: true },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    });
+    const pageIds = new Set(movements.map((m) => m.id));
+    const somaNovas = new Map<string, number>(); // Σ deltas estritamente mais recentes, por produto:site
+    for (const s of stream) {
+      const key = `${s.productId}:${s.siteId}`;
+      const acima = somaNovas.get(key) ?? 0;
+      if (pageIds.has(s.id) && balMap.has(key)) {
+        saldoPorLinha.set(s.id, balMap.get(key)! - acima);
+      }
+      somaNovas.set(key, acima + n(s.deltaFechado));
+    }
+  }
 
-  return movements.map((m) => {
+  const rows: MovimentacaoRow[] = movements.map((m) => {
     const deltaFechado = n(m.deltaFechado);
     const custoUnitario = m.custoUnitario ? n(m.custoUnitario) : null;
-
-    let saldoDepois: number | null;
-    if (running.has(m.productId)) {
-      saldoDepois = running.get(m.productId)!;
-    } else {
-      saldoDepois = balMap.has(m.productId) ? balMap.get(m.productId)! : null;
-    }
-    running.set(m.productId, (saldoDepois ?? 0) - deltaFechado);
+    const saldoDepois = saldoPorLinha.has(m.id) ? saldoPorLinha.get(m.id)! : null;
 
     const purchase = m.purchaseId ? purchaseMap.get(m.purchaseId) : null;
     const producaoNome = m.productionId ? (productionMap.get(m.productionId) ?? null) : null;
@@ -340,7 +508,9 @@ export async function loadMovimentacoes(
       purchase,
       transferId: m.transferId,
       saleId: m.saleId,
+      saleOrigem: m.saleId ? (saleMap.get(m.saleId) ?? null) : null,
       producaoNome,
+      observacao: m.observacao,
       delta: deltaFechado,
     });
 
@@ -365,6 +535,8 @@ export async function loadMovimentacoes(
       createdAt: m.createdAt,
     };
   });
+
+  return { rows, total, pagina, porPagina, responsaveis };
 }
 
 // Descreve a origem em linguagem do operador (não códigos). Os códigos
@@ -374,16 +546,26 @@ function resolveOrigem(
   ctx: {
     purchase?: {
       tipo: string;
+      motivo: string | null;
       numeroNota: string | null;
       purchaseOrder: { numero: string } | null;
     } | null;
     transferId: string | null;
     saleId: string | null;
+    saleOrigem: string | null;
     producaoNome: string | null;
+    observacao: string | null;
     delta: number;
   },
 ): { origem: string; documento: string | null } {
-  const { purchase, transferId, saleId, producaoNome } = ctx;
+  const { purchase, transferId, saleId, saleOrigem, producaoNome, observacao } = ctx;
+  const vendaDoc = saleId ? `Venda #${saleId.slice(-6)}` : null;
+  const vendaLabel =
+    saleOrigem === "TOTEM"
+      ? "Venda no autoatendimento"
+      : saleOrigem === "APP"
+        ? "Venda pelo app"
+        : "Venda no PDV";
   const purchaseDoc = purchase?.purchaseOrder?.numero
     ? purchase.purchaseOrder.numero
     : purchase?.numeroNota
@@ -393,12 +575,19 @@ function resolveOrigem(
   switch (tipo) {
     case "ENTRADA":
       if (purchase?.purchaseOrder?.numero) return { origem: "Entrada por pedido de compra", documento: purchaseDoc };
+      if (purchase?.motivo === "ESTOQUE_INICIAL") return { origem: "Estoque inicial", documento: purchaseDoc };
+      if (purchase?.motivo === "BONIFICACAO") return { origem: "Bonificação", documento: purchaseDoc };
       if (purchase) return { origem: "Entrada compra manual", documento: purchaseDoc };
       return { origem: "Entrada manual", documento: null };
     case "ABERTURA":
-      return { origem: "Estoque inicial", documento: null };
+      // Garrafa fechada aberta para consumo fracionado (drink/dose) — o
+      // fechado vira conteúdo aberto, não é saída de estoque.
+      return {
+        origem: producaoNome ? `Abertura para ${producaoNome}` : "Abertura de garrafa",
+        documento: null,
+      };
     case "SAIDA":
-      return { origem: saleId ? "Saída por PDV" : "Saída manual", documento: saleId ? `Venda #${saleId.slice(-6)}` : null };
+      return { origem: saleId ? vendaLabel : "Saída manual", documento: vendaDoc };
     case "TRANSFERENCIA":
       return {
         origem: ctx.delta >= 0 ? "Transferência recebida" : "Transferência enviada",
@@ -409,8 +598,14 @@ function resolveOrigem(
         origem: producaoNome ? `Produção ${producaoNome}` : "Produção",
         documento: null,
       };
-    case "AJUSTE":
+    case "AJUSTE": {
+      // Estorno de venda cancelada carrega o saleId; ajuste de inventário é
+      // identificado pela observação gravada no fechamento da contagem.
+      if (saleId) return { origem: "Estorno de venda", documento: vendaDoc };
+      const inv = observacao?.match(/^Inventário (\S+)/);
+      if (inv) return { origem: "Ajuste por inventário", documento: `Inventário ${inv[1]}` };
       return { origem: "Ajuste manual", documento: null };
+    }
     case "PERDA":
       return { origem: "Perda / quebra", documento: null };
     case "DEVOLUCAO_CLIENTE":
