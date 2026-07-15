@@ -218,7 +218,7 @@ export async function getAlerts(): Promise<AlertItem[]> {
         titulo: atrasado ? "Inventário atrasado" : "Inventário em aberto",
         descricao: `${inv.site.nome} — contagem ainda não fechada.`,
         at: new Date(inv.createdAt).toISOString(),
-        href: "/estoque/inventario",
+        href: "/estoque/inventarios",
         acaoLabel: "Ver inventário",
       });
     }

@@ -599,7 +599,7 @@ function linkVinculo(row: MovimentacaoRow): { href: string; label: string } | nu
     return { href: "/estoque/transferencias", label: "Ver transferências" };
   }
   if (row.origem === "Ajuste por inventário") {
-    return { href: "/estoque/inventario", label: "Ver inventários" };
+    return { href: "/estoque/inventarios", label: "Ver inventários" };
   }
   return null;
 }

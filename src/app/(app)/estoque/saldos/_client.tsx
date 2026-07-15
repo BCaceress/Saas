@@ -27,6 +27,7 @@ import {
   Wallet,
   MapPin,
   ClipboardList,
+  Info,
   Filter,
   X,
 } from "lucide-react";
@@ -607,6 +608,12 @@ export function SaldosView({
                   <Th label="Produto" sortKey="nome" sort={sort} onSort={toggleSort} />
                   <th className="px-4 py-2">Situação</th>
                   <Th label="Estoque" sortKey="fechado" sort={sort} onSort={toggleSort} />
+                  <th className="hidden px-4 py-2 lg:table-cell">
+                    <span className="inline-flex items-center gap-1" title="Conteúdo restante da unidade aberta, vendida em doses/drinks">
+                      Aberto (consumo/drinks)
+                      <Info size={12} className="text-faint" aria-label="Conteúdo restante da unidade aberta, vendida em doses/drinks" />
+                    </span>
+                  </th>
                   <th className="hidden px-4 py-2 md:table-cell">Reposição</th>
                   <th className="w-px px-3 py-2" aria-hidden />
                 </tr>
@@ -629,6 +636,9 @@ export function SaldosView({
                       <td className="px-4 py-2">
                         <EstoqueCell s={s} />
                       </td>
+                      <td className="hidden px-4 py-2 lg:table-cell">
+                        <AbertaCell s={s} />
+                      </td>
                       <td className="hidden px-4 py-2 md:table-cell">
                         <ReposicaoStatusCell s={s} />
                       </td>
@@ -644,6 +654,7 @@ export function SaldosView({
                   <td className="px-4 py-2" colSpan={3}>
                     {total} {total === 1 ? "produto" : "produtos"}
                   </td>
+                  <td className="hidden px-4 py-2 lg:table-cell" />
                   <td className="hidden px-4 py-2 md:table-cell" />
                   <td className="px-3 py-2" />
                 </tr>
@@ -675,6 +686,11 @@ export function SaldosView({
                         <ReposicaoStatusCell s={s} />
                       </div>
                     </div>
+                    {temAbertaFrac(s) && (
+                      <div className="mt-1.5">
+                        <AbertaCell s={s} />
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -980,11 +996,6 @@ function EstoqueCell({ s }: { s: SaldoRow }) {
         </div>
       ) : (
         <span className="text-[10px] text-faint">sem meta definida</span>
-      )}
-      {temAbertaFrac(s) && (
-        <p className="text-[11px] text-accent">
-          {fmtVol(s.estoqueAberto, s.unidadeBase.toLowerCase())} em uso
-        </p>
       )}
     </div>
   );

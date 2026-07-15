@@ -76,7 +76,7 @@ export function TransferenciaForm({
           router.refresh();
           onDone?.();
         } else {
-          router.push("/estoque/saldos");
+          router.push("/estoque");
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao transferir.");

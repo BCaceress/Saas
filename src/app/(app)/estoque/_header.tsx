@@ -133,7 +133,7 @@ export function EstoqueHeader({
 
   // Inventários e Movimentações têm cabeçalho próprio (PageHeader com voltar)
   // — o header geral de Estoque não aparece nessas rotas.
-  if (pathname.startsWith("/estoque/inventario") || pathname.startsWith("/estoque/movimentacoes")) return null;
+  if (pathname.startsWith("/estoque/inventarios") || pathname.startsWith("/estoque/movimentacoes")) return null;
 
   const activeSite = sites.find((s) => s.id === activeSiteId) ?? sites[0];
   const entradaMotivo = panel?.startsWith("entrada:") ? (panel.split(":")[1] as Motivo) : null;
@@ -190,10 +190,10 @@ export function EstoqueHeader({
 
           {/* Inventários — processo separado de contagem */}
           <Link
-            href="/estoque/inventario"
+            href="/estoque/inventarios"
             className={cn(
               "flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors",
-              pathname === "/estoque/inventario"
+              pathname === "/estoque/inventarios"
                 ? "border-brand bg-brand-soft text-brand"
                 : "border-line bg-surface text-ink hover:bg-surface-2",
             )}
