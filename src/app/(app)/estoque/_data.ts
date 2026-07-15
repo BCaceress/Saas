@@ -572,24 +572,19 @@ export async function loadComprasFormOptions() {
 
 export async function loadEntradaFormOptions() {
   // Select enxuto: só os campos que o NovaEntradaForm consome.
-  const [products, suppliers, sites] = await Promise.all([
+  const [products, sites] = await Promise.all([
     db.product.findMany({
       where: { ativo: true, tipo: { in: ["SIMPLES", "INSUMO"] } },
       select: {
         id: true,
         nome: true,
         sku: true,
+        ean: true,
         imagemUrl: true,
         packagings: { select: { id: true, nome: true, fatorConversao: true, isCompraDefault: true } },
-        suppliers: { select: { supplierId: true } },
         brand: { select: { nome: true } },
       },
       orderBy: { nome: "asc" },
-    }),
-    db.supplier.findMany({
-      where: { ativo: true },
-      orderBy: { razaoSocial: "asc" },
-      select: { id: true, razaoSocial: true, nomeFantasia: true },
     }),
     db.site.findMany({
       where: { ativo: true },
@@ -598,7 +593,7 @@ export async function loadEntradaFormOptions() {
     }),
   ]);
 
-  return { products, suppliers, sites };
+  return { products, sites };
 }
 
 // ── Reposição ─────────────────────────────────────────────────
@@ -664,6 +659,31 @@ export async function loadSitesTransferencia() {
   return db.site.findMany({ where: { ativo: true }, orderBy: { nome: "asc" } });
 }
 
+/** Opções para o formulário de transferência: sites, produtos estocáveis e saldos por site. */
+export async function loadTransferenciaFormOptions() {
+  const [sites, products, stocks] = await Promise.all([
+    loadSitesTransferencia(),
+    db.product.findMany({
+      where: { ativo: true, tipo: { in: ["SIMPLES", "INSUMO"] } },
+      orderBy: { nome: "asc" },
+      select: { id: true, nome: true, sku: true },
+    }),
+    db.stock.findMany({
+      where: { estoqueFechado: { gt: 0 } },
+      select: { productId: true, siteId: true, estoqueFechado: true },
+    }),
+  ]);
+  return {
+    sites,
+    products,
+    saldos: stocks.map((s) => ({
+      productId: s.productId,
+      siteId: s.siteId ?? "",
+      saldo: n(s.estoqueFechado),
+    })),
+  };
+}
+
 // ── Distribuição CD→loja: requisições, expedição, recebimento ──
 
 export type RequisicaoItemView = {
@@ -687,14 +707,15 @@ export type RequisicaoView = {
   items: RequisicaoItemView[];
 };
 
-/** Helper: mapa productId -> {nome, sku, imagemUrl} para um conjunto de ids. */
+/** Helper: mapa productId -> {nome, sku, ean, imagemUrl} para um conjunto de ids. */
 async function mapProdutos(productIds: string[]) {
-  if (productIds.length === 0) return new Map<string, { nome: string; sku: string; imagemUrl: string | null }>();
+  if (productIds.length === 0)
+    return new Map<string, { nome: string; sku: string; ean: string | null; imagemUrl: string | null }>();
   const products = await db.product.findMany({
     where: { id: { in: productIds } },
-    select: { id: true, nome: true, sku: true, imagemUrl: true },
+    select: { id: true, nome: true, sku: true, ean: true, imagemUrl: true },
   });
-  return new Map(products.map((p) => [p.id, { nome: p.nome, sku: p.sku, imagemUrl: p.imagemUrl }]));
+  return new Map(products.map((p) => [p.id, { nome: p.nome, sku: p.sku, ean: p.ean, imagemUrl: p.imagemUrl }]));
 }
 
 /** Requisições recentes (abertas a atender + atendidas), com saldo no CD. */
@@ -807,6 +828,9 @@ export type InventarioItemView = {
   productId: string;
   nome: string;
   sku: string;
+  ean: string | null;
+  imagemUrl: string | null;
+  locationNome: string | null;
   qtdSistema: number;
   qtdContada: number | null;
 };
@@ -816,9 +840,19 @@ export type InventarioView = {
   status: string;
   siteId: string;
   siteNome: string;
+  escopoTipo: string;
+  escopoLabel: string;
+  categoriaNome: string | null;
+  qtdProdutos: number;
+  modoCego: boolean;
+  dataProgramada: Date;
+  recorrente: boolean;
+  diasSemana: number[];
   observacao: string | null;
   createdAt: Date;
+  iniciadoEm: Date | null;
   fechadoEm: Date | null;
+  fechadoPorNome: string | null;
   items: InventarioItemView[];
 };
 
@@ -827,31 +861,134 @@ export async function loadInventarios(siteId: string | null): Promise<Inventario
     where: siteId ? { siteId } : {},
     include: {
       site: { select: { nome: true } },
-      items: true,
+      category: { select: { nome: true } },
+      items: { select: { productId: true, qtdSistema: true, qtdContada: true } },
     },
     orderBy: { createdAt: "desc" },
     take: 30,
   });
 
   const productIds = [...new Set(invs.flatMap((i) => i.items.map((it) => it.productId)))];
-  const prodMap = await mapProdutos(productIds);
+  const siteIds = [...new Set(invs.map((i) => i.siteId))];
+  const fechadoPorIds = [...new Set(invs.map((i) => i.fechadoPor).filter((v): v is string => !!v))];
 
-  return invs.map((inv) => ({
-    id: inv.id,
-    status: inv.status,
-    siteId: inv.siteId,
-    siteNome: inv.site.nome,
-    observacao: inv.observacao,
-    createdAt: inv.createdAt,
-    fechadoEm: inv.fechadoEm,
-    items: inv.items.map((it) => ({
-      productId: it.productId,
-      nome: prodMap.get(it.productId)?.nome ?? it.productId,
-      sku: prodMap.get(it.productId)?.sku ?? "",
-      qtdSistema: n(it.qtdSistema),
-      qtdContada: it.qtdContada != null ? n(it.qtdContada) : null,
-    })),
-  }));
+  // Inventários ainda não iniciados (sem InventoryItem) precisam do tamanho do escopo
+  // calculado agora: categoria conta produtos da categoria; completo conta produtos com
+  // estoque no site.
+  const semItens = invs.filter((i) => i.items.length === 0);
+  const categoriaIds = [...new Set(semItens.filter((i) => i.escopoTipo === "CATEGORIA" && i.categoryId).map((i) => i.categoryId!))];
+  const sitesCompleto = [...new Set(semItens.filter((i) => i.escopoTipo === "COMPLETO").map((i) => i.siteId))];
+
+  const [prodMap, stocks, produtosCategoria, produtosCompleto, fechadoPorUsers] = await Promise.all([
+    mapProdutos(productIds),
+    productIds.length > 0
+      ? db.stock.findMany({
+          where: { productId: { in: productIds }, siteId: { in: siteIds } },
+          select: { productId: true, siteId: true, location: { select: { nome: true } } },
+        })
+      : Promise.resolve([]),
+    categoriaIds.length > 0
+      ? db.product.findMany({
+          where: { subcategory: { categoryId: { in: categoriaIds } } },
+          select: { id: true, subcategory: { select: { categoryId: true } } },
+        })
+      : Promise.resolve([]),
+    sitesCompleto.length > 0
+      ? db.stock.findMany({
+          where: { siteId: { in: sitesCompleto } },
+          distinct: ["productId", "siteId"],
+          select: { productId: true, siteId: true },
+        })
+      : Promise.resolve([]),
+    // User mora nas tabelas de auth (não tenant-scoped): usa basePrisma.
+    fechadoPorIds.length > 0
+      ? basePrisma.user.findMany({ where: { id: { in: fechadoPorIds } }, select: { id: true, name: true, email: true } })
+      : Promise.resolve([]),
+  ]);
+  const locationMap = new Map(stocks.map((s) => [`${s.productId}:${s.siteId}`, s.location?.nome ?? null]));
+  const fechadoPorMap = new Map(fechadoPorUsers.map((u) => [u.id, u.name ?? u.email ?? null]));
+
+  const qtdPorCategoria = new Map<string, number>();
+  for (const p of produtosCategoria) {
+    const catId = p.subcategory?.categoryId;
+    if (!catId) continue;
+    qtdPorCategoria.set(catId, (qtdPorCategoria.get(catId) ?? 0) + 1);
+  }
+  const qtdPorSite = new Map<string, number>();
+  for (const s of produtosCompleto) {
+    qtdPorSite.set(s.siteId!, (qtdPorSite.get(s.siteId!) ?? 0) + 1);
+  }
+
+  return invs.map((inv) => {
+    // Antes de iniciar, o escopo ainda não tem InventoryItem — resolve pelo tamanho do escopo.
+    const qtdProdutos =
+      inv.items.length > 0
+        ? inv.items.length
+        : inv.escopoTipo === "PRODUTOS"
+          ? inv.escopoProdutoIds.length
+          : inv.escopoTipo === "CATEGORIA"
+            ? (inv.categoryId ? qtdPorCategoria.get(inv.categoryId) ?? 0 : 0)
+            : qtdPorSite.get(inv.siteId) ?? 0;
+    return {
+      id: inv.id,
+      status: inv.status,
+      siteId: inv.siteId,
+      siteNome: inv.site.nome,
+      escopoTipo: inv.escopoTipo,
+      escopoLabel:
+        inv.escopoTipo === "CATEGORIA"
+          ? `Categoria: ${inv.category?.nome ?? "—"}`
+          : inv.escopoTipo === "PRODUTOS"
+            ? `${qtdProdutos} ${qtdProdutos === 1 ? "produto" : "produtos"}`
+            : "Todo o estoque",
+      categoriaNome: inv.category?.nome ?? null,
+      qtdProdutos,
+      modoCego: inv.modoCego,
+      dataProgramada: inv.dataProgramada,
+      recorrente: inv.recorrente,
+      diasSemana: inv.diasSemana,
+      observacao: inv.observacao,
+      createdAt: inv.createdAt,
+      iniciadoEm: inv.iniciadoEm,
+      fechadoEm: inv.fechadoEm,
+      fechadoPorNome: inv.fechadoPor ? fechadoPorMap.get(inv.fechadoPor) ?? null : null,
+      items: inv.items.map((it) => ({
+        productId: it.productId,
+        nome: prodMap.get(it.productId)?.nome ?? it.productId,
+        sku: prodMap.get(it.productId)?.sku ?? "",
+        ean: prodMap.get(it.productId)?.ean ?? null,
+        imagemUrl: prodMap.get(it.productId)?.imagemUrl ?? null,
+        locationNome: locationMap.get(`${it.productId}:${inv.siteId}`) ?? null,
+        qtdSistema: n(it.qtdSistema),
+        qtdContada: it.qtdContada != null ? n(it.qtdContada) : null,
+      })),
+    };
+  });
+}
+
+/** Categorias para o formulário de inventário — leve, carregada de cara com a página. */
+export async function loadInventarioCategorias() {
+  return db.category.findMany({
+    orderBy: { nome: "asc" },
+    select: { id: true, nome: true },
+  });
+}
+
+/**
+ * Produtos para o escopo "Produtos específicos" do formulário de inventário.
+ * Catálogo inteiro — carregado sob demanda (só quando o usuário abre o formulário),
+ * não no load inicial da página.
+ */
+export async function loadInventarioFormOptions() {
+  const [categories, products] = await Promise.all([
+    loadInventarioCategorias(),
+    db.product.findMany({
+      where: { ativo: true, tipo: { in: ["SIMPLES", "INSUMO"] } },
+      orderBy: { nome: "asc" },
+      select: { id: true, nome: true, sku: true },
+    }),
+  ]);
+  return { categories, products };
 }
 
 /** Opções para o formulário de requisição (sites + produtos estocáveis). */

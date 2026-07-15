@@ -14,10 +14,15 @@ export function TransferenciaForm({
   sites,
   products,
   saldos,
+  embedded = false,
+  onDone,
 }: {
   sites: Site[];
   products: Product[];
   saldos: Saldo[];
+  /** Quando usado dentro de um sidepanel: não navega, chama onDone + refresh. */
+  embedded?: boolean;
+  onDone?: () => void;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -67,7 +72,12 @@ export function TransferenciaForm({
           observacao: observacao || null,
           items: valid,
         });
-        router.push("/estoque/saldos");
+        if (embedded) {
+          router.refresh();
+          onDone?.();
+        } else {
+          router.push("/estoque/saldos");
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao transferir.");
       }
@@ -176,7 +186,7 @@ export function TransferenciaForm({
       <div className="flex justify-end gap-3 border-t border-line pt-4">
         <button
           type="button"
-          onClick={() => router.back()}
+          onClick={() => (embedded ? onDone?.() : router.back())}
           className="rounded-full border border-line px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
         >
           Cancelar

@@ -7,33 +7,25 @@ import {
   ChevronDown,
   Plus,
   PackagePlus,
-  SlidersHorizontal,
-  Undo2,
-  Beaker,
+  Gift,
+  PackageCheck,
   ClipboardList,
   Loader2,
   ArrowRightLeft,
+  History,
 } from "lucide-react";
 import { useState, useTransition, useEffect } from "react";
-import {
-  setSiteAction,
-  fetchAjustesFormDataAction,
-  fetchEntradaFormDataAction,
-  fetchProducaoDataAction,
-  fetchInventarioDataAction,
-} from "./actions";
+import { setSiteAction, fetchEntradaFormDataAction, fetchTransferenciaFormDataAction } from "./actions";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import { Sheet } from "@/components/ui/sheet";
-import { AjustesForm } from "./ajustes/_client";
-import { DevolucaoForm } from "./devolucoes/_client";
-import { NovaEntradaForm } from "./entradas/nova/_client";
-import { ProducaoForm } from "./producao/_client";
-import { InventarioClient } from "./inventario/_client";
+import { NovaEntradaForm, MOTIVO_OPTIONS, type Motivo } from "./entradas/nova/_client";
+import { TransferenciaForm } from "./transferencias/_client";
 
 type SiteRow = { id: string; nome: string; tipo: string; ativo: boolean };
-type PanelId = "entrada" | "ajuste" | "devolucao" | "producao" | "inventario" | null;
+type EntradaPanelId = `entrada:${Motivo}`;
+type PanelId = EntradaPanelId | "transferencia" | null;
 
 // ── Lazy panel content ─────────────────────────────────────────
 
@@ -45,7 +37,7 @@ function LoadingPanel() {
   );
 }
 
-function EntradaPanel({ onClose }: { onClose: () => void }) {
+function EntradaPanel({ motivo, onClose }: { motivo: Motivo; onClose: () => void }) {
   const router = useRouter();
   type Data = Awaited<ReturnType<typeof fetchEntradaFormDataAction>>;
   const [data, setData] = useState<Data | null>(null);
@@ -59,6 +51,7 @@ function EntradaPanel({ onClose }: { onClose: () => void }) {
   return (
     <NovaEntradaForm
       {...data}
+      motivo={motivo}
       embedded
       onDone={() => {
         onClose();
@@ -68,93 +61,25 @@ function EntradaPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-function AjustePanel({ onClose }: { onClose: () => void }) {
+function TransferenciaPanel({ onClose }: { onClose: () => void }) {
   const router = useRouter();
-  type Data = Awaited<ReturnType<typeof fetchAjustesFormDataAction>>;
+  type Data = Awaited<ReturnType<typeof fetchTransferenciaFormDataAction>>;
   const [data, setData] = useState<Data | null>(null);
 
   useEffect(() => {
-    fetchAjustesFormDataAction().then(setData);
+    fetchTransferenciaFormDataAction().then(setData);
   }, []);
 
   if (!data) return <LoadingPanel />;
 
   return (
-    <AjustesForm
-      sites={data.sites}
-      defaultSiteId={data.siteId}
-      products={data.products}
+    <TransferenciaForm
+      {...data}
+      embedded
       onDone={() => {
         onClose();
         router.refresh();
       }}
-    />
-  );
-}
-
-function DevolucaoPanel({ onClose }: { onClose: () => void }) {
-  const router = useRouter();
-  type Data = Awaited<ReturnType<typeof fetchAjustesFormDataAction>>;
-  const [data, setData] = useState<Data | null>(null);
-
-  useEffect(() => {
-    fetchAjustesFormDataAction().then(setData);
-  }, []);
-
-  if (!data) return <LoadingPanel />;
-
-  return (
-    <DevolucaoForm
-      sites={data.sites}
-      defaultSiteId={data.siteId}
-      products={data.products}
-      onDone={() => {
-        onClose();
-        router.refresh();
-      }}
-    />
-  );
-}
-
-function ProducaoPanel({ onClose }: { onClose: () => void }) {
-  const router = useRouter();
-  type Data = Awaited<ReturnType<typeof fetchProducaoDataAction>>;
-  const [data, setData] = useState<Data | null>(null);
-
-  useEffect(() => {
-    fetchProducaoDataAction().then(setData);
-  }, []);
-
-  if (!data) return <LoadingPanel />;
-
-  return (
-    <ProducaoForm
-      sites={data.sites}
-      defaultSiteId={data.siteId}
-      personalizados={data.personalizados}
-      onDone={() => {
-        onClose();
-        router.refresh();
-      }}
-    />
-  );
-}
-
-function InventarioPanel() {
-  type Data = Awaited<ReturnType<typeof fetchInventarioDataAction>>;
-  const [data, setData] = useState<Data | null>(null);
-
-  useEffect(() => {
-    fetchInventarioDataAction().then(setData);
-  }, []);
-
-  if (!data) return <LoadingPanel />;
-
-  return (
-    <InventarioClient
-      inventarios={data.inventarios}
-      sites={data.sites}
-      activeSiteId={data.activeSiteId}
     />
   );
 }
@@ -163,13 +88,31 @@ function InventarioPanel() {
 
 const CORE_TABS: { href: string; label: string }[] = [];
 
-const ACOES: { id: Exclude<PanelId, null>; label: string; icon: React.ElementType; soon?: boolean }[] = [
-  { id: "entrada", label: "Entrada", icon: PackagePlus },
-  { id: "ajuste", label: "Ajuste", icon: SlidersHorizontal, soon: true },
-  { id: "devolucao", label: "Devolução", icon: Undo2, soon: true },
-  { id: "producao", label: "Produção", icon: Beaker, soon: true },
-  { id: "inventario", label: "Inventário", icon: ClipboardList },
-];
+const ENTRADA_ICON: Record<Motivo, React.ElementType> = {
+  COMPRA_SEM_PEDIDO: PackagePlus,
+  BONIFICACAO: Gift,
+  ESTOQUE_INICIAL: PackageCheck,
+};
+
+const ENTRADA_DESC: Record<Motivo, string> = {
+  COMPRA_SEM_PEDIDO: "Adicionar produtos diretamente ao estoque.",
+  BONIFICACAO: "Registrar produtos recebidos sem custo.",
+  ESTOQUE_INICIAL: "Informar os saldos existentes na implantação.",
+};
+
+export const ENTRADA_SHEET_META: Record<Motivo, { title: string; description: string }> = {
+  COMPRA_SEM_PEDIDO: { title: "Nova entrada manual", description: "Adicione produtos diretamente ao estoque." },
+  BONIFICACAO: { title: "Nova bonificação", description: "Registre produtos recebidos sem custo." },
+  ESTOQUE_INICIAL: { title: "Definir estoque inicial", description: "Informe as quantidades existentes antes de iniciar o controle pelo sistema." },
+};
+
+const ENTRADA_ACOES: { id: EntradaPanelId; label: string; desc: string; icon: React.ElementType }[] =
+  MOTIVO_OPTIONS.map((m) => ({
+    id: `entrada:${m.value}` as EntradaPanelId,
+    label: m.label,
+    desc: ENTRADA_DESC[m.value],
+    icon: ENTRADA_ICON[m.value],
+  }));
 
 export function EstoqueHeader({
   sites,
@@ -184,11 +127,17 @@ export function EstoqueHeader({
 }) {
   const pathname = usePathname();
   const [siteOpen, setSiteOpen] = useState(false);
-  const [registrarOpen, setRegistrarOpen] = useState(false);
+  const [novaMovOpen, setNovaMovOpen] = useState(false);
   const [panel, setPanel] = useState<PanelId>(null);
   const [pending, startTransition] = useTransition();
 
+  // Inventários tem cabeçalho próprio (PageHeader com voltar) — o header
+  // geral de Estoque não aparece nessa rota.
+  if (pathname.startsWith("/estoque/inventario")) return null;
+
   const activeSite = sites.find((s) => s.id === activeSiteId) ?? sites[0];
+  const entradaMotivo = panel?.startsWith("entrada:") ? (panel.split(":")[1] as Motivo) : null;
+  const entradaMeta = entradaMotivo ? ENTRADA_SHEET_META[entradaMotivo] : null;
 
   const distribui = topologia !== "LOCAL";
   const navTabs = [
@@ -220,12 +169,12 @@ export function EstoqueHeader({
         <PageHeader
           title="Estoque"
           icon={navIcon("/estoque")}
-          description="Saldos, entradas e movimentações por loja."
+          description="Acompanhe os saldos, identifique necessidades e gerencie o estoque da loja."
           innerClassName="max-w-none"
           className="pb-3"
           actions={
             <>
-          {/* Movimentações — acesso ao razão */}
+          {/* Movimentações — histórico auditável */}
           <Link
             href="/estoque/movimentacoes"
             className={cn(
@@ -235,53 +184,82 @@ export function EstoqueHeader({
                 : "border-line bg-surface text-ink hover:bg-surface-2",
             )}
           >
-            <ArrowRightLeft size={15} className="opacity-80" />
+            <History size={15} className="opacity-80" />
             <span>Movimentações</span>
           </Link>
 
-          {/* Registrar — menu único de ações */}
+          {/* Inventários — processo separado de contagem */}
+          <Link
+            href="/estoque/inventario"
+            className={cn(
+              "flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors",
+              pathname === "/estoque/inventario"
+                ? "border-brand bg-brand-soft text-brand"
+                : "border-line bg-surface text-ink hover:bg-surface-2",
+            )}
+          >
+            <ClipboardList size={15} className="opacity-80" />
+            <span>Inventários</span>
+          </Link>
+
+          {/* Nova movimentação — menu de ações disponíveis */}
           <div className="relative">
             <button
               type="button"
               onClick={() => {
                 setSiteOpen(false);
-                setRegistrarOpen((v) => !v);
+                setNovaMovOpen((v) => !v);
               }}
               className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
             >
               <Plus size={15} />
-              <span>Registrar</span>
+              <span>Nova movimentação</span>
               <ChevronDown size={13} className="opacity-80" />
             </button>
-            {registrarOpen && (
-              <div className="absolute right-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-(--shadow-2)">
-                {ACOES.map((a) =>
-                  a.soon ? (
-                    <div
-                      key={a.id}
-                      aria-disabled
-                      className="flex w-full cursor-not-allowed items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-faint"
-                    >
-                      <a.icon size={15} className="shrink-0 text-faint" />
-                      {a.label}
-                      <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted">
-                        Em breve
-                      </span>
-                    </div>
-                  ) : (
+            {novaMovOpen && (
+              <div className="absolute right-0 top-full z-50 mt-1 w-80 overflow-hidden rounded-xl border border-line bg-surface py-1.5 shadow-(--shadow-2)">
+                <p className="px-3.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
+                  Entradas
+                </p>
+                {ENTRADA_ACOES.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={() => {
+                      setNovaMovOpen(false);
+                      setPanel(a.id);
+                    }}
+                    className="flex w-full items-start gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2"
+                  >
+                    <a.icon size={16} className="mt-0.5 shrink-0 text-muted" />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium text-ink">{a.label}</span>
+                      <span className="block text-xs text-muted">{a.desc}</span>
+                    </span>
+                  </button>
+                ))}
+
+                {multiSite && (
+                  <>
+                    <div className="my-1 h-px bg-line" />
+                    <p className="px-3.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
+                      Movimentação interna
+                    </p>
                     <button
-                      key={a.id}
                       type="button"
                       onClick={() => {
-                        setRegistrarOpen(false);
-                        setPanel(a.id);
+                        setNovaMovOpen(false);
+                        setPanel("transferencia");
                       }}
-                      className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-ink transition-colors hover:bg-surface-2"
+                      className="flex w-full items-start gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2"
                     >
-                      <a.icon size={15} className="shrink-0 text-muted" />
-                      {a.label}
+                      <ArrowRightLeft size={16} className="mt-0.5 shrink-0 text-muted" />
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium text-ink">Transferência</span>
+                        <span className="block text-xs text-muted">Movimentar produtos entre locais.</span>
+                      </span>
                     </button>
-                  ),
+                  </>
                 )}
               </div>
             )}
@@ -292,7 +270,7 @@ export function EstoqueHeader({
             <div className="relative ml-1">
               <button
                 onClick={() => {
-                  setRegistrarOpen(false);
+                  setNovaMovOpen(false);
                   setSiteOpen((v) => !v);
                 }}
                 className="flex items-center gap-2 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
@@ -354,53 +332,23 @@ export function EstoqueHeader({
 
       {/* ── Sidepanels ── */}
       <Sheet
-        open={panel === "entrada"}
+        open={panel !== null && panel.startsWith("entrada:")}
         onClose={closePanel}
-        title="Registrar entrada"
-        description="Lance a compra ou reposição no estoque."
+        title={entradaMeta?.title ?? "Nova movimentação"}
+        description={entradaMeta?.description ?? "Lance a movimentação no estoque."}
         width="xl"
       >
-        {panel === "entrada" && <EntradaPanel onClose={closePanel} />}
+        {entradaMotivo && <EntradaPanel motivo={entradaMotivo} onClose={closePanel} />}
       </Sheet>
 
       <Sheet
-        open={panel === "ajuste"}
+        open={panel === "transferencia"}
         onClose={closePanel}
-        title="Ajustar estoque"
-        description="Corrija saldos por contagem física ou registre quebras."
-        width="md"
-      >
-        {panel === "ajuste" && <AjustePanel onClose={closePanel} />}
-      </Sheet>
-
-      <Sheet
-        open={panel === "devolucao"}
-        onClose={closePanel}
-        title="Registrar devolução"
-        description="Cliente devolve (entra) ou devolução ao fornecedor (sai)."
-        width="md"
-      >
-        {panel === "devolucao" && <DevolucaoPanel onClose={closePanel} />}
-      </Sheet>
-
-      <Sheet
-        open={panel === "producao"}
-        onClose={closePanel}
-        title="Registrar produção"
-        description="Consome insumos do estoque via ficha técnica."
+        title="Nova transferência"
+        description="Movimente produtos entre locais."
         width="xl"
       >
-        {panel === "producao" && <ProducaoPanel onClose={closePanel} />}
-      </Sheet>
-
-      <Sheet
-        open={panel === "inventario"}
-        onClose={closePanel}
-        title="Inventário"
-        description="Conte o físico e ajuste o sistema pela diferença."
-        width="xl"
-      >
-        {panel === "inventario" && <InventarioPanel />}
+        {panel === "transferencia" && <TransferenciaPanel onClose={closePanel} />}
       </Sheet>
     </>
   );

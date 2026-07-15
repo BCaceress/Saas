@@ -1,10 +1,10 @@
 "use client";
 
 import { useMemo, useState, useEffect, useId, useRef, type ComponentProps } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
-  AlertOctagon,
   Search,
   Boxes,
   Download,
@@ -27,7 +27,6 @@ import {
   Wallet,
   MapPin,
   ClipboardList,
-  Info,
   Filter,
   X,
 } from "lucide-react";
@@ -111,17 +110,28 @@ const SALE_ORIGEM_LABEL: Record<string, string> = {
   APP:   "Venda online",
 };
 
+const PURCHASE_MOTIVO_LABEL: Record<string, string> = {
+  COMPRA_SEM_PEDIDO: "Entrada manual",
+  BONIFICACAO: "Bonificação",
+  ESTOQUE_INICIAL: "Estoque inicial",
+  TRANSFERENCIA: "Transferência",
+};
+
 function getMovLabel(m: HistoricoItem): string {
   if (m.tipo === "SAIDA" && m.saleOrigem) return SALE_ORIGEM_LABEL[m.saleOrigem] ?? "Saída";
   if (m.tipo === "ENTRADA") {
+    if (m.purchaseMotivo) {
+      const label = PURCHASE_MOTIVO_LABEL[m.purchaseMotivo] ?? m.purchaseMotivo;
+      return m.purchaseMotivo === "COMPRA_SEM_PEDIDO" ? label : `Entrada — ${label}`;
+    }
     if (m.purchaseTipo === "FORNECEDOR") return "Entrada — Fornecedor";
-    if (m.purchaseTipo === "MANUAL")     return "Entrada — Manual";
+    return "Entrada — Manual";
   }
   return TIPO_MOV[m.tipo]?.label ?? m.tipo;
 }
 
 function getMovSub(m: HistoricoItem): string | null {
-  if (m.tipo === "ENTRADA" && m.purchaseTipo === "FORNECEDOR" && m.purchaseSupplier) {
+  if (m.tipo === "ENTRADA" && !m.purchaseMotivo && m.purchaseTipo === "FORNECEDOR" && m.purchaseSupplier) {
     return m.purchaseSupplier;
   }
   if (m.tipo === "PRODUCAO" && m.producaoDrinkNome) {
@@ -130,38 +140,38 @@ function getMovSub(m: HistoricoItem): string | null {
   return null;
 }
 
-type Filtro =
-  | "todos" | "com" | "sem" | "critico" | "baixo" | "repor" | "semlocal" | "pendencias";
+type Filtro = "todos" | "sem" | "baixoMinimo" | "repor" | "pendencias";
 type SortKey = "nome" | "fechado" | "valor";
 type SortDir = "asc" | "desc";
-type FormOptions = Pick<ComponentProps<typeof NovaEntradaForm>, "products" | "suppliers" | "sites">;
+type FormOptions = Pick<ComponentProps<typeof NovaEntradaForm>, "products" | "sites">;
 type HistoricoItem = Awaited<ReturnType<typeof fetchHistoricoProductAction>>[number];
 
 // ── Situação do estoque ───────────────────────────────────────
-// Considera fechado × mínimo × ideal (+ aberto p/ distinguir zerado real).
+// Estados objetivos: fechado × mínimo × ideal (+ aberto p/ distinguir zerado real).
+// Sem mín. e sem ideal configurados ⇒ não dá pra calcular corretamente ("Meta não definida").
 
-type Status = "saudavel" | "atencao" | "baixo" | "critico" | "sem";
+type Status = "semEstoque" | "semMeta" | "baixoMinimo" | "baixoIdeal" | "abastecido";
 
 function statusOf(s: SaldoRow): Status {
   const f = s.estoqueFechado;
-  if (f <= 0 && s.estoqueAberto <= 0) return "sem";
+  if (f <= 0 && s.estoqueAberto <= 0) return "semEstoque";
   const { estoqueMinimo: min, estoqueIdeal: ideal } = s;
-  if (min > 0 && f <= min / 2) return "critico";
-  if (min > 0 && f < min) return "baixo";
-  if (ideal > 0 && f < ideal) return "atencao";
-  return "saudavel";
+  if (min <= 0 && ideal <= 0) return "semMeta";
+  if (min > 0 && f < min) return "baixoMinimo";
+  if (ideal > 0 && f < ideal) return "baixoIdeal";
+  return "abastecido";
 }
 
 const STATUS_META: Record<Status, { label: string; text: string; dot: string; bar: string; Icon: React.ElementType }> = {
-  saudavel: { label: "Abastecido",  text: "text-ok",     dot: "bg-ok",     bar: "bg-ok",     Icon: PackageCheck },
-  atencao:  { label: "Atenção",     text: "text-warn",   dot: "bg-warn",   bar: "bg-warn",   Icon: AlertTriangle },
-  baixo:    { label: "Baixo",       text: "text-brand",  dot: "bg-brand",  bar: "bg-brand",  Icon: AlertTriangle },
-  critico:  { label: "Crítico",     text: "text-danger", dot: "bg-danger", bar: "bg-danger", Icon: AlertOctagon },
-  sem:      { label: "Sem estoque", text: "text-faint",  dot: "bg-faint",  bar: "bg-danger", Icon: PackageX },
+  abastecido:  { label: "Abastecido",       text: "text-ok",     dot: "bg-ok",     bar: "bg-ok",     Icon: PackageCheck },
+  baixoIdeal:  { label: "Abaixo do ideal",  text: "text-warn",   dot: "bg-warn",   bar: "bg-warn",   Icon: AlertTriangle },
+  baixoMinimo: { label: "Abaixo do mínimo", text: "text-brand",  dot: "bg-brand",  bar: "bg-brand",  Icon: AlertTriangle },
+  semEstoque:  { label: "Sem estoque",      text: "text-danger", dot: "bg-danger", bar: "bg-danger", Icon: PackageX },
+  semMeta:     { label: "Meta não definida",text: "text-faint",  dot: "bg-faint",  bar: "bg-faint",  Icon: PackageX },
 };
 
-const semEstoque = (s: SaldoRow) => statusOf(s) === "sem";
-const abaixoMin = (s: SaldoRow) => s.estoqueFechado < s.estoqueMinimo;
+const semEstoque = (s: SaldoRow) => statusOf(s) === "semEstoque";
+const abaixoMin = (s: SaldoRow) => s.estoqueMinimo > 0 && s.estoqueFechado < s.estoqueMinimo;
 const precisaRepor = (s: SaldoRow) => s.estoqueIdeal > 0 && s.estoqueFechado < s.estoqueIdeal;
 const valorEstoque = (s: SaldoRow) => s.estoqueFechado * (s.custoMedio ?? 0);
 const disponivel = (s: SaldoRow) => s.estoqueFechado - s.estoqueAberto;
@@ -186,7 +196,7 @@ function dataGaps(s: SaldoRow): ("custo" | "fornecedor" | "local")[] {
   return g;
 }
 
-const PRIORITY: Record<Status, number> = { sem: 0, critico: 1, baixo: 2, atencao: 3, saudavel: 4 };
+const PRIORITY: Record<Status, number> = { semEstoque: 0, baixoMinimo: 1, baixoIdeal: 2, semMeta: 3, abastecido: 4 };
 
 /* CSV: separador ";" e decimal com vírgula (Excel pt-BR). */
 function toCsv(rows: SaldoRow[]): string {
@@ -273,30 +283,64 @@ export function SaldosView({
   }, [saldos]);
 
   const counts = useMemo(() => {
-    let com = 0, sem = 0, critico = 0, baixo = 0, repor = 0, semlocal = 0, pendencias = 0;
+    let sem = 0, baixoMinimo = 0, repor = 0, semlocal = 0, pendencias = 0, comEstoque = 0, semMeta = 0;
     for (const s of saldos) {
-      if (!semEstoque(s)) com++; else sem++;
-      if (statusOf(s) === "critico") critico++;
-      if (abaixoMin(s)) baixo++;
+      if (!semEstoque(s)) comEstoque++; else sem++;
+      if (abaixoMin(s)) baixoMinimo++;
       if (precisaRepor(s)) repor++;
       if (!s.locationNome) semlocal++;
       if (dataGaps(s).length > 0) pendencias++;
+      if (statusOf(s) === "semMeta") semMeta++;
     }
-    return { todos: saldos.length, com, sem, critico, baixo, repor, semlocal, pendencias };
+    return { todos: saldos.length, sem, baixoMinimo, repor, semlocal, pendencias, comEstoque, semMeta };
   }, [saldos]);
+
+  // Filtros secundários (painel "Filtros") — categoria/fornecedor/local derivados dos dados.
+  const [avComEstoque, setAvComEstoque] = useState(false);
+  const [avSemLocal, setAvSemLocal] = useState(false);
+  const [avSemMeta, setAvSemMeta] = useState(false);
+  const [avCategoria, setAvCategoria] = useState("");
+  const [avFornecedor, setAvFornecedor] = useState("");
+  const [avLocal, setAvLocal] = useState("");
+
+  const categorias = useMemo(
+    () => [...new Set(saldos.map((s) => s.categoria).filter((v): v is string => !!v))].sort(),
+    [saldos],
+  );
+  const fornecedores = useMemo(
+    () => [...new Set(saldos.map((s) => s.fornecedorNome).filter((v): v is string => !!v))].sort(),
+    [saldos],
+  );
+  const locais = useMemo(
+    () => [...new Set(saldos.map((s) => s.locationNome).filter((v): v is string => !!v))].sort(),
+    [saldos],
+  );
+
+  const avancadoAtivo = avComEstoque || avSemLocal || avSemMeta || !!avCategoria || !!avFornecedor || !!avLocal;
+  function limparAvancado() {
+    setAvComEstoque(false);
+    setAvSemLocal(false);
+    setAvSemMeta(false);
+    setAvCategoria("");
+    setAvFornecedor("");
+    setAvLocal("");
+  }
 
   const filtrados = useMemo(() => {
     const termo = q.trim().toLowerCase();
     const out = saldos.filter((s) => {
       switch (filtro) {
-        case "com":        if (semEstoque(s)) return false; break;
-        case "sem":        if (!semEstoque(s)) return false; break;
-        case "critico":    if (statusOf(s) !== "critico") return false; break;
-        case "baixo":      if (!abaixoMin(s)) return false; break;
-        case "repor":      if (!precisaRepor(s)) return false; break;
-        case "semlocal":   if (s.locationNome) return false; break;
-        case "pendencias": if (dataGaps(s).length === 0) return false; break;
+        case "sem":         if (!semEstoque(s)) return false; break;
+        case "baixoMinimo": if (!abaixoMin(s)) return false; break;
+        case "repor":       if (!precisaRepor(s)) return false; break;
+        case "pendencias":  if (dataGaps(s).length === 0) return false; break;
       }
+      if (avComEstoque && semEstoque(s)) return false;
+      if (avSemLocal && s.locationNome) return false;
+      if (avSemMeta && statusOf(s) !== "semMeta") return false;
+      if (avCategoria && s.categoria !== avCategoria) return false;
+      if (avFornecedor && s.fornecedorNome !== avFornecedor) return false;
+      if (avLocal && s.locationNome !== avLocal) return false;
       if (termo) {
         const alvo = `${s.nome} ${s.sku} ${s.ean ?? ""} ${s.categoria ?? ""} ${s.marca ?? ""} ${s.fornecedorNome ?? ""}`.toLowerCase();
         if (!alvo.includes(termo)) return false;
@@ -320,10 +364,10 @@ export function SaldosView({
     });
 
     return out;
-  }, [saldos, q, filtro, sort]);
+  }, [saldos, q, filtro, sort, avComEstoque, avSemLocal, avSemMeta, avCategoria, avFornecedor, avLocal]);
 
   // Paginação — volta à 1ª página quando o conjunto muda.
-  useEffect(() => { setPage(1); }, [q, filtro, sort, pageSize]);
+  useEffect(() => { setPage(1); }, [q, filtro, sort, pageSize, avComEstoque, avSemLocal, avSemMeta, avCategoria, avFornecedor, avLocal]);
   const total = filtrados.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const pageSafe = Math.min(page, totalPages);
@@ -365,20 +409,33 @@ export function SaldosView({
     }
   }
 
+  /** Nova movimentação a partir do sidepanel de detalhe — prefila este produto, sem exigir déficit. */
+  async function abrirNovaMovimentacao(s: SaldoRow) {
+    setReporLoading(true);
+    try {
+      const opts = await ensureFormOptions();
+      const prod = opts.products.find((p) => p.id === s.productId);
+      const padrao = prod?.packagings.find((pk) => pk.isCompraDefault);
+      setReporItems([
+        prod
+          ? { productId: prod.id, quantidade: 1, custoTotal: 0, custoDisplay: "", packagingId: padrao?.id ?? null }
+          : { productId: "", quantidade: 1, custoTotal: 0, custoDisplay: "", packagingId: null },
+      ]);
+    } finally {
+      setReporLoading(false);
+    }
+  }
+
   type Pill = { key: Filtro; label: string; count: number; tone: "neutral" | "danger" | "warn" | "brand" };
+  // Chips visíveis: só os 5 estados objetivos do resultado esperado. O resto
+  // (com estoque, sem localização, sem meta, categoria/fornecedor/local) mora no menu "Filtros".
   const pillsEstoque: Pill[] = [
-    { key: "todos",   label: "Todos",          count: counts.todos,   tone: "neutral" },
-    { key: "com",     label: "Com estoque",    count: counts.com,     tone: "neutral" },
-    { key: "sem",     label: "Sem estoque",    count: counts.sem,     tone: "danger"  },
-    { key: "critico", label: "Críticos",       count: counts.critico, tone: "danger"  },
-    { key: "baixo",   label: "Abaixo do mín.", count: counts.baixo,   tone: "brand"   },
-    { key: "repor",   label: "A repor",        count: counts.repor,   tone: "warn"    },
+    { key: "todos",       label: "Todos",           count: counts.todos,       tone: "neutral" },
+    { key: "sem",         label: "Sem estoque",     count: counts.sem,         tone: "danger"  },
+    { key: "baixoMinimo", label: "Abaixo do mínimo", count: counts.baixoMinimo, tone: "brand"   },
+    { key: "repor",       label: "A repor",         count: counts.repor,       tone: "warn"    },
+    { key: "pendencias",  label: "Pendências",      count: counts.pendencias,  tone: "warn"    },
   ];
-  // Chips de cadastro só aparecem quando há o que resolver.
-  const pillsCadastro: Pill[] = ([
-    { key: "semlocal",   label: "Sem localização", count: counts.semlocal,   tone: "neutral" },
-    { key: "pendencias", label: "Pendências",      count: counts.pendencias, tone: "warn"    },
-  ] as Pill[]).filter((p) => p.count > 0 || filtro === p.key);
 
   return (
     <div className="flex flex-col gap-4">
@@ -395,24 +452,27 @@ export function SaldosView({
           label="Sem estoque"
           value={String(kpis.sem)}
           tone="danger"
+          selected={filtro === "sem"}
           onClick={() => setFiltro(filtro === "sem" ? "todos" : "sem")}
-          hint="p/ venda"
+          hint="Indisponíveis para venda"
         />
         <Kpi
-          icon={AlertOctagon}
-          label="Críticos"
+          icon={AlertTriangle}
+          label="Abaixo do mínimo"
           value={String(kpis.abaixo)}
           tone="danger"
-          onClick={() => setFiltro(filtro === "baixo" ? "todos" : "baixo")}
-          hint="abaixo do mín."
+          selected={filtro === "baixoMinimo"}
+          onClick={() => setFiltro(filtro === "baixoMinimo" ? "todos" : "baixoMinimo")}
+          hint="Requerem atenção"
         />
         <Kpi
           icon={RefreshCw}
           label="A repor"
           value={String(kpis.repor)}
           tone="warn"
+          selected={filtro === "repor"}
           onClick={() => setFiltro(filtro === "repor" ? "todos" : "repor")}
-          hint="abaixo do ideal"
+          hint="Precisam de reposição"
         />
       </div>
 
@@ -429,7 +489,7 @@ export function SaldosView({
         </div>
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="flex flex-1 items-center gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {[...pillsEstoque, ...pillsCadastro].map((p) => (
+            {pillsEstoque.map((p) => (
               <FilterPill
                 key={p.key}
                 label={p.label}
@@ -441,16 +501,84 @@ export function SaldosView({
           </div>
           <Menu
             align="end"
+            className="w-72"
             trigger={
               <button
                 type="button"
-                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-2 text-sm font-medium text-ink transition-colors hover:border-line-strong hover:bg-surface-2"
+                className={cn(
+                  "flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-colors",
+                  avancadoAtivo
+                    ? "border-brand bg-brand-soft text-brand"
+                    : "border-line bg-surface text-ink hover:border-line-strong hover:bg-surface-2",
+                )}
               >
-                <Filter size={15} className="text-muted" />
+                <Filter size={15} className={avancadoAtivo ? "text-brand" : "text-muted"} />
                 <span>Filtros</span>
               </button>
             }
           >
+            <p className="px-2.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-faint">Estoque</p>
+            <label className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-sm text-ink transition-colors hover:bg-surface-2">
+              <input type="checkbox" checked={avComEstoque} onChange={(e) => setAvComEstoque(e.target.checked)} className="accent-brand" />
+              Com estoque
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-sm text-ink transition-colors hover:bg-surface-2">
+              <input type="checkbox" checked={avSemLocal} onChange={(e) => setAvSemLocal(e.target.checked)} className="accent-brand" />
+              Sem localização
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-sm text-ink transition-colors hover:bg-surface-2">
+              <input type="checkbox" checked={avSemMeta} onChange={(e) => setAvSemMeta(e.target.checked)} className="accent-brand" />
+              Sem meta definida
+            </label>
+
+            {(categorias.length > 0 || fornecedores.length > 0 || locais.length > 0) && (
+              <>
+                <div className="my-1.5 h-px bg-line" />
+                <div className="flex flex-col gap-2 px-2.5 py-1">
+                  {categorias.length > 0 && (
+                    <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+                      Categoria
+                      <select
+                        value={avCategoria}
+                        onChange={(e) => setAvCategoria(e.target.value)}
+                        className="rounded-lg border border-line bg-surface px-2 py-1.5 text-sm text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+                      >
+                        <option value="">Todas</option>
+                        {categorias.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  {fornecedores.length > 0 && (
+                    <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+                      Fornecedor
+                      <select
+                        value={avFornecedor}
+                        onChange={(e) => setAvFornecedor(e.target.value)}
+                        className="rounded-lg border border-line bg-surface px-2 py-1.5 text-sm text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+                      >
+                        <option value="">Todos</option>
+                        {fornecedores.map((f) => <option key={f} value={f}>{f}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  {locais.length > 0 && (
+                    <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+                      Local
+                      <select
+                        value={avLocal}
+                        onChange={(e) => setAvLocal(e.target.value)}
+                        className="rounded-lg border border-line bg-surface px-2 py-1.5 text-sm text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+                      >
+                        <option value="">Todos</option>
+                        {locais.map((l) => <option key={l} value={l}>{l}</option>)}
+                      </select>
+                    </label>
+                  )}
+                </div>
+              </>
+            )}
+
+            <div className="my-1.5 h-px bg-line" />
             <MenuItem
               icon={<Download size={15} />}
               onClick={() => baixarCsv(filtrados)}
@@ -458,8 +586,8 @@ export function SaldosView({
             >
               Exportar CSV
             </MenuItem>
-            {(filtro !== "todos" || q.trim() !== "") && (
-              <MenuItem icon={<X size={15} />} onClick={() => { setFiltro("todos"); setQ(""); }}>
+            {(filtro !== "todos" || q.trim() !== "" || avancadoAtivo) && (
+              <MenuItem icon={<X size={15} />} onClick={() => { setFiltro("todos"); setQ(""); limparAvancado(); }}>
                 Limpar filtros
               </MenuItem>
             )}
@@ -477,14 +605,8 @@ export function SaldosView({
               <thead>
                 <tr className="border-b border-line bg-surface-2 text-left text-xs font-semibold uppercase tracking-wide text-faint">
                   <Th label="Produto" sortKey="nome" sort={sort} onSort={toggleSort} />
-                  <th className="px-4 py-2">Status</th>
+                  <th className="px-4 py-2">Situação</th>
                   <Th label="Estoque" sortKey="fechado" sort={sort} onSort={toggleSort} />
-                  <th className="hidden px-4 py-2 lg:table-cell">
-                    <span className="inline-flex items-center gap-1" title="Conteúdo restante da unidade aberta, vendida em doses/drinks">
-                      Aberto (consumo/drinks)
-                      <Info size={12} className="text-faint" aria-label="Conteúdo restante da unidade aberta, vendida em doses/drinks" />
-                    </span>
-                  </th>
                   <th className="hidden px-4 py-2 md:table-cell">Reposição</th>
                   <th className="w-px px-3 py-2" aria-hidden />
                 </tr>
@@ -507,9 +629,6 @@ export function SaldosView({
                       <td className="px-4 py-2">
                         <EstoqueCell s={s} />
                       </td>
-                      <td className="hidden px-4 py-2 lg:table-cell">
-                        <AbertaCell s={s} />
-                      </td>
                       <td className="hidden px-4 py-2 md:table-cell">
                         <ReposicaoStatusCell s={s} />
                       </td>
@@ -525,7 +644,6 @@ export function SaldosView({
                   <td className="px-4 py-2" colSpan={3}>
                     {total} {total === 1 ? "produto" : "produtos"}
                   </td>
-                  <td className="hidden px-4 py-2 lg:table-cell" />
                   <td className="hidden px-4 py-2 md:table-cell" />
                   <td className="px-3 py-2" />
                 </tr>
@@ -557,11 +675,6 @@ export function SaldosView({
                         <ReposicaoStatusCell s={s} />
                       </div>
                     </div>
-                    {temAbertaFrac(s) && (
-                      <div className="mt-1.5">
-                        <AbertaCell s={s} />
-                      </div>
-                    )}
                   </div>
                 </div>
               );
@@ -591,6 +704,7 @@ export function SaldosView({
         onClose={() => setDetalhe(null)}
         onEditar={(id) => router.push(`/produtos/${id}/editar`)}
         onRepor={(s) => { setDetalhe(null); abrirReposicao([s]); }}
+        onNovaMovimentacao={(s) => { setDetalhe(null); abrirNovaMovimentacao(s); }}
         onAjustado={() => { setDetalhe(null); router.refresh(); }}
       />
 
@@ -605,6 +719,7 @@ export function SaldosView({
         {reporItems && formOptions ? (
           <NovaEntradaForm
             {...formOptions}
+            motivo="COMPRA_SEM_PEDIDO"
             embedded
             initialItems={reporItems}
             onDone={() => setReporItems(null)}
@@ -627,6 +742,7 @@ function Kpi({
   value,
   hint,
   tone = "neutral",
+  selected = false,
   onClick,
 }: {
   icon: React.ElementType;
@@ -634,6 +750,7 @@ function Kpi({
   value: string;
   hint?: string;
   tone?: "neutral" | "danger" | "warn";
+  selected?: boolean;
   onClick?: () => void;
 }) {
   const iconWrap =
@@ -647,10 +764,11 @@ function Kpi({
   const Wrapper: "button" | "div" = onClick ? "button" : "div";
   return (
     <Wrapper
-      {...(onClick ? { type: "button" as const, onClick } : {})}
+      {...(onClick ? { type: "button" as const, onClick, "aria-pressed": selected } : {})}
       className={cn(
-        "flex flex-col gap-2.5 rounded-2xl border border-line bg-surface p-4 text-left transition-all",
-        onClick && "hover:border-line-strong hover:shadow-sm",
+        "flex flex-col gap-2.5 rounded-2xl border bg-surface p-4 text-left transition-all",
+        selected ? "border-brand ring-1 ring-brand/30" : "border-line",
+        onClick && !selected && "hover:border-line-strong hover:shadow-sm",
       )}
     >
       <div className="flex items-center gap-2">
@@ -863,6 +981,11 @@ function EstoqueCell({ s }: { s: SaldoRow }) {
       ) : (
         <span className="text-[10px] text-faint">sem meta definida</span>
       )}
+      {temAbertaFrac(s) && (
+        <p className="text-[11px] text-accent">
+          {fmtVol(s.estoqueAberto, s.unidadeBase.toLowerCase())} em uso
+        </p>
+      )}
     </div>
   );
 }
@@ -941,22 +1064,30 @@ function ReposBadge({ tone, children }: { tone: "ok" | "warn" | "danger" | "mute
   );
 }
 
+/**
+ * Reposição responde "o que preciso fazer?" — separado da situação física do
+ * estoque. Comprar hoje/Sem reposição só se aplicam quando falta comprar e
+ * não há pedido em aberto; havendo pedido, o que importa é a previsão.
+ */
 function ReposicaoStatusCell({ s }: { s: SaldoRow }) {
   if (s.reposEstado === "prevista") {
     return (
       <ReposBadge tone="ok">
-        Compra {s.reposPrevisao ? previsaoLabel(s.reposPrevisao) : "prevista"}
+        Próxima compra {s.reposPrevisao ? previsaoLabel(s.reposPrevisao) : ""}
       </ReposBadge>
     );
   }
   if (s.reposEstado === "pedido") {
-    return <ReposBadge tone="warn">Pedido ao fornecedor</ReposBadge>;
+    return <ReposBadge tone="ok">Próxima compra — pedido enviado</ReposBadge>;
   }
-  // Sem pedido: só alarma quando precisa repor.
-  if (precisaRepor(s)) {
-    return <ReposBadge tone="danger">Sem reposição</ReposBadge>;
+  if (!precisaRepor(s)) {
+    return <ReposBadge tone="muted">Não necessário</ReposBadge>;
   }
-  return <span className="text-[11px] text-faint">—</span>;
+  const st = statusOf(s);
+  if (st === "semEstoque" || st === "baixoMinimo") {
+    return <ReposBadge tone="danger">Comprar hoje</ReposBadge>;
+  }
+  return <ReposBadge tone="warn">Sem reposição</ReposBadge>;
 }
 
 // ── Célula de produto (miniatura + nome + SKU/EAN + ícones) ────
@@ -1023,8 +1154,7 @@ function ProdutoCell({ s, onPendencias }: { s: SaldoRow; onPendencias?: () => vo
         <p className={cn("mt-0.5 text-[11px]", s.ultimaMovEm ? "text-muted" : "text-faint")}>{mov}</p>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
           <span className="font-mono text-faint">{s.sku}</span>
-          {s.ean && <span className="font-mono text-faint">{s.ean}</span>}
-          {s.categoria && <span className="hidden text-muted lg:inline">{s.categoria}</span>}
+          {s.categoria && <span className="text-muted">{s.categoria}</span>}
         </div>
       </div>
     </div>
@@ -1103,6 +1233,7 @@ function DetalheDrawer({
   onClose,
   onEditar,
   onRepor,
+  onNovaMovimentacao,
   onAjustado,
 }: {
   saldo: SaldoRow | null;
@@ -1112,6 +1243,7 @@ function DetalheDrawer({
   onClose: () => void;
   onEditar: (productId: string) => void;
   onRepor: (s: SaldoRow) => void;
+  onNovaMovimentacao: (s: SaldoRow) => void;
   onAjustado: () => void;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
@@ -1156,6 +1288,7 @@ function DetalheDrawer({
               gaps={gaps}
               onEditar={onEditar}
               onRepor={onRepor}
+              onNovaMovimentacao={onNovaMovimentacao}
               onAjustado={onAjustado}
             />
           ) : (
@@ -1174,6 +1307,7 @@ function ResumoTab({
   gaps,
   onEditar,
   onRepor,
+  onNovaMovimentacao,
   onAjustado,
 }: {
   s: SaldoRow;
@@ -1182,6 +1316,7 @@ function ResumoTab({
   gaps: ("custo" | "fornecedor" | "local")[];
   onEditar: (productId: string) => void;
   onRepor: (s: SaldoRow) => void;
+  onNovaMovimentacao: (s: SaldoRow) => void;
   onAjustado: () => void;
 }) {
   const st = statusOf(s);
@@ -1307,6 +1442,14 @@ function ResumoTab({
         )}
       </div>
 
+      {/* ── EM USO — unidade aberta, vendida em doses/drinks ── */}
+      {temAbertaFrac(s) && (
+        <div className="rounded-xl border border-line bg-surface p-4">
+          <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-faint">Em uso</h3>
+          <AbertaCell s={s} />
+        </div>
+      )}
+
       {/* ── Consumo médio (linha única, espaçada) ── */}
       <div className="rounded-xl border border-line bg-surface px-4 py-3">
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-faint">Consumo médio</h3>
@@ -1329,14 +1472,23 @@ function ResumoTab({
         </dl>
       </div>
 
-      {/* Editar produto (terciário) */}
-      <button
-        type="button"
-        onClick={() => onEditar(s.productId)}
-        className="flex items-center gap-1.5 self-start text-sm font-medium text-muted transition-colors hover:text-ink"
-      >
-        <Pencil size={14} /> Editar produto
-      </button>
+      {/* ── Ações ── */}
+      <div className="flex flex-wrap gap-2 border-t border-line pt-4">
+        <button
+          type="button"
+          onClick={() => onEditar(s.productId)}
+          className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+        >
+          <Pencil size={14} className="text-muted" /> Configurações do estoque
+        </button>
+        <button
+          type="button"
+          onClick={() => onNovaMovimentacao(s)}
+          className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+        >
+          <RefreshCw size={14} className="text-muted" /> Nova movimentação
+        </button>
+      </div>
     </div>
   );
 }
@@ -1565,6 +1717,13 @@ function HistoricoTab({
           })}
         </ol>
       )}
+
+      <Link
+        href="/estoque/movimentacoes"
+        className="self-start text-sm font-medium text-brand transition-colors hover:underline"
+      >
+        Ver todas as movimentações
+      </Link>
     </div>
   );
 }

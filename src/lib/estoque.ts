@@ -86,6 +86,7 @@ export async function registrarEntrada(
   items: EntradaItem[],
   opts: {
     tipo: "MANUAL" | "FORNECEDOR";
+    motivo?: "COMPRA_SEM_PEDIDO" | "BONIFICACAO" | "ESTOQUE_INICIAL" | "TRANSFERENCIA" | null;
     supplierId?: string | null;
     purchaseOrderId?: string | null;
     numeroNota?: string | null;
@@ -117,6 +118,7 @@ export async function registrarEntrada(
         tenantId,
         siteId,
         tipo: opts.tipo,
+        motivo: opts.motivo ?? null,
         supplierId: opts.supplierId ?? null,
         purchaseOrderId: opts.purchaseOrderId ?? null,
         numeroNota: opts.numeroNota ?? null,
@@ -808,21 +810,34 @@ export async function cancelarRequisicao(tenantId: string, requisicaoId: string)
 }
 
 // ── Inventário / contagem ────────────────────────────────────
-// Abertura tira snapshot do saldo fechado por produto no site. Fechamento
-// reconcilia: para cada item contado, gera um AJUSTE = (contado − saldo atual).
+// Programado primeiro (sem tirar snapshot); só ao iniciar (ação explícita)
+// resolve o escopo e fotografa o saldo fechado por produto no site.
+// Fechamento reconcilia: para cada item contado, gera um AJUSTE = (contado − saldo atual).
 
-/** Abre um inventário no site, fotografando o saldo atual de todos os produtos. */
+/** Programa um inventário no site — não tira snapshot ainda. */
 export async function criarInventario(
   tenantId: string,
   siteId: string,
-  opts: { observacao?: string | null; createdBy?: string }
+  opts: {
+    dataProgramada: Date;
+    observacao?: string | null;
+    createdBy?: string;
+    escopoTipo?: "COMPLETO" | "CATEGORIA" | "PRODUTOS";
+    categoryId?: string | null;
+    productIds?: string[] | null;
+    modoCego?: boolean;
+    responsavelId?: string | null;
+    recorrente?: boolean;
+    diasSemana?: number[] | null;
+  }
 ): Promise<string> {
-  const stocks = await basePrisma.stock.findMany({
-    where: { siteId, tenantId },
-    select: { productId: true, estoqueFechado: true },
-  });
-  if (stocks.length === 0) {
-    throw new Error("Nenhum produto com estoque neste site para inventariar.");
+  const escopoTipo = opts.escopoTipo ?? "COMPLETO";
+
+  if (escopoTipo === "PRODUTOS" && (!opts.productIds || opts.productIds.length === 0)) {
+    throw new Error("Selecione ao menos um produto.");
+  }
+  if (escopoTipo === "CATEGORIA" && !opts.categoryId) {
+    throw new Error("Selecione a categoria.");
   }
 
   const inv = await basePrisma.$transaction(async (tx) => {
@@ -831,22 +846,121 @@ export async function criarInventario(
       data: {
         tenantId,
         siteId,
+        escopoTipo,
+        categoryId: escopoTipo === "CATEGORIA" ? opts.categoryId : null,
+        escopoProdutoIds: escopoTipo === "PRODUTOS" ? (opts.productIds ?? []) : [],
+        modoCego: opts.modoCego ?? false,
+        dataProgramada: opts.dataProgramada,
+        recorrente: opts.recorrente ?? false,
+        diasSemana: opts.recorrente
+          ? (opts.diasSemana?.length ? opts.diasSemana : [opts.dataProgramada.getUTCDay()])
+          : [],
+        responsavelId: opts.responsavelId ?? null,
         observacao: opts.observacao ?? null,
         createdBy: opts.createdBy ?? null,
-        items: {
-          create: stocks.map((s) => ({
-            tenantId,
-            productId: s.productId,
-            qtdSistema: s.estoqueFechado,
-          })),
-        },
       },
     });
   });
   return inv.id;
 }
 
+/** Menor data estritamente após `apos` que cai em um dos dias da semana informados. */
+function proximaOcorrencia(diasSemana: number[], apos: Date): Date {
+  const d = new Date(apos);
+  for (let delta = 1; delta <= 7; delta++) {
+    d.setUTCDate(apos.getUTCDate() + delta);
+    if (diasSemana.includes(d.getUTCDay())) return d;
+  }
+  // Nunca deveria cair aqui com diasSemana não-vazio, mas garante retorno.
+  const fallback = new Date(apos);
+  fallback.setUTCDate(apos.getUTCDate() + 7);
+  return fallback;
+}
+
+/** Inicia a contagem: resolve o escopo agora e fotografa o saldo fechado por produto. */
+export async function iniciarInventario(tenantId: string, inventoryId: string): Promise<void> {
+  const inv = await basePrisma.inventory.findFirst({ where: { id: inventoryId, tenantId } });
+  if (!inv) throw new Error("Inventário não encontrado.");
+  if (inv.status !== "PROGRAMADO") throw new Error("Só inventários programados podem ser iniciados.");
+
+  let productIdFilter: string[] | null = null;
+  if (inv.escopoTipo === "PRODUTOS") {
+    productIdFilter = inv.escopoProdutoIds;
+    if (productIdFilter.length === 0) throw new Error("Nenhum produto selecionado para este inventário.");
+  } else if (inv.escopoTipo === "CATEGORIA") {
+    if (!inv.categoryId) throw new Error("Categoria não definida para este inventário.");
+    const produtos = await basePrisma.product.findMany({
+      where: { tenantId, subcategory: { categoryId: inv.categoryId } },
+      select: { id: true },
+    });
+    productIdFilter = produtos.map((p) => p.id);
+    if (productIdFilter.length === 0) throw new Error("Nenhum produto nessa categoria.");
+  }
+
+  const stocks = await basePrisma.stock.findMany({
+    where: {
+      siteId: inv.siteId,
+      tenantId,
+      ...(productIdFilter ? { productId: { in: productIdFilter } } : {}),
+    },
+    select: { productId: true, estoqueFechado: true },
+  });
+  if (stocks.length === 0) {
+    throw new Error("Nenhum produto com estoque neste site para inventariar.");
+  }
+
+  await basePrisma.$transaction([
+    basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
+    basePrisma.inventoryItem.createMany({
+      data: stocks.map((s) => ({
+        tenantId,
+        inventoryId,
+        productId: s.productId,
+        qtdSistema: s.estoqueFechado,
+      })),
+    }),
+    basePrisma.inventory.update({
+      where: { id: inventoryId },
+      data: { status: "ABERTO", iniciadoEm: new Date() },
+    }),
+  ]);
+}
+
 export type ContagemInput = { productId: string; qtdContada: number };
+
+/**
+ * Salva a contagem parcial (rascunho) de um inventário em andamento — grava
+ * `qtdContada` nos itens sem aplicar ajuste. Protege a contagem contra F5/queda
+ * do navegador; o ajuste de saldo só acontece em `fecharInventario`.
+ */
+export async function salvarContagemInventario(
+  tenantId: string,
+  inventoryId: string,
+  contagens: ContagemInput[]
+): Promise<void> {
+  const inv = await basePrisma.inventory.findFirst({
+    where: { id: inventoryId, tenantId },
+    select: { status: true, items: { select: { id: true, productId: true } } },
+  });
+  if (!inv) throw new Error("Inventário não encontrado.");
+  if (inv.status !== "ABERTO") throw new Error("A contagem só pode ser salva com o inventário em andamento.");
+
+  const itemPorProduto = new Map(inv.items.map((i) => [i.productId, i.id]));
+  const updates = contagens
+    .filter((c) => itemPorProduto.has(c.productId))
+    .map((c) =>
+      basePrisma.inventoryItem.update({
+        where: { id: itemPorProduto.get(c.productId)! },
+        data: { qtdContada: Math.max(0, c.qtdContada) },
+      })
+    );
+  if (updates.length === 0) return;
+
+  await basePrisma.$transaction([
+    basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
+    ...updates,
+  ]);
+}
 
 /** Fecha o inventário: grava a contagem e ajusta o saldo pela divergência. */
 export async function fecharInventario(
@@ -898,19 +1012,39 @@ export async function fecharInventario(
     basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
     basePrisma.inventory.update({
       where: { id: inventoryId },
-      data: { status: "FECHADO", fechadoEm: new Date() },
+      data: { status: "FECHADO", fechadoEm: new Date(), fechadoPor: opts.createdBy ?? null },
     }),
   ]);
+
+  // Recorrente: agenda a próxima ocorrência (mesmo escopo/site) — o dia mais próximo
+  // dentre os dias da semana configurados, contando a partir da data programada atual.
+  if (inv.recorrente && inv.diasSemana.length > 0) {
+    const proxima = proximaOcorrencia(inv.diasSemana, inv.dataProgramada);
+    await criarInventario(tenantId, siteId, {
+      dataProgramada: proxima,
+      escopoTipo: inv.escopoTipo,
+      categoryId: inv.categoryId,
+      productIds: inv.escopoProdutoIds,
+      modoCego: inv.modoCego,
+      recorrente: true,
+      diasSemana: inv.diasSemana,
+      responsavelId: inv.responsavelId,
+      observacao: inv.observacao,
+      createdBy: opts.createdBy,
+    });
+  }
 }
 
-/** Cancela um inventário ABERTO sem aplicar ajustes. */
+/** Cancela um inventário programado ou em andamento, sem aplicar ajustes. */
 export async function cancelarInventario(tenantId: string, inventoryId: string): Promise<void> {
   const inv = await basePrisma.inventory.findFirst({
     where: { id: inventoryId, tenantId },
     select: { status: true },
   });
   if (!inv) throw new Error("Inventário não encontrado.");
-  if (inv.status !== "ABERTO") throw new Error("Só inventários abertos podem ser cancelados.");
+  if (inv.status !== "PROGRAMADO" && inv.status !== "ABERTO") {
+    throw new Error("Só inventários programados ou em andamento podem ser cancelados.");
+  }
   await basePrisma.$transaction([
     basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
     basePrisma.inventory.update({ where: { id: inventoryId }, data: { status: "CANCELADO" } }),

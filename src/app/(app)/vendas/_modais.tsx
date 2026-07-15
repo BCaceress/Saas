@@ -234,6 +234,15 @@ export function PagamentoModal({
     }
   }
 
+  // Selecionar o quadro do Pix já gera a cobrança sozinho — sem clique extra
+  // num botão "Gerar QR Code" (disparado no clique/atalho, não num efeito).
+  function selecionarMetodo(m: ModalMetodo) {
+    if (fluxoTravado) return;
+    setFluxo(null);
+    setMetodo(m);
+    if (m === "PIX" && pixIntegrado) iniciarFluxo("PIX", {});
+  }
+
   // polling: consulta o status a cada 3s até estado final (o webhook do
   // provedor pode confirmar antes — a consulta só lê e sincroniza)
   const fluxoFase = fluxo?.fase;
@@ -329,10 +338,8 @@ export function PagamentoModal({
       };
       const m = map[e.key];
       if (m && (m === "MISTO" || metodosAtivos.includes(m))) {
-        if (fluxoTravado) return;
         e.preventDefault();
-        setFluxo(null);
-        setMetodo(m);
+        selecionarMetodo(m);
         return;
       }
       if (e.key === "Enter" && pronto && !pending) {
@@ -409,11 +416,7 @@ export function PagamentoModal({
               return (
                 <button
                   key={m}
-                  onClick={() => {
-                    if (fluxoTravado) return;
-                    setFluxo(null);
-                    setMetodo(m);
-                  }}
+                  onClick={() => selecionarMetodo(m)}
                   disabled={fluxoTravado && !sel}
                   className={cn(
                     "flex min-h-[5.5rem] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-[var(--radius)] border-2 px-2 py-3 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40",
@@ -507,9 +510,8 @@ export function PagamentoModal({
                 <PixIntegradoPanel
                   total={total}
                   fluxo={fluxo?.tipo === "PIX" ? fluxo : null}
-                  onGerar={() => iniciarFluxo("PIX", {})}
                   onCancelar={cancelarFluxo}
-                  onTentarDeNovo={() => setFluxo(null)}
+                  onTentarDeNovo={() => iniciarFluxo("PIX", {})}
                 />
               ) : (
                 <PixPanel
@@ -849,13 +851,11 @@ function FluxoFalha({
 function PixIntegradoPanel({
   total,
   fluxo,
-  onGerar,
   onCancelar,
   onTentarDeNovo,
 }: {
   total: number;
   fluxo: FluxoIntegrado | null;
-  onGerar: () => void;
   onCancelar: () => void;
   onTentarDeNovo: () => void;
 }) {
@@ -865,7 +865,9 @@ function PixIntegradoPanel({
   if (fluxo?.fase === "falha")
     return <FluxoFalha msg={fluxo.falhaMsg} onTentarDeNovo={onTentarDeNovo} />;
 
-  if (fluxo?.fase === "iniciando") {
+  // idle (fluxo null) e "iniciando" mostram o mesmo loading — a geração é
+  // automática ao selecionar o quadro do Pix, não tem botão manual.
+  if (fluxo === null || fluxo.fase === "iniciando") {
     return (
       <div className="flex flex-col items-center gap-3 py-12 text-center">
         <Loader2 size={28} className="animate-spin text-brand" />
@@ -914,28 +916,6 @@ function PixIntegradoPanel({
       </div>
     );
   }
-
-  // ainda não gerou
-  return (
-    <div className="flex flex-col items-center gap-4 py-6 text-center">
-      <span className="grid h-16 w-16 place-items-center rounded-full bg-brand-soft text-brand">
-        <QrCode size={30} />
-      </span>
-      <p className="font-display text-2xl font-bold tabular-nums text-brand">
-        {brl(total)}
-      </p>
-      <p className="max-w-sm text-sm text-muted">
-        Gere o QR Code — o cliente paga pelo celular e a venda finaliza sozinha
-        quando o pagamento cair.
-      </p>
-      <button
-        onClick={onGerar}
-        className="flex min-h-[3.25rem] cursor-pointer items-center gap-2 rounded-[var(--radius)] bg-brand px-8 text-base font-bold text-on-brand hover:bg-brand-strong"
-      >
-        <QrCode size={18} /> Gerar QR Code PIX
-      </button>
-    </div>
-  );
 }
 
 function CartaoIntegradoPanel({

@@ -308,6 +308,13 @@ enum PurchaseType {
   FORNECEDOR
 }
 
+enum PurchaseMotivo {
+  COMPRA_SEM_PEDIDO
+  BONIFICACAO
+  ESTOQUE_INICIAL
+  TRANSFERENCIA
+}
+
 enum PurchaseOrderStatus {
   RASCUNHO         // em elaboração 🟡
   ENVIADO          // enviado ao fornecedor 🔵
@@ -331,6 +338,7 @@ enum TransferStatus {
 }
 
 enum InventoryStatus {
+  PROGRAMADO // agendado, ainda sem contagem
   ABERTO // contagem em andamento
   FECHADO // contado e ajustado
   CANCELADO
@@ -444,6 +452,7 @@ model Category {
 
   tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   subcategories Subcategory[]
+  inventories   Inventory[]
 
   @@unique([tenantId, skuPrefix])
   @@index([tenantId])
@@ -844,7 +853,8 @@ model Purchase {
   id              String       @id @default(cuid())
   tenantId        String
   siteId          String
-  tipo            PurchaseType @default(MANUAL)
+  tipo            PurchaseType    @default(MANUAL)
+  motivo          PurchaseMotivo?
   supplierId      String?
   purchaseOrderId String? // entrada gerada pela conferência de um pedido de compra
   numeroNota      String?
@@ -1010,20 +1020,38 @@ model RequisicaoItem {
   @@index([productId])
 }
 
-// Inventário (contagem). Na abertura tira snapshot do saldo por produto no site;
-// no fechamento, a divergência (contado − saldo atual) gera um AJUSTE no razão.
-model Inventory {
-  id         String          @id @default(cuid())
-  tenantId   String
-  siteId     String
-  status     InventoryStatus @default(ABERTO)
-  observacao String?
-  createdAt  DateTime        @default(now())
-  createdBy  String?
-  fechadoEm  DateTime?
+enum InventoryEscopo {
+  COMPLETO // todo o estoque do site
+  CATEGORIA // produtos de uma categoria
+  PRODUTOS // lista específica de produtos
+}
 
-  site  Site            @relation(fields: [siteId], references: [id])
-  items InventoryItem[]
+// Inventário (contagem). É programado primeiro (sem tirar snapshot); só ao
+// iniciar (ação explícita do usuário) fotografa o saldo por produto no site.
+// No fechamento, a divergência (contado − saldo atual) gera um AJUSTE no razão.
+model Inventory {
+  id               String          @id @default(cuid())
+  tenantId         String
+  siteId           String
+  status           InventoryStatus @default(PROGRAMADO)
+  escopoTipo       InventoryEscopo @default(COMPLETO)
+  categoryId       String? // quando escopoTipo = CATEGORIA
+  escopoProdutoIds String[]        @default([]) // quando escopoTipo = PRODUTOS (antes de iniciar)
+  modoCego         Boolean         @default(false) // contador não vê o saldo do sistema até fechar
+  dataProgramada   DateTime // data (+ horário, se informado) planejada para realizar
+  recorrente       Boolean         @default(false) // ao fechar, agenda automaticamente a próxima ocorrência
+  diasSemana       Int[]           @default([]) // 0=domingo..6=sábado — dias da recorrência semanal (pode ter mais de um)
+  responsavelId    String? // userId do responsável designado (opcional)
+  observacao       String?
+  createdAt        DateTime        @default(now())
+  createdBy        String?
+  iniciadoEm       DateTime? // quando a contagem foi de fato aberta (snapshot tirado)
+  fechadoEm        DateTime?
+  fechadoPor       String? // userId de quem finalizou a contagem
+
+  site     Site            @relation(fields: [siteId], references: [id])
+  category Category?       @relation(fields: [categoryId], references: [id])
+  items    InventoryItem[]
 
   @@index([tenantId])
   @@index([siteId])

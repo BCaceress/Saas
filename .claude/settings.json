@@ -41,7 +41,16 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3000/)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://lvh.me:3000/)",
-      "Bash(curl -s -o /tmp/resp.html -w \"HTTP %{http_code}\\\\n\" \"http://lvh.me:3000/configuracoes/metodos-pagamento\")"
+      "Bash(curl -s -o /tmp/resp.html -w \"HTTP %{http_code}\\\\n\" \"http://lvh.me:3000/configuracoes/metodos-pagamento\")",
+      "Bash(tasklist)",
+      "Bash(grep -A1 \"saldos.\\\\_client.tsx$\" /tmp/lintout.txt)",
+      "Bash(grep -A3 \"_header.tsx$\" /tmp/lintout.txt)",
+      "Bash(grep -A3 \"entradas.nova._client.tsx$\" /tmp/lintout.txt)",
+      "Bash(grep -A3 \"entradas.nova.page.tsx$\" /tmp/lintout.txt)",
+      "Bash(rm -f /tmp/lintout.txt)",
+      "Bash(node -e ' *)",
+      "Bash(grep -A3 \"inventario._client.tsx$\")",
+      "Bash(grep -A3 \"_header.tsx$\\\\|entradas.nova._client.tsx$\")"
     ],
     "additionalDirectories": [
       "\\tmp"

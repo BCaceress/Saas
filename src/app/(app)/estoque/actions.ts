@@ -5,7 +5,7 @@ import { z } from "zod";
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
-import { loadComprasFormOptions } from "./_data";
+import { loadComprasFormOptions, loadInventarioFormOptions } from "./_data";
 import {
   registrarEntrada,
   registrarAjuste,
@@ -18,6 +18,8 @@ import {
   receberTransferencia,
   cancelarRequisicao,
   criarInventario,
+  iniciarInventario,
+  salvarContagemInventario,
   fecharInventario,
   cancelarInventario,
   criarPedidoCompra,
@@ -120,8 +122,7 @@ const entradaItemSchema = z.object({
 
 const entradaSchema = z.object({
   siteId: z.string().min(1, "Selecione o site."),
-  tipo: z.enum(["MANUAL", "FORNECEDOR"]),
-  supplierId: z.string().optional().nullable(),
+  motivo: z.enum(["COMPRA_SEM_PEDIDO", "BONIFICACAO", "ESTOQUE_INICIAL", "TRANSFERENCIA"]),
   numeroNota: z.string().optional().nullable(),
   observacao: z.string().optional().nullable(),
   items: z.array(entradaItemSchema).min(1, "Adicione ao menos um item."),
@@ -131,8 +132,9 @@ export async function registrarEntradaAction(input: z.input<typeof entradaSchema
   return tx(async (tid, userId) => {
     const d = entradaSchema.parse(input);
     const id = await registrarEntrada(tid, d.siteId, d.items, {
-      tipo: d.tipo,
-      supplierId: d.supplierId,
+      tipo: "MANUAL",
+      motivo: d.motivo,
+      supplierId: null,
       numeroNota: d.numeroNota,
       observacao: d.observacao,
       createdBy: userId,
@@ -437,21 +439,66 @@ export async function updateTopologiaAction(topologia: z.infer<typeof topologiaS
 
 const inventarioSchema = z.object({
   siteId: z.string().min(1, "Selecione o site."),
+  escopoTipo: z.enum(["COMPLETO", "CATEGORIA", "PRODUTOS"]).default("COMPLETO"),
+  categoryId: z.string().optional().nullable(),
+  productIds: z.array(z.string()).optional().nullable(),
+  modoCego: z.boolean().default(false),
+  dataProgramada: z.string().min(1, "Informe a data do inventário."),
+  recorrente: z.boolean().default(false),
+  diasSemana: z.array(z.number().int().min(0).max(6)).optional().nullable(),
   observacao: z.string().optional().nullable(),
 });
 
 export async function criarInventarioAction(input: z.input<typeof inventarioSchema>) {
   return tx(async (tid, userId) => {
     const d = inventarioSchema.parse(input);
-    const id = await criarInventario(tid, d.siteId, { observacao: d.observacao, createdBy: userId });
+    const id = await criarInventario(tid, d.siteId, {
+      escopoTipo: d.escopoTipo,
+      categoryId: d.categoryId,
+      productIds: d.productIds,
+      modoCego: d.modoCego,
+      dataProgramada: new Date(d.dataProgramada),
+      recorrente: d.recorrente,
+      diasSemana: d.diasSemana,
+      observacao: d.observacao,
+      createdBy: userId,
+    });
     ok();
     return id;
   });
 }
 
+export async function iniciarInventarioAction(inventoryId: string) {
+  return tx(async (tid) => {
+    await iniciarInventario(tid, inventoryId);
+    ok();
+  });
+}
+
+const contagemItemsSchema = z
+  .array(z.object({ productId: z.string().min(1), qtdContada: z.number().nonnegative() }))
+  .min(1);
+
+const salvarContagemSchema = z.object({
+  inventoryId: z.string().min(1),
+  items: contagemItemsSchema,
+});
+
+/**
+ * Rascunho da contagem — persiste qtdContada sem aplicar ajuste, para a contagem
+ * sobreviver a F5/troca de aparelho. Sem revalidatePath de propósito: o estado
+ * local do contador é a verdade durante a digitação.
+ */
+export async function salvarContagemInventarioAction(input: z.input<typeof salvarContagemSchema>) {
+  return tx(async (tid) => {
+    const d = salvarContagemSchema.parse(input);
+    await salvarContagemInventario(tid, d.inventoryId, d.items);
+  });
+}
+
 const fecharInventarioSchema = z.object({
   inventoryId: z.string().min(1),
-  items: z.array(z.object({ productId: z.string().min(1), qtdContada: z.number().nonnegative() })).min(1),
+  items: contagemItemsSchema,
 });
 
 export async function fecharInventarioAction(input: z.input<typeof fecharInventarioSchema>) {
@@ -467,6 +514,12 @@ export async function cancelarInventarioAction(inventoryId: string) {
     await cancelarInventario(tid, inventoryId);
     ok();
   });
+}
+
+/** Catálogo de produtos p/ escopo "Produtos específicos" — carregado sob demanda ao abrir o formulário. */
+export async function fetchInventarioProdutosAction() {
+  const ctx = await requireActiveTenant();
+  return runWithTenant(ctx.tenant.id, async () => (await loadInventarioFormOptions()).products);
 }
 
 // ── Produção ─────────────────────────────────────────────────
@@ -530,6 +583,7 @@ export async function fetchHistoricoProductAction(productId: string, siteId: str
     const saleMap = new Map(sales.map((s) => [s.id, s.origem as string]));
     const purchaseMap = new Map(purchases.map((p) => [p.id, {
       tipo: p.tipo as string,
+      motivo: p.motivo as string | null,
       supplierNome: p.supplier ? (p.supplier.nomeFantasia ?? p.supplier.razaoSocial) : null,
     }]));
 
@@ -551,6 +605,7 @@ export async function fetchHistoricoProductAction(productId: string, siteId: str
       createdAt: m.createdAt.toISOString(),
       saleOrigem:         m.saleId       ? (saleMap.get(m.saleId)             ?? null) : null,
       purchaseTipo:       m.purchaseId   ? (purchaseMap.get(m.purchaseId)?.tipo        ?? null) : null,
+      purchaseMotivo:     m.purchaseId   ? (purchaseMap.get(m.purchaseId)?.motivo      ?? null) : null,
       purchaseSupplier:   m.purchaseId   ? (purchaseMap.get(m.purchaseId)?.supplierNome ?? null) : null,
       producaoDrinkNome:  m.productionId ? (productionMap.get(m.productionId)           ?? null) : null,
     }));
@@ -568,74 +623,11 @@ export async function setSiteAction(siteId: string) {
 
 // ── Fetch data for header panels (lazy-load) ──────────────────
 
-import { getActiveSiteId, listSites } from "@/lib/sites";
-import { loadEntradaFormOptions, loadInventarios, loadPersonalizados } from "./_data";
+import { loadEntradaFormOptions, loadTransferenciaFormOptions } from "./_data";
 
-export async function fetchAjustesFormDataAction() {
+export async function fetchTransferenciaFormDataAction() {
   const ctx = await requireActiveTenant();
-  return runWithTenant(ctx.tenant.id, async () => {
-    const [siteId, sites, products] = await Promise.all([
-      getActiveSiteId(),
-      listSites(),
-      db.product.findMany({
-        where: { ativo: true },
-        orderBy: { nome: "asc" },
-        select: { id: true, nome: true, sku: true, unidadeBase: true, fracionavel: true },
-      }),
-    ]);
-    return { siteId, sites, products };
-  });
-}
-
-export async function fetchInventarioDataAction() {
-  const ctx = await requireActiveTenant();
-  return runWithTenant(ctx.tenant.id, async () => {
-    const activeSiteId = await getActiveSiteId();
-    const [inventarios, sites] = await Promise.all([
-      loadInventarios(activeSiteId),
-      listSites(),
-    ]);
-    return {
-      inventarios: inventarios.map((inv) => ({
-        ...inv,
-        createdAt: inv.createdAt.toISOString(),
-        fechadoEm: inv.fechadoEm?.toISOString() ?? null,
-      })),
-      sites,
-      activeSiteId,
-    };
-  });
-}
-
-export async function fetchProducaoDataAction() {
-  const ctx = await requireActiveTenant();
-  return runWithTenant(ctx.tenant.id, async () => {
-    const [siteId, sites, personalizados] = await Promise.all([
-      getActiveSiteId(),
-      listSites(),
-      loadPersonalizados(),
-    ]);
-    // Decimals do Prisma não cruzam a fronteira RSC → client; converter para número.
-    return {
-      siteId,
-      sites,
-      personalizados: personalizados.map((p) => ({
-        id: p.id,
-        nome: p.nome,
-        sku: p.sku,
-        variants: p.variants.map((v) => ({
-          id: v.id,
-          nome: v.nome,
-          fatorEscala: Number(v.fatorEscala),
-          volumeMl: v.volumeMl == null ? null : Number(v.volumeMl),
-        })),
-        components: p.components.map((c) => ({
-          component: { nome: c.component.nome, unidadeBase: c.component.unidadeBase },
-          quantidade: Number(c.quantidade),
-        })),
-      })),
-    };
-  });
+  return runWithTenant(ctx.tenant.id, () => loadTransferenciaFormOptions());
 }
 
 export async function fetchEntradaFormDataAction() {
@@ -647,6 +639,7 @@ export async function fetchEntradaFormDataAction() {
         id: p.id,
         nome: p.nome,
         sku: p.sku,
+        ean: p.ean ?? null,
         imagemUrl: p.imagemUrl ?? null,
         packagings: p.packagings.map((pk) => ({
           id: pk.id,
@@ -654,13 +647,7 @@ export async function fetchEntradaFormDataAction() {
           fatorConversao: Number(pk.fatorConversao),
           isCompraDefault: pk.isCompraDefault,
         })),
-        suppliers: p.suppliers.map((sup) => ({ supplierId: sup.supplierId })),
         brand: p.brand ? { nome: p.brand.nome } : null,
-      })),
-      suppliers: opts.suppliers.map((s) => ({
-        id: s.id,
-        razaoSocial: s.razaoSocial,
-        nomeFantasia: s.nomeFantasia,
       })),
       sites: opts.sites.map((s) => ({ id: s.id, nome: s.nome, tipo: s.tipo })),
     };

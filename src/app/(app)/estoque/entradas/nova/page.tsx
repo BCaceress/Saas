@@ -15,9 +15,9 @@ export default async function NovaEntradaPage() {
     <div className="flex flex-col gap-4">
       <div>
         <h2 className="text-base font-semibold text-ink">Registrar entrada</h2>
-        <p className="text-sm text-muted">Entrada manual ou por fornecedor com conversão de embalagem.</p>
+        <p className="text-sm text-muted">Entrada manual com conversão de embalagem.</p>
       </div>
-      <NovaEntradaForm {...opts} />
+      <NovaEntradaForm {...opts} motivo="COMPRA_SEM_PEDIDO" />
     </div>
   );
 }

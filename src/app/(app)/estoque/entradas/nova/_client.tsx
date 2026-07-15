@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Trash2, Loader2, Package } from "lucide-react";
+import { Plus, Trash2, Loader2, Package, Info, Search, X } from "lucide-react";
 import { registrarEntradaAction } from "../../actions";
 import { cn } from "@/lib/utils";
 
@@ -10,14 +10,21 @@ type Product = {
   id: string;
   nome: string;
   sku: string;
+  ean: string | null;
   imagemUrl: string | null;
   packagings: { id: string; nome: string; fatorConversao: unknown; isCompraDefault: boolean }[];
-  suppliers: { supplierId: string }[];
   brand: { nome: string } | null;
 };
 
-type Supplier = { id: string; razaoSocial: string; nomeFantasia: string | null };
 type Site = { id: string; nome: string; tipo: string };
+
+export type Motivo = "COMPRA_SEM_PEDIDO" | "BONIFICACAO" | "ESTOQUE_INICIAL";
+
+export const MOTIVO_OPTIONS: { value: Motivo; label: string }[] = [
+  { value: "COMPRA_SEM_PEDIDO", label: "Entrada manual" },
+  { value: "BONIFICACAO", label: "Bonificação" },
+  { value: "ESTOQUE_INICIAL", label: "Estoque inicial" },
+];
 
 export type Item = {
   productId: string;
@@ -48,15 +55,16 @@ function parseCusto(raw: string): { custoDisplay: string; custoTotal: number } {
 }
 
 export function NovaEntradaForm({
+  motivo,
   products,
-  suppliers,
   sites,
   embedded = false,
   onDone,
   initialItems,
 }: {
+  /** Motivo da entrada — definido pela ação escolhida no menu Registrar, não editável aqui. */
+  motivo: Motivo;
   products: Product[];
-  suppliers: Supplier[];
   sites: Site[];
   /** Quando usado dentro de um sidepanel: não navega, chama onDone + refresh. */
   embedded?: boolean;
@@ -68,15 +76,28 @@ export function NovaEntradaForm({
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  const [tipo, setTipo] = useState<"MANUAL" | "FORNECEDOR">("MANUAL");
   const [siteId, setSiteId] = useState(sites[0]?.id ?? "");
-  const [supplierId, setSupplierId] = useState("");
   const [numeroNota, setNumeroNota] = useState("");
   const [observacao, setObservacao] = useState("");
   const [items, setItems] = useState<Item[]>(
     initialItems && initialItems.length > 0 ? initialItems : [],
   );
   const [draft, setDraft] = useState<Item>(itemVazio);
+  const [busca, setBusca] = useState("");
+  const [buscaAberta, setBuscaAberta] = useState(false);
+
+  function selecionarProduto(p: Product) {
+    const padrao = p.packagings.find((pk) => pk.isCompraDefault);
+    setDraft({ ...draft, productId: p.id, packagingId: padrao?.id ?? null });
+    setBusca("");
+    setBuscaAberta(false);
+  }
+
+  function trocarProduto() {
+    setDraft({ ...itemVazio() });
+    setBusca("");
+    setBuscaAberta(true);
+  }
 
   function addDraft() {
     if (!draft.productId || draft.quantidade <= 0) return;
@@ -92,29 +113,6 @@ export function NovaEntradaForm({
     setItems((prev) => prev.map((item, i) => (i === idx ? { ...item, ...patch } : item)));
   }
 
-  // Por fornecedor: só os produtos vinculados ao fornecedor selecionado.
-  const availableProducts = useMemo(() => {
-    if (tipo === "FORNECEDOR" && supplierId) {
-      return products.filter((p) => p.suppliers.some((s) => s.supplierId === supplierId));
-    }
-    return products;
-  }, [products, tipo, supplierId]);
-
-  // Ao trocar de fornecedor, limpa itens cujo produto não pertence a ele.
-  function changeSupplier(id: string) {
-    setSupplierId(id);
-    setDraft(itemVazio());
-    if (!id) return;
-    setItems((prev) =>
-      prev.map((it) => {
-        const allowed = products
-          .find((p) => p.id === it.productId)
-          ?.suppliers.some((s) => s.supplierId === id);
-        return it.productId && !allowed ? { ...it, productId: "", packagingId: null } : it;
-      }),
-    );
-  }
-
   function submit() {
     setError(null);
     const valid = items.filter((i) => i.productId && i.quantidade > 0);
@@ -125,8 +123,7 @@ export function NovaEntradaForm({
       try {
         await registrarEntradaAction({
           siteId,
-          tipo,
-          supplierId: tipo === "FORNECEDOR" ? supplierId || null : null,
+          motivo,
           numeroNota: numeroNota || null,
           observacao: observacao || null,
           items: valid,
@@ -168,55 +165,15 @@ export function NovaEntradaForm({
           )}
         </div>
 
-        {/* Tipo */}
         <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-semibold uppercase tracking-wide text-faint">Tipo</label>
-          <div className="flex gap-2">
-            {(["MANUAL", "FORNECEDOR"] as const).map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => setTipo(t)}
-                className={cn(
-                  "flex-1 rounded-[var(--radius)] border px-3 py-2.5 text-sm font-medium transition-colors",
-                  tipo === t
-                    ? "border-brand bg-brand-soft text-brand"
-                    : "border-line text-muted hover:bg-surface-2"
-                )}
-              >
-                {t === "MANUAL" ? "Manual" : "Fornecedor"}
-              </button>
-            ))}
-          </div>
+          <label className="text-xs font-semibold uppercase tracking-wide text-faint">Nº do documento (opcional)</label>
+          <input
+            value={numeroNota}
+            onChange={(e) => setNumeroNota(e.target.value)}
+            placeholder="Ex: 001234"
+            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          />
         </div>
-
-        {/* Fornecedor (só FORNECEDOR) */}
-        {tipo === "FORNECEDOR" && (
-          <>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wide text-faint">Fornecedor</label>
-              <select
-                value={supplierId}
-                onChange={(e) => changeSupplier(e.target.value)}
-                className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-              >
-                <option value="">Selecione...</option>
-                {suppliers.map((s) => (
-                  <option key={s.id} value={s.id}>{s.nomeFantasia ?? s.razaoSocial}</option>
-                ))}
-              </select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wide text-faint">Nº da nota (opcional)</label>
-              <input
-                value={numeroNota}
-                onChange={(e) => setNumeroNota(e.target.value)}
-                placeholder="Ex: 001234"
-                className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-              />
-            </div>
-          </>
-        )}
 
         <div className="flex flex-col gap-1.5 sm:col-span-2">
           <label className="text-xs font-semibold uppercase tracking-wide text-faint">Observação (opcional)</label>
@@ -229,44 +186,112 @@ export function NovaEntradaForm({
         </div>
       </div>
 
+      {motivo === "ESTOQUE_INICIAL" && (
+        <p className="flex items-start gap-2 rounded-[var(--radius-lg)] border border-line bg-surface-2 px-3.5 py-2.5 text-xs text-muted">
+          <Info size={14} className="mt-0.5 shrink-0 text-faint" />
+          Utilize esta operação para informar os saldos existentes na implantação do estoque.
+        </p>
+      )}
+
       {/* Composer — escolhe um item e adiciona à lista abaixo */}
       <div className="flex flex-col gap-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-faint">Adicionar item</p>
         {(() => {
+          const semCusto = motivo === "BONIFICACAO";
           const draftProd = products.find((p) => p.id === draft.productId);
           const usedIds = new Set(items.map((i) => i.productId).filter(Boolean));
-          const selectableProducts = availableProducts.filter(
-            (p) => !usedIds.has(p.id) || p.id === draft.productId,
-          );
-          const bloqueado = tipo === "FORNECEDOR" && !supplierId;
+          const selectableProducts = products.filter((p) => !usedIds.has(p.id));
+          const termo = busca.trim().toLowerCase();
+          const resultados = termo
+            ? selectableProducts.filter((p) =>
+                `${p.nome} ${p.sku} ${p.ean ?? ""} ${p.brand?.nome ?? ""}`.toLowerCase().includes(termo),
+              )
+            : selectableProducts;
+
           return (
             <div className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4">
               <div className="flex flex-col gap-1">
                 <label className="text-[11px] font-semibold text-faint">Produto</label>
-                <select
-                  value={draft.productId}
-                  onChange={(e) => {
-                    const p = products.find((x) => x.id === e.target.value);
-                    const padrao = p?.packagings.find((pk) => pk.isCompraDefault);
-                    setDraft({ ...draft, productId: e.target.value, packagingId: padrao?.id ?? null });
-                  }}
-                  disabled={bloqueado}
-                  className="w-full rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink disabled:opacity-50 focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                >
-                  <option value="">
-                    {bloqueado
-                      ? "Selecione o fornecedor primeiro"
-                      : tipo === "FORNECEDOR" && availableProducts.length === 0
-                        ? "Nenhum produto deste fornecedor"
-                        : "Selecione..."}
-                  </option>
-                  {selectableProducts.map((p) => (
-                    <option key={p.id} value={p.id}>{p.nome} ({p.sku})</option>
-                  ))}
-                </select>
+                {draftProd ? (
+                  <div className="flex items-center gap-2.5 rounded-[var(--radius)] border border-brand/40 bg-brand-soft/40 px-3 py-2">
+                    <span className="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-[var(--radius-sm)] border border-line bg-surface">
+                      {draftProd.imagemUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={draftProd.imagemUrl} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        <Package size={14} className="text-faint" />
+                      )}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-ink">{draftProd.nome}</p>
+                      <p className="truncate font-mono text-[11px] text-faint">{draftProd.sku}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={trocarProduto}
+                      className="shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold text-brand transition-colors hover:bg-brand-soft"
+                    >
+                      Trocar
+                    </button>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
+                    <input
+                      value={busca}
+                      onChange={(e) => setBusca(e.target.value)}
+                      onFocus={() => setBuscaAberta(true)}
+                      onBlur={() => setTimeout(() => setBuscaAberta(false), 120)}
+                      placeholder="Buscar produto por nome, SKU ou código de barras..."
+                      className="w-full rounded-[var(--radius)] border border-line bg-surface py-2 pl-8 pr-8 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                    />
+                    {busca && (
+                      <button
+                        type="button"
+                        onMouseDown={(e) => { e.preventDefault(); setBusca(""); }}
+                        aria-label="Limpar busca"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-faint hover:text-ink"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
+                    {buscaAberta && (
+                      <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-[var(--radius-lg)] border border-line bg-surface shadow-(--shadow-2)">
+                        {resultados.length === 0 ? (
+                          <p className="px-3.5 py-3 text-center text-xs text-faint">Nenhum produto encontrado.</p>
+                        ) : (
+                          resultados.slice(0, 30).map((p) => (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onMouseDown={(e) => { e.preventDefault(); selecionarProduto(p); }}
+                              className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left transition-colors hover:bg-surface-2"
+                            >
+                              <span className="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-[var(--radius-sm)] border border-line bg-surface-2">
+                                {p.imagemUrl ? (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img src={p.imagemUrl} alt="" className="h-full w-full object-cover" />
+                                ) : (
+                                  <Package size={14} className="text-faint" />
+                                )}
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate text-sm text-ink">{p.nome}</span>
+                                <span className="block truncate font-mono text-[11px] text-faint">
+                                  {p.sku}{p.ean ? ` · ${p.ean}` : ""}
+                                </span>
+                              </span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
+              {draftProd && (
+              <div className={cn("grid grid-cols-1 gap-3", semCusto ? "sm:grid-cols-[1fr_1fr_auto]" : "sm:grid-cols-[1fr_1fr_1fr_auto]")}>
                 {/* Embalagem */}
                 <div className="flex flex-col gap-1">
                   <label className="text-[11px] font-semibold text-faint">Embalagem</label>
@@ -292,25 +317,28 @@ export function NovaEntradaForm({
                     step={0.001}
                     value={draft.quantidade}
                     onChange={(e) => setDraft({ ...draft, quantidade: Number(e.target.value) })}
-                    className="w-full rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                  />
-                </div>
-
-                {/* Custo total */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-[11px] font-semibold text-faint">Custo total (R$)</label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    value={draft.custoDisplay}
-                    onChange={(e) => setDraft({ ...draft, ...parseCusto(e.target.value) })}
                     onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addDraft())}
-                    placeholder="0,00"
                     className="w-full rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                   />
                 </div>
 
-                {/* Adicionar — ao lado do custo */}
+                {/* Custo total — não se aplica à bonificação */}
+                {!semCusto && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-semibold text-faint">Custo total (R$)</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={draft.custoDisplay}
+                      onChange={(e) => setDraft({ ...draft, ...parseCusto(e.target.value) })}
+                      onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addDraft())}
+                      placeholder="0,00"
+                      className="w-full rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                    />
+                  </div>
+                )}
+
+                {/* Adicionar */}
                 <div className="flex items-end">
                   <button
                     type="button"
@@ -323,6 +351,7 @@ export function NovaEntradaForm({
                   </button>
                 </div>
               </div>
+              )}
             </div>
           );
         })()}
@@ -348,6 +377,7 @@ export function NovaEntradaForm({
             const prod = products.find((p) => p.id === item.productId);
             const pk = prod?.packagings.find((p) => p.id === item.packagingId);
             const desc = `${prod?.nome ?? "Produto"} · ${prod?.sku ?? ""}${pk ? ` · ${pk.nome} (×${Number(pk.fatorConversao)})` : " · Unidade"}`;
+            const semCusto = motivo === "BONIFICACAO";
             return (
               <div
                 key={idx}
@@ -383,16 +413,18 @@ export function NovaEntradaForm({
                   className="w-16 shrink-0 rounded-[var(--radius)] border border-line bg-surface px-2 py-1.5 text-right text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 />
 
-                {/* Custo total */}
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={item.custoDisplay}
-                  onChange={(e) => updateItem(idx, parseCusto(e.target.value))}
-                  placeholder="0,00"
-                  title="Custo total (R$)"
-                  className="w-20 shrink-0 rounded-[var(--radius)] border border-line bg-surface px-2 py-1.5 text-right text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                />
+                {/* Custo total — não se aplica à bonificação */}
+                {!semCusto && (
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={item.custoDisplay}
+                    onChange={(e) => updateItem(idx, parseCusto(e.target.value))}
+                    placeholder="0,00"
+                    title="Custo total (R$)"
+                    className="w-20 shrink-0 rounded-[var(--radius)] border border-line bg-surface px-2 py-1.5 text-right text-sm text-ink tabular-nums focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  />
+                )}
 
                 <button
                   type="button"
@@ -416,23 +448,36 @@ export function NovaEntradaForm({
      </div>
 
       {/* Footer — fixo abaixo */}
-      <div className="sticky bottom-0 z-10 mt-4 flex justify-end gap-3 rounded-[var(--radius-lg)] border border-line bg-surface-2 px-4 py-3">
-        <button
-          type="button"
-          onClick={() => (embedded ? onDone?.() : router.back())}
-          className="rounded-full border border-line-strong px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-surface"
-        >
-          Cancelar
-        </button>
-        <button
-          type="button"
-          onClick={submit}
-          disabled={pending}
-          className="flex items-center gap-2 rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-60"
-        >
-          {pending && <Loader2 size={14} className="animate-spin" />}
-          Confirmar entrada
-        </button>
+      <div className="sticky bottom-0 z-10 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-line bg-surface-2 px-4 py-3">
+        {items.length > 0 ? (
+          <p className="text-xs font-medium text-muted">
+            {items.length} {items.length === 1 ? "produto" : "produtos"} ·{" "}
+            {items.reduce((acc, i) => acc + i.quantidade, 0).toLocaleString("pt-BR", { maximumFractionDigits: 3 })}{" "}
+            unidades
+            {items.some((i) => i.custoTotal > 0) &&
+              ` · ${items.reduce((acc, i) => acc + i.custoTotal, 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`}
+          </p>
+        ) : (
+          <span />
+        )}
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => (embedded ? onDone?.() : router.back())}
+            className="rounded-full border border-line-strong px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-surface"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={pending || items.length === 0}
+            className="flex items-center gap-2 rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-60"
+          >
+            {pending && <Loader2 size={14} className="animate-spin" />}
+            Confirmar entrada
+          </button>
+        </div>
       </div>
     </div>
   );

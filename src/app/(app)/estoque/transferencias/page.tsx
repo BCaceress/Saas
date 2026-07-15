@@ -1,31 +1,10 @@
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
-import { loadSitesTransferencia } from "../_data";
-import { db } from "@/lib/prisma";
+import { loadTransferenciaFormOptions } from "../_data";
 import { TransferenciaForm } from "./_client";
 
 export default async function TransferenciasPage() {
   const ctx = await requireActiveTenant();
-  const { sites, products, saldos } = await withTenant(ctx, async () => {
-    const [ss, ps, st] = await Promise.all([
-      loadSitesTransferencia(),
-      db.product.findMany({
-        where: { ativo: true, tipo: { in: ["SIMPLES", "INSUMO"] } },
-        orderBy: { nome: "asc" },
-        select: { id: true, nome: true, sku: true },
-      }),
-      // Saldos fechados > 0 por produto/site — filtra a lista pela origem no client.
-      db.stock.findMany({
-        where: { estoqueFechado: { gt: 0 } },
-        select: { productId: true, siteId: true, estoqueFechado: true },
-      }),
-    ]);
-    const saldos = st.map((s) => ({
-      productId: s.productId,
-      siteId: s.siteId ?? "",
-      saldo: Number(s.estoqueFechado),
-    }));
-    return { sites: ss, products: ps, saldos };
-  });
+  const { sites, products, saldos } = await withTenant(ctx, () => loadTransferenciaFormOptions());
 
   if (sites.length < 2) {
     return (
