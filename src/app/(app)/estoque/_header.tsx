@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import { Sheet } from "@/components/ui/sheet";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import { NovaEntradaForm, MOTIVO_OPTIONS, type Motivo } from "./entradas/nova/_client";
 import { TransferenciaForm } from "./transferencias/_client";
 
@@ -126,8 +127,7 @@ export function EstoqueHeader({
   topologia: string;
 }) {
   const pathname = usePathname();
-  const [siteOpen, setSiteOpen] = useState(false);
-  const [novaMovOpen, setNovaMovOpen] = useState(false);
+  const router = useRouter();
   const [panel, setPanel] = useState<PanelId>(null);
   const [pending, startTransition] = useTransition();
 
@@ -151,10 +151,10 @@ export function EstoqueHeader({
   ];
 
   function changeSite(id: string) {
-    setSiteOpen(false);
     startTransition(async () => {
       await setSiteAction(id);
-      window.location.reload();
+      // refresh() rebusca os RSC sem full reload — preserva filtros na URL.
+      router.refresh();
     });
   }
 
@@ -203,104 +203,80 @@ export function EstoqueHeader({
           </Link>
 
           {/* Nova movimentação — menu de ações disponíveis */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => {
-                setSiteOpen(false);
-                setNovaMovOpen((v) => !v);
-              }}
-              className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-            >
-              <Plus size={15} />
-              <span>Nova movimentação</span>
-              <ChevronDown size={13} className="opacity-80" />
-            </button>
-            {novaMovOpen && (
-              <div className="absolute right-0 top-full z-50 mt-1 w-80 overflow-hidden rounded-xl border border-line bg-surface py-1.5 shadow-(--shadow-2)">
-                <p className="px-3.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
-                  Entradas
-                </p>
-                {ENTRADA_ACOES.map((a) => (
-                  <button
-                    key={a.id}
-                    type="button"
-                    onClick={() => {
-                      setNovaMovOpen(false);
-                      setPanel(a.id);
-                    }}
-                    className="flex w-full items-start gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2"
-                  >
-                    <a.icon size={16} className="mt-0.5 shrink-0 text-muted" />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-medium text-ink">{a.label}</span>
-                      <span className="block text-xs text-muted">{a.desc}</span>
-                    </span>
-                  </button>
-                ))}
+          <Menu
+            align="end"
+            className="w-80"
+            trigger={
+              <button
+                type="button"
+                className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+              >
+                <Plus size={15} />
+                <span>Nova movimentação</span>
+                <ChevronDown size={13} className="opacity-80" />
+              </button>
+            }
+          >
+            <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
+              Entradas
+            </p>
+            {ENTRADA_ACOES.map((a) => (
+              <MenuItem key={a.id} icon={<a.icon size={16} />} onClick={() => setPanel(a.id)}>
+                <span className="block text-sm font-medium text-ink">{a.label}</span>
+                <span className="block text-xs text-muted">{a.desc}</span>
+              </MenuItem>
+            ))}
 
-                {multiSite && (
-                  <>
-                    <div className="my-1 h-px bg-line" />
-                    <p className="px-3.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
-                      Movimentação interna
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setNovaMovOpen(false);
-                        setPanel("transferencia");
-                      }}
-                      className="flex w-full items-start gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2"
-                    >
-                      <ArrowRightLeft size={16} className="mt-0.5 shrink-0 text-muted" />
-                      <span className="min-w-0">
-                        <span className="block text-sm font-medium text-ink">Transferência</span>
-                        <span className="block text-xs text-muted">Movimentar produtos entre locais.</span>
-                      </span>
-                    </button>
-                  </>
-                )}
-              </div>
+            {multiSite && (
+              <>
+                <div className="my-1 h-px bg-line" />
+                <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
+                  Movimentação interna
+                </p>
+                <MenuItem icon={<ArrowRightLeft size={16} />} onClick={() => setPanel("transferencia")}>
+                  <span className="block text-sm font-medium text-ink">Transferência</span>
+                  <span className="block text-xs text-muted">Movimentar produtos entre locais.</span>
+                </MenuItem>
+              </>
             )}
-          </div>
+          </Menu>
 
           {/* Site selector */}
           {multiSite && activeSite && (
-            <div className="relative ml-1">
-              <button
-                onClick={() => {
-                  setNovaMovOpen(false);
-                  setSiteOpen((v) => !v);
-                }}
-                className="flex items-center gap-2 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-                disabled={pending}
-              >
-                <Store size={14} className="text-muted" />
-                <span className="max-w-30 truncate">{activeSite.nome}</span>
-                <ChevronDown size={13} className="text-muted" />
-              </button>
-              {siteOpen && (
-                <div className="absolute right-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-xl border border-line bg-surface shadow-(--shadow-2)">
-                  {sites.map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => changeSite(s.id)}
-                      className={cn(
-                        "flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-sm transition-colors hover:bg-surface-2",
-                        s.id === activeSiteId ? "font-semibold text-brand" : "text-ink",
-                      )}
-                    >
-                      <Store size={13} className="shrink-0 text-muted" />
-                      <span className="truncate">{s.nome}</span>
-                      <span className="ml-auto text-[10px] text-faint">
-                        {s.tipo === "CD" ? "CD" : "Loja"}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <Menu
+              align="end"
+              className="w-52"
+              trigger={
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="ml-1 flex items-center gap-2 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-60"
+                >
+                  {pending ? (
+                    <Loader2 size={14} className="animate-spin text-muted" />
+                  ) : (
+                    <Store size={14} className="text-muted" />
+                  )}
+                  <span className="max-w-30 truncate">{activeSite.nome}</span>
+                  <ChevronDown size={13} className="text-muted" />
+                </button>
+              }
+            >
+              {sites.map((s) => (
+                <MenuItem
+                  key={s.id}
+                  icon={<Store size={13} />}
+                  onClick={() => changeSite(s.id)}
+                  trailing={
+                    <span className="text-[10px] text-faint">{s.tipo === "CD" ? "CD" : "Loja"}</span>
+                  }
+                >
+                  <span className={cn("block truncate", s.id === activeSiteId && "font-semibold text-brand")}>
+                    {s.nome}
+                  </span>
+                </MenuItem>
+              ))}
+            </Menu>
           )}
             </>
           }

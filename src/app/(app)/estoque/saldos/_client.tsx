@@ -141,7 +141,7 @@ function getMovSub(m: HistoricoItem): string | null {
   return null;
 }
 
-type Filtro = "todos" | "sem" | "baixoMinimo" | "repor" | "pendencias";
+export type Filtro = "todos" | "sem" | "baixoMinimo" | "repor" | "pendencias";
 type SortKey = "nome" | "fechado" | "valor";
 type SortDir = "asc" | "desc";
 type FormOptions = Pick<ComponentProps<typeof NovaEntradaForm>, "products" | "sites">;
@@ -163,10 +163,12 @@ function statusOf(s: SaldoRow): Status {
   return "abastecido";
 }
 
+// Rampa de severidade: danger (crítico) → warn (urgente) → brand (ação de repor,
+// mesma cor do CTA "Repor") → ok. semMeta é neutro — falta configuração, não estoque.
 const STATUS_META: Record<Status, { label: string; text: string; dot: string; bar: string; Icon: React.ElementType }> = {
   abastecido:  { label: "Abastecido",       text: "text-ok",     dot: "bg-ok",     bar: "bg-ok",     Icon: PackageCheck },
-  baixoIdeal:  { label: "Abaixo do ideal",  text: "text-warn",   dot: "bg-warn",   bar: "bg-warn",   Icon: AlertTriangle },
-  baixoMinimo: { label: "Abaixo do mínimo", text: "text-brand",  dot: "bg-brand",  bar: "bg-brand",  Icon: AlertTriangle },
+  baixoIdeal:  { label: "Abaixo do ideal",  text: "text-brand",  dot: "bg-brand",  bar: "bg-brand",  Icon: AlertTriangle },
+  baixoMinimo: { label: "Abaixo do mínimo", text: "text-warn",   dot: "bg-warn",   bar: "bg-warn",   Icon: AlertTriangle },
   semEstoque:  { label: "Sem estoque",      text: "text-danger", dot: "bg-danger", bar: "bg-danger", Icon: PackageX },
   semMeta:     { label: "Meta não definida",text: "text-faint",  dot: "bg-faint",  bar: "bg-faint",  Icon: PackageX },
 };
@@ -242,18 +244,24 @@ type Tab = "resumo" | "historico";
 export function SaldosView({
   saldos,
   siteId,
+  initialQ = "",
+  initialFiltro = "todos",
+  initialPage = 1,
 }: {
   saldos: SaldoRow[];
   siteId: string | null;
+  initialQ?: string;
+  initialFiltro?: Filtro;
+  initialPage?: number;
 }) {
   const router = useRouter();
-  const [q, setQ] = useState("");
-  const [filtro, setFiltro] = useState<Filtro>("todos");
+  const [q, setQ] = useState(initialQ);
+  const [filtro, setFiltro] = useState<Filtro>(initialFiltro);
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
   const [reporItems, setReporItems] = useState<Item[] | null>(null);
   const [reporLoading, setReporLoading] = useState(false);
   const [detalhe, setDetalhe] = useState<{ row: SaldoRow; tab: Tab } | null>(null);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(initialPage);
   const [pageSize, setPageSize] = useState(25);
 
   // Opções do form de reposição: carregadas sob demanda (1ª vez) e cacheadas —

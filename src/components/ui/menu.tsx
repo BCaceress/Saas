@@ -58,11 +58,16 @@ export function Menu({
   React.useEffect(() => {
     if (!open) return;
     const onScroll = () => close();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onScroll);
+    window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onScroll);
+      window.removeEventListener("keydown", onKey);
     };
   }, [open, close]);
 

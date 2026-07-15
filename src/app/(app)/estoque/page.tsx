@@ -1,10 +1,16 @@
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { loadSaldos } from "./_data";
-import { Layers } from "lucide-react";
-import { SaldosView } from "./saldos/_client";
+import { SaldosView, type Filtro } from "./saldos/_client";
+import { EstoqueEmpty } from "./_empty";
 
-export default async function EstoquePage() {
+const FILTROS: readonly string[] = ["todos", "sem", "baixoMinimo", "repor", "pendencias"];
+
+export default async function EstoquePage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const ctx = await requireActiveTenant();
   // Opções do form de reposição são carregadas sob demanda no client
   // (fetchEntradaFormDataAction) — a página só precisa dos saldos.
@@ -13,15 +19,16 @@ export default async function EstoquePage() {
     return [sid, await loadSaldos(sid)] as const;
   });
 
-  if (saldos.length === 0) {
-    return (
-      <div className="flex flex-col items-center gap-3 rounded-xl border border-line bg-surface py-16 text-center">
-        <Layers size={36} className="text-faint" />
-        <p className="text-sm font-medium text-muted">Nenhum produto com estoque neste site.</p>
-        <p className="text-xs text-faint">Registre uma entrada para começar a controlar o estoque.</p>
-      </div>
-    );
-  }
+  if (saldos.length === 0) return <EstoqueEmpty />;
 
-  return <SaldosView saldos={saldos} siteId={siteId} />;
+  // Estado da lista vive na URL (compartilhável, sobrevive a refresh/troca de site).
+  const sp = await searchParams;
+  const filtro =
+    typeof sp.filtro === "string" && FILTROS.includes(sp.filtro) ? (sp.filtro as Filtro) : "todos";
+  const q = typeof sp.q === "string" ? sp.q : "";
+  const pagina = Math.max(1, Math.floor(Number(typeof sp.pagina === "string" ? sp.pagina : "")) || 1);
+
+  return (
+    <SaldosView saldos={saldos} siteId={siteId} initialQ={q} initialFiltro={filtro} initialPage={pagina} />
+  );
 }
