@@ -150,7 +150,7 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
           where: {
             productId: { in: productIds },
             purchaseOrder: {
-              status: { in: ["ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"] },
+              status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] },
               ...(siteId ? { siteId } : {}),
             },
           },
@@ -645,6 +645,7 @@ export type PedidoCompraView = {
   observacao: string | null;
   financeiroGerado: boolean;
   createdAt: Date;
+  updatedAt: Date;
   enviadoEm: Date | null;
   recebidoEm: Date | null;
   canceladoEm: Date | null;
@@ -696,6 +697,7 @@ export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
     observacao: p.observacao,
     financeiroGerado: p.financeiroGerado,
     createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
     enviadoEm: p.enviadoEm,
     recebidoEm: p.recebidoEm,
     canceladoEm: p.canceladoEm,
@@ -719,7 +721,7 @@ export async function loadPedidosAReceber(siteId: string | null): Promise<Pedido
   const all = await loadPedidosCompra();
   return all.filter(
     (p) =>
-      ["ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"].includes(p.status) &&
+      ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"].includes(p.status) &&
       (!siteId || p.siteId === siteId),
   );
 }
@@ -1154,7 +1156,9 @@ export async function loadInventarios(siteId: string | null): Promise<Inventario
         ean: prodMap.get(it.productId)?.ean ?? null,
         imagemUrl: prodMap.get(it.productId)?.imagemUrl ?? null,
         locationNome: locationMap.get(`${it.productId}:${inv.siteId}`) ?? null,
-        qtdSistema: n(it.qtdSistema),
+        // Contagem cega em andamento: o saldo do sistema não pode chegar ao
+        // browser (nem via devtools) — só é revelado após o fechamento.
+        qtdSistema: inv.modoCego && inv.status === "ABERTO" ? 0 : n(it.qtdSistema),
         qtdContada: it.qtdContada != null ? n(it.qtdContada) : null,
       })),
     };

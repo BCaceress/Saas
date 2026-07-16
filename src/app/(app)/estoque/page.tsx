@@ -4,7 +4,7 @@ import { loadSaldos } from "./_data";
 import { SaldosView, type Filtro } from "./saldos/_client";
 import { EstoqueEmpty } from "./_empty";
 
-const FILTROS: readonly string[] = ["todos", "sem", "baixoMinimo", "repor", "pendencias"];
+const FILTROS: readonly string[] = ["todos", "sem", "baixoMinimo", "repor", "quaseIdeal", "aberto"];
 
 export default async function EstoquePage({
   searchParams,

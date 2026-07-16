@@ -316,11 +316,12 @@ enum PurchaseMotivo {
 }
 
 enum PurchaseOrderStatus {
-  RASCUNHO         // em elaboração 🟡
+  RASCUNHO         // em elaboração ⚪
   ENVIADO          // enviado ao fornecedor 🔵
-  AGUARDANDO       // aguardando entrega 🟠
-  RECEBIDO_PARCIAL // recebido em parte 🟢
-  RECEBIDO         // recebido por completo ✅
+  AGUARDANDO       // confirmado pelo fornecedor, aguardando entrega 🟡
+  EM_TRANSITO      // mercadoria a caminho 🟣
+  RECEBIDO_PARCIAL // recebimento pendente (chegou em parte) 🟠
+  RECEBIDO         // concluído ✅
   CANCELADO        // 🔴
 }
 
@@ -892,6 +893,7 @@ model PurchaseOrder {
   recebidoEm       DateTime?
   canceladoEm      DateTime?
   createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @default(now()) @updatedAt // última mudança (status, itens…)
   createdBy        String?
 
   site     Site                @relation(fields: [siteId], references: [id])

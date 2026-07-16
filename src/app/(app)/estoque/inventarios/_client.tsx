@@ -808,10 +808,16 @@ export function InventarioClient({
   function fechar(inv: Inventario) {
     setError(null);
     const mapa = contagem[inv.id] ?? {};
-    const items = inv.items.map((it) => ({
-      productId: it.productId,
-      qtdContada: mapa[it.productId] ?? it.qtdSistema,
-    }));
+    // Contagem cega: qtdSistema chega zerada do servidor com o inventário aberto,
+    // então só envia o que foi contado (a UI exige contar tudo antes de chegar aqui).
+    const items = inv.modoCego
+      ? inv.items
+          .filter((it) => mapa[it.productId] != null)
+          .map((it) => ({ productId: it.productId, qtdContada: mapa[it.productId] }))
+      : inv.items.map((it) => ({
+          productId: it.productId,
+          qtdContada: mapa[it.productId] ?? it.qtdSistema,
+        }));
     startTransition(async () => {
       try {
         await fecharInventarioAction({ inventoryId: inv.id, items });
@@ -1213,15 +1219,29 @@ export function InventarioClient({
               })}
             </div>
 
-            <div className="flex justify-end border-t border-line pt-3">
+            <div className="flex flex-wrap items-center justify-end gap-3 border-t border-line pt-3">
+              {/* Contagem cega: não existe "mantém saldo do sistema" — tudo precisa ser contado. */}
+              {aberto.modoCego && contadosAberto < totalAberto && (
+                <p className="text-xs text-muted">
+                  Contagem cega exige contar todos os produtos —{" "}
+                  {totalAberto - contadosAberto === 1
+                    ? "falta 1 produto"
+                    : `faltam ${totalAberto - contadosAberto} produtos`}.
+                </p>
+              )}
               <button
                 type="button"
                 onClick={() => setRevisaoAberta(true)}
-                disabled={pending}
-                className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-60"
+                disabled={pending || (aberto.modoCego && contadosAberto < totalAberto)}
+                title={
+                  aberto.modoCego && contadosAberto < totalAberto
+                    ? "Na contagem cega todos os produtos precisam ser contados antes de finalizar"
+                    : undefined
+                }
+                className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <CheckCircle2 size={14} />
-                Revisar divergências e finalizar
+                {aberto.modoCego ? "Revisar e finalizar" : "Revisar divergências e finalizar"}
               </button>
             </div>
           </div>
@@ -1233,10 +1253,66 @@ export function InventarioClient({
         open={revisaoAberta && !!aberto}
         onClose={() => setRevisaoAberta(false)}
         title="Revisar e finalizar"
-        description="Confira o resultado antes de aplicar os ajustes — divergências geram ajuste automático no saldo."
+        description={
+          aberto?.modoCego
+            ? "Confira os valores contados antes de finalizar — a divergência é calculada no fechamento, sem mostrar o saldo do sistema."
+            : "Confira o resultado antes de aplicar os ajustes — divergências geram ajuste automático no saldo."
+        }
         width="lg"
       >
-        {aberto && (
+        {aberto && aberto.modoCego && (
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-faint">
+                {aberto.items.length} {pl(aberto.items.length, "produto contado", "produtos contados")}
+              </p>
+              <div className="flex max-h-72 flex-col gap-2 overflow-y-auto pr-1">
+                {itensOrdenados.map((it) => (
+                  <div
+                    key={it.productId}
+                    className="flex items-center gap-3 rounded-[var(--radius)] border border-line bg-surface-2 px-3 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-ink">{it.nome}</p>
+                      <p className="font-mono text-[11px] text-faint">
+                        {it.sku}
+                        {it.locationNome && ` · ${it.locationNome}`}
+                      </p>
+                    </div>
+                    <div className="w-14 shrink-0 text-center">
+                      <p className="text-[10px] text-faint">Contado</p>
+                      <p className="text-sm font-semibold tabular-nums text-ink">
+                        {mapaAberto[it.productId] != null ? fmtQtd(mapaAberto[it.productId]) : "—"}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-line pt-3">
+              <button
+                type="button"
+                onClick={() => setRevisaoAberta(false)}
+                disabled={pending}
+                className="cursor-pointer rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+              >
+                Voltar à contagem
+              </button>
+              <button
+                type="button"
+                onClick={() => fechar(aberto)}
+                disabled={pending}
+                className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-60"
+              >
+                {pending ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                Confirmar e finalizar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {aberto && !aberto.modoCego && (
           <div className="flex flex-col gap-4">
             {/* Aviso de não contados */}
             {naoContadosRevisao.length > 0 && (

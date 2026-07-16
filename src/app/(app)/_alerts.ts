@@ -73,7 +73,7 @@ export async function getAlerts(): Promise<AlertItem[]> {
         },
       }),
       db.purchaseOrder.findMany({
-        where: { status: { in: ["RASCUNHO", "ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"] } },
+        where: { status: { in: ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] } },
         select: {
           id: true,
           numero: true,
@@ -241,7 +241,7 @@ export async function getAlerts(): Promise<AlertItem[]> {
     // ── Compras / recebimentos ─────────────────────────────────
     for (const pc of pedidos) {
       const fornecedor = pc.supplier.nomeFantasia ?? pc.supplier.razaoSocial;
-      if (pc.status === "AGUARDANDO" || pc.status === "RECEBIDO_PARCIAL") {
+      if (pc.status === "AGUARDANDO" || pc.status === "EM_TRANSITO" || pc.status === "RECEBIDO_PARCIAL") {
         alerts.push({
           id: `recebimento:${pc.id}`,
           priority: "alto",

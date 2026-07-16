@@ -26,6 +26,7 @@ import {
   atualizarPedidoCompra,
   enviarPedidoCompra,
   marcarAguardandoPedido,
+  marcarEmTransitoPedido,
   cancelarPedidoCompra,
   excluirPedidoCompra,
   receberPedidoCompra,
@@ -216,6 +217,13 @@ export async function enviarPedidoCompraAction(pedidoId: string) {
 export async function marcarAguardandoPedidoAction(pedidoId: string) {
   return tx(async (tid) => {
     await marcarAguardandoPedido(tid, pedidoId);
+    ok();
+  });
+}
+
+export async function marcarEmTransitoPedidoAction(pedidoId: string) {
+  return tx(async (tid) => {
+    await marcarEmTransitoPedido(tid, pedidoId);
     ok();
   });
 }

@@ -304,6 +304,25 @@ export async function marcarAguardandoPedido(tenantId: string, pedidoId: string)
   ]);
 }
 
+/** ENVIADO/AGUARDANDO → EM_TRANSITO (mercadoria a caminho). */
+export async function marcarEmTransitoPedido(tenantId: string, pedidoId: string): Promise<void> {
+  const po = await basePrisma.purchaseOrder.findFirst({
+    where: { id: pedidoId, tenantId },
+    select: { status: true },
+  });
+  if (!po) throw new Error("Pedido não encontrado.");
+  if (!["ENVIADO", "AGUARDANDO"].includes(po.status)) {
+    throw new Error("Só pedidos enviados ou confirmados podem entrar em trânsito.");
+  }
+  await basePrisma.$transaction([
+    basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
+    basePrisma.purchaseOrder.update({
+      where: { id: pedidoId },
+      data: { status: "EM_TRANSITO" },
+    }),
+  ]);
+}
+
 /** Cancela um pedido que ainda não foi (totalmente) recebido. */
 export async function cancelarPedidoCompra(tenantId: string, pedidoId: string): Promise<void> {
   const po = await basePrisma.purchaseOrder.findFirst({
@@ -354,7 +373,7 @@ export async function receberPedidoCompra(
     include: { items: true },
   });
   if (!po) throw new Error("Pedido não encontrado.");
-  if (!["ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"].includes(po.status)) {
+  if (!["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"].includes(po.status)) {
     throw new Error("Este pedido não está aberto para recebimento.");
   }
 
@@ -976,12 +995,26 @@ export async function fecharInventario(
   if (!inv) throw new Error("Inventário não encontrado.");
   if (inv.status !== "ABERTO") throw new Error("Inventário já fechado ou cancelado.");
 
+  // Contagem cega: todo item precisa de contagem (nesta chamada ou já salva
+  // como rascunho) — não existe "mantém saldo do sistema" no modo cego.
+  if (inv.modoCego) {
+    const contados = new Set(contagens.map((c) => c.productId));
+    const faltam = inv.items.filter((i) => i.qtdContada == null && !contados.has(i.productId)).length;
+    if (faltam > 0) {
+      throw new Error(
+        `Contagem cega: todos os produtos precisam ser contados — ${faltam} ${faltam === 1 ? "produto está" : "produtos estão"} sem contagem.`
+      );
+    }
+  }
+
   const siteId = inv.siteId;
 
   for (const item of inv.items) {
     const conta = contagens.find((c) => c.productId === item.productId);
-    if (!conta) continue; // item não contado → mantém saldo, sem ajuste
-    const contada = Math.max(0, conta.qtdContada);
+    // Sem valor nesta chamada, vale o rascunho salvo em `salvarContagemInventario`.
+    const valorContado = conta?.qtdContada ?? (item.qtdContada != null ? Number(item.qtdContada) : null);
+    if (valorContado == null) continue; // item não contado → mantém saldo, sem ajuste
+    const contada = Math.max(0, valorContado);
 
     // Saldo atual no momento do fechamento (não o snapshot — pode ter havido venda).
     const stock = await basePrisma.stock.findFirst({

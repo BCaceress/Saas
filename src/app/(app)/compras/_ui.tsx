@@ -23,23 +23,82 @@ export const fmtQtd = (v: number) => v.toLocaleString("pt-BR", { maximumFraction
 
 /** Status do pedido de compra — ícone/cores/label únicos, usados em toda tela que referencia um PurchaseOrder. */
 export const PEDIDO_STATUS: Record<string, { label: string; icon: React.ElementType; cls: string; dot: string; soft: string; text: string }> = {
-  RASCUNHO:         { label: "Rascunho",              icon: FilePenLine,   cls: "bg-surface-2 text-muted",  dot: "bg-faint",  soft: "bg-surface-2",  text: "text-muted" },
+  RASCUNHO:         { label: "Rascunho",              icon: FilePenLine,  cls: "bg-surface-2 text-muted",  dot: "bg-faint",  soft: "bg-surface-2",  text: "text-muted" },
   ENVIADO:          { label: "Enviado",               icon: Send,         cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500", soft: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400" },
-  AGUARDANDO:       { label: "Aguardando entrega",    icon: Clock3,       cls: "bg-warn-soft text-warn",   dot: "bg-warn",   soft: "bg-warn-soft",  text: "text-warn" },
-  RECEBIDO_PARCIAL: { label: "Recebido parcialmente", icon: PackageCheck, cls: "bg-brand-soft text-brand", dot: "bg-brand",  soft: "bg-brand-soft", text: "text-brand" },
-  RECEBIDO:         { label: "Recebido",              icon: CircleCheck,  cls: "bg-ok-soft text-ok",       dot: "bg-ok",     soft: "bg-ok-soft",    text: "text-ok" },
+  AGUARDANDO:       { label: "Confirmado",            icon: Clock3,       cls: "bg-warn-soft text-warn",   dot: "bg-warn",   soft: "bg-warn-soft",  text: "text-warn" },
+  EM_TRANSITO:      { label: "Em trânsito",           icon: Truck,        cls: "bg-purple-500/10 text-purple-600 dark:text-purple-400", dot: "bg-purple-500", soft: "bg-purple-500/10", text: "text-purple-600 dark:text-purple-400" },
+  RECEBIDO_PARCIAL: { label: "Recebimento pendente",  icon: PackageCheck, cls: "bg-accent-soft text-accent", dot: "bg-accent", soft: "bg-accent-soft", text: "text-accent" },
+  RECEBIDO:         { label: "Concluído",             icon: CircleCheck,  cls: "bg-ok-soft text-ok",       dot: "bg-ok",     soft: "bg-ok-soft",    text: "text-ok" },
   CANCELADO:        { label: "Cancelado",             icon: CircleX,      cls: "bg-danger-soft text-danger", dot: "bg-danger", soft: "bg-danger-soft", text: "text-danger" },
 };
+
+/** Pedidos que ainda vão gerar entrada no estoque (tudo menos concluído/cancelado). */
+export const PEDIDO_ABERTO = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"];
+/** Abertos já enviados (têm prazo de entrega relevante). */
+export const PEDIDO_A_RECEBER = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"];
+
+/** Ordem do fluxo — colunas do kanban. CANCELADO fica fora (só na lista). */
+export const PEDIDO_FLUXO = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL", "RECEBIDO"] as const;
+
+/**
+ * Transições permitidas por drag-and-drop no kanban. Avançar segue o fluxo;
+ * voltar nunca. RECEBIDO_PARCIAL/RECEBIDO não são setáveis por arraste direto —
+ * dependem da conferência do recebimento ("receber" abre o fluxo de conferência).
+ */
+export function transicaoDrag(de: string, para: string): "enviar" | "confirmar" | "transito" | "receber" | null {
+  if (de === para) return null;
+  if (de === "RASCUNHO" && para === "ENVIADO") return "enviar";
+  if (de === "ENVIADO" && para === "AGUARDANDO") return "confirmar";
+  if ((de === "ENVIADO" || de === "AGUARDANDO") && para === "EM_TRANSITO") return "transito";
+  if (PEDIDO_A_RECEBER.includes(de) && para === "RECEBIDO") return "receber";
+  return null;
+}
 
 export function StatusBadge({ status }: { status: string }) {
   const m = PEDIDO_STATUS[status] ?? { label: status, icon: FilePenLine, cls: "bg-surface-2 text-muted" };
   const Icon = m.icon;
   return (
-    <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold", m.cls)}>
+    <span className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold", m.cls)}>
       <Icon size={12} />
       {m.label}
     </span>
   );
+}
+
+/** Nome exigido pela arquitetura do módulo de Pedidos de Compra — mesmo componente. */
+export const PurchaseOrderStatusBadge = StatusBadge;
+
+/** Avatar discreto com as iniciais do fornecedor — sem logotipo. */
+export function SupplierAvatar({ nome, size = 28 }: { nome: string; size?: number }) {
+  const iniciais = nome
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]!.toUpperCase())
+    .join("");
+  return (
+    <span
+      aria-hidden
+      className="grid shrink-0 place-items-center rounded-lg border border-line bg-surface-2 font-display text-[11px] font-bold text-muted"
+      style={{ width: size, height: size }}
+    >
+      {iniciais || "?"}
+    </span>
+  );
+}
+
+/** "há 5 min" / "há 2 h" / "ontem" / "há 4 dias" — última atualização em cards e linhas. */
+export function relTempo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return "agora";
+  if (min < 60) return `há ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `há ${h} h`;
+  const d = Math.floor(h / 24);
+  if (d === 1) return "ontem";
+  if (d < 30) return `há ${d} dias`;
+  return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" });
 }
 
 /** Estado derivado do prazo de entrega — não é status novo, só uma leitura do `previsaoEntrega` para pedidos ainda abertos. */

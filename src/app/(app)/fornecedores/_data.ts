@@ -1,7 +1,7 @@
 import { db } from "@/lib/prisma";
 import type { SupplierRow } from "../produtos/_types";
 
-const PEDIDOS_ATIVOS = ["ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"] as const;
+const PEDIDOS_ATIVOS = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] as const;
 const DIA_MS = 24 * 60 * 60 * 1000;
 
 /** Fornecedores com sinais agregados de compras — usado no sidepanel de /fornecedores. Roda dentro de `runWithTenant`. */

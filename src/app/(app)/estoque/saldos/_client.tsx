@@ -26,15 +26,16 @@ import {
   Pencil,
   Wallet,
   MapPin,
-  ClipboardList,
   Info,
   Filter,
   X,
+  ShoppingCart,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { NovaEntradaForm, type Item } from "../entradas/nova/_client";
+import { AdicionarCompraSheet } from "./_comprar";
 import type { SaldoRow } from "../_data";
 import { fetchHistoricoProductAction, registrarAjusteAction, fetchEntradaFormDataAction } from "../actions";
 
@@ -141,7 +142,7 @@ function getMovSub(m: HistoricoItem): string | null {
   return null;
 }
 
-export type Filtro = "todos" | "sem" | "baixoMinimo" | "repor" | "pendencias";
+export type Filtro = "todos" | "sem" | "baixoMinimo" | "repor" | "quaseIdeal" | "aberto";
 type SortKey = "nome" | "fechado" | "valor";
 type SortDir = "asc" | "desc";
 type FormOptions = Pick<ComponentProps<typeof NovaEntradaForm>, "products" | "sites">;
@@ -168,7 +169,7 @@ function statusOf(s: SaldoRow): Status {
 const STATUS_META: Record<Status, { label: string; text: string; dot: string; bar: string; Icon: React.ElementType }> = {
   abastecido:  { label: "Abastecido",       text: "text-ok",     dot: "bg-ok",     bar: "bg-ok",     Icon: PackageCheck },
   baixoIdeal:  { label: "Abaixo do ideal",  text: "text-brand",  dot: "bg-brand",  bar: "bg-brand",  Icon: AlertTriangle },
-  baixoMinimo: { label: "Abaixo do mínimo", text: "text-warn",   dot: "bg-warn",   bar: "bg-warn",   Icon: AlertTriangle },
+  baixoMinimo: { label: "Abaixo do mínimo", text: "text-danger", dot: "bg-danger", bar: "bg-danger", Icon: AlertTriangle },
   semEstoque:  { label: "Sem estoque",      text: "text-danger", dot: "bg-danger", bar: "bg-danger", Icon: PackageX },
   semMeta:     { label: "Meta não definida",text: "text-faint",  dot: "bg-faint",  bar: "bg-faint",  Icon: PackageX },
 };
@@ -178,6 +179,7 @@ const abaixoMin = (s: SaldoRow) => s.estoqueMinimo > 0 && s.estoqueFechado < s.e
 const precisaRepor = (s: SaldoRow) => s.estoqueIdeal > 0 && s.estoqueFechado < s.estoqueIdeal;
 const valorEstoque = (s: SaldoRow) => s.estoqueFechado * (s.custoMedio ?? 0);
 const disponivel = (s: SaldoRow) => s.estoqueFechado - s.estoqueAberto;
+const temEstoqueAberto = (s: SaldoRow) => s.estoqueAberto > 0;
 
 /** Média diária de vendas (prioriza 7d, cai p/ 30d). 0 = sem giro. */
 const mediaDia = (s: SaldoRow) =>
@@ -188,6 +190,17 @@ function diasCobertura(s: SaldoRow): number | null {
   const m = mediaDia(s);
   if (m <= 0) return null;
   return Math.max(0, Math.round(s.estoqueFechado / m));
+}
+
+/**
+ * Alerta preventivo: ainda no ideal, mas o ritmo de venda vai derrubar o
+ * saldo abaixo do ideal em menos de 1 dia — antecipa a reposição em vez de
+ * esperar o produto já entrar em "Abaixo do ideal".
+ */
+function quaseIdeal(s: SaldoRow): boolean {
+  if (s.estoqueIdeal <= 0 || s.estoqueFechado < s.estoqueIdeal) return false;
+  const m = mediaDia(s);
+  return m > 0 && s.estoqueFechado - s.estoqueIdeal < m;
 }
 
 /** Lacunas de cadastro que atrapalham operação (custo, fornecedor, localização). */
@@ -258,8 +271,11 @@ export function SaldosView({
   const [q, setQ] = useState(initialQ);
   const [filtro, setFiltro] = useState<Filtro>(initialFiltro);
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
-  const [reporItems, setReporItems] = useState<Item[] | null>(null);
-  const [reporLoading, setReporLoading] = useState(false);
+  const [entradaItems, setEntradaItems] = useState<Item[] | null>(null);
+  const [entradaLoading, setEntradaLoading] = useState(false);
+  // Compra manual — o operador escolhe produtos e o sistema só registra.
+  const [comprarIds, setComprarIds] = useState<string[] | null>(null);
+  const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
   const [detalhe, setDetalhe] = useState<{ row: SaldoRow; tab: Tab } | null>(null);
   const [page, setPage] = useState(initialPage);
   const [pageSize, setPageSize] = useState(25);
@@ -292,22 +308,25 @@ export function SaldosView({
   }, [saldos]);
 
   const counts = useMemo(() => {
-    let sem = 0, baixoMinimo = 0, repor = 0, semlocal = 0, pendencias = 0, comEstoque = 0, semMeta = 0;
+    let sem = 0, baixoMinimo = 0, repor = 0, quaseIdealN = 0, aberto = 0, semlocal = 0, pendencias = 0, comEstoque = 0, semMeta = 0;
     for (const s of saldos) {
       if (!semEstoque(s)) comEstoque++; else sem++;
       if (abaixoMin(s)) baixoMinimo++;
       if (precisaRepor(s)) repor++;
+      if (quaseIdeal(s)) quaseIdealN++;
+      if (temEstoqueAberto(s)) aberto++;
       if (!s.locationNome) semlocal++;
       if (dataGaps(s).length > 0) pendencias++;
       if (statusOf(s) === "semMeta") semMeta++;
     }
-    return { todos: saldos.length, sem, baixoMinimo, repor, semlocal, pendencias, comEstoque, semMeta };
+    return { todos: saldos.length, sem, baixoMinimo, repor, quaseIdeal: quaseIdealN, aberto, semlocal, pendencias, comEstoque, semMeta };
   }, [saldos]);
 
   // Filtros secundários (painel "Filtros") — categoria/fornecedor/local derivados dos dados.
   const [avComEstoque, setAvComEstoque] = useState(false);
   const [avSemLocal, setAvSemLocal] = useState(false);
   const [avSemMeta, setAvSemMeta] = useState(false);
+  const [avPendenciaCadastro, setAvPendenciaCadastro] = useState(false);
   const [avCategoria, setAvCategoria] = useState("");
   const [avFornecedor, setAvFornecedor] = useState("");
   const [avLocal, setAvLocal] = useState("");
@@ -325,11 +344,12 @@ export function SaldosView({
     [saldos],
   );
 
-  const avancadoAtivo = avComEstoque || avSemLocal || avSemMeta || !!avCategoria || !!avFornecedor || !!avLocal;
+  const avancadoAtivo = avComEstoque || avSemLocal || avSemMeta || avPendenciaCadastro || !!avCategoria || !!avFornecedor || !!avLocal;
   function limparAvancado() {
     setAvComEstoque(false);
     setAvSemLocal(false);
     setAvSemMeta(false);
+    setAvPendenciaCadastro(false);
     setAvCategoria("");
     setAvFornecedor("");
     setAvLocal("");
@@ -342,11 +362,13 @@ export function SaldosView({
         case "sem":         if (!semEstoque(s)) return false; break;
         case "baixoMinimo": if (!abaixoMin(s)) return false; break;
         case "repor":       if (!precisaRepor(s)) return false; break;
-        case "pendencias":  if (dataGaps(s).length === 0) return false; break;
+        case "quaseIdeal":  if (!quaseIdeal(s)) return false; break;
+        case "aberto":      if (!temEstoqueAberto(s)) return false; break;
       }
       if (avComEstoque && semEstoque(s)) return false;
       if (avSemLocal && s.locationNome) return false;
       if (avSemMeta && statusOf(s) !== "semMeta") return false;
+      if (avPendenciaCadastro && dataGaps(s).length === 0) return false;
       if (avCategoria && s.categoria !== avCategoria) return false;
       if (avFornecedor && s.fornecedorNome !== avFornecedor) return false;
       if (avLocal && s.locationNome !== avLocal) return false;
@@ -358,8 +380,8 @@ export function SaldosView({
     });
 
     out.sort((a, b) => {
-      const pa = PRIORITY[statusOf(a)], pb = PRIORITY[statusOf(b)];
-      if (pa !== pb) return pa - pb;
+      // Sort explícito do usuário vence o agrupamento por severidade —
+      // clicar "Produto A→Z" deve ordenar a lista inteira, não dentro dos grupos.
       if (sort) {
         const f = (s: SaldoRow) =>
           sort.key === "nome" ? s.nome.toLowerCase()
@@ -367,21 +389,41 @@ export function SaldosView({
           : valorEstoque(s);
         const va = f(a), vb = f(b);
         const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number);
-        return sort.dir === "asc" ? cmp : -cmp;
+        if (cmp !== 0) return sort.dir === "asc" ? cmp : -cmp;
+        return a.nome.localeCompare(b.nome);
       }
+      const pa = PRIORITY[statusOf(a)], pb = PRIORITY[statusOf(b)];
+      if (pa !== pb) return pa - pb;
       return a.nome.localeCompare(b.nome);
     });
 
     return out;
-  }, [saldos, q, filtro, sort, avComEstoque, avSemLocal, avSemMeta, avCategoria, avFornecedor, avLocal]);
+  }, [saldos, q, filtro, sort, avComEstoque, avSemLocal, avSemMeta, avPendenciaCadastro, avCategoria, avFornecedor, avLocal]);
 
-  // Paginação — volta à 1ª página quando o conjunto muda.
-  useEffect(() => { setPage(1); }, [q, filtro, sort, pageSize, avComEstoque, avSemLocal, avSemMeta, avCategoria, avFornecedor, avLocal]);
+  // Paginação — volta à 1ª página quando o conjunto muda. Pula o mount para
+  // não descartar a página restaurada da URL.
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (firstRun.current) { firstRun.current = false; return; }
+    setPage(1);
+  }, [q, filtro, sort, pageSize, avComEstoque, avSemLocal, avSemMeta, avPendenciaCadastro, avCategoria, avFornecedor, avLocal]);
   const total = filtrados.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const pageSafe = Math.min(page, totalPages);
   const inicio = (pageSafe - 1) * pageSize;
   const pageRows = filtrados.slice(inicio, inicio + pageSize);
+
+  // Espelha busca/filtro/página na URL (compartilhável, sobrevive a refresh e
+  // troca de site) sem round-trip ao servidor — replaceState não navega.
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const set = (k: string, v: string) => { if (v) p.set(k, v); else p.delete(k); };
+    set("q", q.trim());
+    set("filtro", filtro === "todos" ? "" : filtro);
+    set("pagina", pageSafe > 1 ? String(pageSafe) : "");
+    const qs = p.toString();
+    window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+  }, [q, filtro, pageSafe]);
 
   function toggleSort(key: SortKey) {
     setSort((cur) =>
@@ -391,60 +433,54 @@ export function SaldosView({
     );
   }
 
-  async function abrirReposicao(scope: SaldoRow[]) {
-    setReporLoading(true);
-    try {
-      const opts = await ensureFormOptions();
-      const productIds = new Set(opts.products.map((p) => p.id));
-      const items: Item[] = scope
-        .filter((s) => precisaRepor(s) && productIds.has(s.productId))
-        .map((s) => {
-          const deficit = s.estoqueIdeal - s.estoqueFechado;
-          const prod = opts.products.find((p) => p.id === s.productId);
-          const padrao = prod?.packagings.find((pk) => pk.isCompraDefault);
-          return {
-            productId: s.productId,
-            quantidade: deficit > 0 ? deficit : 1,
-            custoTotal: 0,
-            custoDisplay: "",
-            packagingId: padrao?.id ?? null,
-          };
-        });
-      setReporItems(items.length > 0 ? items : [
-        { productId: "", quantidade: 1, custoTotal: 0, custoDisplay: "", packagingId: null },
-      ]);
-    } finally {
-      setReporLoading(false);
-    }
-  }
-
-  /** Nova movimentação a partir do sidepanel de detalhe — prefila este produto, sem exigir déficit. */
+  /** Nova movimentação a partir do sidepanel de detalhe — prefila este produto. */
   async function abrirNovaMovimentacao(s: SaldoRow) {
-    setReporLoading(true);
+    setEntradaLoading(true);
     try {
       const opts = await ensureFormOptions();
       const prod = opts.products.find((p) => p.id === s.productId);
       const padrao = prod?.packagings.find((pk) => pk.isCompraDefault);
-      setReporItems([
+      setEntradaItems([
         prod
           ? { productId: prod.id, quantidade: 1, custoTotal: 0, custoDisplay: "", packagingId: padrao?.id ?? null }
           : { productId: "", quantidade: 1, custoTotal: 0, custoDisplay: "", packagingId: null },
       ]);
     } finally {
-      setReporLoading(false);
+      setEntradaLoading(false);
     }
   }
 
+  // ── Seleção múltipla (checkbox por linha + action bar) ────────
+  function toggleSelecionado(productId: string) {
+    setSelecionados((cur) => {
+      const next = new Set(cur);
+      if (next.has(productId)) next.delete(productId);
+      else next.add(productId);
+      return next;
+    });
+  }
+
   type Pill = { key: Filtro; label: string; count: number; tone: "neutral" | "danger" | "warn" | "brand" };
-  // Chips visíveis: só os 5 estados objetivos do resultado esperado. O resto
-  // (com estoque, sem localização, sem meta, categoria/fornecedor/local) mora no menu "Filtros".
+  // Pills = mesmo estado de filtro dos KPIs acima (clicar um seleciona o
+  // outro também) — só um segundo jeito de chegar no mesmo filtro, mais os
+  // dois que não têm KPI: alerta preventivo e estoque aberto.
   const pillsEstoque: Pill[] = [
-    { key: "todos",       label: "Todos",           count: counts.todos,       tone: "neutral" },
-    { key: "sem",         label: "Sem estoque",     count: counts.sem,         tone: "danger"  },
-    { key: "baixoMinimo", label: "Abaixo do mínimo", count: counts.baixoMinimo, tone: "brand"   },
-    { key: "repor",       label: "A repor",         count: counts.repor,       tone: "warn"    },
-    { key: "pendencias",  label: "Pendências",      count: counts.pendencias,  tone: "warn"    },
+    { key: "todos",       label: "Todos",             count: counts.todos,      tone: "neutral" },
+    { key: "baixoMinimo", label: "Abaixo do mínimo",  count: counts.baixoMinimo, tone: "danger" },
+    { key: "repor",       label: "Abaixo do ideal",   count: counts.repor,      tone: "brand"   },
+    { key: "quaseIdeal",  label: "Quase do ideal",    count: counts.quaseIdeal, tone: "warn"    },
+    { key: "aberto",      label: "Estoque aberto",    count: counts.aberto,     tone: "neutral" },
   ];
+
+  const pageAllSelected = pageRows.length > 0 && pageRows.every((s) => selecionados.has(s.productId));
+  function togglePageSelecionada() {
+    setSelecionados((cur) => {
+      const next = new Set(cur);
+      if (pageAllSelected) pageRows.forEach((s) => next.delete(s.productId));
+      else pageRows.forEach((s) => next.add(s.productId));
+      return next;
+    });
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -478,7 +514,7 @@ export function SaldosView({
           icon={RefreshCw}
           label="A repor"
           value={String(kpis.repor)}
-          tone="warn"
+          tone="brand"
           selected={filtro === "repor"}
           onClick={() => setFiltro(filtro === "repor" ? "todos" : "repor")}
           hint="Precisam de reposição"
@@ -492,9 +528,20 @@ export function SaldosView({
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") setQ(""); }}
             placeholder="Buscar por nome, SKU, código, categoria, marca ou fornecedor…"
-            className="w-full rounded-lg border border-line bg-surface py-2 pl-9 pr-3 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+            className="w-full rounded-lg border border-line bg-surface py-2 pl-9 pr-8 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
           />
+          {q !== "" && (
+            <button
+              type="button"
+              onClick={() => setQ("")}
+              aria-label="Limpar busca"
+              className="absolute right-2 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-faint transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+            >
+              <X size={13} />
+            </button>
+          )}
         </div>
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="flex flex-1 items-center gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -503,6 +550,7 @@ export function SaldosView({
                 key={p.key}
                 label={p.label}
                 count={p.count}
+                tone={p.tone}
                 active={filtro === p.key}
                 onClick={() => setFiltro(filtro === p.key ? "todos" : p.key)}
               />
@@ -538,6 +586,10 @@ export function SaldosView({
             <label className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-sm text-ink transition-colors hover:bg-surface-2">
               <input type="checkbox" checked={avSemMeta} onChange={(e) => setAvSemMeta(e.target.checked)} className="accent-brand" />
               Sem meta definida
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-sm text-ink transition-colors hover:bg-surface-2">
+              <input type="checkbox" checked={avPendenciaCadastro} onChange={(e) => setAvPendenciaCadastro(e.target.checked)} className="accent-brand" />
+              Com pendência cadastral
             </label>
 
             {(categorias.length > 0 || fornecedores.length > 0 || locais.length > 0) && (
@@ -587,20 +639,25 @@ export function SaldosView({
               </>
             )}
 
-            <div className="my-1.5 h-px bg-line" />
-            <MenuItem
-              icon={<Download size={15} />}
-              onClick={() => baixarCsv(filtrados)}
-              disabled={filtrados.length === 0}
-            >
-              Exportar CSV
-            </MenuItem>
             {(filtro !== "todos" || q.trim() !== "" || avancadoAtivo) && (
-              <MenuItem icon={<X size={15} />} onClick={() => { setFiltro("todos"); setQ(""); limparAvancado(); }}>
-                Limpar filtros
-              </MenuItem>
+              <>
+                <div className="my-1.5 h-px bg-line" />
+                <MenuItem icon={<X size={15} />} onClick={() => { setFiltro("todos"); setQ(""); limparAvancado(); }}>
+                  Limpar filtros
+                </MenuItem>
+              </>
             )}
           </Menu>
+          <button
+            type="button"
+            onClick={() => baixarCsv(filtrados)}
+            disabled={filtrados.length === 0}
+            title="Exportar CSV"
+            aria-label="Exportar CSV"
+            className="grid h-9.5 w-9.5 shrink-0 place-items-center rounded-lg border border-line bg-surface text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-40"
+          >
+            <Download size={15} />
+          </button>
         </div>
       </div>
 
@@ -609,12 +666,22 @@ export function SaldosView({
       ) : (
         <>
           {/* ── Tabela (desktop) ── */}
-          <div className="hidden overflow-hidden rounded-xl border border-line bg-surface md:block">
+          <div className="hidden overflow-clip rounded-xl border border-line bg-surface md:block">
             <table className="w-full text-sm">
-              <thead>
+              {/* sticky exige overflow-clip no wrapper (overflow-hidden viraria o
+                  ancestral de rolagem e anularia o efeito) */}
+              <thead className="sticky top-0 z-10">
                 <tr className="border-b border-line bg-surface-2 text-left text-xs font-semibold uppercase tracking-wide text-faint">
+                  <th className="w-10 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={pageAllSelected}
+                      onChange={togglePageSelecionada}
+                      aria-label="Selecionar todos os produtos da página"
+                      className="h-4 w-4 accent-brand"
+                    />
+                  </th>
                   <Th label="Produto" sortKey="nome" sort={sort} onSort={toggleSort} />
-                  <th className="px-4 py-2">Situação</th>
                   <Th label="Estoque" sortKey="fechado" sort={sort} onSort={toggleSort} />
                   <th className="hidden px-4 py-2 lg:table-cell">
                     <span className="inline-flex items-center gap-1" title="Conteúdo restante da unidade aberta, vendida em doses/drinks">
@@ -622,40 +689,57 @@ export function SaldosView({
                       <Info size={12} className="text-faint" aria-label="Conteúdo restante da unidade aberta, vendida em doses/drinks" />
                     </span>
                   </th>
-                  <th className="hidden px-4 py-2 md:table-cell">Reposição</th>
+                  <th className="hidden px-4 py-2 md:table-cell">Próxima compra</th>
+                  <Th label="Valor" sortKey="valor" sort={sort} onSort={toggleSort} align="right" className="hidden lg:table-cell" />
                   <th className="w-px px-3 py-2" aria-hidden />
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {pageRows.map((s) => {
-                  const st = statusOf(s);
-                  return (
-                    <tr
-                      key={s.productId}
-                      onClick={() => abrir(s)}
-                      className="group cursor-pointer transition-colors hover:bg-surface-2"
-                    >
-                      <td className="px-4 py-2">
-                        <ProdutoCell s={s} onPendencias={() => router.push(`/produtos/${s.productId}/editar`)} />
-                      </td>
-                      <td className="px-4 py-2">
-                        <StatusCell status={st} />
-                      </td>
-                      <td className="px-4 py-2">
-                        <EstoqueCell s={s} />
-                      </td>
-                      <td className="hidden px-4 py-2 lg:table-cell">
-                        <AbertaCell s={s} />
-                      </td>
-                      <td className="hidden px-4 py-2 md:table-cell">
-                        <ReposicaoStatusCell s={s} />
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <ChevronRight size={16} className="ml-auto shrink-0 text-faint transition-colors group-hover:text-ink" />
-                      </td>
-                    </tr>
-                  );
-                })}
+                {pageRows.map((s) => (
+                  <tr
+                    key={s.productId}
+                    onClick={() => abrir(s)}
+                    className={cn(
+                      "group cursor-pointer transition-colors hover:bg-surface-2",
+                      statusOf(s) === "baixoMinimo" && "bg-danger-soft/40",
+                      selecionados.has(s.productId) && "bg-brand-soft/30",
+                    )}
+                  >
+                    <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selecionados.has(s.productId)}
+                        onChange={() => toggleSelecionado(s.productId)}
+                        aria-label={`Selecionar ${s.nome}`}
+                        className="h-4 w-4 accent-brand"
+                      />
+                    </td>
+                    <td className="px-4 py-2">
+                      <ProdutoCell
+                        s={s}
+                        onOpen={() => abrir(s)}
+                        onPendencias={() => router.push(`/produtos/${s.productId}/editar`)}
+                      />
+                    </td>
+                    <td className="px-4 py-2">
+                      <EstoqueCell s={s} />
+                    </td>
+                    <td className="hidden px-4 py-2 lg:table-cell">
+                      <AbertaCell s={s} />
+                    </td>
+                    <td className="hidden px-4 py-2 md:table-cell">
+                      <ReposicaoStatusCell s={s} />
+                    </td>
+                    <td className="hidden px-4 py-2 text-right lg:table-cell">
+                      <span className="font-mono text-sm tabular-nums text-ink">
+                        {s.custoMedio != null ? fmtMoneyShort(valorEstoque(s)) : "—"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <ChevronRight size={16} className="ml-auto shrink-0 text-faint transition-colors group-hover:text-ink" />
+                    </td>
+                  </tr>
+                ))}
               </tbody>
               <tfoot>
                 <tr className="border-t border-line bg-surface-2 text-xs font-semibold text-muted">
@@ -664,6 +748,9 @@ export function SaldosView({
                   </td>
                   <td className="hidden px-4 py-2 lg:table-cell" />
                   <td className="hidden px-4 py-2 md:table-cell" />
+                  <td className="hidden px-4 py-2 text-right font-mono tabular-nums lg:table-cell">
+                    {fmtMoneyShort(filtrados.reduce((acc, s) => acc + valorEstoque(s), 0))}
+                  </td>
                   <td className="px-3 py-2" />
                 </tr>
               </tfoot>
@@ -672,37 +759,43 @@ export function SaldosView({
 
           {/* ── Cards (mobile) ── */}
           <div className="flex flex-col gap-2.5 md:hidden">
-            {pageRows.map((s) => {
-              const st = statusOf(s);
-              return (
-                <div
-                  key={s.productId}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => abrir(s)}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(s); } }}
-                  className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-surface px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <ProdutoCell s={s} onPendencias={() => router.push(`/produtos/${s.productId}/editar`)} />
-                      <StatusCell status={st} compact />
+            {pageRows.map((s) => (
+              <div
+                key={s.productId}
+                role="button"
+                tabIndex={0}
+                onClick={() => abrir(s)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(s); } }}
+                className={cn(
+                  "flex cursor-pointer items-start gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)",
+                  statusOf(s) === "baixoMinimo" ? "border-danger/30 bg-danger-soft/30" : "border-line bg-surface",
+                  selecionados.has(s.productId) && "border-brand/50 bg-brand-soft/20",
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={selecionados.has(s.productId)}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={() => toggleSelecionado(s.productId)}
+                  aria-label={`Selecionar ${s.nome}`}
+                  className="mt-1 h-4 w-4 shrink-0 accent-brand"
+                />
+                <div className="min-w-0 flex-1">
+                  <ProdutoCell s={s} onPendencias={() => router.push(`/produtos/${s.productId}/editar`)} />
+                  <div className="mt-2 flex items-end justify-between gap-3">
+                    <EstoqueCell s={s} />
+                    <div className="shrink-0 text-right">
+                      <ReposicaoStatusCell s={s} />
                     </div>
-                    <div className="mt-2 flex items-end justify-between gap-3">
-                      <EstoqueCell s={s} />
-                      <div className="shrink-0 text-right">
-                        <ReposicaoStatusCell s={s} />
-                      </div>
-                    </div>
-                    {temAbertaFrac(s) && (
-                      <div className="mt-1.5">
-                        <AbertaCell s={s} />
-                      </div>
-                    )}
                   </div>
+                  {temAbertaFrac(s) && (
+                    <div className="mt-1.5">
+                      <AbertaCell s={s} />
+                    </div>
+                  )}
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
 
           <PaginationBar
@@ -727,26 +820,66 @@ export function SaldosView({
         canRepor={detalhe ? ["SIMPLES", "INSUMO"].includes(detalhe.row.tipo) : false}
         onClose={() => setDetalhe(null)}
         onEditar={(id) => router.push(`/produtos/${id}/editar`)}
-        onRepor={(s) => { setDetalhe(null); abrirReposicao([s]); }}
+        onComprar={(s) => { setDetalhe(null); setComprarIds([s.productId]); }}
         onNovaMovimentacao={(s) => { setDetalhe(null); abrirNovaMovimentacao(s); }}
         onAjustado={() => { setDetalhe(null); router.refresh(); }}
       />
 
-      {/* ── Sidepanel — reposição ── */}
+      {/* ── Action bar — aparece com produtos selecionados ── */}
+      {selecionados.size > 0 && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-5 z-40 flex justify-center px-4">
+          <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-line bg-surface py-2 pl-4 pr-2 shadow-(--shadow-2)">
+            <span className="text-sm font-medium text-ink">
+              <b className="tabular-nums">{selecionados.size}</b>{" "}
+              {selecionados.size === 1 ? "produto selecionado" : "produtos selecionados"}
+            </span>
+            <button
+              type="button"
+              onClick={() => setComprarIds([...selecionados])}
+              className="flex items-center gap-1.5 rounded-full bg-brand px-3.5 py-1.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+            >
+              <ShoppingCart size={14} /> Comprar
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelecionados(new Set())}
+              aria-label="Limpar seleção"
+              className="grid h-8 w-8 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Sidepanel — compra manual (sem sugestões) ── */}
+      <AdicionarCompraSheet
+        open={comprarIds !== null}
+        produtoIds={comprarIds ?? []}
+        siteId={siteId}
+        onClose={() => setComprarIds(null)}
+        onDone={() => {
+          setComprarIds(null);
+          setSelecionados(new Set());
+          router.refresh();
+        }}
+      />
+
+      {/* ── Sidepanel — nova movimentação (entrada manual) ── */}
       <Sheet
-        open={reporItems !== null || reporLoading}
-        onClose={() => setReporItems(null)}
-        title="Repor estoque"
-        description="Itens abaixo do ideal já carregados. Ajuste quantidades e custos."
+        open={entradaItems !== null || entradaLoading}
+        onClose={() => setEntradaItems(null)}
+        title="Nova movimentação"
+        description="Adicione produtos diretamente ao estoque."
         width="xl"
       >
-        {reporItems && formOptions ? (
+        {entradaItems && formOptions ? (
           <NovaEntradaForm
             {...formOptions}
             motivo="COMPRA_SEM_PEDIDO"
             embedded
-            initialItems={reporItems}
-            onDone={() => setReporItems(null)}
+            initialItems={entradaItems}
+            onDone={() => setEntradaItems(null)}
           />
         ) : (
           <div className="flex items-center justify-center py-16">
@@ -773,7 +906,7 @@ function Kpi({
   label: string;
   value: string;
   hint?: string;
-  tone?: "neutral" | "danger" | "warn";
+  tone?: "neutral" | "danger" | "warn" | "brand";
   selected?: boolean;
   onClick?: () => void;
 }) {
@@ -784,6 +917,7 @@ function Kpi({
   const valueCls =
     tone === "danger" ? "text-danger"
     : tone === "warn" ? "text-warn"
+    : tone === "brand" ? "text-brand"
     : "text-ink";
   const Wrapper: "button" | "div" = onClick ? "button" : "div";
   return (
@@ -815,14 +949,23 @@ function FilterPill({
   label,
   count,
   active,
+  tone = "neutral",
   onClick,
 }: {
   label: string;
   count: number;
   active: boolean;
+  tone?: "neutral" | "danger" | "warn" | "brand";
   onClick: () => void;
 }) {
   // Contorno discreto; ativo destaca em laranja (brand) sem preenchimento sólido.
+  // O contador ganha a cor do tom quando há itens — sinaliza sem exigir clique.
+  const countCls = active
+    ? "bg-brand/15 text-brand"
+    : count > 0 && tone === "danger" ? "bg-danger-soft text-danger"
+    : count > 0 && tone === "warn" ? "bg-warn-soft text-warn"
+    : count > 0 && tone === "brand" ? "bg-brand-soft text-brand"
+    : "bg-surface-2 text-muted";
   return (
     <button
       type="button"
@@ -836,12 +979,7 @@ function FilterPill({
       )}
     >
       {label}
-      <span
-        className={cn(
-          "min-w-5 rounded-md px-1.5 py-0.5 text-center text-xs font-semibold tabular-nums",
-          active ? "bg-brand/15 text-brand" : "bg-surface-2 text-muted",
-        )}
-      >
+      <span className={cn("min-w-5 rounded-md px-1.5 py-0.5 text-center text-xs font-semibold tabular-nums", countCls)}>
         {count}
       </span>
     </button>
@@ -1069,44 +1207,35 @@ function AbertaCell({ s }: { s: SaldoRow }) {
   );
 }
 
-// ── Célula de próxima reposição (pedido de compra em aberto) ───
+// ── Célula de próxima compra (pedido de compra em aberto) ─────
 
 /** Badge com dot colorido. */
-function ReposBadge({ tone, children }: { tone: "ok" | "warn" | "danger" | "muted"; children: React.ReactNode }) {
-  const text = tone === "ok" ? "text-ok" : tone === "warn" ? "text-warn" : tone === "danger" ? "text-danger" : "text-faint";
-  const dot = tone === "ok" ? "bg-ok" : tone === "warn" ? "bg-warn" : tone === "danger" ? "bg-danger" : "bg-faint";
+function ReposBadge({ children }: { children: React.ReactNode }) {
   return (
-    <span className={cn("inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-medium", text)}>
-      <span className={cn("h-2 w-2 shrink-0 rounded-full", dot)} />
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-ok">
+      <span className="h-2 w-2 shrink-0 rounded-full bg-ok" />
       {children}
     </span>
   );
 }
 
 /**
- * Reposição responde "o que preciso fazer?" — separado da situação física do
- * estoque. Comprar hoje/Sem reposição só se aplicam quando falta comprar e
- * não há pedido em aberto; havendo pedido, o que importa é a previsão.
+ * Coluna factual: mostra apenas pedidos de compra em aberto (o que já foi
+ * decidido pelo operador). Recomendações de compra vivem na Reposição
+ * Inteligente (/compras) — nunca aqui.
  */
 function ReposicaoStatusCell({ s }: { s: SaldoRow }) {
   if (s.reposEstado === "prevista") {
     return (
-      <ReposBadge tone="ok">
+      <ReposBadge>
         Próxima compra {s.reposPrevisao ? previsaoLabel(s.reposPrevisao) : ""}
       </ReposBadge>
     );
   }
   if (s.reposEstado === "pedido") {
-    return <ReposBadge tone="ok">Próxima compra — pedido enviado</ReposBadge>;
+    return <ReposBadge>Próxima compra — pedido enviado</ReposBadge>;
   }
-  if (!precisaRepor(s)) {
-    return <ReposBadge tone="muted">Não necessário</ReposBadge>;
-  }
-  const st = statusOf(s);
-  if (st === "semEstoque" || st === "baixoMinimo") {
-    return <ReposBadge tone="danger">Comprar hoje</ReposBadge>;
-  }
-  return <ReposBadge tone="warn">Sem reposição</ReposBadge>;
+  return <span className="text-[11px] text-faint">—</span>;
 }
 
 // ── Célula de produto (miniatura + nome + SKU/EAN + ícones) ────
@@ -1131,7 +1260,17 @@ function GapIcon({ icon: Icon, title, color, onClick }: { icon: React.ElementTyp
   );
 }
 
-function ProdutoCell({ s, onPendencias }: { s: SaldoRow; onPendencias?: () => void }) {
+function ProdutoCell({
+  s,
+  onPendencias,
+  onOpen,
+}: {
+  s: SaldoRow;
+  onPendencias?: () => void;
+  /** Quando presente, o nome vira botão focável — acesso por teclado nas linhas da tabela. */
+  onOpen?: () => void;
+}) {
+  const st = statusOf(s);
   const semLocal = !s.locationNome;
   const cadGaps = dataGaps(s).filter((g) => g !== "local"); // custo, fornecedor
   const mov = s.ultimaMovEm
@@ -1142,7 +1281,17 @@ function ProdutoCell({ s, onPendencias }: { s: SaldoRow; onPendencias?: () => vo
       <Thumb url={s.imagemUrl} />
       <div className="min-w-0">
         <div className="flex items-center gap-1.5">
-          <p className="truncate font-medium text-ink">{s.nome}</p>
+          {onOpen ? (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onOpen(); }}
+              className="min-w-0 truncate rounded text-left font-medium text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+            >
+              {s.nome}
+            </button>
+          ) : (
+            <p className="truncate font-medium text-ink">{s.nome}</p>
+          )}
           {s.tipo === "PERSONALIZADO" && (
             <span className="shrink-0 rounded-full bg-brand-soft px-1.5 py-px text-[10px] font-medium text-brand">
               <Zap size={9} className="-mt-px mr-0.5 inline" />Pers.
@@ -1170,7 +1319,10 @@ function ProdutoCell({ s, onPendencias }: { s: SaldoRow; onPendencias?: () => vo
             />
           )}
         </div>
-        <p className={cn("mt-0.5 text-[11px]", s.ultimaMovEm ? "text-muted" : "text-faint")}>{mov}</p>
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+          <StatusCell status={st} />
+          <span className={s.ultimaMovEm ? "text-muted" : "text-faint"}>{mov}</span>
+        </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
           <span className="font-mono text-faint">{s.sku}</span>
           {s.categoria && <span className="text-muted">{s.categoria}</span>}
@@ -1223,7 +1375,7 @@ function Th({
 // ── Estado vazio ──────────────────────────────────────────────
 
 function EmptyState({ filtro, busca }: { filtro: Filtro; busca: string }) {
-  const Icon = filtro === "sem" ? PackageCheck : filtro === "pendencias" ? ClipboardList : Boxes;
+  const Icon = filtro === "sem" ? PackageCheck : filtro === "aberto" ? PackageOpen : Boxes;
   return (
     <div className="flex flex-col items-center gap-2 rounded-xl border border-line bg-surface py-14 text-center">
       <Icon size={32} className="text-faint" />
@@ -1232,11 +1384,17 @@ function EmptyState({ filtro, busca }: { filtro: Filtro; busca: string }) {
           ? "Nenhum produto encontrado para a busca."
           : filtro === "sem"
             ? "Tudo abastecido — nenhum item zerado."
-            : filtro === "pendencias"
-              ? "Cadastro completo — nenhuma pendência."
-              : filtro !== "todos"
-                ? "Nenhum produto para este filtro."
-                : "Nenhum produto com estoque neste site."}
+            : filtro === "baixoMinimo"
+              ? "Nada abaixo do mínimo."
+              : filtro === "repor"
+                ? "Nada abaixo do ideal."
+                : filtro === "quaseIdeal"
+                  ? "Nenhum item perto de precisar reposição."
+                  : filtro === "aberto"
+                    ? "Nenhum item com estoque aberto no momento."
+                    : filtro !== "todos"
+                      ? "Nenhum produto para este filtro."
+                      : "Nenhum produto com estoque neste site."}
       </p>
     </div>
   );
@@ -1251,7 +1409,7 @@ function DetalheDrawer({
   canRepor,
   onClose,
   onEditar,
-  onRepor,
+  onComprar,
   onNovaMovimentacao,
   onAjustado,
 }: {
@@ -1261,7 +1419,7 @@ function DetalheDrawer({
   canRepor: boolean;
   onClose: () => void;
   onEditar: (productId: string) => void;
-  onRepor: (s: SaldoRow) => void;
+  onComprar: (s: SaldoRow) => void;
   onNovaMovimentacao: (s: SaldoRow) => void;
   onAjustado: () => void;
 }) {
@@ -1306,7 +1464,7 @@ function DetalheDrawer({
               canRepor={canRepor}
               gaps={gaps}
               onEditar={onEditar}
-              onRepor={onRepor}
+              onComprar={onComprar}
               onNovaMovimentacao={onNovaMovimentacao}
               onAjustado={onAjustado}
             />
@@ -1325,7 +1483,7 @@ function ResumoTab({
   canRepor,
   gaps,
   onEditar,
-  onRepor,
+  onComprar,
   onNovaMovimentacao,
   onAjustado,
 }: {
@@ -1334,7 +1492,7 @@ function ResumoTab({
   canRepor: boolean;
   gaps: ("custo" | "fornecedor" | "local")[];
   onEditar: (productId: string) => void;
-  onRepor: (s: SaldoRow) => void;
+  onComprar: (s: SaldoRow) => void;
   onNovaMovimentacao: (s: SaldoRow) => void;
   onAjustado: () => void;
 }) {
@@ -1342,14 +1500,10 @@ function ResumoTab({
   const status = STATUS_META[st];
   const base = s.custo ?? s.custoMedio;
   const un = s.unidadeBase.toLowerCase();
-  const med = mediaDia(s);
   const media7 = s.consumo7 / 7;
   const media30 = s.consumo30 / 30;
   const deficit = s.estoqueIdeal > 0 && s.estoqueFechado < s.estoqueIdeal ? s.estoqueIdeal - s.estoqueFechado : 0;
-  const dura = med > 0 && deficit > 0 ? Math.round(deficit / med) : null;
-  const custoSug = base != null && deficit > 0 ? deficit * base : null;
   const pctAberta = temAbertaFrac(s) ? Math.round((s.estoqueAberto / s.conteudoPorUnidade!) * 100) : 0;
-  const podeRepor = canRepor && precisaRepor(s);
   const [ajuste, setAjuste] = useState(false);
 
   const gapMsg: Record<"custo" | "fornecedor" | "local", string> = {
@@ -1395,13 +1549,13 @@ function ResumoTab({
         )}
 
         <div className="mt-3 flex flex-wrap gap-2">
-          {podeRepor && (
+          {canRepor && (
             <button
               type="button"
-              onClick={() => onRepor(s)}
+              onClick={() => onComprar(s)}
               className="flex items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
             >
-              <RefreshCw size={14} /> Repor
+              <ShoppingCart size={14} /> Comprar
             </button>
           )}
           <button
@@ -1449,16 +1603,9 @@ function ResumoTab({
             value={temAbertaFrac(s) ? `${fmtVol(s.estoqueAberto, un)} (${pctAberta}%)` : "—"}
             tone={temAbertaFrac(s) ? "accent" : undefined}
           />
+          <Field label="Mínimo" value={s.estoqueMinimo > 0 ? `${fmt(s.estoqueMinimo)} un` : "—"} />
           <Field label="Ideal" value={s.estoqueIdeal > 0 ? `${fmt(s.estoqueIdeal)} un` : "—"} />
-          <Field label="Comprar" value={deficit > 0 ? `${fmt(deficit)} un` : "no ideal"} tone={deficit > 0 ? "brand" : "ok"} />
         </dl>
-        {deficit > 0 && (dura != null || custoSug != null) && (
-          <p className="mt-3 border-t border-line pt-2.5 text-xs text-muted">
-            Sugestão: comprar {fmt(deficit)} un
-            {dura != null && ` · ≈ dura ${dura} ${dura === 1 ? "dia" : "dias"}`}
-            {custoSug != null && ` · ${fmtMoney(custoSug)}`}
-          </p>
-        )}
       </div>
 
       {/* ── EM USO — unidade aberta, vendida em doses/drinks ── */}
@@ -1620,6 +1767,15 @@ function AjusteInline({
             />
           </label>
           {erro && <p className="text-xs text-danger">{erro}</p>}
+          {!podeEnviar && !pending && (
+            <p className="text-[11px] text-faint">
+              {!Number.isFinite(nova)
+                ? "Informe um número válido na contagem."
+                : delta === 0
+                  ? "Contagem igual ao saldo atual — nada a ajustar."
+                  : "Informe o motivo do ajuste (mínimo 3 caracteres)."}
+            </p>
+          )}
           <button
             type="button"
             onClick={salvar}

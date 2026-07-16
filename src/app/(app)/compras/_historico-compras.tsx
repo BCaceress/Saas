@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useMemo, useState } from "react";
-import { CircleCheck, CircleX, Clock3, FilePenLine, PackageCheck, Search, SlidersHorizontal, Send, X } from "lucide-react";
+import { CircleCheck, CircleX, Clock3, FilePenLine, PackageCheck, Search, SlidersHorizontal, Send, Truck, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
 import { PedidoDrawer, PedidoFormSheet, type PedidoView, type FormOptions } from "./_pedidos";
@@ -92,9 +92,10 @@ export function HistoricoComprasProvider({
 
 function eventoPrincipal(p: PedidoView): { label: string; icon: React.ElementType; cls: string; data: string } {
   if (p.status === "CANCELADO" && p.canceladoEm) return { label: "Cancelado", icon: CircleX, cls: "text-danger", data: p.canceladoEm };
-  if (p.status === "RECEBIDO" && p.recebidoEm) return { label: "Recebido", icon: CircleCheck, cls: "text-ok", data: p.recebidoEm };
-  if (p.status === "RECEBIDO_PARCIAL") return { label: "Recebido parcialmente", icon: PackageCheck, cls: "text-brand", data: p.enviadoEm ?? p.createdAt };
-  if (p.status === "AGUARDANDO") return { label: "Aguardando entrega", icon: Clock3, cls: "text-warn", data: p.enviadoEm ?? p.createdAt };
+  if (p.status === "RECEBIDO" && p.recebidoEm) return { label: "Concluído", icon: CircleCheck, cls: "text-ok", data: p.recebidoEm };
+  if (p.status === "RECEBIDO_PARCIAL") return { label: "Recebimento pendente", icon: PackageCheck, cls: "text-accent", data: p.enviadoEm ?? p.createdAt };
+  if (p.status === "EM_TRANSITO") return { label: "Em trânsito", icon: Truck, cls: "text-purple-600 dark:text-purple-400", data: p.enviadoEm ?? p.createdAt };
+  if (p.status === "AGUARDANDO") return { label: "Confirmado", icon: Clock3, cls: "text-warn", data: p.enviadoEm ?? p.createdAt };
   if (p.status === "ENVIADO" && p.enviadoEm) return { label: "Enviado", icon: Send, cls: "text-blue-600 dark:text-blue-400", data: p.enviadoEm };
   return { label: "Criado", icon: FilePenLine, cls: "text-muted", data: p.createdAt };
 }

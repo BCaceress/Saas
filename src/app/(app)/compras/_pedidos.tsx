@@ -28,6 +28,7 @@ import {
   atualizarPedidoCompraAction,
   enviarPedidoCompraAction,
   marcarAguardandoPedidoAction,
+  marcarEmTransitoPedidoAction,
   cancelarPedidoCompraAction,
   excluirPedidoCompraAction,
 } from "../estoque/actions";
@@ -63,6 +64,7 @@ export type PedidoView = {
   observacao: string | null;
   financeiroGerado: boolean;
   createdAt: string;
+  updatedAt: string;
   enviadoEm: string | null;
   recebidoEm: string | null;
   canceladoEm: string | null;
@@ -109,7 +111,7 @@ export function PedidoDrawer({
   const [erro, setErro] = useState<string | null>(null);
   const [reenviar, setReenviar] = useState(false);
   const p = pedido;
-  const aberto = p ? ["ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL"].includes(p.status) : false;
+  const aberto = p ? ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"].includes(p.status) : false;
   const prazo = p && aberto ? estadoEntrega(p.previsaoEntrega) : null;
 
   async function run(label: string, fn: () => Promise<unknown>) {
@@ -208,7 +210,7 @@ export function PedidoDrawer({
           {erro && <p className="rounded-lg bg-danger-soft px-3 py-2.5 text-sm text-danger">{erro}</p>}
 
           {/* Recebimento hint */}
-          {(p.status === "ENVIADO" || p.status === "AGUARDANDO" || p.status === "RECEBIDO_PARCIAL") && (
+          {aberto && (
             <div className="flex items-start gap-2 rounded-lg border border-brand/30 bg-brand-soft/60 px-3 py-2.5 text-xs text-brand">
               <Truck size={14} className="mt-px shrink-0" />
               <span>Quando o caminhão chegar, use <strong>Receber mercadoria</strong> para conferir e gerar a entrada no estoque.</span>
@@ -217,7 +219,7 @@ export function PedidoDrawer({
 
           {/* Ações por status */}
           <div className="flex flex-wrap gap-2">
-            {(p.status === "ENVIADO" || p.status === "AGUARDANDO" || p.status === "RECEBIDO_PARCIAL") && onReceber && (
+            {aberto && onReceber && (
               <button type="button" onClick={() => onReceber(p)} className="flex items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand hover:bg-brand-strong">
                 <PackageCheck size={14} /> Receber mercadoria
               </button>
@@ -255,6 +257,11 @@ export function PedidoDrawer({
                   <Send size={14} className="text-muted" /> Reenviar / compartilhar
                 </button>
               </>
+            )}
+            {(p.status === "ENVIADO" || p.status === "AGUARDANDO") && (
+              <button type="button" disabled={pending !== null} onClick={() => run("transito", () => marcarEmTransitoPedidoAction(p.id))} className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink hover:bg-surface-2 disabled:opacity-50">
+                {pending === "transito" ? <Loader2 size={14} className="animate-spin" /> : <Truck size={14} className="text-muted" />} Marcar em trânsito
+              </button>
             )}
             {p.status !== "RECEBIDO" && p.status !== "CANCELADO" && (
               <button type="button" disabled={pending !== null} onClick={() => run("cancelar", () => cancelarPedidoCompraAction(p.id))} className="flex items-center gap-1.5 rounded-full border border-danger/40 bg-surface px-3.5 py-2 text-sm font-medium text-danger hover:bg-danger-soft disabled:opacity-50">
