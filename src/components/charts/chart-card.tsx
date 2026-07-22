@@ -15,8 +15,8 @@ export function ChartCard({
   className?: string;
 }) {
   return (
-    <section className={cn("rounded-[var(--radius-lg)] border border-line bg-surface p-5", className)}>
-      <div className="mb-4 flex items-start justify-between gap-3">
+    <section className={cn("rounded-[var(--radius-lg)] border border-line bg-surface p-4 print:break-inside-avoid", className)}>
+      <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="font-display text-base font-semibold text-ink">{title}</h2>
           {subtitle && <p className="mt-0.5 text-xs text-muted">{subtitle}</p>}

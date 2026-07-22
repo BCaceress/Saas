@@ -1,4 +1,10 @@
-import type { ProductType, BaseUnit, StorageType, SalesChannel } from "@/generated/prisma";
+import type {
+  ProductType,
+  BaseUnit,
+  StorageType,
+  SalesChannel,
+  IndicadorIE,
+} from "@/generated/prisma";
 
 /** Configuração de um produto num canal de venda online (§7). */
 export type SalesChannelItem = {
@@ -29,12 +35,19 @@ export type ProductRow = {
   conteudoPorUnidade: number | null;
   vendeOnline: boolean;
   fiscalProfileId: string | null;
+  /** Fiscal por item — só preenchido quando a unidade tributável difere da de venda. */
+  gtinTributavel: string | null;
+  unidadeTributavel: string | null;
+  fatorConversaoTrib: number | null;
+  codigoAnp: string | null;
   estoque: {
     fechado: number;
     aberto: number;
     minimo: number;
     ideal: number;
     locationId: string | null;
+    /** false = INSUMO fora do controle de estoque (não entra em /estoque). */
+    controlado: boolean;
   };
   fornecedorPrincipalId: string | null;
   custoFornecedor: number | null;
@@ -103,13 +116,19 @@ export type SupplierRow = {
   telefone: string | null;
   nomeContatoPrincipal: string | null;
   website: string | null;
+  logoUrl?: string | null;
+  pedidoMinimo?: number | null;
   cep: string | null;
   logradouro: string | null;
   numero: string | null;
   complemento: string | null;
   bairro: string | null;
   municipio: string | null;
+  /** IBGE (7 dígitos) — chega preenchido quando o fornecedor vem de um XML. */
+  codigoMunicipio: string | null;
   uf: string | null;
+  ie: string | null;
+  indicadorIE: IndicadorIE | null;
   ativo: boolean;
   createdAt?: string; // ISO
   totalProdutos?: number;

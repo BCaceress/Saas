@@ -35,9 +35,11 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   // Tema vem do cookie (escrito pelo ThemeToggle) e é aplicado no servidor —
-  // sem flash, sem script inline no cliente.
+  // sem flash, sem script inline no cliente. Sem cookie, o padrão é CLARO: não
+  // seguimos o prefers-color-scheme do sistema, senão quem tem o SO no escuro
+  // entrava no escuro sem ter escolhido.
   const cookieTheme = (await cookies()).get("theme")?.value;
-  const dataTheme = cookieTheme === "dark" || cookieTheme === "light" ? cookieTheme : undefined;
+  const dataTheme = cookieTheme === "dark" ? "dark" : "light";
 
   return (
     <html lang="pt-BR" data-theme={dataTheme} className="h-full" suppressHydrationWarning>

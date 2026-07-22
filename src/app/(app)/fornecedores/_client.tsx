@@ -18,17 +18,21 @@ import {
   Phone,
   Wallet,
   History,
+  Trash2,
+  ImageIcon,
+  ChevronRight,
 } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Field, Badge } from "@/components/ui/misc";
-import { cn } from "@/lib/utils";
+import { cn, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
 import { maskCnpj, maskPhone } from "@/lib/masks";
 import { fmtData } from "@/lib/customers";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
+import { ViewToggle, useViewMode } from "@/components/app/view-toggle";
 import { relDia, previsaoLabel, fmtMoney, PEDIDO_STATUS, StatusBadge } from "../compras/_ui";
 import {
   createSupplier,
@@ -36,6 +40,7 @@ import {
   setSupplierActive,
 } from "../produtos/actions";
 import type { SupplierRow } from "../produtos/_types";
+import type { IndicadorIE } from "@/generated/prisma";
 
 function StatCell({
   icon, label, value, sub, className,
@@ -57,15 +62,55 @@ function StatCell({
   );
 }
 
+function SupplierLogo({
+  logoUrl,
+  nome,
+  ativo,
+  size = 36,
+  rounded = "rounded-xl",
+}: {
+  logoUrl?: string | null;
+  nome: string;
+  ativo: boolean;
+  size?: number;
+  rounded?: string;
+}) {
+  if (logoUrl) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={logoUrl}
+        alt={`Logo de ${nome}`}
+        className={cn("shrink-0 border border-line bg-surface object-contain p-1", rounded)}
+        style={{ width: size, height: size }}
+      />
+    );
+  }
+  return (
+    <span
+      className={cn(
+        "grid shrink-0 place-items-center",
+        rounded,
+        ativo ? "bg-brand-soft text-brand" : "bg-surface-2 text-faint",
+      )}
+      style={{ width: size, height: size }}
+    >
+      <Truck size={Math.round(size * 0.45)} />
+    </span>
+  );
+}
+
 type SupplierForm = {
   id?: string;
   cnpj: string;
   razaoSocial: string;
   nomeFantasia: string;
+  logoUrl: string;
   email: string;
   telefone: string;
   contato: string;
   website: string;
+  pedidoMinimo: string; // máscara pt-BR — vazio = sem mínimo
   cep: string;
   logradouro: string;
   numero: string;
@@ -73,6 +118,10 @@ type SupplierForm = {
   bairro: string;
   municipio: string;
   uf: string;
+  /** Fiscal — entrada por XML e devolução ao fornecedor. */
+  ie: string;
+  indicadorIE: "" | IndicadorIE;
+  codigoMunicipio: string;
 };
 
 const UFS = [
@@ -85,10 +134,12 @@ const emptyForm = (cnpj = ""): SupplierForm => ({
   cnpj,
   razaoSocial: "",
   nomeFantasia: "",
+  logoUrl: "",
   email: "",
   telefone: "",
   contato: "",
   website: "",
+  pedidoMinimo: "",
   cep: "",
   logradouro: "",
   numero: "",
@@ -96,6 +147,9 @@ const emptyForm = (cnpj = ""): SupplierForm => ({
   bairro: "",
   municipio: "",
   uf: "",
+  ie: "",
+  indicadorIE: "",
+  codigoMunicipio: "",
 });
 
 function formFromRow(s: SupplierRow): SupplierForm {
@@ -104,10 +158,12 @@ function formFromRow(s: SupplierRow): SupplierForm {
     cnpj: s.cnpj ? maskCnpj(s.cnpj) : "",
     razaoSocial: s.razaoSocial,
     nomeFantasia: s.nomeFantasia ?? "",
+    logoUrl: s.logoUrl ?? "",
     email: s.email ?? "",
     telefone: s.telefone ?? "",
     contato: s.nomeContatoPrincipal ?? "",
     website: s.website ?? "",
+    pedidoMinimo: s.pedidoMinimo != null ? moneyToMask(s.pedidoMinimo) : "",
     cep: s.cep ?? "",
     logradouro: s.logradouro ?? "",
     numero: s.numero ?? "",
@@ -115,6 +171,9 @@ function formFromRow(s: SupplierRow): SupplierForm {
     bairro: s.bairro ?? "",
     municipio: s.municipio ?? "",
     uf: s.uf ?? "",
+    ie: s.ie ?? "",
+    indicadorIE: s.indicadorIE ?? "",
+    codigoMunicipio: s.codigoMunicipio ?? "",
   };
 }
 
@@ -142,6 +201,7 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
   const [loadingCnpj, setLoadingCnpj] = useState(false);
   const [error, setError] = useState<string>();
   const [q, setQ] = useState("");
+  const [view, setView] = useViewMode("nohub:fornecedores:view");
 
   const [form, setForm] = useState<SupplierForm | null>(null);
   const [modalNote, setModalNote] = useState<string>();
@@ -202,10 +262,12 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
       cnpj: form.cnpj,
       razaoSocial: form.razaoSocial,
       nomeFantasia: form.nomeFantasia,
+      logoUrl: form.logoUrl,
       email: form.email,
       telefone: form.telefone,
       nomeContatoPrincipal: form.contato,
       website: form.website,
+      pedidoMinimo: parseMoney(form.pedidoMinimo),
       cep: form.cep,
       logradouro: form.logradouro,
       numero: form.numero,
@@ -213,6 +275,9 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
       bairro: form.bairro,
       municipio: form.municipio,
       uf: form.uf,
+      ie: form.ie,
+      indicadorIE: form.indicadorIE || null,
+      codigoMunicipio: form.codigoMunicipio,
     };
     start(async () => {
       try {
@@ -274,17 +339,20 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
         }
       />
 
-      <div className="relative">
-        <Search
-          size={15}
-          className="absolute left-3 top-1/2 -translate-y-1/2 text-faint"
-        />
-        <Input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Buscar fornecedor cadastrado"
-          className="pl-9"
-        />
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search
+            size={15}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-faint"
+          />
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Buscar fornecedor cadastrado"
+            className="pl-9"
+          />
+        </div>
+        <ViewToggle view={view} onChange={setView} />
       </div>
 
       {list.length === 0 ? (
@@ -293,6 +361,104 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
           <p className="text-sm text-muted">
             Nenhum fornecedor cadastrado. Adicione o primeiro.
           </p>
+        </div>
+      ) : view === "cards" ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {list.map((s) => (
+            <div
+              key={s.id}
+              onClick={() => setResumo(s)}
+              className={cn(
+                "flex cursor-pointer flex-col gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4 transition-colors hover:border-line-strong hover:bg-surface-2",
+                !s.ativo && "opacity-60",
+              )}
+            >
+              <div className="flex items-start gap-3">
+                <SupplierLogo logoUrl={s.logoUrl} nome={s.nomeFantasia || s.razaoSocial} ativo={s.ativo} />
+                <div className="min-w-0 flex-1">
+                  <p
+                    className={cn(
+                      "truncate text-sm font-medium text-ink",
+                      !s.ativo && "text-faint line-through",
+                    )}
+                  >
+                    {s.nomeFantasia || s.razaoSocial}
+                  </p>
+                  <p className="truncate text-xs text-faint">{s.cnpj ? maskCnpj(s.cnpj) : "sem CNPJ"}</p>
+                </div>
+                {!s.ativo && <Badge>Inativo</Badge>}
+                <div onClick={(e) => e.stopPropagation()}>
+                  <Menu
+                    align="end"
+                    trigger={
+                      <button
+                        type="button"
+                        aria-label="Ações do fornecedor"
+                        title="Ações do fornecedor"
+                        className="cursor-pointer rounded-[var(--radius-sm)] p-1.5 text-muted hover:bg-surface-2 hover:text-ink"
+                      >
+                        <MoreVertical size={16} />
+                      </button>
+                    }
+                  >
+                    <MenuItem
+                      icon={<Pencil size={15} />}
+                      onClick={() => {
+                        setModalNote(undefined);
+                        setModalError(undefined);
+                        setForm(formFromRow(s));
+                      }}
+                    >
+                      Editar
+                    </MenuItem>
+                    {enderecoMapsUrl(s) && (
+                      <MenuItem
+                        icon={<MapPin size={15} />}
+                        onClick={() => window.open(enderecoMapsUrl(s)!, "_blank", "noopener,noreferrer")}
+                      >
+                        Ver endereço no Maps
+                      </MenuItem>
+                    )}
+                    <MenuItem
+                      icon={
+                        s.ativo ? <Archive size={15} /> : <ArchiveRestore size={15} />
+                      }
+                      onClick={() => toggleActive(s)}
+                    >
+                      {s.ativo ? "Inativar" : "Reativar"}
+                    </MenuItem>
+                  </Menu>
+                </div>
+              </div>
+              {(s.telefone || s.email) && (
+                <div className="flex items-center gap-x-2 border-t border-line pt-3 text-xs text-faint">
+                  {s.telefone && (
+                    <a
+                      href={whatsappUrl(s.telefone)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      title="Abrir no WhatsApp"
+                      className="shrink-0 text-faint underline-offset-2 hover:text-brand hover:underline"
+                    >
+                      {maskPhone(s.telefone)}
+                    </a>
+                  )}
+                  {s.telefone && s.email && <span className="shrink-0">·</span>}
+                  {s.email && (
+                    <a
+                      href={`mailto:${s.email}`}
+                      onClick={(e) => e.stopPropagation()}
+                      title="Enviar e-mail"
+                      className="truncate text-faint underline-offset-2 hover:text-brand hover:underline"
+                    >
+                      {s.email}
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       ) : (
         <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
@@ -306,14 +472,7 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
                 !s.ativo && "opacity-60",
               )}
             >
-              <span
-                className={cn(
-                  "grid h-9 w-9 shrink-0 place-items-center rounded-xl",
-                  s.ativo ? "bg-brand-soft text-brand" : "bg-surface-2 text-faint",
-                )}
-              >
-                <Truck size={16} />
-              </span>
+              <SupplierLogo logoUrl={s.logoUrl} nome={s.nomeFantasia || s.razaoSocial} ativo={s.ativo} />
               <div className="min-w-0 flex-1">
                 <p
                   className={cn(
@@ -468,8 +627,17 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
               <Input id="m-tel" value={form.telefone} onChange={(e) => upd("telefone", maskPhone(e.target.value))} inputMode="numeric" maxLength={15} placeholder="(11) 99999-9999" />
             </Field>
 
-            <Field className="col-span-12" label="Website" htmlFor="m-site">
+            <Field className="col-span-12 sm:col-span-7" label="Website" htmlFor="m-site">
               <Input id="m-site" value={form.website} onChange={(e) => upd("website", e.target.value)} placeholder="https://" />
+            </Field>
+            <Field className="col-span-12 sm:col-span-5" label="Pedido mínimo (R$)" htmlFor="m-minimo">
+              <Input
+                id="m-minimo"
+                value={form.pedidoMinimo}
+                onChange={(e) => upd("pedidoMinimo", maskMoney(e.target.value))}
+                inputMode="numeric"
+                placeholder="Sem mínimo"
+              />
             </Field>
 
             <p className="col-span-12 mt-1 text-[11px] font-medium uppercase tracking-wider text-faint">Endereço</p>
@@ -503,6 +671,81 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
             </Field>
             <Field className="col-span-4 sm:col-span-3" label="Número" htmlFor="m-num">
               <Input id="m-num" value={form.numero} onChange={(e) => upd("numero", e.target.value)} />
+            </Field>
+
+            {/*
+              Fiscal: usado na entrada por XML e na devolução ao fornecedor.
+              Chega preenchido sozinho quando o fornecedor nasce de uma nota.
+            */}
+            <details className="group col-span-12 border-t border-line pt-3">
+              <summary className="flex cursor-pointer select-none list-none items-center gap-2 text-sm text-muted transition-colors hover:text-ink-2 [&::-webkit-details-marker]:hidden">
+                <ChevronRight
+                  size={13}
+                  className="shrink-0 transition-transform duration-200 group-open:rotate-90"
+                />
+                Dados fiscais
+              </summary>
+              <div className="mt-3 grid grid-cols-12 gap-x-3 gap-y-3">
+                <Field className="col-span-6 sm:col-span-4" label="Inscrição estadual" htmlFor="m-ie">
+                  <Input id="m-ie" value={form.ie} onChange={(e) => upd("ie", e.target.value)} className="font-mono" />
+                </Field>
+                <Field className="col-span-6 sm:col-span-4" label="Indicador de IE" htmlFor="m-indie">
+                  <Select
+                    id="m-indie"
+                    value={form.indicadorIE}
+                    onChange={(e) => upd("indicadorIE", e.target.value as SupplierForm["indicadorIE"])}
+                  >
+                    <option value="">—</option>
+                    <option value="CONTRIBUINTE">Contribuinte</option>
+                    <option value="ISENTO">Isento</option>
+                    <option value="NAO_CONTRIBUINTE">Não contribuinte</option>
+                  </Select>
+                </Field>
+                <Field
+                  className="col-span-12 sm:col-span-4"
+                  label="Código IBGE do município"
+                  htmlFor="m-ibge"
+                  hint="7 dígitos."
+                >
+                  <Input
+                    id="m-ibge"
+                    value={form.codigoMunicipio}
+                    onChange={(e) => upd("codigoMunicipio", e.target.value.replace(/\D/g, "").slice(0, 7))}
+                    inputMode="numeric"
+                    className="font-mono"
+                    placeholder="4314902"
+                  />
+                </Field>
+              </div>
+            </details>
+
+            <Field className="col-span-12" label="Logo do fornecedor (URL)" htmlFor="m-logo">
+              <div className="flex items-center gap-3">
+                {form.logoUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={form.logoUrl}
+                    alt="Logo do fornecedor"
+                    className="h-16 w-16 shrink-0 rounded-xl border border-line bg-surface-2 object-contain p-1"
+                  />
+                ) : (
+                  <span className="grid h-16 w-16 shrink-0 place-items-center rounded-xl border border-dashed border-line bg-surface-2 text-faint">
+                    <ImageIcon size={22} />
+                  </span>
+                )}
+                <Input
+                  id="m-logo"
+                  type="url"
+                  value={form.logoUrl}
+                  onChange={(e) => upd("logoUrl", e.target.value)}
+                  placeholder="https://exemplo.com/logo.png"
+                />
+                {form.logoUrl && (
+                  <Button type="button" variant="outline" className="shrink-0" onClick={() => upd("logoUrl", "")}>
+                    <Trash2 size={16} /> Remover
+                  </Button>
+                )}
+              </div>
             </Field>
           </div>
         )}
@@ -548,14 +791,13 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
           <div className="flex flex-col gap-5">
             {/* Identificação */}
             <div className="flex items-start gap-3">
-              <span
-                className={cn(
-                  "grid h-11 w-11 shrink-0 place-items-center rounded-full",
-                  resumo.ativo ? "bg-brand-soft text-brand" : "bg-surface-2 text-faint",
-                )}
-              >
-                <Truck size={18} />
-              </span>
+              <SupplierLogo
+                logoUrl={resumo.logoUrl}
+                nome={resumo.nomeFantasia || resumo.razaoSocial}
+                ativo={resumo.ativo}
+                size={44}
+                rounded="rounded-full"
+              />
               <div className="min-w-0 flex-1 pt-0.5">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
                   <span className={cn("flex items-center gap-1.5 font-medium", resumo.ativo ? "text-ok" : "text-faint")}>

@@ -1,4 +1,4 @@
-import { PrismaClient } from "@/generated/prisma";
+import { PrismaClient, Prisma } from "@/generated/prisma";
 import { getTenantId } from "./tenant-context";
 
 /**
@@ -125,3 +125,50 @@ const extendedPrisma = basePrisma.$extends({
  */
 export const db = extendedPrisma;
 export type Db = typeof extendedPrisma;
+
+// ============================================================
+// Acesso com tenant explícito (para quem usa basePrisma)
+//
+// Serviços de domínio (lib/vendas, lib/estoque, lib/caixa, lib/pagamentos)
+// recebem o tenantId por parâmetro e rodam FORA do AsyncLocalStorage — por
+// isso usam basePrisma. Só que basePrisma não faz `SET LOCAL
+// app.current_tenant`, então a query roda sem contexto: hoje passa porque o
+// papel do banco tem BYPASSRLS, mas no dia em que o RLS valer de verdade a
+// policy compara `tenantId = NULL` e devolve ZERO LINHA.
+//
+// Zero linha é pior que erro: um `count()` que devolve 0 vira "não há
+// restrição". Use estes helpers em TODA leitura via basePrisma — o custo é o
+// mesmo (uma ida ao banco, igual ao que o `db` estendido já faz).
+// ============================================================
+
+/**
+ * Uma query só, com o tenant setado na mesma transação (e portanto na mesma
+ * conexão — necessário sob o pooler do Neon).
+ *
+ *   const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({…}));
+ */
+export async function comTenant<T>(
+  tenantId: string,
+  query: Prisma.PrismaPromise<T>,
+): Promise<T> {
+  const [, resultado] = await basePrisma.$transaction([
+    basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
+    query,
+  ]);
+  return resultado;
+}
+
+/**
+ * Várias queries no mesmo contexto — quando uma depende do resultado da outra.
+ * Transação interativa: segura a conexão, então prefira `comTenant` quando for
+ * leitura única.
+ */
+export function txComTenant<T>(
+  tenantId: string,
+  fn: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  return basePrisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`;
+    return fn(tx);
+  });
+}

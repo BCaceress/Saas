@@ -107,10 +107,13 @@ export function AuthForm({
   mode,
   action,
   googleAction,
+  emailFixo,
 }: {
   mode: "login" | "signup";
   action: (prev: FormState, fd: FormData) => Promise<FormState>;
   googleAction: () => Promise<void>;
+  /** Cadastro via convite: o e-mail vem travado — se mudar, o convite não pega. */
+  emailFixo?: string;
 }) {
   const [state, formAction] = useActionState<FormState, FormData>(action, undefined);
   const isSignup = mode === "signup";
@@ -118,12 +121,13 @@ export function AuthForm({
   const [remember, setRemember] = useState(false);
 
   useEffect(() => {
+    if (emailFixo) return;
     const saved = window.localStorage.getItem(REMEMBER_KEY);
     if (saved && emailRef.current) {
       emailRef.current.value = saved;
       setRemember(true);
     }
-  }, []);
+  }, [emailFixo]);
 
   function handleSubmit(fd: FormData) {
     const email = String(fd.get("email") ?? "");
@@ -177,7 +181,14 @@ export function AuthForm({
             autoComplete="email"
             placeholder="voce@mercado.com.br"
             required
+            defaultValue={emailFixo}
+            readOnly={!!emailFixo}
           />
+          {emailFixo && (
+            <p className="text-xs text-[var(--auth-muted)]">
+              E-mail do convite — não pode ser alterado.
+            </p>
+          )}
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -198,7 +209,7 @@ export function AuthForm({
             id="password"
             name="password"
             autoComplete={isSignup ? "new-password" : "current-password"}
-            placeholder="••••••••"
+            // Sem placeholder de bolinhas: no cadastro parecia campo já preenchido.
             hasError={!!state?.error}
             required
           />

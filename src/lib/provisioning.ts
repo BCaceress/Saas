@@ -2,6 +2,7 @@ import "server-only";
 import bcrypt from "bcryptjs";
 import { basePrisma } from "./prisma";
 import { seedTenant } from "./seed-tenant";
+import { criarMembershipDoConvite } from "./convites";
 
 const RESERVED = new Set(["www", "app", "api", "admin", "mail", "static", "assets"]);
 
@@ -88,9 +89,7 @@ export async function signupWithTenant(input: SignupInput): Promise<SignupResult
       },
     });
 
-    await tx.membership.create({
-      data: { userId: user.id, tenantId: tenant.id, role: "OWNER" },
-    });
+    await criarProprietario(tx, user.id, tenant.id);
 
     await seedTenant(tx, tenant.id);
 
@@ -107,6 +106,22 @@ export class SignupError extends Error {
 type Tx = Parameters<Parameters<typeof basePrisma.$transaction>[0]>[0];
 
 /**
+ * Dono da conta: Membership com `proprietario` + acesso ADMINISTRADOR global.
+ * A flag responde por cobrança e por "não pode ser removido"; o poder de fato
+ * vem do acesso.
+ */
+async function criarProprietario(tx: Tx, userId: string, tenantId: string) {
+  await tx.membership.create({
+    data: {
+      userId,
+      tenantId,
+      proprietario: true,
+      acessos: { create: { tenantId, perfil: "ADMINISTRADOR", siteId: null } },
+    },
+  });
+}
+
+/**
  * Consome convites pendentes do e-mail (Configurações → Usuários): cria uma
  * Membership por convite e apaga os convites. Retorna o tenant do primeiro
  * convite (destino do redirect) ou null se não havia convite.
@@ -116,18 +131,17 @@ async function acceptInvites(
   userId: string,
   email: string
 ): Promise<{ tenantId: string; subdomain: string } | null> {
+  // Convite vencido não vale — fica no banco para o admin reenviar.
   const invites = await tx.invite.findMany({
-    where: { email },
+    where: { email, expiresAt: { gt: new Date() } },
     orderBy: { createdAt: "asc" },
   });
   if (invites.length === 0) return null;
 
   for (const inv of invites) {
-    await tx.membership.create({
-      data: { userId, tenantId: inv.tenantId, role: inv.role },
-    });
+    await criarMembershipDoConvite(tx, userId, inv);
   }
-  await tx.invite.deleteMany({ where: { email } });
+  await tx.invite.deleteMany({ where: { id: { in: invites.map((i) => i.id) } } });
 
   const tenant = await tx.tenant.findUniqueOrThrow({
     where: { id: invites[0].tenantId },
@@ -171,9 +185,7 @@ export async function provisionTenantForUser(input: {
         trialEndsAt,
       },
     });
-    await tx.membership.create({
-      data: { userId: input.userId, tenantId: tenant.id, role: "OWNER" },
-    });
+    await criarProprietario(tx, input.userId, tenant.id);
     await seedTenant(tx, tenant.id);
   });
 }

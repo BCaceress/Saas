@@ -3,7 +3,7 @@
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/prisma";
-import { requireActiveTenant } from "@/lib/current-tenant";
+import { guardAction } from "@/lib/guard";
 import { runWithTenant } from "@/lib/tenant-context";
 import { normalizeBrand, normalizeSkuPrefix, onlyDigits } from "@/lib/normalize";
 import { getOrCreateDefaultSite } from "@/lib/sites";
@@ -28,17 +28,19 @@ import type { StorageType } from "@/generated/prisma";
  * writes aninhados nem os tipos do Prisma (ver CLAUDE.md).
  */
 async function tx<T>(fn: (tid: string) => Promise<T>): Promise<T> {
-  const ctx = await requireActiveTenant();
+  const ctx = await guardAction("produto.editar");
   return runWithTenant(ctx.tenant.id, () => fn(ctx.tenant.id));
 }
 
 const ok = () => {
   revalidatePath("/produtos");
+  revalidatePath("/estoque");
 };
 
 const okStorage = () => {
   revalidatePath("/produtos");
   revalidatePath("/configuracoes/sites");
+  revalidatePath("/estoque");
 };
 
 // ── Busca global (navbar) ──────────────────────────────────
@@ -273,16 +275,29 @@ const supplierSchema = z.object({
   telefone: z.string().optional(),
   nomeContatoPrincipal: z.string().optional(),
   website: z.string().optional(),
+  logoUrl: z.string().trim().optional().nullable(),
+  pedidoMinimo: z.number().nonnegative().optional().nullable(),
   cep: z.string().optional(),
   logradouro: z.string().optional(),
   numero: z.string().optional(),
   complemento: z.string().optional(),
   bairro: z.string().optional(),
   municipio: z.string().optional(),
+  codigoMunicipio: z.string().optional(),
   uf: z.string().optional(),
+  // Fiscal — usados na entrada por XML e na devolução ao fornecedor.
+  ie: z.string().optional(),
+  indicadorIE: z.enum(["CONTRIBUINTE", "ISENTO", "NAO_CONTRIBUINTE"]).optional().nullable(),
 });
 
 function supplierData(d: z.infer<typeof supplierSchema>) {
+  const logoUrl = d.logoUrl?.trim() ?? "";
+  if (logoUrl && !/^(data:image\/(png|jpeg|webp|svg\+xml);base64,|https?:\/\/)/.test(logoUrl)) {
+    throw new Error("Logo invalida - envie a imagem novamente.");
+  }
+  if (logoUrl.length > 700_000) {
+    throw new Error("Logo muito grande - envie uma imagem menor.");
+  }
   return {
     cnpj: d.cnpj ? onlyDigits(d.cnpj) : null,
     razaoSocial: d.razaoSocial.trim(),
@@ -291,13 +306,18 @@ function supplierData(d: z.infer<typeof supplierSchema>) {
     telefone: d.telefone?.trim() || null,
     nomeContatoPrincipal: d.nomeContatoPrincipal?.trim() || null,
     website: d.website?.trim() || null,
+    pedidoMinimo: d.pedidoMinimo ?? null,
+    ...("logoUrl" in d ? { logoUrl: logoUrl || null } : {}),
     cep: d.cep ? onlyDigits(d.cep) : null,
     logradouro: d.logradouro?.trim() || null,
     numero: d.numero?.trim() || null,
     complemento: d.complemento?.trim() || null,
     bairro: d.bairro?.trim() || null,
     municipio: d.municipio?.trim() || null,
+    codigoMunicipio: d.codigoMunicipio ? onlyDigits(d.codigoMunicipio) || null : null,
     uf: d.uf?.trim().toUpperCase().slice(0, 2) || null,
+    ie: d.ie?.trim() || null,
+    indicadorIE: d.indicadorIE ?? null,
   };
 }
 
@@ -426,6 +446,14 @@ const productSchema = z.object({
   fiscalProfileId: z.string().optional().nullable(),
   restricaoIdade: z.boolean().default(false),
 
+  // Fiscal POR ITEM. O tributário (NCM, CST, CFOP) vem do perfil fiscal — aqui
+  // só o que muda de SKU para SKU. Vazio na esmagadora maioria dos produtos.
+  gtinTributavel: z.string().optional().nullable(),
+  unidadeTributavel: z.string().optional().nullable(),
+  fatorConversaoTrib: z.number().positive().optional().nullable(),
+  codigoAnp: z.string().optional().nullable(),
+
+  controlaEstoque: z.boolean().default(true),
   estoqueMinimo: z.number().nonnegative().default(0),
   estoqueIdeal: z.number().nonnegative().default(0),
   estoqueInicial: z.number().nonnegative().default(0),
@@ -509,6 +537,11 @@ export async function createProduct(input: ProductInput) {
         custo: d.custo ?? null,
         fiscalProfileId: d.fiscalProfileId ?? sub.defaultFiscalProfileId ?? null,
         restricaoIdade: d.restricaoIdade,
+        gtinTributavel: d.gtinTributavel || null,
+        unidadeTributavel: d.unidadeTributavel || null,
+        fatorConversaoTrib: d.fatorConversaoTrib ?? null,
+        codigoAnp: d.codigoAnp || null,
+        controlaEstoque: d.tipo === "INSUMO" ? d.controlaEstoque : true,
         vendeOnline: d.vendeOnline,
         pesoGramas: d.pesoGramas ?? null,
         alturaCm: d.alturaCm ?? null,
@@ -576,6 +609,11 @@ export async function updateProduct(id: string, input: ProductInput) {
         custo: d.custo ?? null,
         fiscalProfileId: d.fiscalProfileId ?? null,
         restricaoIdade: d.restricaoIdade,
+        gtinTributavel: d.gtinTributavel || null,
+        unidadeTributavel: d.unidadeTributavel || null,
+        fatorConversaoTrib: d.fatorConversaoTrib ?? null,
+        codigoAnp: d.codigoAnp || null,
+        controlaEstoque: d.tipo === "INSUMO" ? d.controlaEstoque : true,
         vendeOnline: d.vendeOnline,
         pesoGramas: d.pesoGramas ?? null,
         alturaCm: d.alturaCm ?? null,

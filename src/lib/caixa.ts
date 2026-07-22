@@ -1,5 +1,5 @@
 import "server-only";
-import { basePrisma } from "./prisma";
+import { basePrisma, comTenant } from "./prisma";
 import type { PaymentMethod } from "@/generated/prisma";
 
 // ============================================================
@@ -14,26 +14,32 @@ async function setTenant(tx: { $executeRaw: (s: TemplateStringsArray, ...v: unkn
 }
 
 export async function sessaoAtual(tenantId: string, siteId: string, operatorUserId: string) {
-  return basePrisma.cashSession.findFirst({
-    where: { tenantId, siteId, operatorUserId, status: "ABERTA" },
-  });
+  return comTenant(
+    tenantId,
+    basePrisma.cashSession.findFirst({
+      where: { tenantId, siteId, operatorUserId, status: "ABERTA" },
+    }),
+  );
 }
 
 /** Existe caixa aberto no site, de qualquer operador? Gate do autoatendimento. */
 export async function caixaAbertoNoSite(tenantId: string, siteId: string): Promise<boolean> {
-  const aberta = await basePrisma.cashSession.findFirst({
+  const aberta = await comTenant(tenantId, basePrisma.cashSession.findFirst({
     where: { tenantId, siteId, status: "ABERTA" },
     select: { id: true },
-  });
+  }));
   return !!aberta;
 }
 
 /** Caixa aberto do operador em qualquer site do tenant (p/ bloquear logout e abrir o painel). */
 export async function caixaAbertoDoOperador(tenantId: string, operatorUserId: string) {
-  return basePrisma.cashSession.findFirst({
-    where: { tenantId, operatorUserId, status: "ABERTA" },
-    include: { site: { select: { nome: true } } },
-  });
+  return comTenant(
+    tenantId,
+    basePrisma.cashSession.findFirst({
+      where: { tenantId, operatorUserId, status: "ABERTA" },
+      include: { site: { select: { nome: true } } },
+    }),
+  );
 }
 
 export async function abrirCaixa(
@@ -65,10 +71,10 @@ export async function registrarMovimentoCaixa(
   motivo: string
 ): Promise<void> {
   if (valor <= 0) throw new Error("Informe um valor maior que zero.");
-  const sessao = await basePrisma.cashSession.findFirst({
+  const sessao = await comTenant(tenantId, basePrisma.cashSession.findFirst({
     where: { id: cashSessionId, tenantId, status: "ABERTA" },
     select: { id: true },
-  });
+  }));
   if (!sessao) throw new Error("Caixa fechado — abra o caixa para movimentar.");
 
   await basePrisma.$transaction([
@@ -97,7 +103,7 @@ export async function relatorioCaixa(
   tenantId: string,
   cashSessionId: string
 ): Promise<FechamentoReport> {
-  const sessao = await basePrisma.cashSession.findFirst({
+  const sessao = await comTenant(tenantId, basePrisma.cashSession.findFirst({
     where: { id: cashSessionId, tenantId },
     include: {
       movements: { select: { tipo: true, valor: true } },
@@ -106,7 +112,7 @@ export async function relatorioCaixa(
         select: { payments: { where: { status: "CONFIRMADO" }, select: { metodo: true, valor: true, troco: true } } },
       },
     },
-  });
+  }));
   if (!sessao) throw new Error("Sessão de caixa não encontrada.");
 
   let suprimentos = 0;
@@ -151,10 +157,10 @@ export async function fecharCaixa(
   cashSessionId: string,
   valorFechamento: number
 ): Promise<FechamentoReport> {
-  const sessao = await basePrisma.cashSession.findFirst({
+  const sessao = await comTenant(tenantId, basePrisma.cashSession.findFirst({
     where: { id: cashSessionId, tenantId, status: "ABERTA" },
     select: { id: true },
-  });
+  }));
   if (!sessao) throw new Error("Caixa já fechado ou inexistente.");
 
   await basePrisma.$transaction(async (tx) => {

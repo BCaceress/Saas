@@ -2,11 +2,11 @@
 
 import { z } from "zod";
 import { db } from "@/lib/prisma";
-import { requireActiveTenant } from "@/lib/current-tenant";
+import { guardAction } from "@/lib/guard";
 import { runWithTenant } from "@/lib/tenant-context";
 
 async function tx<T>(fn: (tid: string) => Promise<T>): Promise<T> {
-  const ctx = await requireActiveTenant();
+  const ctx = await guardAction("config.gerenciar");
   return runWithTenant(ctx.tenant.id, () => fn(ctx.tenant.id));
 }
 

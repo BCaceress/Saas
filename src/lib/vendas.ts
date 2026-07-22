@@ -1,5 +1,5 @@
 import "server-only";
-import { basePrisma } from "./prisma";
+import { basePrisma, comTenant } from "./prisma";
 import { aplicarMovimento, registrarProducao } from "./estoque";
 import { emitirHookFiscal } from "./fiscal";
 import { defaultPaymentMethods } from "./presets";
@@ -35,10 +35,10 @@ export async function disponibilidadeSimples(
   siteId: string,
   productId: string
 ): Promise<number> {
-  const stock = await basePrisma.stock.findFirst({
+  const stock = await comTenant(tenantId, basePrisma.stock.findFirst({
     where: { productId, siteId, tenantId },
     select: { estoqueFechado: true },
-  });
+  }));
   return num(stock?.estoqueFechado);
 }
 
@@ -47,10 +47,10 @@ export async function listSitePaymentMethods(
   tenantId: string,
   siteId: string
 ): Promise<{ id: string; metodo: PaymentMethod; ativo: boolean }[]> {
-  const existing = await basePrisma.sitePaymentMethod.findMany({
+  const existing = await comTenant(tenantId, basePrisma.sitePaymentMethod.findMany({
     where: { tenantId, siteId },
     select: { id: true, metodo: true, ativo: true },
-  });
+  }));
   if (existing.length > 0) return existing;
 
   const tenant = await basePrisma.tenant.findUnique({
@@ -67,10 +67,13 @@ export async function listSitePaymentMethods(
     });
   });
 
-  return basePrisma.sitePaymentMethod.findMany({
-    where: { tenantId, siteId },
-    select: { id: true, metodo: true, ativo: true },
-  });
+  return comTenant(
+    tenantId,
+    basePrisma.sitePaymentMethod.findMany({
+      where: { tenantId, siteId },
+      select: { id: true, metodo: true, ativo: true },
+    }),
+  );
 }
 
 // ── Criação da venda (carrinho persistido) ──────────────────
@@ -100,25 +103,34 @@ async function resolverItensVenda(tenantId: string, items: NovoItemVenda[]) {
   const selecaoIds = [...new Set(items.flatMap((i) => i.selecoes ?? []))];
 
   const [products, variants, selComps] = await Promise.all([
-    basePrisma.product.findMany({
-      where: { id: { in: productIds }, tenantId },
-      select: { id: true, precoVenda: true },
-    }),
+    comTenant(
+      tenantId,
+      basePrisma.product.findMany({
+        where: { id: { in: productIds }, tenantId },
+        select: { id: true, precoVenda: true },
+      }),
+    ),
     variantIds.length
-      ? basePrisma.productVariant.findMany({
-          where: { id: { in: variantIds }, tenantId },
-          select: { id: true, precoVenda: true, fatorEscala: true },
-        })
+      ? comTenant(
+          tenantId,
+          basePrisma.productVariant.findMany({
+            where: { id: { in: variantIds }, tenantId },
+            select: { id: true, precoVenda: true, fatorEscala: true },
+          }),
+        )
       : Promise.resolve([]),
     selecaoIds.length
-      ? basePrisma.productComponent.findMany({
-          where: {
-            tenantId,
-            parentProductId: { in: productIds },
-            componentProductId: { in: selecaoIds },
-          },
-          select: { parentProductId: true, componentProductId: true, acrescimoPreco: true },
-        })
+      ? comTenant(
+          tenantId,
+          basePrisma.productComponent.findMany({
+            where: {
+              tenantId,
+              parentProductId: { in: productIds },
+              componentProductId: { in: selecaoIds },
+            },
+            select: { parentProductId: true, componentProductId: true, acrescimoPreco: true },
+          }),
+        )
       : Promise.resolve([]),
   ]);
   const prodMap = new Map(products.map((p) => [p.id, p]));
@@ -232,7 +244,7 @@ async function aplicarBaixaItem(
   saleId: string,
   createdBy?: string
 ) {
-  const product = await basePrisma.product.findFirst({
+  const product = await comTenant(tenantId, basePrisma.product.findFirst({
     where: { id: item.productId, tenantId },
     select: {
       id: true,
@@ -248,7 +260,7 @@ async function aplicarBaixaItem(
         },
       },
     },
-  });
+  }));
   if (!product) throw new Error("Produto da venda não encontrado.");
 
   const qtd = item.quantidade;
@@ -302,7 +314,7 @@ export async function finalizarVenda(
   saleId: string,
   createdBy?: string
 ): Promise<void> {
-  const sale = await basePrisma.sale.findFirst({
+  const sale = await comTenant(tenantId, basePrisma.sale.findFirst({
     where: { id: saleId, tenantId },
     include: {
       items: {
@@ -315,20 +327,20 @@ export async function finalizarVenda(
       },
       payments: { select: { status: true, valor: true } },
     },
-  });
+  }));
   if (!sale) throw new Error("Venda não encontrada.");
   if (sale.status !== "ABERTA") throw new Error("Venda já finalizada ou cancelada.");
   if (sale.items.length === 0) throw new Error("Adicione itens antes de finalizar.");
 
   // +18 (§4): só exige confirmação se a loja tiver o controle de idade ativado
-  const site = await basePrisma.site.findFirst({
+  const site = await comTenant(tenantId, basePrisma.site.findFirst({
     where: { id: sale.siteId, tenantId },
     select: { controleIdade: true },
-  });
+  }));
   if (site?.controleIdade) {
-    const restritos = await basePrisma.product.count({
+    const restritos = await comTenant(tenantId, basePrisma.product.count({
       where: { tenantId, restricaoIdade: true, id: { in: sale.items.map((i) => i.productId) } },
-    });
+    }));
     if (restritos > 0 && !sale.maiorIdadeConfirmada) {
       throw new Error("Confirme a maioridade do cliente para vender itens +18.");
     }
@@ -366,8 +378,9 @@ export async function finalizarVenda(
     }),
   ]);
 
-  // hook fiscal pós-pagamento (§11) — no-op nesta fase
-  await emitirHookFiscal(tenantId, saleId);
+  // Hook fiscal pós-pagamento (§11). Só ENFILEIRA a NFC-e — a transmissão é
+  // assíncrona de propósito: a venda não pode esperar a SEFAZ.
+  await emitirHookFiscal(tenantId, saleId, createdBy);
 }
 
 // ── Confirmação de pagamento self-service (§6/§8) — idempotente ──
@@ -376,10 +389,10 @@ export async function confirmarPagamentoVenda(
   saleId: string,
   createdBy?: string
 ): Promise<{ already: boolean }> {
-  const sale = await basePrisma.sale.findFirst({
+  const sale = await comTenant(tenantId, basePrisma.sale.findFirst({
     where: { id: saleId, tenantId },
     select: { status: true },
-  });
+  }));
   if (!sale) throw new Error("Venda não encontrada.");
   if (sale.status === "PAGA") return { already: true }; // idempotente
   if (sale.status === "CANCELADA") throw new Error("Venda cancelada.");
@@ -412,10 +425,10 @@ export async function receberVendaTotem(
     pagamentos: NovoPagamento[];
   }
 ): Promise<void> {
-  const sale = await basePrisma.sale.findFirst({
+  const sale = await comTenant(tenantId, basePrisma.sale.findFirst({
     where: { id: input.saleId, tenantId },
     select: { id: true, status: true, origem: true },
-  });
+  }));
   if (!sale) throw new Error("Venda não encontrada.");
   if (sale.status !== "ABERTA") throw new Error("Esta venda já foi recebida ou cancelada.");
   if (sale.origem === "PDV") throw new Error("Venda não é do autoatendimento.");
@@ -459,10 +472,10 @@ export async function cancelarVenda(
   saleId: string,
   createdBy?: string
 ): Promise<void> {
-  const sale = await basePrisma.sale.findFirst({
+  const sale = await comTenant(tenantId, basePrisma.sale.findFirst({
     where: { id: saleId, tenantId },
     select: { id: true, status: true, siteId: true },
-  });
+  }));
   if (!sale) throw new Error("Venda não encontrada.");
   if (sale.status === "CANCELADA") throw new Error("Venda já cancelada.");
 
@@ -470,10 +483,10 @@ export async function cancelarVenda(
     // Agrega os deltas aplicados pela venda por produto e aplica o inverso.
     // Reverter ABERTURA (fechado-1, aberto+conteudo) pelo inverso devolve a
     // garrafa ao fechado — compensação exata sem reconstruir o passo a passo.
-    const movs = await basePrisma.stockMovement.findMany({
+    const movs = await comTenant(tenantId, basePrisma.stockMovement.findMany({
       where: { saleId, tenantId },
       select: { productId: true, deltaFechado: true, deltaAberto: true },
-    });
+    }));
     const agg = new Map<string, { f: number; a: number }>();
     for (const m of movs) {
       const cur = agg.get(m.productId) ?? { f: 0, a: 0 };

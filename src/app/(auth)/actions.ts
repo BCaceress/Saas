@@ -53,13 +53,15 @@ export async function signupAction(
 
   let dest: string;
   try {
-    const { subdomain } = await signupWithTenant(parsed.data);
+    await signupWithTenant(parsed.data);
     await signIn("credentials", {
       email: parsed.data.email,
       password: parsed.data.password,
       redirect: false,
     });
-    dest = tenantUrl(subdomain, "/onboarding");
+    // Convidado entra num tenant já configurado — mandar para /onboarding só
+    // ricocheteava. destinationForUser olha o onboardingDone e decide.
+    dest = await destinationForUser(parsed.data.email);
   } catch (e) {
     if (e instanceof SignupError) return { error: e.message };
     if (e instanceof AuthError) return { error: "Conta criada, mas o login falhou. Tente entrar." };

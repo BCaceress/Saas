@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/prisma";
-import { requireActiveTenant } from "@/lib/current-tenant";
+import { guardAction } from "@/lib/guard";
 import { runWithTenant } from "@/lib/tenant-context";
 import { normalizeBrand, normalizeSkuPrefix, onlyDigits } from "@/lib/normalize";
 import { getOrCreateDefaultSite } from "@/lib/sites";
@@ -38,7 +38,7 @@ function num(v?: string): number | null {
  * casar por prefixo/nome — senão a linha vira erro). Tudo no contexto do tenant.
  */
 export async function commitImport(rows: CsvRow[]): Promise<ImportResult> {
-  const ctx = await requireActiveTenant();
+  const ctx = await guardAction("produto.editar");
   const tid = ctx.tenant.id;
   return runWithTenant(tid, async () => {
     const subs = await db.subcategory.findMany({

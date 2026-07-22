@@ -1,4 +1,4 @@
-import type { Sexo } from "@/generated/prisma";
+import type { Sexo, IndicadorIE } from "@/generated/prisma";
 
 export type CustomerRow = {
   id: string;
@@ -10,6 +10,23 @@ export type CustomerRow = {
   pontos: number;
   ativo: boolean;
   createdAt: string; // ISO
+  email: string | null;
+  /**
+   * Fiscal — exigido só na NF-e (modelo 55). Na NFC-e o CPF basta, e mesmo ele
+   * é opcional. Vem quase sempre vazio no mercadinho.
+   */
+  cnpj: string | null;
+  razaoSocial: string | null;
+  ie: string | null;
+  indicadorIE: IndicadorIE | null;
+  cep: string | null;
+  logradouro: string | null;
+  numero: string | null;
+  complemento: string | null;
+  bairro: string | null;
+  municipio: string | null;
+  codigoMunicipio: string | null;
+  uf: string | null;
   /** Total gasto acumulado (para tier + ordenação) — vem agregado das vendas. */
   totalGasto: number;
   /** Data da última compra (ISO) ou null. */

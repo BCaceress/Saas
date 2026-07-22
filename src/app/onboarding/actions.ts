@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { basePrisma } from "@/lib/prisma";
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { PRESETS, tierFromPontos } from "@/lib/presets";
+import { isAdmin } from "@/lib/permissoes";
 
 const schema = z.object({
   tipoOperacao: z.enum(["AUTONOMO", "MERCADINHO", "CONVENIENCIA_BEBIDAS"]),
@@ -19,7 +20,7 @@ export type OnboardingInput = z.infer<typeof schema>;
 
 export async function saveOnboarding(input: OnboardingInput) {
   const ctx = await requireActiveTenant();
-  if (ctx.role !== "OWNER" && ctx.role !== "ADMIN") {
+  if (!isAdmin(ctx.acessos)) {
     throw new Error("Sem permissão para concluir o setup.");
   }
 

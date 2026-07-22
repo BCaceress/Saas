@@ -13,15 +13,19 @@ import {
 import { cn } from "@/lib/utils";
 import { receberTransferenciaAction, receberPedidoCompraAction } from "../estoque/actions";
 import { fmtMoney, fmtQtd, previsaoLabel, Thumb } from "./_ui";
+import { BonusBadge } from "./_bonus";
+import type { TipoItemPedido } from "./_types";
 
 // ── Tipos ─────────────────────────────────────────────────────
 
 type PedidoItem = {
+  id: string;
   productId: string;
   nome: string;
   sku: string;
   imagemUrl: string | null;
   packagingNome: string | null;
+  tipo: TipoItemPedido;
   qtdPedida: number;
   qtdRecebida: number;
   custoUnitario: number;
@@ -58,12 +62,16 @@ export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () =
   const [error, setError] = useState<string | null>(null);
   const [numeroNota, setNumeroNota] = useState("");
   const [gerarFinanceiro, setGerarFinanceiro] = useState(false);
-  // productId -> recebido agora (default: restante do pedido)
+  // itemId (linha do pedido, não productId — um produto pode ter linha de
+  // compra e linha de bonificação separadas) -> recebido agora.
   const [recebido, setRecebido] = useState<Record<string, number>>(() =>
-    Object.fromEntries(pedido.items.map((it) => [it.productId, Math.max(0, it.qtdPedida - it.qtdRecebida)])),
+    Object.fromEntries(pedido.items.map((it) => [it.id, Math.max(0, it.qtdPedida - it.qtdRecebida)])),
   );
 
-  const setQtd = (productId: string, v: number) => setRecebido((p) => ({ ...p, [productId]: Math.max(0, v) }));
+  const setQtd = (itemId: string, v: number) => setRecebido((p) => ({ ...p, [itemId]: Math.max(0, v) }));
+
+  const produtos = useMemo(() => pedido.items.filter((it) => it.tipo === "COMPRA"), [pedido.items]);
+  const bonificados = useMemo(() => pedido.items.filter((it) => it.tipo !== "COMPRA"), [pedido.items]);
 
   const resumo = useMemo(() => {
     let completos = 0;
@@ -72,7 +80,7 @@ export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () =
     let valorPendente = 0;
     for (const it of pedido.items) {
       const restante = Math.max(0, it.qtdPedida - it.qtdRecebida);
-      const agora = recebido[it.productId] ?? 0;
+      const agora = recebido[it.id] ?? 0;
       if (agora >= restante && restante > 0) completos += 1;
       else if (agora < restante) faltantes += 1;
       valorRecebido += agora * it.custoUnitario;
@@ -81,16 +89,16 @@ export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () =
     return { completos, faltantes, valorRecebido, valorPendente };
   }, [pedido.items, recebido]);
 
-  const algumItem = pedido.items.some((it) => (recebido[it.productId] ?? 0) > 0);
+  const algumItem = pedido.items.some((it) => (recebido[it.id] ?? 0) > 0);
   const parcial = pedido.status === "RECEBIDO_PARCIAL";
 
   function receberTudo() {
-    setRecebido(Object.fromEntries(pedido.items.map((it) => [it.productId, Math.max(0, it.qtdPedida - it.qtdRecebida)])));
+    setRecebido(Object.fromEntries(pedido.items.map((it) => [it.id, Math.max(0, it.qtdPedida - it.qtdRecebida)])));
   }
 
   function receber() {
     setError(null);
-    const items = pedido.items.map((it) => ({ productId: it.productId, qtdRecebida: recebido[it.productId] ?? 0 }));
+    const items = pedido.items.map((it) => ({ itemId: it.id, qtdRecebida: recebido[it.id] ?? 0 }));
     startTransition(async () => {
       try {
         await receberPedidoCompraAction({ pedidoId: pedido.id, numeroNota: numeroNota || null, gerarFinanceiro, items });
@@ -119,58 +127,28 @@ export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () =
         </button>
       </div>
 
-      {/* Itens */}
-      <ul className="divide-y divide-line rounded-xl border border-line">
-        {pedido.items.map((it) => {
-          const restante = Math.max(0, it.qtdPedida - it.qtdRecebida);
-          const agora = recebido[it.productId] ?? 0;
-          const dif = agora - restante;
-          return (
-            <li key={it.productId} className="flex flex-wrap items-center gap-3 px-3.5 py-2.5">
-              <div className="flex min-w-0 flex-1 items-center gap-3">
-                <Thumb url={it.imagemUrl} nome={it.nome} size={36} />
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-ink">{it.nome}</p>
-                  <p className="truncate font-mono text-[11px] text-faint">
-                    {it.sku}
-                    {it.packagingNome ? <span className="font-sans"> · {it.packagingNome}</span> : null}
-                  </p>
-                </div>
-              </div>
+      {/* Itens — produtos e bonificações conferidos separadamente, nunca misturados */}
+      {produtos.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <p className="px-1 text-[11px] font-semibold uppercase tracking-wide text-faint">Produtos</p>
+          <ul className="divide-y divide-line rounded-xl border border-line">
+            {produtos.map((it) => (
+              <ConferenciaRow key={it.id} item={it} agora={recebido[it.id] ?? 0} onChange={(v) => setQtd(it.id, v)} parcial={parcial} />
+            ))}
+          </ul>
+        </div>
+      )}
 
-              <div className="flex items-center gap-4 text-sm">
-                <div className="w-16 text-right">
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">Pedido</p>
-                  <p className="tabular-nums text-muted">
-                    {fmtQtd(restante)}
-                    {parcial && it.qtdRecebida > 0 && <span className="block text-[10px] text-ok">já {fmtQtd(it.qtdRecebida)}</span>}
-                  </p>
-                </div>
-                <div className="w-24">
-                  <p className="text-right text-[10px] font-semibold uppercase tracking-wide text-faint">Recebendo</p>
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    value={agora}
-                    onChange={(e) => setQtd(it.productId, Number(e.target.value))}
-                    className={cn(
-                      "w-full rounded-lg border bg-surface px-2 py-1.5 text-right text-sm font-semibold tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)",
-                      dif < 0 ? "border-danger text-danger" : dif > 0 ? "border-warn text-warn" : "border-line text-ink focus-visible:border-brand",
-                    )}
-                  />
-                </div>
-                <div className="w-16 text-right">
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">Difer.</p>
-                  <p className={cn("font-semibold tabular-nums", dif < 0 ? "text-danger" : dif > 0 ? "text-warn" : "text-faint")}>
-                    {dif === 0 ? "—" : `${dif > 0 ? "+" : ""}${fmtQtd(dif)}`}
-                  </p>
-                </div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+      {bonificados.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <p className="px-1 text-[11px] font-semibold uppercase tracking-wide text-faint">Bonificações</p>
+          <ul className="divide-y divide-line rounded-xl border border-violet/30 bg-violet-soft/20">
+            {bonificados.map((it) => (
+              <ConferenciaRow key={it.id} item={it} agora={recebido[it.id] ?? 0} onChange={(v) => setQtd(it.id, v)} parcial={parcial} />
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Nota + financeiro */}
       <div className="flex flex-wrap items-center gap-3">
@@ -220,6 +198,68 @@ export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () =
         </button>
       </div>
     </div>
+  );
+}
+
+function ConferenciaRow({
+  item: it,
+  agora,
+  onChange,
+  parcial,
+}: {
+  item: PedidoItem;
+  agora: number;
+  onChange: (v: number) => void;
+  parcial: boolean;
+}) {
+  const restante = Math.max(0, it.qtdPedida - it.qtdRecebida);
+  const dif = agora - restante;
+  return (
+    <li className="flex flex-wrap items-center gap-3 px-3.5 py-2.5">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <Thumb url={it.imagemUrl} nome={it.nome} size={36} />
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 truncate text-sm font-medium text-ink">
+            {it.nome}
+            {it.tipo !== "COMPRA" && <BonusBadge tipo={it.tipo} />}
+          </p>
+          <p className="truncate font-mono text-[11px] text-faint">
+            {it.sku}
+            {it.packagingNome ? <span className="font-sans"> · {it.packagingNome}</span> : null}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-4 text-sm">
+        <div className="w-16 text-right">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">Pedido</p>
+          <p className="tabular-nums text-muted">
+            {fmtQtd(restante)}
+            {parcial && it.qtdRecebida > 0 && <span className="block text-[10px] text-ok">já {fmtQtd(it.qtdRecebida)}</span>}
+          </p>
+        </div>
+        <div className="w-24">
+          <p className="text-right text-[10px] font-semibold uppercase tracking-wide text-faint">Recebendo</p>
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={agora}
+            onChange={(e) => onChange(Number(e.target.value))}
+            className={cn(
+              "w-full rounded-lg border bg-surface px-2 py-1.5 text-right text-sm font-semibold tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)",
+              dif < 0 ? "border-danger text-danger" : dif > 0 ? "border-warn text-warn" : "border-line text-ink focus-visible:border-brand",
+            )}
+          />
+        </div>
+        <div className="w-16 text-right">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">Difer.</p>
+          <p className={cn("font-semibold tabular-nums", dif < 0 ? "text-danger" : dif > 0 ? "text-warn" : "text-faint")}>
+            {dif === 0 ? "—" : `${dif > 0 ? "+" : ""}${fmtQtd(dif)}`}
+          </p>
+        </div>
+      </div>
+    </li>
   );
 }
 

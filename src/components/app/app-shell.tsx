@@ -5,14 +5,17 @@ import { Sidebar, type SidebarToggles } from "@/components/app/sidebar";
 import { Navbar } from "@/components/app/navbar";
 import type { CaixaInfo } from "@/components/app/caixa-sheet";
 import type { PaymentMethod } from "@/generated/prisma";
+import type { Acesso } from "@/lib/permissoes";
 
 export function AppShell({
   toggles,
+  acessos,
   tenantNome,
   planoLabel,
   userNome,
   userEmail,
   userCargo,
+  podeConfigurar,
   trialDias,
   vocabularioPonto,
   multiPonto,
@@ -23,11 +26,14 @@ export function AppShell({
   children,
 }: {
   toggles: SidebarToggles;
+  acessos: Acesso[];
   tenantNome: string;
   planoLabel: string;
   userNome: string;
   userEmail: string;
   userCargo: string;
+  /** Só administrador vê o atalho de Configurações na navbar. */
+  podeConfigurar: boolean;
   trialDias: number | null;
   vocabularioPonto: string;
   multiPonto: boolean;
@@ -43,6 +49,7 @@ export function AppShell({
     <div className="flex h-dvh gap-0 overflow-hidden bg-canvas p-2 sm:gap-3 sm:p-3">
       <Sidebar
         toggles={toggles}
+        acessos={acessos}
         collapsed={collapsed}
         planoLabel={planoLabel}
         trialDias={trialDias}
@@ -55,6 +62,7 @@ export function AppShell({
           userNome={userNome}
           userEmail={userEmail}
           userCargo={userCargo}
+          podeConfigurar={podeConfigurar}
           vocabularioPonto={vocabularioPonto}
           multiPonto={multiPonto}
           caixaInfo={caixaInfo}

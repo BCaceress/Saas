@@ -3,17 +3,27 @@
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/prisma";
-import { requireActiveTenant } from "@/lib/current-tenant";
+import { guardAction } from "@/lib/guard";
+import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { onlyDigits } from "@/lib/normalize";
 import { loadCustomerRows, computeInsights, loadCouponCandidates } from "./_data";
 import type { CustomerRow, CustomerInsights, CouponCandidate, CouponReasonUI } from "./_types";
 
-/** Roda `fn` no contexto de tenant e entrega tenantId + config de cupom. */
-async function tx<T>(
-  fn: (ctx: { tid: string; cupomDiasRisco: number; cupomAutomatico: boolean }) => Promise<T>,
+type ClienteCtx = { tid: string; cupomDiasRisco: number; cupomAutomatico: boolean };
+
+/** Leitura do módulo. */
+const tx = <T>(fn: (c: ClienteCtx) => Promise<T>) => comPermissao("cliente.ver", fn);
+/** Escrita no cadastro de clientes. */
+const txw = <T>(fn: (c: ClienteCtx) => Promise<T>) => comPermissao("cliente.editar", fn);
+/** Regras de fidelização valem para o tenant inteiro — é configuração. */
+const txCfg = <T>(fn: (c: ClienteCtx) => Promise<T>) => comPermissao("config.gerenciar", fn);
+
+async function comPermissao<T>(
+  permissao: Permissao,
+  fn: (ctx: ClienteCtx) => Promise<T>,
 ): Promise<T> {
-  const ctx = await requireActiveTenant();
+  const ctx = await guardAction(permissao);
   return runWithTenant(ctx.tenant.id, () =>
     fn({
       tid: ctx.tenant.id,
@@ -33,6 +43,24 @@ const customerSchema = z.object({
   dataNascimento: z.string().optional().nullable(), // dd/mm/aaaa
   sexo: z.enum(["MASCULINO", "FEMININO", "OUTRO"]).optional().nullable(),
   whatsapp: z.string().optional().nullable(),
+  email: z.string().optional().nullable(),
+
+  // Fiscal — só a NF-e exige. Tudo opcional: cliente de balcão não preenche nada.
+  cnpj: z.string().optional().nullable(),
+  razaoSocial: z.string().optional().nullable(),
+  ie: z.string().optional().nullable(),
+  indicadorIE: z
+    .enum(["CONTRIBUINTE", "ISENTO", "NAO_CONTRIBUINTE"])
+    .optional()
+    .nullable(),
+  cep: z.string().optional().nullable(),
+  logradouro: z.string().optional().nullable(),
+  numero: z.string().optional().nullable(),
+  complemento: z.string().optional().nullable(),
+  bairro: z.string().optional().nullable(),
+  municipio: z.string().optional().nullable(),
+  codigoMunicipio: z.string().optional().nullable(),
+  uf: z.string().optional().nullable(),
 });
 
 /** dd/mm/aaaa → Date (UTC, sem hora). null se vazio/ inválido. */
@@ -54,11 +82,24 @@ function customerData(d: z.infer<typeof customerSchema>) {
     dataNascimento: parseData(d.dataNascimento),
     sexo: d.sexo ?? null,
     whatsapp: d.whatsapp ? onlyDigits(d.whatsapp) || null : null,
+    email: d.email?.trim() || null,
+    cnpj: d.cnpj ? onlyDigits(d.cnpj) || null : null,
+    razaoSocial: d.razaoSocial?.trim() || null,
+    ie: d.ie?.trim() || null,
+    indicadorIE: d.indicadorIE ?? null,
+    cep: d.cep ? onlyDigits(d.cep) || null : null,
+    logradouro: d.logradouro?.trim() || null,
+    numero: d.numero?.trim() || null,
+    complemento: d.complemento?.trim() || null,
+    bairro: d.bairro?.trim() || null,
+    municipio: d.municipio?.trim() || null,
+    codigoMunicipio: d.codigoMunicipio ? onlyDigits(d.codigoMunicipio) || null : null,
+    uf: d.uf?.trim().toUpperCase().slice(0, 2) || null,
   };
 }
 
 export async function createCustomer(input: z.input<typeof customerSchema>) {
-  return tx(async ({ tid }) => {
+  return txw(async ({ tid }) => {
     const d = customerSchema.parse(input);
     const data = customerData(d);
     if (data.cpf) {
@@ -72,7 +113,7 @@ export async function createCustomer(input: z.input<typeof customerSchema>) {
 }
 
 export async function updateCustomer(id: string, input: z.input<typeof customerSchema>) {
-  return tx(async () => {
+  return txw(async () => {
     const d = customerSchema.parse(input);
     const data = customerData(d);
     if (data.cpf) {
@@ -85,7 +126,7 @@ export async function updateCustomer(id: string, input: z.input<typeof customerS
 }
 
 export async function setCustomerActive(id: string, ativo: boolean) {
-  return tx(async () => {
+  return txw(async () => {
     await db.customer.update({ where: { id }, data: { ativo } });
     ok();
   });
@@ -137,7 +178,7 @@ export async function sendCoupon(
   tipo: CouponReasonUI,
   automatico = false,
 ): Promise<{ waLink: string | null }> {
-  return tx(async ({ tid }) => {
+  return txw(async ({ tid }) => {
     const c = await db.customer.findFirst({ where: { id: customerId } });
     if (!c) throw new Error("Cliente não encontrado.");
     const mensagem = MENSAGEM[tipo](c.nome.split(" ")[0]);
@@ -161,7 +202,7 @@ const cupomConfigSchema = z.object({
 });
 
 export async function updateCupomConfig(input: z.input<typeof cupomConfigSchema>) {
-  return tx(async ({ tid }) => {
+  return txCfg(async ({ tid }) => {
     const d = cupomConfigSchema.parse(input);
     await db.tenant.update({ where: { id: tid }, data: d });
     revalidatePath("/clientes");
@@ -178,7 +219,7 @@ const tierConfigSchema = z.object({
 
 /** Limites (R$) dos níveis de fidelização — Cobre é sempre o nível-base, R$ 0. */
 export async function updateTierConfig(input: z.input<typeof tierConfigSchema>) {
-  return tx(async ({ tid }) => {
+  return txCfg(async ({ tid }) => {
     const d = tierConfigSchema.parse(input);
     if (!(d.tierBronzeMin < d.tierPrataMin && d.tierPrataMin < d.tierOuroMin && d.tierOuroMin < d.tierDiamanteMin)) {
       throw new Error("Cada nível deve exigir um valor maior que o anterior.");

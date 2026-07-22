@@ -1,7 +1,8 @@
 "use server";
 
 import { z } from "zod";
-import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
+import { withTenant } from "@/lib/current-tenant";
+import { guardAction } from "@/lib/guard";
 import { getActiveSiteId } from "@/lib/sites";
 import { resolvePeriodo, fmtDataCompleta } from "@/lib/periodo";
 import { completeJson, llmConfigured } from "@/lib/llm";
@@ -74,7 +75,7 @@ export async function perguntarIA(pergunta: string): Promise<ResultadoIA | { err
   if (texto.length > 400) return { erro: "Pergunta muito longa. Seja mais direto." };
   if (!llmConfigured()) return { erro: "IA não configurada neste ambiente. Defina a chave do provedor (ANTHROPIC_API_KEY ou GEMINI_API_KEY)." };
 
-  const ctx = await requireActiveTenant();
+  const ctx = await guardAction("relatorio.ver");
 
   // 1+2. IA → DSL → validação Zod.
   let consulta: Consulta;

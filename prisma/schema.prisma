@@ -46,10 +46,14 @@ enum TenantStatus {
   CANCELED
 }
 
-enum Role {
-  OWNER
-  ADMIN
-  MEMBER
+/// Perfis de acesso. ADMINISTRADOR é sempre do tenant inteiro (siteId null);
+/// os demais são operacionais e podem ser restritos a uma loja.
+enum Perfil {
+  ADMINISTRADOR
+  ESTOQUISTA
+  CAIXA
+  FINANCEIRO
+  CONTADOR
 }
 
 enum TipoOperacao {
@@ -112,8 +116,8 @@ model Tenant {
 
   // Fidelização / CRM: envio automático de cupom (risco + aniversário) via
   // WhatsApp. Desligado por padrão — o operador liga em Configurações.
-  cupomAutomatico  Boolean @default(false)
-  cupomDiasRisco   Int     @default(25) // dias sem comprar → cliente em risco
+  cupomAutomatico Boolean @default(false)
+  cupomDiasRisco  Int     @default(25) // dias sem comprar → cliente em risco
 
   // Níveis do cliente por total gasto acumulado (Cobre é o nível-base, sempre
   // R$ 0 — não configurável). Ajustável em Configurações → Fidelização.
@@ -154,31 +158,70 @@ model Tenant {
   comodatoAssets   ComodatoAsset[]
   containerTypes   ContainerType[]
   paymentProvider  PaymentProviderConfig?
+  fiscalConfig     FiscalConfig?
+  fiscalEmitentes  FiscalEmitente[]
 
   @@index([status])
 }
 
 model Membership {
-  id        String   @id @default(cuid())
-  userId    String
-  tenantId  String
-  role      Role     @default(OWNER)
+  id       String @id @default(cuid())
+  userId   String
+  tenantId String
+
+  /// Dono da conta: responde pela cobrança e não pode ser removido/desativado.
+  /// NÃO é um perfil — poder vem de MembershipAccess.
+  proprietario Boolean   @default(false)
+  ativo        Boolean   @default(true)
+  ultimoAcesso DateTime?
+
   createdAt DateTime @default(now())
 
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  acessos MembershipAccess[]
+  user    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant  Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([userId, tenantId])
   @@index([tenantId])
 }
 
+/// Um acesso = um perfil, opcionalmente restrito a uma loja.
+/// siteId null = vale para todas as lojas. Uma pessoa pode ter vários.
+/// Ex.: { ESTOQUISTA, null } + { CAIXA, "loja-centro" }.
+model MembershipAccess {
+  id           String   @id @default(cuid())
+  tenantId     String
+  membershipId String
+  perfil       Perfil
+  siteId       String?
+  criadoEm     DateTime @default(now())
+
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  site       Site?      @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  // Atenção: NULL não colide em Postgres — o índice parcial que impede duplicar
+  // o acesso global está na migration (MembershipAccess_global_key).
+  @@unique([membershipId, perfil, siteId])
+  @@index([tenantId, siteId])
+}
+
 // Convite de equipe (tabela de CONTROLE, como Membership): criado em
 // Configurações → Usuários; consumido no signup/OAuth quando o e-mail bate.
 model Invite {
-  id        String   @id @default(cuid())
-  tenantId  String
-  email     String
-  role      Role     @default(MEMBER)
+  id       String @id @default(cuid())
+  tenantId String
+  email    String
+
+  /// Acessos que a pessoa recebe ao aceitar: [{ perfil, siteId | null }, …].
+  /// Mesmo formato de MembershipAccess — validado por Zod antes de gravar.
+  acessos Json @default("[]")
+
+  /// Segredo do link /convite/<token>. Trocado a cada reenvio.
+  token       String   @unique
+  expiresAt   DateTime
+  /// Quem convidou (User global) — só para exibir na tela.
+  criadoPorId String?
+
   createdAt DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -313,16 +356,42 @@ enum PurchaseMotivo {
   BONIFICACAO
   ESTOQUE_INICIAL
   TRANSFERENCIA
+  BRINDE
+  TROCA
+  AMOSTRA
+  SERVICO
+}
+
+// Tipo do item dentro do pedido de compra — separa o que é cobrado pelo
+// fornecedor (COMPRA) do que entra no estoque sem custo. Modelado como enum
+// (não checkbox) para crescer sem alterar a estrutura do pedido.
+enum TipoItemPedido {
+  COMPRA
+  BONIFICACAO
+  BRINDE
+  TROCA
+  AMOSTRA
+  SERVICO
+}
+
+// Motivo específico de um item não-COMPRA (hoje só bonificação usa).
+enum MotivoBonificacao {
+  COMERCIAL
+  CAMPANHA
+  REPOSICAO
+  TROCA
+  CORTESIA
+  OUTRO
 }
 
 enum PurchaseOrderStatus {
-  RASCUNHO         // em elaboração ⚪
-  ENVIADO          // enviado ao fornecedor 🔵
-  AGUARDANDO       // confirmado pelo fornecedor, aguardando entrega 🟡
-  EM_TRANSITO      // mercadoria a caminho 🟣
+  RASCUNHO // em elaboração ⚪
+  ENVIADO // enviado ao fornecedor 🔵
+  AGUARDANDO // confirmado pelo fornecedor, aguardando entrega 🟡
+  EM_TRANSITO // mercadoria a caminho 🟣
   RECEBIDO_PARCIAL // recebimento pendente (chegou em parte) 🟠
-  RECEBIDO         // concluído ✅
-  CANCELADO        // 🔴
+  RECEBIDO // concluído ✅
+  CANCELADO // 🔴
 }
 
 enum RequisicaoStatus {
@@ -479,20 +548,33 @@ model Subcategory {
   @@index([categoryId])
 }
 
+// Classificação fiscal reutilizável. É a FONTE do tributário: o produto
+// aponta para um perfil em vez de repetir NCM/CST/CFOP em cada SKU (um
+// mercadinho tem milhares de produtos e ~20 perfis). O que é por-item
+// (GTIN tributável, fator de conversão) fica no Product.
 model FiscalProfile {
-  id             String   @id @default(cuid())
-  tenantId       String
-  nome           String // "Cerveja ST – RS"
-  ncm            String
-  cest           String?
-  origem         String   @default("0")
-  csosn          String?
-  cst            String?
-  cstPis         String?
-  cstCofins      String?
-  aliquotaIcms   Decimal? @db.Decimal(5, 2)
-  temSt          Boolean  @default(false)
-  precisaRevisao Boolean  @default(false)
+  id              String   @id @default(cuid())
+  tenantId        String
+  nome            String // "Cerveja ST – RS"
+  ncm             String
+  cest            String?
+  origem          String   @default("0")
+  csosn           String?
+  cst             String?
+  cstPis          String?
+  cstCofins       String?
+  cstIpi          String?
+  aliquotaIcms    Decimal? @db.Decimal(5, 2)
+  aliquotaPis     Decimal? @db.Decimal(5, 2)
+  aliquotaCofins  Decimal? @db.Decimal(5, 2)
+  aliquotaIpi     Decimal? @db.Decimal(5, 2)
+  // CFOP é da operação, não do SKU — mora aqui. Dentro do estado; a emissão
+  // troca o 5xxx por 6xxx quando a UF do destinatário difere da do emitente.
+  cfopSaida       String?
+  cfopEntrada     String?
+  codigoBeneficio String? // cBenef (UFs que exigem: RS, BA, PE…)
+  temSt           Boolean  @default(false)
+  precisaRevisao  Boolean  @default(false)
 
   tenant                 Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   products               Product[]
@@ -519,7 +601,7 @@ model StorageLocation {
 }
 
 model Supplier {
-  id                   String   @id @default(cuid())
+  id                   String       @id @default(cuid())
   tenantId             String
   cnpj                 String?
   razaoSocial          String
@@ -528,21 +610,29 @@ model Supplier {
   telefone             String? // telefone/WhatsApp
   nomeContatoPrincipal String?
   website              String?
+  logoUrl              String?
   cep                  String?
   logradouro           String?
   numero               String?
   complemento          String?
   bairro               String?
   municipio            String?
+  codigoMunicipio      String? // IBGE (7 dígitos) — vem do XML de entrada
   uf                   String?
-  ativo                Boolean  @default(true)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  ie                   String? // inscrição estadual
+  indicadorIE          IndicadorIE?
+  pedidoMinimo         Decimal?     @db.Decimal(12, 2) // valor mínimo de pedido exigido pelo fornecedor
+  ativo                Boolean      @default(true)
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
 
-  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  products       ProductSupplier[]
-  purchases      Purchase[]
-  purchaseOrders PurchaseOrder[]
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products        ProductSupplier[]
+  purchases       Purchase[]
+  purchaseOrders  PurchaseOrder[]
+  fiscalDocuments FiscalDocument[]
+  fiscalInbounds  FiscalInbound[]
+  itemMaps        SupplierItemMap[]
 
   @@unique([tenantId, cnpj])
   @@index([tenantId])
@@ -584,9 +674,16 @@ model Product {
   custo      Decimal? @db.Decimal(10, 2)
   custoMedio Decimal? @db.Decimal(10, 2)
 
-  fiscalProfileId String?
-  restricaoIdade  Boolean @default(false) // +18
-  ativo           Boolean @default(true)
+  fiscalProfileId    String?
+  // Dados fiscais POR ITEM (o resto herda do FiscalProfile — não duplicar).
+  // Recolhidos na UI: quem não vende por unidade tributável diferente nunca vê.
+  gtinTributavel     String? // cEANTrib — difere do EAN quando se vende fração
+  unidadeTributavel  String? // uTrib ("KG", "L") quando ≠ da unidade de venda
+  fatorConversaoTrib Decimal? @db.Decimal(12, 4) // qTrib = quantidade × fator
+  codigoAnp          String? // combustíveis
+  restricaoIdade     Boolean  @default(false) // +18
+  ativo              Boolean  @default(true)
+  controlaEstoque    Boolean  @default(true) // false = INSUMO fora do controle de estoque (não aparece em /estoque)
 
   tipoReceita RecipeType?
   copoMl      Decimal?    @db.Decimal(10, 2) // tamanho do copo (drink) — tamanho único
@@ -607,15 +704,15 @@ model Product {
   subcategory   Subcategory?   @relation(fields: [subcategoryId], references: [id])
   fiscalProfile FiscalProfile? @relation(fields: [fiscalProfileId], references: [id])
 
-  stocks        Stock[]
-  packagings    ProductPackaging[]
-  components    ProductComponent[]    @relation("ParentProduct")
-  usedInRecipes ProductComponent[]    @relation("ComponentProduct")
+  stocks          Stock[]
+  packagings      ProductPackaging[]
+  components      ProductComponent[]      @relation("ParentProduct")
+  usedInRecipes   ProductComponent[]      @relation("ComponentProduct")
   componentGroups ProductComponentGroup[]
-  variants      ProductVariant[]
-  tags          ProductTag[]
-  salesChannels ProductSalesChannel[]
-  suppliers     ProductSupplier[]
+  variants        ProductVariant[]
+  tags            ProductTag[]
+  salesChannels   ProductSalesChannel[]
+  suppliers       ProductSupplier[]
 
   @@unique([tenantId, sku])
   @@index([tenantId])
@@ -673,9 +770,9 @@ model ProductComponent {
   acrescenta         Boolean  @default(true)
   acrescimoPreco     Decimal? @db.Decimal(10, 2)
 
-  parent    Product                   @relation("ParentProduct", fields: [parentProductId], references: [id], onDelete: Cascade)
-  component Product                   @relation("ComponentProduct", fields: [componentProductId], references: [id])
-  group     ProductComponentGroup?    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  parent    Product                @relation("ParentProduct", fields: [parentProductId], references: [id], onDelete: Cascade)
+  component Product                @relation("ComponentProduct", fields: [componentProductId], references: [id])
+  group     ProductComponentGroup? @relation(fields: [groupId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
   @@index([parentProductId])
@@ -693,7 +790,7 @@ model ProductComponentGroup {
   maxSelecoes     Int?
   ordem           Int           @default(0)
 
-  parent     Product          @relation(fields: [parentProductId], references: [id], onDelete: Cascade)
+  parent     Product            @relation(fields: [parentProductId], references: [id], onDelete: Cascade)
   components ProductComponent[]
 
   @@index([tenantId])
@@ -770,22 +867,22 @@ model ProductSalesChannel {
 // ============================================================
 
 model Site {
-  id        String   @id @default(cuid())
-  tenantId  String
-  nome      String
-  tipo      SiteType @default(LOJA)
-  ativo     Boolean  @default(true)
+  id       String   @id @default(cuid())
+  tenantId String
+  nome     String
+  tipo     SiteType @default(LOJA)
+  ativo    Boolean  @default(true)
 
   // Endereço (opcional)
-  cep       String?
-  rua       String?
-  numero    String?
-  cidade    String?
-  estado    String?
+  cep    String?
+  rua    String?
+  numero String?
+  cidade String?
+  estado String?
 
   // Estoque: próprio ou abastecido por CD
-  estoquePropio      Boolean @default(true)
-  cdAbastecedorId    String?
+  estoquePropio   Boolean @default(true)
+  cdAbastecedorId String?
 
   // Venda restrita p/ maiores de 18 (PDV): só se aplica a LOJA — CD não vende.
   controleIdade Boolean @default(false)
@@ -809,8 +906,13 @@ model Site {
   sales              Sale[]
   cashSessions       CashSession[]
   paymentMethods     SitePaymentMethod[]
+  acessos            MembershipAccess[]
   totemDevices       TotemDevice[]
   paymentTerminals   PaymentTerminal[]
+  fiscalEmitente     FiscalEmitente?
+  fiscalSeries       FiscalSerie[]
+  fiscalDocuments    FiscalDocument[]
+  fiscalInbounds     FiscalInbound[]
 
   @@unique([tenantId, nome])
   @@index([tenantId])
@@ -851,7 +953,7 @@ model StockMovement {
 }
 
 model Purchase {
-  id              String       @id @default(cuid())
+  id              String          @id @default(cuid())
   tenantId        String
   siteId          String
   tipo            PurchaseType    @default(MANUAL)
@@ -859,15 +961,17 @@ model Purchase {
   supplierId      String?
   purchaseOrderId String? // entrada gerada pela conferência de um pedido de compra
   numeroNota      String?
-  data            DateTime     @default(now())
+  data            DateTime        @default(now())
   observacao      String?
-  createdAt       DateTime     @default(now())
+  createdAt       DateTime        @default(now())
   createdBy       String?
 
-  site          Site           @relation(fields: [siteId], references: [id])
-  supplier      Supplier?      @relation(fields: [supplierId], references: [id])
-  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  site          Site             @relation(fields: [siteId], references: [id])
+  supplier      Supplier?        @relation(fields: [supplierId], references: [id])
+  purchaseOrder PurchaseOrder?   @relation(fields: [purchaseOrderId], references: [id])
   items         PurchaseItem[]
+  fiscalDocs    FiscalDocument[]
+  fiscalInbound FiscalInbound?
 
   @@index([tenantId])
   @@index([siteId])
@@ -890,6 +994,8 @@ model PurchaseOrder {
   observacao       String?
   financeiroGerado Boolean             @default(false) // gancho Contas a Pagar (stub)
   enviadoEm        DateTime?
+  confirmadoEm     DateTime?
+  emTransitoEm     DateTime?
   recebidoEm       DateTime?
   canceladoEm      DateTime?
   createdAt        DateTime            @default(now())
@@ -900,6 +1006,7 @@ model PurchaseOrder {
   supplier Supplier            @relation(fields: [supplierId], references: [id])
   items    PurchaseOrderItem[]
   entradas Purchase[]
+  inbounds FiscalInbound[]
 
   @@unique([tenantId, numero])
   @@index([tenantId])
@@ -909,14 +1016,17 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderItem {
-  id              String  @id @default(cuid())
-  tenantId        String
-  purchaseOrderId String
-  productId       String
-  packagingId     String? // unidade de compra (caixa, fardo…)
-  qtdPedida       Decimal @db.Decimal(12, 3)
-  custoUnitario   Decimal @default(0) @db.Decimal(12, 2) // custo por unidade de compra
-  qtdRecebida     Decimal @default(0) @db.Decimal(12, 3) // acumulado conferido
+  id                String             @id @default(cuid())
+  tenantId          String
+  purchaseOrderId   String
+  productId         String
+  packagingId       String? // unidade de compra (caixa, fardo…)
+  tipo              TipoItemPedido     @default(COMPRA)
+  motivoBonificacao MotivoBonificacao? // só para tipo != COMPRA
+  qtdPedida         Decimal            @db.Decimal(12, 3)
+  custoUnitario     Decimal            @default(0) @db.Decimal(12, 2) // custo por unidade de compra — sempre 0 quando tipo != COMPRA
+  qtdRecebida       Decimal            @default(0) @db.Decimal(12, 3) // acumulado conferido
+  observacao        String? // nota do item ("trocar por validade longa", etc.)
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
 
@@ -942,23 +1052,23 @@ model PurchaseItem {
 }
 
 model Transfer {
-  id            String         @id @default(cuid())
-  tenantId      String
-  origemSiteId  String
-  destinoSiteId String
-  status        TransferStatus @default(RECEBIDO) // default RECEBIDO p/ não quebrar linhas atômicas antigas
-  requisicaoId  String?        @unique
-  data          DateTime       @default(now())
-  expedidoEm    DateTime?
-  recebidoEm    DateTime?
-  temDivergencia Boolean       @default(false)
-  observacao    String?
-  createdAt     DateTime       @default(now())
-  createdBy     String?
+  id             String         @id @default(cuid())
+  tenantId       String
+  origemSiteId   String
+  destinoSiteId  String
+  status         TransferStatus @default(RECEBIDO) // default RECEBIDO p/ não quebrar linhas atômicas antigas
+  requisicaoId   String?        @unique
+  data           DateTime       @default(now())
+  expedidoEm     DateTime?
+  recebidoEm     DateTime?
+  temDivergencia Boolean        @default(false)
+  observacao     String?
+  createdAt      DateTime       @default(now())
+  createdBy      String?
 
-  origem     Site        @relation("TransferOrigem", fields: [origemSiteId], references: [id])
-  destino    Site        @relation("TransferDestino", fields: [destinoSiteId], references: [id])
-  requisicao Requisicao? @relation(fields: [requisicaoId], references: [id])
+  origem     Site           @relation("TransferOrigem", fields: [origemSiteId], references: [id])
+  destino    Site           @relation("TransferDestino", fields: [destinoSiteId], references: [id])
+  requisicao Requisicao?    @relation(fields: [requisicaoId], references: [id])
   items      TransferItem[]
 
   @@index([tenantId])
@@ -996,9 +1106,9 @@ model Requisicao {
   createdBy     String?
   atendidaEm    DateTime?
 
-  origem  Site             @relation("RequisicaoOrigem", fields: [origemSiteId], references: [id])
-  destino Site             @relation("RequisicaoDestino", fields: [destinoSiteId], references: [id])
-  items   RequisicaoItem[]
+  origem   Site             @relation("RequisicaoOrigem", fields: [origemSiteId], references: [id])
+  destino  Site             @relation("RequisicaoDestino", fields: [destinoSiteId], references: [id])
+  items    RequisicaoItem[]
   transfer Transfer?
 
   @@index([tenantId])
@@ -1121,12 +1231,13 @@ model Sale {
   createdAt DateTime  @default(now())
   paidAt    DateTime?
 
-  site        Site         @relation(fields: [siteId], references: [id])
-  cashSession CashSession? @relation(fields: [cashSessionId], references: [id])
-  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  totemDevice TotemDevice? @relation(fields: [totemDeviceId], references: [id], onDelete: SetNull)
+  site        Site             @relation(fields: [siteId], references: [id])
+  cashSession CashSession?     @relation(fields: [cashSessionId], references: [id])
+  customer    Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  totemDevice TotemDevice?     @relation(fields: [totemDeviceId], references: [id], onDelete: SetNull)
   items       SaleItem[]
   payments    Payment[]
+  fiscalDocs  FiscalDocument[]
 
   @@index([tenantId])
   @@index([siteId])
@@ -1220,8 +1331,8 @@ model PaymentProviderConfig {
   partnerRef    String? // Stone Connect: ServiceRefererName (código do Programa de Parcerias) — exigido p/ cartão no POS
   ambiente      PaymentAmbiente @default(PRODUCAO) // PagBank: produção x sandbox — hosts de API diferentes
 
-  pixAutomatico    Boolean @default(true) // PIX gera QR dinâmico e confirma sozinho
-  cartaoIntegrado  Boolean @default(false) // envia valor à maquininha via API
+  pixAutomatico   Boolean @default(true) // PIX gera QR dinâmico e confirma sozinho
+  cartaoIntegrado Boolean @default(false) // envia valor à maquininha via API
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1314,16 +1425,33 @@ model Customer {
   dataNascimento DateTime? @db.Date
   sexo           Sexo?
   whatsapp       String? // só dígitos (DDD + número)
+  email          String?
   pontos         Int       @default(0)
   ativo          Boolean   @default(true)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+
+  // Fiscal — exigido só na NF-e (modelo 55). Na NFC-e o CPF basta, e mesmo
+  // ele é opcional ("consumidor não identificado").
+  cnpj            String? // só dígitos — cliente PJ
+  razaoSocial     String?
+  ie              String?
+  indicadorIE     IndicadorIE?
+  cep             String?
+  logradouro      String?
+  numero          String?
+  complemento     String?
+  bairro          String?
+  municipio       String?
+  codigoMunicipio String? // IBGE (7 dígitos) — a NF-e pede o código, não o nome
+  uf              String?
 
   tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   sales              Sale[]
   coupons            CouponSend[]
   comodatoLoans      ComodatoLoan[]
   containerMovements ContainerMovement[]
+  fiscalDocuments    FiscalDocument[]
 
   @@unique([tenantId, cpf])
   @@index([tenantId])
@@ -1465,4 +1593,482 @@ model StockSnapshot {
   @@index([tenantId])
   @@index([siteId, data])
   @@index([data])
+}
+
+// ── Feedback dos insights do dashboard (/inicio) ────────────────
+// Alimenta a repriorização por aprendizado: regras muito ignoradas descem
+// de prioridade nos cards seguintes. `insightId` é a CHAVE DA REGRA (ex.:
+// "ticket", "produto-crescimento"), não o id de uma instância — várias
+// linhas por regra ao longo do tempo formam o histórico.
+
+enum InsightFeedbackAcao {
+  IGNORADO
+  CLICADO
+}
+
+model InsightFeedback {
+  id        String              @id @default(cuid())
+  tenantId  String
+  insightId String
+  acao      InsightFeedbackAcao
+  createdAt DateTime            @default(now())
+
+  @@index([tenantId, insightId])
+  @@index([tenantId, createdAt])
+}
+
+// Personalização do Centro de Operações (/inicio) — por usuário, por tenant.
+// `hidden` = ids de widget ocultados; `ordem` = ids na ordem escolhida (widgets
+// fora da lista entram no fim, na ordem default — ver inicio/_widgets.ts).
+model DashboardWidgetPref {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  hidden    String[] @default([])
+  ordem     String[] @default([])
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, userId])
+}
+
+// ============================================================
+// FISCAL — emissão de documentos eletrônicos e entrada de XML.
+//
+// PRINCÍPIO: o NoHub não apura imposto nem gera SPED. Ele monta o documento,
+// delega assinatura/transmissão ao provedor (FiscalProvider) e guarda o
+// resultado. A legislação fica encapsulada no provedor.
+//
+// EMISSÃO É ASSÍNCRONA. A venda NUNCA espera a SEFAZ: fecha o caixa, cria o
+// FiscalDocument em PENDENTE e um worker transmite. SEFAZ fora do ar não pode
+// parar a loja — é também o que viabiliza contingência.
+//
+// O certificado A1 NÃO mora aqui: sobe uma vez para o provedor, que o guarda
+// por CNPJ. Guardamos só o id opaco, o titular e a validade (para avisar do
+// vencimento). Sem chave privada no nosso banco.
+// ============================================================
+
+enum FiscalProviderKind {
+  NUVEM_FISCAL
+  PLUGNOTAS
+  FOCUS
+  TECNOSPEED
+  SIMULADO // desenvolvimento/demonstração, sem certificado nem SEFAZ
+}
+
+enum FiscalAmbiente {
+  PRODUCAO // tpAmb 1
+  HOMOLOGACAO // tpAmb 2
+}
+
+enum FiscalModelo {
+  NFCE // modelo 65 — venda ao consumidor no PDV
+  NFE // modelo 55 — pedido faturado, entrada, devolução
+}
+
+enum FiscalDirecao {
+  SAIDA
+  ENTRADA
+}
+
+enum FiscalStatus {
+  PENDENTE // na fila, ainda não transmitido
+  PROCESSANDO // enviado ao provedor, aguardando retorno da SEFAZ
+  AUTORIZADO
+  REJEITADO // erro de validação — corrigir e reemitir
+  DENEGADO // SEFAZ negou por irregularidade do destinatário (não reemitir)
+  CANCELADO
+  CONTINGENCIA // emitido offline, pendente de transmissão
+  INUTILIZADO // faixa de numeração queimada
+}
+
+enum FiscalEventoTipo {
+  EMISSAO
+  CANCELAMENTO
+  CARTA_CORRECAO
+  INUTILIZACAO
+  REJEICAO
+  CONTINGENCIA
+  MANIFESTACAO
+}
+
+enum FiscalInboundStatus {
+  PENDENTE // XML importado, itens ainda não relacionados a produtos
+  CONCILIADO // todos os itens têm produto — pronto para gerar entrada
+  RECEBIDO // entrada gerada (Purchase criada, estoque movimentado)
+  DESCARTADO // nota que não vira entrada (já lançada, devolvida, erro)
+}
+
+enum ManifestacaoTipo {
+  CIENCIA
+  CONFIRMACAO
+  DESCONHECIMENTO
+  NAO_REALIZADA
+}
+
+/**
+ * CRT do emitente. Define se o item sai com CSOSN (Simples) ou CST (Normal).
+ */
+enum RegimeTributario {
+  SIMPLES_NACIONAL // CRT 1
+  SIMPLES_EXCESSO // CRT 2
+  REGIME_NORMAL // CRT 3
+}
+
+/**
+ * indIEDest do destinatário.
+ */
+enum IndicadorIE {
+  CONTRIBUINTE // 1
+  ISENTO // 2
+  NAO_CONTRIBUINTE // 9
+}
+
+// Credenciais do provedor fiscal — uma por tenant. O certificado é por CNPJ
+// (ver FiscalEmitente); aqui fica só o acesso à API e o comportamento padrão.
+model FiscalConfig {
+  id       String             @id @default(cuid())
+  tenantId String             @unique
+  provider FiscalProviderKind @default(SIMULADO)
+  ambiente FiscalAmbiente     @default(HOMOLOGACAO)
+  ativo    Boolean            @default(false)
+
+  apiToken      String? // token privado do provedor — nunca vai ao browser
+  webhookSecret String? // valida o callback de autorização
+
+  // Emitir NFC-e automaticamente ao confirmar o pagamento no PDV. Desligado
+  // por padrão: muitos mercadinhos operam sem obrigação de emissão.
+  emissaoAutomaticaNfce Boolean @default(false)
+
+  // Minutos após a autorização em que a SEFAZ ainda aceita cancelamento de
+  // NFC-e. Varia por UF (30 na maioria) — a UI usa isso para não oferecer um
+  // botão que vai falhar.
+  prazoCancelamentoMin Int @default(30)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+// Estabelecimento emitente — um por loja (Site). Multiempresa sai de graça:
+// cada loja pode ter CNPJ, IE e certificado próprios. Loja sem emitente
+// simplesmente não emite.
+model FiscalEmitente {
+  id       String @id @default(cuid())
+  tenantId String
+  siteId   String @unique
+
+  cnpj         String // só dígitos
+  razaoSocial  String
+  nomeFantasia String?
+  ie           String
+  im           String? // inscrição municipal (serviços)
+  cnae         String?
+  regime       RegimeTributario @default(SIMPLES_NACIONAL)
+
+  cep             String
+  logradouro      String
+  numero          String
+  complemento     String?
+  bairro          String
+  municipio       String
+  codigoMunicipio String // IBGE (7 dígitos)
+  uf              String
+  telefone        String?
+
+  // Certificado A1 — armazenado NO PROVEDOR. Aqui só o rastro.
+  certificadoId       String? // id opaco devolvido pelo provedor
+  certificadoTitular  String? // CN do certificado, para conferência visual
+  certificadoValidade DateTime?
+
+  // NFC-e (modelo 65): CSC/token vêm do portal da SEFAZ da UF.
+  cscId String? // idToken (identificador do CSC)
+  csc   String? // código de segurança do contribuinte
+
+  naturezaOperacaoPadrao String @default("Venda de mercadoria")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  site   Site   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, cnpj])
+  @@index([tenantId])
+}
+
+// Contador de numeração por (loja × modelo × série). O próximo número sai de
+// um UPDATE … RETURNING atômico — nunca de max(numero)+1, que gera duplicidade
+// sob concorrência e derruba a nota na SEFAZ.
+model FiscalSerie {
+  id            String       @id @default(cuid())
+  tenantId      String
+  siteId        String
+  modelo        FiscalModelo
+  serie         Int
+  proximoNumero Int          @default(1)
+  ativa         Boolean      @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([siteId, modelo, serie])
+  @@index([tenantId])
+}
+
+// Documento fiscal que nós emitimos. O XML/PDF fica em blob storage — aqui só
+// a URL, a chave de 44 dígitos e o protocolo.
+model FiscalDocument {
+  id       String         @id @default(cuid())
+  tenantId String
+  siteId   String
+  modelo   FiscalModelo
+  direcao  FiscalDirecao  @default(SAIDA)
+  status   FiscalStatus   @default(PENDENTE)
+  ambiente FiscalAmbiente
+
+  serie  Int
+  numero Int
+
+  chave      String? // 44 dígitos — só existe após montar o documento
+  protocolo  String? // nProt da autorização
+  externalId String? // id do documento no provedor
+
+  // Chave de idempotência. Retry de rede não pode emitir a mesma nota duas
+  // vezes — a unicidade por tenant é a trava.
+  idempotencyKey String
+
+  naturezaOperacao String
+  dataEmissao      DateTime  @default(now())
+  dataAutorizacao  DateTime?
+
+  saleId     String?
+  purchaseId String?
+  customerId String?
+  supplierId String?
+
+  // Snapshot do destinatário no momento da emissão — o cadastro muda, a nota
+  // não. Sem isso a segunda via mente.
+  destNome      String?
+  destDocumento String? // CPF/CNPJ, só dígitos
+
+  valorProdutos Decimal @default(0) @db.Decimal(12, 2)
+  valorDesconto Decimal @default(0) @db.Decimal(12, 2)
+  valorTotal    Decimal @default(0) @db.Decimal(12, 2)
+
+  codigoRejeicao String? // cStat da SEFAZ (ex.: "539")
+  motivoRejeicao String? // xMotivo legível — vai direto para a tela
+  tentativas     Int     @default(0)
+  contingencia   Boolean @default(false)
+
+  xmlUrl      String? // XML autorizado (blob privado)
+  pdfUrl      String? // DANFE / DANFE-NFC-e
+  qrCodeUrl   String? // NFC-e: URL do QR Code impressa no cupom
+  urlConsulta String? // consulta pública na SEFAZ
+
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  site     Site                 @relation(fields: [siteId], references: [id])
+  sale     Sale?                @relation(fields: [saleId], references: [id], onDelete: SetNull)
+  purchase Purchase?            @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  customer Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  supplier Supplier?            @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  items    FiscalDocumentItem[]
+  eventos  FiscalEvent[]
+
+  @@unique([tenantId, idempotencyKey])
+  @@unique([tenantId, chave])
+  @@unique([siteId, modelo, serie, numero])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([siteId, dataEmissao])
+  @@index([saleId])
+  @@index([customerId])
+  @@index([supplierId])
+}
+
+// Item da nota — SNAPSHOT completo. Nunca leia o produto para reimprimir uma
+// nota: preço, NCM e alíquota do cadastro mudam; os da nota são imutáveis.
+// productId é escalar (alto volume, igual a StockMovement).
+model FiscalDocumentItem {
+  id         String  @id @default(cuid())
+  tenantId   String
+  documentId String
+  ordem      Int // nItem no XML (1-based)
+  productId  String?
+
+  codigo    String // cProd
+  descricao String
+  gtin      String? // cEAN
+  ncm       String
+  cest      String?
+  cfop      String
+  origem    String  @default("0")
+  cst       String?
+  csosn     String?
+
+  unidade       String
+  quantidade    Decimal @db.Decimal(12, 4)
+  valorUnitario Decimal @db.Decimal(12, 4)
+  valorTotal    Decimal @db.Decimal(12, 2)
+  valorDesconto Decimal @default(0) @db.Decimal(12, 2)
+
+  baseIcms     Decimal? @db.Decimal(12, 2)
+  aliquotaIcms Decimal? @db.Decimal(5, 2)
+  valorIcms    Decimal? @db.Decimal(12, 2)
+  valorIcmsSt  Decimal? @db.Decimal(12, 2)
+  valorPis     Decimal? @db.Decimal(12, 2)
+  valorCofins  Decimal? @db.Decimal(12, 2)
+
+  document FiscalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, ordem])
+  @@index([tenantId])
+  @@index([documentId])
+  @@index([productId])
+}
+
+// Trilha append-only: emissão, cancelamento, CC-e, inutilização, rejeição,
+// contingência, manifestação. É histórico fiscal E auditoria — nunca atualize
+// nem apague uma linha daqui.
+model FiscalEvent {
+  id         String           @id @default(cuid())
+  tenantId   String
+  documentId String? // inutilização não tem documento
+  tipo       FiscalEventoTipo
+
+  sequencia Int? // nSeqEvento (CC-e permite até 20)
+  motivo    String? // justificativa (mín. 15 caracteres na SEFAZ)
+  protocolo String?
+  codigo    String? // cStat do retorno
+  mensagem  String? // xMotivo
+
+  // Inutilização de faixa (sem documento associado).
+  serie         Int?
+  numeroInicial Int?
+  numeroFinal   Int?
+
+  payload   Json? // retorno bruto do provedor — ouro no suporte
+  userId    String?
+  createdAt DateTime @default(now())
+
+  document FiscalDocument? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, createdAt])
+  @@index([documentId])
+}
+
+// Nota de FORNECEDOR (XML de entrada). Caminho:
+// XML → relacionar itens a produtos → gerar Purchase → estoque + custo médio.
+model FiscalInbound {
+  id       String              @id @default(cuid())
+  tenantId String
+  siteId   String // loja onde a mercadoria entra
+  status   FiscalInboundStatus @default(PENDENTE)
+
+  chave       String // 44 dígitos — trava contra importar a mesma nota duas vezes
+  modelo      String   @default("55")
+  numero      Int
+  serie       Int
+  dataEmissao DateTime
+  valorTotal  Decimal  @db.Decimal(12, 2)
+
+  // Emitente do XML, guardado cru: o Supplier pode ainda não existir no
+  // cadastro, e a importação não pode travar por causa disso.
+  emitCnpj        String
+  emitRazaoSocial String
+  emitUf          String?
+  supplierId      String?
+
+  purchaseOrderId String? // pedido de compra conciliado
+  purchaseId      String? @unique // entrada gerada
+
+  manifestacao  ManifestacaoTipo?
+  manifestadoEm DateTime?
+
+  xmlUrl       String?
+  observacao   String?
+  importadoPor String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  site          Site                @relation(fields: [siteId], references: [id])
+  supplier      Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  purchaseOrder PurchaseOrder?      @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  purchase      Purchase?           @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  items         FiscalInboundItem[]
+
+  @@unique([tenantId, chave])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([siteId])
+  @@index([supplierId])
+}
+
+// Item do XML do fornecedor + o produto ao qual foi relacionado. Enquanto
+// houver item com productId null a nota fica PENDENTE.
+model FiscalInboundItem {
+  id        String @id @default(cuid())
+  tenantId  String
+  inboundId String
+  ordem     Int
+
+  // Como veio no XML.
+  codigoFornecedor String // cProd
+  gtin             String? // cEAN
+  descricao        String
+  ncm              String?
+  cfop             String?
+  unidade          String
+  quantidade       Decimal @db.Decimal(12, 4)
+  valorUnitario    Decimal @db.Decimal(12, 4)
+  valorTotal       Decimal @db.Decimal(12, 2)
+  valorDesconto    Decimal @default(0) @db.Decimal(12, 2)
+  valorIcmsSt      Decimal @default(0) @db.Decimal(12, 2)
+  valorIpi         Decimal @default(0) @db.Decimal(12, 2)
+  valorFrete       Decimal @default(0) @db.Decimal(12, 2)
+
+  // Resolução no nosso catálogo.
+  productId      String?
+  packagingId    String? // fornecedor manda caixa, estoque conta unidade
+  // Unidades do nosso estoque por unidade do XML (caixa com 12 → 12).
+  fatorConversao Decimal @default(1) @db.Decimal(12, 4)
+  bonificacao    Boolean @default(false) // CFOP de bonificação: entra sem custo
+
+  inbound FiscalInbound @relation(fields: [inboundId], references: [id], onDelete: Cascade)
+
+  @@unique([inboundId, ordem])
+  @@index([tenantId])
+  @@index([inboundId])
+  @@index([productId])
+}
+
+// De-para persistido fornecedor↔catálogo. Escrito quando o operador relaciona
+// um item na primeira nota; da segunda em diante a importação resolve sozinha.
+// É o que faz a entrada por XML valer a pena no dia a dia.
+model SupplierItemMap {
+  id               String  @id @default(cuid())
+  tenantId         String
+  supplierId       String
+  codigoFornecedor String // cProd do XML
+  gtin             String?
+  productId        String
+  packagingId      String?
+  fatorConversao   Decimal @default(1) @db.Decimal(12, 4)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@unique([supplierId, codigoFornecedor])
+  @@index([tenantId])
+  @@index([productId])
 }

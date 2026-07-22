@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CalendarClock, Loader2, User } from "lucide-react";
+import { CalendarClock, Gift, Loader2, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   estadoEntrega,
@@ -154,12 +154,17 @@ export function PurchaseOrderCard({
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-xs font-semibold text-ink">{p.numero}</span>
+        <span className="flex items-center gap-1.5">
+          <span className="font-mono text-xs font-semibold text-ink">{p.numero}</span>
+          {p.items.some((i) => i.tipo !== "COMPRA") && (
+            <Gift size={11} className="shrink-0 text-violet" aria-label="Tem bonificação" />
+          )}
+        </span>
         {movendo && <Loader2 size={13} className="animate-spin text-brand" />}
       </div>
 
       <div className="flex items-center gap-2">
-        <SupplierAvatar nome={p.supplierNome} size={26} />
+        <SupplierAvatar nome={p.supplierNome} logoUrl={p.supplierLogoUrl} size={26} />
         <span className="min-w-0 truncate text-sm font-medium text-ink">{p.supplierNome}</span>
       </div>
 

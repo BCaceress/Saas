@@ -3,11 +3,28 @@
 import { db } from "@/lib/prisma";
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
-import type { AlertItem } from "@/lib/alerts-types";
+import type { AlertItem, AlertCategory } from "@/lib/alerts-types";
 import { sortAlerts } from "@/lib/alerts-types";
+import { podeEmAlguma, type Acesso, type Permissao } from "@/lib/permissoes";
 import { loadCouponCandidates } from "./clientes/_data";
 
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
+
+/**
+ * Permissão mínima por categoria do sino. Sem isto, um operador de caixa via
+ * alerta de margem, custo e ruptura — a mesma informação que a tela nega.
+ */
+const CATEGORIA_PERMISSAO: Record<AlertCategory, Permissao> = {
+  criticos: "estoque.ver",
+  operacao: "estoque.ver",
+  consumo: "estoque.ver",
+  inventario: "estoque.inventario",
+  financeiro: "relatorio.financeiro",
+  inteligencia: "relatorio.ver",
+};
+
+const podeVerCategoria = (acessos: Acesso[], c: AlertCategory) =>
+  podeEmAlguma(acessos, CATEGORIA_PERMISSAO[c]);
 
 /** Roda a leitura no contexto de tenant, entregando o tenant resolvido. */
 async function withTenant<T>(
@@ -45,6 +62,7 @@ export async function getAlerts(): Promise<AlertItem[]> {
           custo: true,
           custoMedio: true,
           createdAt: true,
+          controlaEstoque: true,
           stocks: {
             select: {
               estoqueFechado: true,
@@ -99,7 +117,7 @@ export async function getAlerts(): Promise<AlertItem[]> {
 
       const href = `/produtos/${p.id}/editar`;
       const abrir = "Abrir produto";
-      const temStock = p.stocks.length > 0;
+      const temStock = p.controlaEstoque && p.stocks.length > 0;
       const total = p.stocks.reduce((s, e) => s + n(e.estoqueFechado) + n(e.estoqueAberto), 0);
       const minimo = p.stocks.reduce((s, e) => s + n(e.estoqueMinimo), 0);
       const ideal = p.stocks.reduce((s, e) => s + n(e.estoqueIdeal), 0);
@@ -191,7 +209,7 @@ export async function getAlerts(): Promise<AlertItem[]> {
           href,
           acaoLabel: abrir,
         });
-      } else if (ultimo != null && agora - ultimo >= paradoMs && total > 0) {
+      } else if (p.controlaEstoque && ultimo != null && agora - ultimo >= paradoMs && total > 0) {
         const dias = Math.round((agora - ultimo) / DIA);
         alerts.push({
           id: `parado:${p.id}`,
@@ -299,6 +317,9 @@ export async function getAlerts(): Promise<AlertItem[]> {
 
     // Categorias desligadas em Configurações → Notificações.
     const off = new Set(ctx.tenant.alertasDesativados);
-    return sortAlerts(off.size ? alerts.filter((a) => !off.has(a.category)) : alerts);
+    const visiveis = alerts.filter(
+      (a) => !off.has(a.category) && podeVerCategoria(ctx.acessos, a.category),
+    );
+    return sortAlerts(visiveis);
   });
 }

@@ -5,7 +5,8 @@ import { usePathname } from "next/navigation";
 import { Sparkles, ArrowRight } from "lucide-react";
 import Image from "next/image";
 import { cn } from "@/lib/utils";
-import { NAV_GROUPS, type NavToggles } from "@/components/app/nav-config";
+import { NAV_GROUPS, podeVerItem, type NavToggles } from "@/components/app/nav-config";
+import type { Acesso } from "@/lib/permissoes";
 
 export type SidebarToggles = NavToggles;
 
@@ -13,22 +14,25 @@ const TRIAL_TOTAL_DIAS = 14;
 
 export function Sidebar({
   toggles,
+  acessos,
   collapsed,
   planoLabel,
   trialDias,
 }: {
   toggles: SidebarToggles;
+  acessos: Acesso[];
   collapsed: boolean;
   planoLabel: string;
   trialDias: number | null;
 }) {
   const pathname = usePathname();
 
+  // Esconder aqui é só conforto — quem digita a URL bate no guard do módulo.
   const groups = NAV_GROUPS.map((group) => ({
     title: group.title,
     items: group.items.map((item) => ({
       ...item,
-      show: item.show ? item.show(toggles) : true,
+      show: (item.show ? item.show(toggles) : true) && podeVerItem(item, acessos),
     })),
   }));
 
@@ -52,7 +56,7 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        "sticky top-3 hidden h-[calc(100dvh-1.5rem)] shrink-0 flex-col overflow-hidden rounded-[var(--radius-xl)] border border-line bg-surface shadow-[var(--shadow-float)] transition-[width] duration-200 md:flex",
+        "sticky top-3 hidden h-[calc(100dvh-1.5rem)] shrink-0 flex-col overflow-hidden rounded-[var(--radius-xl)] border border-line bg-surface shadow-[var(--shadow-float)] transition-[width] duration-200 md:flex print:hidden",
         collapsed ? "w-18" : "w-60",
       )}
     >

@@ -90,6 +90,8 @@ type FluxoIntegrado = {
   tipo: "PIX" | "CARTAO";
   fase: "iniciando" | "aguardando" | "confirmado" | "falha";
   paymentId?: string;
+  /** Venda criada no provedor — usada para acompanhar a NFC-e depois. */
+  saleId?: string;
   copiaECola?: string;
   qrCodeBase64?: string | null;
   falhaMsg?: string;
@@ -158,7 +160,7 @@ export function PagamentoModal({
     metodo: "PIX" | "CARTAO_CREDITO" | "CARTAO_DEBITO",
     opts: { parcelas?: number; terminalId?: string | null },
   ) => Promise<InicioPagamentoIntegrado>;
-  onConcluidoIntegrado?: () => void;
+  onConcluidoIntegrado?: (saleId?: string) => void;
 }) {
   const [metodo, setMetodo] = useState<ModalMetodo | null>(null);
   const [recebido, setRecebido] = useState("");
@@ -222,6 +224,7 @@ export function PagamentoModal({
         tipo: r.tipo,
         fase: "aguardando",
         paymentId: r.paymentId,
+        saleId: r.saleId,
         copiaECola: r.tipo === "PIX" ? r.copiaECola : undefined,
         qrCodeBase64: r.tipo === "PIX" ? r.qrCodeBase64 : null,
       });
@@ -247,6 +250,7 @@ export function PagamentoModal({
   // provedor pode confirmar antes — a consulta só lê e sincroniza)
   const fluxoFase = fluxo?.fase;
   const fluxoPaymentId = fluxo?.paymentId;
+  const fluxoSaleId = fluxo?.saleId;
   useEffect(() => {
     if (fluxoFase !== "aguardando" || !fluxoPaymentId) return;
     let ativo = true;
@@ -268,7 +272,7 @@ export function PagamentoModal({
             );
           } else {
             setFluxo((f) => f && { ...f, fase: "confirmado" });
-            window.setTimeout(() => onConcluidoIntegrado?.(), 900);
+            window.setTimeout(() => onConcluidoIntegrado?.(fluxoSaleId), 900);
           }
         } else if (FALHA_LABEL[r.status]) {
           setFluxo((f) => f && { ...f, fase: "falha", falhaMsg: FALHA_LABEL[r.status] });
@@ -286,7 +290,7 @@ export function PagamentoModal({
       window.clearTimeout(t0);
       window.clearInterval(id);
     };
-  }, [fluxoFase, fluxoPaymentId, onConcluidoIntegrado]);
+  }, [fluxoFase, fluxoPaymentId, fluxoSaleId, onConcluidoIntegrado]);
 
   function cancelarFluxo() {
     const pid = fluxo?.paymentId;

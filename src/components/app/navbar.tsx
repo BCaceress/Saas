@@ -33,6 +33,7 @@ export function Navbar({
   userNome,
   userEmail,
   userCargo,
+  podeConfigurar,
   vocabularioPonto,
   multiPonto,
   caixaInfo,
@@ -46,6 +47,7 @@ export function Navbar({
   userNome: string;
   userEmail: string;
   userCargo: string;
+  podeConfigurar: boolean;
   vocabularioPonto: string;
   multiPonto: boolean;
   caixaInfo: CaixaInfo | null;
@@ -127,7 +129,7 @@ export function Navbar({
     .toUpperCase();
 
   return (
-    <header className="sticky top-1 z-30 flex h-15 items-center gap-3 rounded-[var(--radius-lg)] border border-line bg-surface px-3 shadow-[var(--shadow-float)] sm:px-4">
+    <header className="sticky top-1 z-30 flex h-15 items-center gap-3 rounded-[var(--radius-lg)] border border-line bg-surface px-3 shadow-[var(--shadow-float)] print:hidden sm:px-4">
       {/* Recolher menu */}
       <button
         onClick={onToggleSidebar}
@@ -280,14 +282,16 @@ export function Navbar({
                 </p>
               </div>
               <div className="p-1.5">
-                <Link
-                  role="menuitem"
-                  href="/configuracoes"
-                  onClick={() => setMenuOpen(false)}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-ink-2 transition-colors hover:bg-surface-2"
-                >
-                  <Settings size={15} /> Configurações
-                </Link>
+                {podeConfigurar && (
+                  <Link
+                    role="menuitem"
+                    href="/configuracoes"
+                    onClick={() => setMenuOpen(false)}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-ink-2 transition-colors hover:bg-surface-2"
+                  >
+                    <Settings size={15} /> Configurações
+                  </Link>
+                )}
                 <ThemeMenuItem />
                 <button
                   role="menuitem"

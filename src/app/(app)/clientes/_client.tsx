@@ -14,17 +14,18 @@ import { Input, Select } from "@/components/ui/input";
 import { Field, Badge } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
 import { cn, brl } from "@/lib/utils";
-import { maskCpf, maskDate, maskPhone } from "@/lib/masks";
+import { maskCpf, maskDate, maskPhone, maskCnpj, maskCep } from "@/lib/masks";
 import { tierFromGasto, fmtDataUTC, fmtDiasAtras, tiersFromThresholds } from "@/lib/customers";
 import type { TierThresholds } from "@/lib/customers";
 import { CustomerSidePanel } from "@/components/app/customer-side-panel";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
+import { ViewToggle, useViewMode } from "@/components/app/view-toggle";
 import {
   createCustomer, updateCustomer, setCustomerActive, sendCoupon,
 } from "./actions";
 import type { CustomerRow, CouponCandidate } from "./_types";
-import type { Sexo } from "@/generated/prisma";
+import type { Sexo, IndicadorIE } from "@/generated/prisma";
 
 type CustomerForm = {
   id?: string;
@@ -33,10 +34,26 @@ type CustomerForm = {
   dataNascimento: string;
   sexo: "" | Sexo;
   whatsapp: string;
+  email: string;
+  // Fiscal — só a NF-e usa. Fica recolhido no formulário.
+  cnpj: string;
+  razaoSocial: string;
+  ie: string;
+  indicadorIE: "" | IndicadorIE;
+  cep: string;
+  logradouro: string;
+  numero: string;
+  complemento: string;
+  bairro: string;
+  municipio: string;
+  codigoMunicipio: string;
+  uf: string;
 };
 
 const emptyForm = (): CustomerForm => ({
-  nome: "", cpf: "", dataNascimento: "", sexo: "", whatsapp: "",
+  nome: "", cpf: "", dataNascimento: "", sexo: "", whatsapp: "", email: "",
+  cnpj: "", razaoSocial: "", ie: "", indicadorIE: "", cep: "", logradouro: "",
+  numero: "", complemento: "", bairro: "", municipio: "", codigoMunicipio: "", uf: "",
 });
 
 function formFromRow(c: CustomerRow): CustomerForm {
@@ -47,6 +64,19 @@ function formFromRow(c: CustomerRow): CustomerForm {
     dataNascimento: c.dataNascimento ? fmtDataUTC(c.dataNascimento) : "",
     sexo: c.sexo ?? "",
     whatsapp: c.whatsapp ? maskPhone(c.whatsapp) : "",
+    email: c.email ?? "",
+    cnpj: c.cnpj ? maskCnpj(c.cnpj) : "",
+    razaoSocial: c.razaoSocial ?? "",
+    ie: c.ie ?? "",
+    indicadorIE: c.indicadorIE ?? "",
+    cep: c.cep ? maskCep(c.cep) : "",
+    logradouro: c.logradouro ?? "",
+    numero: c.numero ?? "",
+    complemento: c.complemento ?? "",
+    bairro: c.bairro ?? "",
+    municipio: c.municipio ?? "",
+    codigoMunicipio: c.codigoMunicipio ?? "",
+    uf: c.uf ?? "",
   };
 }
 
@@ -62,6 +92,7 @@ export function ClientesClient({
   const router = useRouter();
   const [pending, start] = useTransition();
   const [q, setQ] = useState("");
+  const [view, setView] = useViewMode("nohub:clientes:view");
   const [form, setForm] = useState<CustomerForm | null>(null);
   const [modalError, setModalError] = useState<string>();
   const [selected, setSelected] = useState<CustomerRow | null>(null);
@@ -82,6 +113,19 @@ export function ClientesClient({
       dataNascimento: form.dataNascimento,
       sexo: form.sexo || null,
       whatsapp: form.whatsapp,
+      email: form.email,
+      cnpj: form.cnpj,
+      razaoSocial: form.razaoSocial,
+      ie: form.ie,
+      indicadorIE: form.indicadorIE || null,
+      cep: form.cep,
+      logradouro: form.logradouro,
+      numero: form.numero,
+      complemento: form.complemento,
+      bairro: form.bairro,
+      municipio: form.municipio,
+      codigoMunicipio: form.codigoMunicipio,
+      uf: form.uf,
     };
     start(async () => {
       try {
@@ -147,14 +191,17 @@ export function ClientesClient({
       )}
 
       {/* Busca */}
-      <div className="relative">
-        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
-        <Input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Buscar por nome, CPF ou WhatsApp"
-          className="pl-9"
-        />
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Buscar por nome, CPF ou WhatsApp"
+            className="pl-9"
+          />
+        </div>
+        <ViewToggle view={view} onChange={setView} />
       </div>
 
       {/* Lista */}
@@ -166,6 +213,73 @@ export function ClientesClient({
               ? "Nenhum cliente cadastrado. Adicione o primeiro."
               : "Nenhum cliente encontrado para essa busca."}
           </p>
+        </div>
+      ) : view === "cards" ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {list.map((c) => {
+            const tier = tierFromGasto(c.totalGasto, tierThresholds);
+            const iniciais = c.nome.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
+            return (
+              <div
+                key={c.id}
+                onClick={() => setSelected(c)}
+                className="flex cursor-pointer flex-col gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4 transition-colors hover:border-line-strong hover:bg-surface-2"
+              >
+                <div className="flex items-start gap-3">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-brand text-sm font-semibold text-on-brand">
+                    {iniciais || <Users size={16} />}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className={cn("truncate text-sm font-medium text-ink", !c.ativo && "text-faint line-through")}>
+                      {c.nome}
+                    </p>
+                    <p className="flex items-center gap-1.5 text-xs text-faint">
+                      <span className={cn("flex items-center gap-0.5", tier.text)}>
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <Star key={i} size={10} className={i < tier.estrelas ? "fill-current" : "opacity-25"} />
+                        ))}
+                      </span>
+                      <span className={tier.text}>{tier.label.replace("Cliente ", "")}</span>
+                    </p>
+                  </div>
+                  {!c.ativo && <Badge>Inativo</Badge>}
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <Menu
+                      align="end"
+                      trigger={
+                        <button
+                          type="button"
+                          aria-label="Ações do cliente"
+                          className="cursor-pointer rounded-[var(--radius-sm)] p-1.5 text-muted hover:bg-surface-2 hover:text-ink"
+                        >
+                          <MoreVertical size={16} />
+                        </button>
+                      }
+                    >
+                      <MenuItem icon={<Pencil size={15} />} onClick={() => { setModalError(undefined); setForm(formFromRow(c)); }}>
+                        Editar
+                      </MenuItem>
+                      <MenuItem
+                        icon={c.ativo ? <Archive size={15} /> : <ArchiveRestore size={15} />}
+                        onClick={() => toggleActive(c)}
+                      >
+                        {c.ativo ? "Inativar" : "Reativar"}
+                      </MenuItem>
+                    </Menu>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between border-t border-line pt-3 text-xs">
+                  <span className="text-faint">{c.whatsapp ? maskPhone(c.whatsapp) : "sem WhatsApp"}</span>
+                  <div className="text-right">
+                    <p className="font-mono font-medium text-ink tnum">{brl(c.totalGasto)}</p>
+                    <p className="text-[11px] text-faint">
+                      {c.ultimaCompra ? `compra ${fmtDiasAtras(c.ultimaCompra)}` : "sem compras"}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       ) : (
         <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
@@ -287,6 +401,66 @@ export function ClientesClient({
                 <option value="OUTRO">Outro</option>
               </Select>
             </Field>
+
+            {/*
+              Nota fiscal: só a NF-e (modelo 55) precisa disso. No cupom do
+              balcão o CPF já basta — por isso fica fechado.
+            */}
+            <details className="group col-span-12 border-t border-line pt-3">
+              <summary className="flex cursor-pointer select-none list-none items-center gap-2 text-sm text-muted transition-colors hover:text-ink-2 [&::-webkit-details-marker]:hidden">
+                <ChevronRight
+                  size={13}
+                  className="shrink-0 transition-transform duration-200 group-open:rotate-90"
+                />
+                Dados para nota fiscal
+              </summary>
+              <div className="mt-3 grid grid-cols-12 gap-x-3 gap-y-3">
+                <Field className="col-span-12 sm:col-span-6" label="E-mail" htmlFor="c-email">
+                  <Input id="c-email" type="email" value={form.email} onChange={(e) => upd("email", e.target.value)} placeholder="Para receber o XML/DANFE" />
+                </Field>
+                <Field className="col-span-12 sm:col-span-6" label="CNPJ (cliente empresa)" htmlFor="c-cnpj">
+                  <Input id="c-cnpj" value={form.cnpj} onChange={(e) => upd("cnpj", maskCnpj(e.target.value))} inputMode="numeric" maxLength={18} placeholder="00.000.000/0000-00" />
+                </Field>
+                <Field className="col-span-12 sm:col-span-6" label="Razão social" htmlFor="c-razao">
+                  <Input id="c-razao" value={form.razaoSocial} onChange={(e) => upd("razaoSocial", e.target.value)} />
+                </Field>
+                <Field className="col-span-6 sm:col-span-3" label="Inscrição estadual" htmlFor="c-ie">
+                  <Input id="c-ie" value={form.ie} onChange={(e) => upd("ie", e.target.value)} className="font-mono" />
+                </Field>
+                <Field className="col-span-6 sm:col-span-3" label="Indicador de IE" htmlFor="c-indie">
+                  <Select id="c-indie" value={form.indicadorIE} onChange={(e) => upd("indicadorIE", e.target.value as CustomerForm["indicadorIE"])}>
+                    <option value="">Não informar</option>
+                    <option value="CONTRIBUINTE">Contribuinte</option>
+                    <option value="ISENTO">Isento</option>
+                    <option value="NAO_CONTRIBUINTE">Não contribuinte</option>
+                  </Select>
+                </Field>
+                <Field className="col-span-6 sm:col-span-3" label="CEP" htmlFor="c-cep">
+                  <Input id="c-cep" value={form.cep} onChange={(e) => upd("cep", maskCep(e.target.value))} inputMode="numeric" maxLength={9} placeholder="00000-000" className="font-mono" />
+                </Field>
+                <Field className="col-span-12 sm:col-span-6" label="Logradouro" htmlFor="c-log">
+                  <Input id="c-log" value={form.logradouro} onChange={(e) => upd("logradouro", e.target.value)} />
+                </Field>
+                <Field className="col-span-6 sm:col-span-3" label="Número" htmlFor="c-num">
+                  <Input id="c-num" value={form.numero} onChange={(e) => upd("numero", e.target.value)} />
+                </Field>
+                <Field className="col-span-6 sm:col-span-6" label="Complemento" htmlFor="c-comp">
+                  <Input id="c-comp" value={form.complemento} onChange={(e) => upd("complemento", e.target.value)} />
+                </Field>
+                <Field className="col-span-6 sm:col-span-6" label="Bairro" htmlFor="c-bairro">
+                  <Input id="c-bairro" value={form.bairro} onChange={(e) => upd("bairro", e.target.value)} />
+                </Field>
+                <Field className="col-span-6 sm:col-span-4" label="Município" htmlFor="c-mun">
+                  <Input id="c-mun" value={form.municipio} onChange={(e) => upd("municipio", e.target.value)} />
+                </Field>
+                <Field className="col-span-3 sm:col-span-2" label="UF" htmlFor="c-uf">
+                  <Input id="c-uf" value={form.uf} onChange={(e) => upd("uf", e.target.value.toUpperCase().slice(0, 2))} maxLength={2} />
+                </Field>
+                <Field className="col-span-9 sm:col-span-6" label="Código IBGE do município" htmlFor="c-ibge" hint="A NF-e exige o código, não o nome.">
+                  <Input id="c-ibge" value={form.codigoMunicipio} onChange={(e) => upd("codigoMunicipio", e.target.value.replace(/\D/g, "").slice(0, 7))} inputMode="numeric" className="font-mono" placeholder="4314902" />
+                </Field>
+              </div>
+            </details>
           </div>
         )}
         {modalError && <p className="mt-3 text-sm text-danger">{modalError}</p>}

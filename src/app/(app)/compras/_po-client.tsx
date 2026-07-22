@@ -51,6 +51,14 @@ export function PurchaseOrdersClient({
 
   // Sobreposições
   const [detalhe, setDetalhe] = useState<PedidoView | null>(null);
+  // `detalhe` é a foto de quando o drawer abriu — depois de um
+  // router.refresh() (ex: bonificação adicionada) a lista `pedidos` vem
+  // atualizada mas o state antigo não. Busca a versão viva pelo id, sem
+  // fechar o drawer nem perder o pedido se ele sumir da lista filtrada.
+  const detalheAtual = useMemo(
+    () => (detalhe ? (pedidos.find((p) => p.id === detalhe.id) ?? detalhe) : null),
+    [detalhe, pedidos],
+  );
   const [editar, setEditar] = useState<PedidoView | null>(null);
   const [duplicar, setDuplicar] = useState<PedidoView | null>(null);
   const [receber, setReceber] = useState<PedidoView | null>(null);
@@ -59,6 +67,8 @@ export function PurchaseOrdersClient({
 
   // Feedback do drag inválido / ações de status
   const [movendoId, setMovendoId] = useState<string | null>(null);
+  // Status sendo alterado a partir do drawer (lista mostra loading na coluna Status).
+  const [statusPendingId, setStatusPendingId] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const avisoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function mostrarAviso(msg: string) {
@@ -184,12 +194,12 @@ export function PurchaseOrdersClient({
         <>
           {/* Mobile: sempre lista vertical */}
           <div className="md:hidden">
-            <PurchaseOrderList pedidos={filtrados} acoes={acoes} compacta />
+            <PurchaseOrderList pedidos={filtrados} acoes={acoes} statusPendingId={statusPendingId} compacta />
           </div>
           {/* Desktop: modo escolhido */}
           <div className="hidden md:block">
             {view === "lista" ? (
-              <PurchaseOrderList pedidos={filtrados} acoes={acoes} />
+              <PurchaseOrderList pedidos={filtrados} acoes={acoes} statusPendingId={statusPendingId} />
             ) : (
               <PurchaseOrderKanban pedidos={filtrados} onAbrir={setDetalhe} onMover={moverPedido} movendoId={movendoId} />
             )}
@@ -211,11 +221,13 @@ export function PurchaseOrdersClient({
 
       {/* ── Sobreposições ── */}
       <PedidoDrawer
-        pedido={detalhe}
+        pedido={detalheAtual}
         empresa={empresa}
+        products={formOptions.products}
         onClose={() => setDetalhe(null)}
         onEditar={(p) => { setDetalhe(null); setEditar(p); }}
         onReceber={(p) => { setDetalhe(null); setReceber(p); }}
+        onStatusChanging={setStatusPendingId}
       />
 
       {editar && (

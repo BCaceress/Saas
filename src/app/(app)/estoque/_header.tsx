@@ -13,9 +13,15 @@ import {
   Loader2,
   ArrowRightLeft,
   History,
+  ShoppingBag,
 } from "lucide-react";
 import { useState, useTransition, useEffect } from "react";
-import { setSiteAction, fetchEntradaFormDataAction, fetchTransferenciaFormDataAction } from "./actions";
+import {
+  setSiteAction,
+  fetchEntradaFormDataAction,
+  fetchTransferenciaFormDataAction,
+  loadComprasFormOptionsAction,
+} from "./actions";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
@@ -23,10 +29,11 @@ import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { NovaEntradaForm, MOTIVO_OPTIONS, type Motivo } from "./entradas/nova/_client";
 import { TransferenciaForm } from "./transferencias/_client";
+import { PedidoFormSheet } from "../compras/_pedidos";
 
 type SiteRow = { id: string; nome: string; tipo: string; ativo: boolean };
 type EntradaPanelId = `entrada:${Motivo}`;
-type PanelId = EntradaPanelId | "transferencia" | null;
+type PanelId = EntradaPanelId | "transferencia" | "pedido" | null;
 
 // ── Lazy panel content ─────────────────────────────────────────
 
@@ -96,7 +103,7 @@ const ENTRADA_ICON: Record<Motivo, React.ElementType> = {
 };
 
 const ENTRADA_DESC: Record<Motivo, string> = {
-  COMPRA_SEM_PEDIDO: "Adicionar produtos diretamente ao estoque.",
+  COMPRA_SEM_PEDIDO: "Registrar produtos diretamente no estoque sem um pedido de compra.",
   BONIFICACAO: "Registrar produtos recebidos sem custo.",
   ESTOQUE_INICIAL: "Informar os saldos existentes na implantação.",
 };
@@ -107,24 +114,67 @@ export const ENTRADA_SHEET_META: Record<Motivo, { title: string; description: st
   ESTOQUE_INICIAL: { title: "Definir estoque inicial", description: "Informe as quantidades existentes antes de iniciar o controle pelo sistema." },
 };
 
+// Bonificação de estoque nasce vinculada a um pedido de compra (aba
+// Pedidos → recebimento/bonificação) — não faz sentido como entrada avulsa.
+// Estoque inicial é opção só da implantação — não aparece no menu do dia a dia.
 const ENTRADA_ACOES: { id: EntradaPanelId; label: string; desc: string; icon: React.ElementType }[] =
-  MOTIVO_OPTIONS.map((m) => ({
+  MOTIVO_OPTIONS.filter((m) => m.value !== "BONIFICACAO" && m.value !== "ESTOQUE_INICIAL").map((m) => ({
     id: `entrada:${m.value}` as EntradaPanelId,
     label: m.label,
     desc: ENTRADA_DESC[m.value],
     icon: ENTRADA_ICON[m.value],
   }));
 
+function PedidoPanel({ onClose, empresa }: { onClose: () => void; empresa: string }) {
+  const router = useRouter();
+  type Data = Awaited<ReturnType<typeof loadComprasFormOptionsAction>>;
+  const [data, setData] = useState<Data | null>(null);
+
+  useEffect(() => {
+    loadComprasFormOptionsAction().then(setData);
+  }, []);
+
+  if (!data) {
+    return (
+      <Sheet
+        open
+        onClose={onClose}
+        title="Novo pedido de compra"
+        description="Monte o pedido para o fornecedor."
+        width="xl"
+      >
+        <LoadingPanel />
+      </Sheet>
+    );
+  }
+
+  return (
+    <PedidoFormSheet
+      open
+      onClose={onClose}
+      mode="novo"
+      formOptions={data}
+      empresa={empresa}
+      onDone={() => {
+        onClose();
+        router.refresh();
+      }}
+    />
+  );
+}
+
 export function EstoqueHeader({
   sites,
   activeSiteId,
   multiSite,
   topologia,
+  empresa,
 }: {
   sites: SiteRow[];
   activeSiteId: string | null;
   multiSite: boolean;
   topologia: string;
+  empresa: string;
 }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -226,6 +276,10 @@ export function EstoqueHeader({
                 <span className="block text-xs text-muted">{a.desc}</span>
               </MenuItem>
             ))}
+            <MenuItem icon={<ShoppingBag size={16} />} onClick={() => setPanel("pedido")}>
+              <span className="block text-sm font-medium text-ink">Pedido de compra</span>
+              <span className="block text-xs text-muted">Criar um pedido para um fornecedor.</span>
+            </MenuItem>
 
             {multiSite && (
               <>
@@ -326,6 +380,8 @@ export function EstoqueHeader({
       >
         {panel === "transferencia" && <TransferenciaPanel onClose={closePanel} />}
       </Sheet>
+
+      {panel === "pedido" && <PedidoPanel onClose={closePanel} empresa={empresa} />}
     </>
   );
 }

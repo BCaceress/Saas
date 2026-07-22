@@ -3,13 +3,13 @@
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/prisma";
-import { requireActiveTenant } from "@/lib/current-tenant";
+import { guardAction } from "@/lib/guard";
 import { runWithTenant } from "@/lib/tenant-context";
 import { onlyDigits } from "@/lib/normalize";
 
-/** Roda `fn` no contexto de tenant. */
+/** Comodato é patrimônio em campo — mesma permissão de quem mexe em estoque. */
 async function tx<T>(fn: (ctx: { tid: string }) => Promise<T>): Promise<T> {
-  const ctx = await requireActiveTenant();
+  const ctx = await guardAction("estoque.ajustar");
   return runWithTenant(ctx.tenant.id, () => fn({ tid: ctx.tenant.id }));
 }
 

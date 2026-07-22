@@ -1,6 +1,7 @@
 import { db } from "@/lib/prisma";
 import { basePrisma } from "@/lib/prisma";
 import { Decimal } from "@/generated/prisma/runtime/library";
+import type { TipoItemPedido, MotivoBonificacao } from "@/lib/estoque";
 
 const n = (v: Decimal | null | undefined) => (v == null ? 0 : Number(v));
 
@@ -32,10 +33,14 @@ export type SaldoRow = {
   ultimaCompraEm: string | null;
   ultimaVendaEm: string | null;
   // Próxima reposição (pedido de compra em aberto p/ este produto/site).
-  reposEstado: "prevista" | "pedido" | "nenhuma";
+  reposEstado: "ENVIADO" | "AGUARDANDO" | "EM_TRANSITO" | "RECEBIDO_PARCIAL" | "nenhuma";
   reposPrevisao: string | null; // ISO — previsão de entrega mais próxima
-  reposQtd: number | null;      // qtd pendente somada
+  reposQtd: number | null;      // qtd pendente somada (todos os pedidos em aberto)
+  reposNumero: string | null;   // nº do pedido em destaque (menor previsão, ou mais antigo)
+  reposSupplierNome: string | null;
+  reposOrdersCount: number;     // quantos pedidos em aberto têm este produto
   locationNome: string | null;
+  locationTipo: "AMBIENTE" | "REFRIGERADO" | "CONGELADO" | null;
   temFornecedor: boolean;
   categoria: string | null;
   marca: string | null;
@@ -81,7 +86,7 @@ export type ReposicaoRow = {
 // ── Saldos ──────────────────────────────────────────────────
 
 export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
-  const where = siteId ? { siteId } : {};
+  const where = { ...(siteId ? { siteId } : {}), product: { controlaEstoque: true } };
   const stocks = await db.stock.findMany({
     where,
     include: {
@@ -99,7 +104,7 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
           },
         },
       },
-      location: { select: { nome: true } },
+      location: { select: { nome: true, tipo: true } },
     },
     orderBy: { product: { nome: "asc" } },
   });
@@ -158,7 +163,15 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
             productId: true,
             qtdPedida: true,
             qtdRecebida: true,
-            purchaseOrder: { select: { previsaoEntrega: true } },
+            purchaseOrder: {
+              select: {
+                numero: true,
+                status: true,
+                previsaoEntrega: true,
+                createdAt: true,
+                supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+              },
+            },
           },
         })
       : Promise.resolve([]),
@@ -189,17 +202,48 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
     if (m.tipo === "SAIDA" && !lastVenda.has(m.productId)) lastVenda.set(m.productId, m.createdAt);
   }
 
-  const reposMap = new Map<string, { previsao: Date | null; qtd: number }>();
+  // Pedido em destaque por produto: o de previsão mais próxima (ou, sem
+  // previsão em nenhum, o mais antigo) — os demais só somam na quantidade.
+  type ReposAgg = {
+    previsao: Date | null;
+    qtd: number;
+    status: string;
+    numero: string;
+    supplierNome: string | null;
+    createdAt: Date;
+    orders: Set<string>;
+  };
+  const reposMap = new Map<string, ReposAgg>();
   for (const it of poItems) {
     const pend = n(it.qtdPedida) - n(it.qtdRecebida);
     if (pend <= 0) continue;
-    const prev = it.purchaseOrder.previsaoEntrega;
+    const po = it.purchaseOrder;
+    const supplierNome = po.supplier ? (po.supplier.nomeFantasia ?? po.supplier.razaoSocial) : null;
     const cur = reposMap.get(it.productId);
     if (!cur) {
-      reposMap.set(it.productId, { previsao: prev, qtd: pend });
-    } else {
-      cur.qtd += pend;
-      if (prev && (!cur.previsao || prev < cur.previsao)) cur.previsao = prev;
+      reposMap.set(it.productId, {
+        previsao: po.previsaoEntrega,
+        qtd: pend,
+        status: po.status,
+        numero: po.numero,
+        supplierNome,
+        createdAt: po.createdAt,
+        orders: new Set([po.numero]),
+      });
+      continue;
+    }
+    cur.qtd += pend;
+    cur.orders.add(po.numero);
+    const melhora =
+      po.previsaoEntrega && (!cur.previsao || po.previsaoEntrega < cur.previsao)
+        ? true
+        : !po.previsaoEntrega && !cur.previsao && po.createdAt < cur.createdAt;
+    if (melhora) {
+      cur.previsao = po.previsaoEntrega;
+      cur.status = po.status;
+      cur.numero = po.numero;
+      cur.supplierNome = supplierNome;
+      cur.createdAt = po.createdAt;
     }
   }
 
@@ -232,12 +276,14 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
       ultimaMovEm: lastMap.get(s.productId)?.at.toISOString() ?? null,
       ultimaCompraEm: lastCompra.get(s.productId)?.toISOString() ?? null,
       ultimaVendaEm: lastVenda.get(s.productId)?.toISOString() ?? null,
-      reposEstado: reposMap.has(s.productId)
-        ? (reposMap.get(s.productId)!.previsao ? "prevista" : "pedido")
-        : "nenhuma",
+      reposEstado: (reposMap.get(s.productId)?.status as SaldoRow["reposEstado"]) ?? "nenhuma",
       reposPrevisao: reposMap.get(s.productId)?.previsao?.toISOString() ?? null,
       reposQtd: reposMap.get(s.productId)?.qtd ?? null,
+      reposNumero: reposMap.get(s.productId)?.numero ?? null,
+      reposSupplierNome: reposMap.get(s.productId)?.supplierNome ?? null,
+      reposOrdersCount: reposMap.get(s.productId)?.orders.size ?? 0,
       locationNome: s.location?.nome ?? null,
+      locationTipo: s.location?.tipo ?? null,
       temFornecedor: s.product.suppliers.length > 0,
       categoria: s.product.subcategory?.nome ?? null,
       marca: s.product.brand?.nome ?? null,
@@ -620,14 +666,20 @@ function resolveOrigem(
 // ── Pedidos de compra (PurchaseOrder) ─────────────────────────
 
 export type PedidoCompraItemView = {
+  id: string;
   productId: string;
   nome: string;
   sku: string;
   imagemUrl: string | null;
+  packagingId: string | null;
   packagingNome: string | null;
-  qtdPedida: number;
+  fatorConversao: number; // un base por unidade de compra (1 = unidade)
+  tipo: TipoItemPedido;
+  motivoBonificacao: MotivoBonificacao | null;
+  qtdPedida: number; // em unidades de compra (embalagem)
   qtdRecebida: number;
-  custoUnitario: number;
+  custoUnitario: number; // por unidade de compra (embalagem) — sempre 0 quando tipo != COMPRA
+  observacao: string | null;
 };
 
 export type PedidoCompraView = {
@@ -638,6 +690,7 @@ export type PedidoCompraView = {
   supplierNome: string;
   supplierTelefone: string | null;
   supplierEmail: string | null;
+  supplierLogoUrl: string | null;
   siteId: string;
   siteNome: string;
   previsaoEntrega: Date | null;
@@ -647,6 +700,8 @@ export type PedidoCompraView = {
   createdAt: Date;
   updatedAt: Date;
   enviadoEm: Date | null;
+  confirmadoEm: Date | null;
+  emTransitoEm: Date | null;
   recebidoEm: Date | null;
   canceladoEm: Date | null;
   operador: string | null;
@@ -657,7 +712,7 @@ export type PedidoCompraView = {
 export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
   const pedidos = await db.purchaseOrder.findMany({
     include: {
-      supplier: { select: { razaoSocial: true, nomeFantasia: true, telefone: true, email: true } },
+      supplier: { select: { razaoSocial: true, nomeFantasia: true, telefone: true, email: true, logoUrl: true } },
       site: { select: { nome: true } },
       items: true,
     },
@@ -672,14 +727,14 @@ export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
   const [products, packagings, users] = await Promise.all([
     mapProdutos(productIds),
     packagingIds.length > 0
-      ? db.productPackaging.findMany({ where: { id: { in: packagingIds } }, select: { id: true, nome: true } })
+      ? db.productPackaging.findMany({ where: { id: { in: packagingIds } }, select: { id: true, nome: true, fatorConversao: true } })
       : Promise.resolve([]),
     // User mora nas tabelas de auth (não tenant-scoped): usa basePrisma.
     userIds.length > 0
       ? basePrisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true, email: true } })
       : Promise.resolve([]),
   ]);
-  const pkgMap = new Map(packagings.map((pk) => [pk.id, pk.nome]));
+  const pkgMap = new Map(packagings.map((pk) => [pk.id, { nome: pk.nome, fator: n(pk.fatorConversao) || 1 }]));
   const userMap = new Map(users.map((u) => [u.id, u.name ?? u.email ?? null]));
 
   return pedidos.map((p) => ({
@@ -690,6 +745,7 @@ export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
     supplierNome: p.supplier ? (p.supplier.nomeFantasia ?? p.supplier.razaoSocial) : "—",
     supplierTelefone: p.supplier?.telefone ?? null,
     supplierEmail: p.supplier?.email ?? null,
+    supplierLogoUrl: p.supplier?.logoUrl ?? null,
     siteId: p.siteId,
     siteNome: p.site.nome,
     previsaoEntrega: p.previsaoEntrega,
@@ -699,20 +755,31 @@ export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
     enviadoEm: p.enviadoEm,
+    confirmadoEm: p.confirmadoEm,
+    emTransitoEm: p.emTransitoEm,
     recebidoEm: p.recebidoEm,
     canceladoEm: p.canceladoEm,
     operador: p.createdBy ? (userMap.get(p.createdBy) ?? null) : null,
     totalItems: p.items.length,
-    items: p.items.map((i) => ({
-      productId: i.productId,
-      nome: products.get(i.productId)?.nome ?? i.productId,
-      sku: products.get(i.productId)?.sku ?? "",
-      imagemUrl: products.get(i.productId)?.imagemUrl ?? null,
-      packagingNome: i.packagingId ? (pkgMap.get(i.packagingId) ?? null) : null,
-      qtdPedida: n(i.qtdPedida),
-      qtdRecebida: n(i.qtdRecebida),
-      custoUnitario: n(i.custoUnitario),
-    })),
+    items: p.items.map((i) => {
+      const pkg = i.packagingId ? (pkgMap.get(i.packagingId) ?? null) : null;
+      return {
+        id: i.id,
+        productId: i.productId,
+        nome: products.get(i.productId)?.nome ?? i.productId,
+        sku: products.get(i.productId)?.sku ?? "",
+        imagemUrl: products.get(i.productId)?.imagemUrl ?? null,
+        packagingId: i.packagingId ?? null,
+        packagingNome: pkg?.nome ?? null,
+        fatorConversao: pkg?.fator ?? 1,
+        tipo: i.tipo,
+        motivoBonificacao: i.motivoBonificacao ?? null,
+        qtdPedida: n(i.qtdPedida),
+        qtdRecebida: n(i.qtdRecebida),
+        custoUnitario: n(i.custoUnitario),
+        observacao: i.observacao ?? null,
+      };
+    }),
   }));
 }
 
@@ -727,8 +794,8 @@ export async function loadPedidosAReceber(siteId: string | null): Promise<Pedido
 }
 
 export async function loadComprasFormOptions() {
-  const [suppliers, products, sites] = await Promise.all([
-    db.supplier.findMany({ where: { ativo: true }, orderBy: { razaoSocial: "asc" }, select: { id: true, razaoSocial: true, nomeFantasia: true, telefone: true, email: true } }),
+  const [suppliers, products, sites, entradas, pendentes] = await Promise.all([
+    db.supplier.findMany({ where: { ativo: true }, orderBy: { razaoSocial: "asc" }, select: { id: true, razaoSocial: true, nomeFantasia: true, telefone: true, email: true, pedidoMinimo: true } }),
     db.product.findMany({
       where: { ativo: true, tipo: { in: ["SIMPLES", "INSUMO"] } },
       orderBy: { nome: "asc" },
@@ -736,25 +803,100 @@ export async function loadComprasFormOptions() {
         id: true,
         nome: true,
         sku: true,
+        ean: true,
         imagemUrl: true,
         custoMedio: true,
+        subcategory: { select: { nome: true } },
         packagings: { select: { id: true, nome: true, fatorConversao: true, isCompraDefault: true } },
         suppliers: { select: { supplierId: true } },
+        stocks: { select: { siteId: true, estoqueFechado: true, estoqueAberto: true } },
       },
     }),
     db.site.findMany({ where: { ativo: true }, orderBy: { nome: "asc" }, select: { id: true, nome: true, tipo: true } }),
+    // Último preço pago por produto×fornecedor — entradas de compra (custoUnitario
+    // já é por UN base). Join manual com Purchase (StockMovement não tem relation).
+    db.stockMovement.findMany({
+      where: { tipo: "ENTRADA", purchaseId: { not: null }, custoUnitario: { not: null } },
+      orderBy: { createdAt: "desc" },
+      take: 3000,
+      select: { productId: true, purchaseId: true, custoUnitario: true, createdAt: true },
+    }),
+    // Itens já pedidos e não recebidos — aviso de duplicidade no form.
+    db.purchaseOrderItem.findMany({
+      where: { purchaseOrder: { status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] } } },
+      select: {
+        productId: true,
+        packagingId: true,
+        qtdPedida: true,
+        qtdRecebida: true,
+        purchaseOrder: { select: { id: true, numero: true, supplierId: true } },
+      },
+    }),
   ]);
 
+  // Resolve fornecedor das entradas via Purchase.
+  const entradaPurchaseIds = [...new Set(entradas.flatMap((e) => (e.purchaseId ? [e.purchaseId] : [])))];
+  const entradaPurchases = entradaPurchaseIds.length
+    ? await db.purchase.findMany({ where: { id: { in: entradaPurchaseIds } }, select: { id: true, supplierId: true } })
+    : [];
+  const purchaseSupplier = new Map(entradaPurchases.map((p) => [p.id, p.supplierId]));
+
+  // productId → últimos preços (1 por fornecedor, mais recente primeiro).
+  const ultimosPrecos = new Map<string, { supplierId: string | null; custoUnBase: number; em: string }[]>();
+  for (const e of entradas) {
+    const supplierId = e.purchaseId ? (purchaseSupplier.get(e.purchaseId) ?? null) : null;
+    const lista = ultimosPrecos.get(e.productId) ?? [];
+    if (lista.some((u) => u.supplierId === supplierId)) continue; // já tem o mais recente (query vem desc)
+    lista.push({ supplierId, custoUnBase: n(e.custoUnitario), em: e.createdAt.toISOString() });
+    ultimosPrecos.set(e.productId, lista);
+  }
+
+  // productId → pedidos abertos com o item (restante > 0).
+  const pendPkgIds = [...new Set(pendentes.flatMap((p) => (p.packagingId ? [p.packagingId] : [])))];
+  const pendPkgs = pendPkgIds.length
+    ? await db.productPackaging.findMany({ where: { id: { in: pendPkgIds } }, select: { id: true, nome: true } })
+    : [];
+  const pendPkgNome = new Map(pendPkgs.map((pk) => [pk.id, pk.nome]));
+  const pendentesMap = new Map<string, { poId: string; numero: string; supplierId: string; qtd: number; packagingNome: string | null }[]>();
+  for (const p of pendentes) {
+    const rest = n(p.qtdPedida) - n(p.qtdRecebida);
+    if (rest <= 0) continue;
+    const lista = pendentesMap.get(p.productId) ?? [];
+    lista.push({
+      poId: p.purchaseOrder.id,
+      numero: p.purchaseOrder.numero,
+      supplierId: p.purchaseOrder.supplierId,
+      qtd: rest,
+      packagingNome: p.packagingId ? (pendPkgNome.get(p.packagingId) ?? null) : null,
+    });
+    pendentesMap.set(p.productId, lista);
+  }
+
   return {
-    suppliers,
+    suppliers: suppliers.map((s) => ({
+      id: s.id,
+      razaoSocial: s.razaoSocial,
+      nomeFantasia: s.nomeFantasia,
+      telefone: s.telefone,
+      email: s.email,
+      pedidoMinimo: s.pedidoMinimo != null ? n(s.pedidoMinimo) : null,
+    })),
     sites,
     products: products.map((p) => ({
       id: p.id,
       nome: p.nome,
       sku: p.sku,
+      ean: p.ean,
       imagemUrl: p.imagemUrl,
       custoMedio: p.custoMedio ? n(p.custoMedio) : null,
+      categoria: p.subcategory?.nome ?? null,
       supplierIds: p.suppliers.map((s) => s.supplierId),
+      // UN base disponíveis por site (fechado + aberto) — decisão de qtd no form.
+      estoquePorSite: Object.fromEntries(
+        p.stocks.filter((s) => s.siteId).map((s) => [s.siteId as string, n(s.estoqueFechado) + n(s.estoqueAberto)]),
+      ) as Record<string, number>,
+      ultimosPrecos: ultimosPrecos.get(p.id) ?? [],
+      pendentes: pendentesMap.get(p.id) ?? [],
       packagings: p.packagings.map((pk) => ({
         id: pk.id,
         nome: pk.nome,
@@ -799,6 +941,7 @@ export async function loadReposicao(siteId: string | null): Promise<ReposicaoRow
   const stocks = await db.stock.findMany({
     where: {
       ...(siteId ? { siteId } : {}),
+      product: { controlaEstoque: true },
     },
     include: {
       product: {

@@ -111,7 +111,7 @@ export function PageHeader({
 
           {/* Ações — alinham à direita; quebram para nova linha se faltar espaço */}
           {actions && (
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 self-center">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 self-center print:hidden">
               {actions}
             </div>
           )}

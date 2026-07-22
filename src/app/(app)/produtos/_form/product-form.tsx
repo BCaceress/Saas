@@ -371,13 +371,19 @@ export function ProductForm({
   const [locationId, setLocation] = useState(product?.estoque.locationId ?? "");
 
   const [controleEstoque, setControleEstoque] = useState(
-    tipo === "INSUMO"
-      ? !!product && (product.estoque.minimo > 0 || product.estoque.ideal > 0)
-      : false,
+    product ? product.estoque.controlado : false,
   );
 
   const [fiscalProfileId, setFiscal] = useState(product?.fiscalProfileId ?? "");
   const [restricaoIdade, setIdade] = useState(product?.restricaoIdade ?? false);
+  // Fiscal por item — recolhido dentro do bloco Fiscal. Quem vende por unidade
+  // (o caso normal) nunca precisa abrir isso.
+  const [gtinTrib, setGtinTrib] = useState(product?.gtinTributavel ?? "");
+  const [uTrib, setUTrib] = useState(product?.unidadeTributavel ?? "");
+  const [fatorTrib, setFatorTrib] = useState(
+    product?.fatorConversaoTrib != null ? String(product.fatorConversaoTrib) : "",
+  );
+  const [codigoAnp, setCodigoAnp] = useState(product?.codigoAnp ?? "");
 
   const [vendeOnline, setVendeOnline] = useState(product?.vendeOnline ?? false);
   const [pesoGramas, setPeso] = useState("");
@@ -562,7 +568,7 @@ export function ProductForm({
       return;
     }
     if (!subcategoryId) return setError("Escolha a subcategoria.");
-    if (!parseMoney(precoVenda)) {
+    if (isSimples && !parseMoney(precoVenda)) {
       toast.error(
         "Preço obrigatório",
         "Informe o preço de venda antes de salvar.",
@@ -598,6 +604,11 @@ export function ProductForm({
       custo: parseMoney(custo),
       fiscalProfileId: fiscalProfileId || undefined,
       restricaoIdade,
+      gtinTributavel: gtinTrib.trim() || undefined,
+      unidadeTributavel: uTrib.trim().toUpperCase() || undefined,
+      fatorConversaoTrib: n(fatorTrib) ?? undefined,
+      codigoAnp: codigoAnp.trim() || undefined,
+      controlaEstoque: isSimples ? true : controleEstoque,
       estoqueMinimo: n(estoqueMinimo) ?? 0,
       estoqueIdeal: n(estoqueIdeal) ?? 0,
       estoqueInicial: n(estoqueInicial) ?? 0,
@@ -1245,6 +1256,78 @@ export function ProductForm({
                   />
                   Venda restrita a maiores de 18 anos
                 </label>
+
+                {/*
+                  Fiscal por item. NCM, CST e CFOP vêm do perfil fiscal acima —
+                  aqui só o que muda de SKU para SKU. Fica fechado porque quem
+                  vende por unidade nunca precisa mexer.
+                */}
+                <details className="group border-t border-line pt-3">
+                  <summary className="flex cursor-pointer select-none list-none items-center gap-2 text-sm text-muted transition-colors hover:text-ink-2 [&::-webkit-details-marker]:hidden">
+                    <ChevronRight
+                      size={13}
+                      className="shrink-0 transition-transform duration-200 group-open:rotate-90"
+                    />
+                    Unidade tributável e combustíveis
+                  </summary>
+                  <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                    <Field
+                      label="Unidade tributável"
+                      htmlFor="utrib"
+                      hint="Só quando a nota sai em unidade diferente da venda (vende o fardo, tributa em KG)."
+                    >
+                      <Input
+                        id="utrib"
+                        value={uTrib}
+                        onChange={(e) => setUTrib(e.target.value.toUpperCase().slice(0, 6))}
+                        placeholder="KG"
+                        className="font-mono"
+                      />
+                    </Field>
+                    <Field
+                      label="Fator de conversão"
+                      htmlFor="ftrib"
+                      hint="Quantidade tributável por unidade vendida."
+                    >
+                      <Input
+                        id="ftrib"
+                        value={fatorTrib}
+                        onChange={(e) => setFatorTrib(e.target.value)}
+                        placeholder="1"
+                        inputMode="decimal"
+                        className="font-mono"
+                      />
+                    </Field>
+                    <Field
+                      label="GTIN tributável"
+                      htmlFor="gtrib"
+                      hint="Deixe vazio para usar o código de barras do produto."
+                    >
+                      <Input
+                        id="gtrib"
+                        value={gtinTrib}
+                        onChange={(e) => setGtinTrib(e.target.value.replace(/\D/g, ""))}
+                        placeholder="7891234567890"
+                        inputMode="numeric"
+                        className="font-mono"
+                      />
+                    </Field>
+                    <Field
+                      label="Código ANP"
+                      htmlFor="anp"
+                      hint="Só para combustíveis."
+                    >
+                      <Input
+                        id="anp"
+                        value={codigoAnp}
+                        onChange={(e) => setCodigoAnp(e.target.value.replace(/\D/g, "").slice(0, 9))}
+                        placeholder="320102001"
+                        inputMode="numeric"
+                        className="font-mono"
+                      />
+                    </Field>
+                  </div>
+                </details>
               </AccordionBlock>
 
               {/* Venda online — recolhível, opcional */}

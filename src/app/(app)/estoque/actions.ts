@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireActiveTenant } from "@/lib/current-tenant";
+import { guardAction, assertSite } from "@/lib/guard";
+import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { loadComprasFormOptions, loadInventarioFormOptions } from "./_data";
@@ -30,11 +31,41 @@ import {
   cancelarPedidoCompra,
   excluirPedidoCompra,
   receberPedidoCompra,
+  adicionarBonificacaoPedido,
 } from "@/lib/estoque";
 
+/** Baseline: só abre o módulo quem enxerga estoque. Use `txp` para escrita. */
 async function tx<T>(fn: (tid: string, userId: string) => Promise<T>): Promise<T> {
-  const ctx = await requireActiveTenant();
+  const ctx = await guardAction("estoque.ver");
   return runWithTenant(ctx.tenant.id, () => fn(ctx.tenant.id, ctx.user.id ?? ""));
+}
+
+/**
+ * Escrita: exige `permissao` — e, quando a operação pertence a uma loja, exige
+ * naquela loja. É o que faz o acesso por loja valer contra requisição forjada.
+ */
+async function txp<T>(
+  permissao: Permissao,
+  siteId: string | null,
+  fn: (tid: string, userId: string) => Promise<T>,
+): Promise<T> {
+  const ctx = await guardAction(permissao, siteId);
+  return runWithTenant(ctx.tenant.id, () => fn(ctx.tenant.id, ctx.user.id ?? ""));
+}
+
+/** Idem, mas o siteId só é conhecido depois de ler o registro no banco. */
+async function txpDepois<T>(
+  permissao: Permissao,
+  fn: (
+    tid: string,
+    userId: string,
+    exigirLoja: (siteId: string) => void,
+  ) => Promise<T>,
+): Promise<T> {
+  const ctx = await guardAction(permissao);
+  return runWithTenant(ctx.tenant.id, () =>
+    fn(ctx.tenant.id, ctx.user.id ?? "", (siteId) => assertSite(ctx, permissao, siteId)),
+  );
 }
 
 const ok = () => revalidatePath("/estoque", "layout");
@@ -55,7 +86,8 @@ const siteSchema = z.object({
 });
 
 export async function createSite(input: z.input<typeof siteSchema>) {
-  return tx(async (tid) => {
+  // Criar/editar loja é configuração do tenant, não operação de estoque.
+  return txp("config.gerenciar", null, async (tid) => {
     const d = siteSchema.parse(input);
     const nome = d.nome.trim();
     const dup = await db.site.findFirst({ where: { nome: { equals: nome, mode: "insensitive" } } });
@@ -81,7 +113,7 @@ export async function createSite(input: z.input<typeof siteSchema>) {
 }
 
 export async function updateSite(id: string, input: z.input<typeof siteSchema>) {
-  return tx(async () => {
+  return txp("config.gerenciar", null, async () => {
     const d = siteSchema.parse(input);
     const nome = d.nome.trim();
     const dup = await db.site.findFirst({ where: { nome: { equals: nome, mode: "insensitive" }, id: { not: id } } });
@@ -106,7 +138,7 @@ export async function updateSite(id: string, input: z.input<typeof siteSchema>) 
 }
 
 export async function toggleSiteAtivo(id: string, ativo: boolean) {
-  return tx(async () => {
+  return txp("config.gerenciar", null, async () => {
     await db.site.update({ where: { id }, data: { ativo } });
     ok();
   });
@@ -130,8 +162,8 @@ const entradaSchema = z.object({
 });
 
 export async function registrarEntradaAction(input: z.input<typeof entradaSchema>) {
-  return tx(async (tid, userId) => {
-    const d = entradaSchema.parse(input);
+  const d = entradaSchema.parse(input);
+  return txp("estoque.ajustar", d.siteId, async (tid, userId) => {
     const id = await registrarEntrada(tid, d.siteId, d.items, {
       tipo: "MANUAL",
       motivo: d.motivo,
@@ -150,8 +182,11 @@ export async function registrarEntradaAction(input: z.input<typeof entradaSchema
 const pedidoItemSchema = z.object({
   productId: z.string().min(1),
   packagingId: z.string().optional().nullable(),
+  tipo: z.enum(["COMPRA", "BONIFICACAO", "BRINDE", "TROCA", "AMOSTRA", "SERVICO"]).default("COMPRA"),
+  motivoBonificacao: z.enum(["COMERCIAL", "CAMPANHA", "REPOSICAO", "TROCA", "CORTESIA", "OUTRO"]).optional().nullable(),
   qtdPedida: z.number().positive(),
   custoUnitario: z.number().nonnegative().default(0),
+  observacao: z.string().trim().max(500).optional().nullable(),
 });
 
 const pedidoSchema = z.object({
@@ -164,6 +199,43 @@ const pedidoSchema = z.object({
 
 const parsePrevisao = (v?: string | null) => (v ? new Date(`${v}T00:00:00`) : null);
 
+/** Loja de destino do pedido — o escopo só aparece depois de ler o registro. */
+async function siteDoPedido(pedidoId: string): Promise<string> {
+  const p = await db.purchaseOrder.findFirst({
+    where: { id: pedidoId },
+    select: { siteId: true },
+  });
+  if (!p) throw new Error("Pedido não encontrado.");
+  return p.siteId;
+}
+
+async function sitesDaRequisicao(requisicaoId: string): Promise<[string, string]> {
+  const r = await db.requisicao.findFirst({
+    where: { id: requisicaoId },
+    select: { origemSiteId: true, destinoSiteId: true },
+  });
+  if (!r) throw new Error("Requisição não encontrada.");
+  return [r.origemSiteId, r.destinoSiteId];
+}
+
+async function siteDestinoTransferencia(transferId: string): Promise<string> {
+  const t = await db.transfer.findFirst({
+    where: { id: transferId },
+    select: { destinoSiteId: true },
+  });
+  if (!t) throw new Error("Transferência não encontrada.");
+  return t.destinoSiteId;
+}
+
+async function siteDoInventario(inventoryId: string): Promise<string> {
+  const i = await db.inventory.findFirst({
+    where: { id: inventoryId },
+    select: { siteId: true },
+  });
+  if (!i) throw new Error("Inventário não encontrado.");
+  return i.siteId;
+}
+
 export async function loadComprasFormOptionsAction() {
   return tx(() => loadComprasFormOptions());
 }
@@ -172,8 +244,8 @@ export async function criarPedidoCompraAction(
   input: z.input<typeof pedidoSchema>,
   enviar = false,
 ) {
-  return tx(async (tid, userId) => {
-    const d = pedidoSchema.parse(input);
+  const d = pedidoSchema.parse(input);
+  return txp("compras.pedir", d.siteId, async (tid, userId) => {
     const id = await criarPedidoCompra(
       tid,
       {
@@ -194,8 +266,11 @@ export async function atualizarPedidoCompraAction(
   pedidoId: string,
   input: z.input<typeof pedidoSchema>,
 ) {
-  return tx(async (tid) => {
-    const d = pedidoSchema.parse(input);
+  const d = pedidoSchema.parse(input);
+  // Editar pode MOVER o pedido de loja — exige as duas pontas.
+  return txpDepois("compras.pedir", async (tid, _userId, exigirLoja) => {
+    exigirLoja(await siteDoPedido(pedidoId));
+    exigirLoja(d.siteId);
     await atualizarPedidoCompra(tid, pedidoId, {
       siteId: d.siteId,
       supplierId: d.supplierId,
@@ -208,35 +283,68 @@ export async function atualizarPedidoCompraAction(
 }
 
 export async function enviarPedidoCompraAction(pedidoId: string) {
-  return tx(async (tid) => {
+  return txpDepois("compras.pedir", async (tid, _userId, exigirLoja) => {
+    exigirLoja(await siteDoPedido(pedidoId));
     await enviarPedidoCompra(tid, pedidoId);
     ok();
   });
 }
 
 export async function marcarAguardandoPedidoAction(pedidoId: string) {
-  return tx(async (tid) => {
+  return txpDepois("compras.pedir", async (tid, _userId, exigirLoja) => {
+    exigirLoja(await siteDoPedido(pedidoId));
     await marcarAguardandoPedido(tid, pedidoId);
     ok();
   });
 }
 
 export async function marcarEmTransitoPedidoAction(pedidoId: string) {
-  return tx(async (tid) => {
+  return txpDepois("compras.pedir", async (tid, _userId, exigirLoja) => {
+    exigirLoja(await siteDoPedido(pedidoId));
     await marcarEmTransitoPedido(tid, pedidoId);
     ok();
   });
 }
 
+const bonificacaoItemSchema = z.object({
+  productId: z.string().min(1),
+  packagingId: z.string().optional().nullable(),
+  motivoBonificacao: z.enum(["COMERCIAL", "CAMPANHA", "REPOSICAO", "TROCA", "CORTESIA", "OUTRO"]).optional().nullable(),
+  qtdPedida: z.number().positive(),
+  observacao: z.string().trim().max(500).optional().nullable(),
+});
+
+const bonificacaoSchema = z.object({
+  items: z.array(bonificacaoItemSchema).min(1, "Adicione ao menos um item."),
+});
+
+export async function adicionarBonificacaoPedidoAction(
+  pedidoId: string,
+  input: z.input<typeof bonificacaoSchema>,
+) {
+  const d = bonificacaoSchema.parse(input);
+  return txpDepois("compras.pedir", async (tid, _userId, exigirLoja) => {
+    exigirLoja(await siteDoPedido(pedidoId));
+    await adicionarBonificacaoPedido(
+      tid,
+      pedidoId,
+      d.items.map((i) => ({ ...i, tipo: "BONIFICACAO" as const, custoUnitario: 0 })),
+    );
+    ok();
+  });
+}
+
 export async function cancelarPedidoCompraAction(pedidoId: string) {
-  return tx(async (tid) => {
+  return txpDepois("compras.pedir", async (tid, _userId, exigirLoja) => {
+    exigirLoja(await siteDoPedido(pedidoId));
     await cancelarPedidoCompra(tid, pedidoId);
     ok();
   });
 }
 
 export async function excluirPedidoCompraAction(pedidoId: string) {
-  return tx(async (tid) => {
+  return txpDepois("compras.pedir", async (tid, _userId, exigirLoja) => {
+    exigirLoja(await siteDoPedido(pedidoId));
     await excluirPedidoCompra(tid, pedidoId);
     ok();
   });
@@ -246,12 +354,14 @@ const recebimentoCompraSchema = z.object({
   pedidoId: z.string().min(1),
   numeroNota: z.string().optional().nullable(),
   gerarFinanceiro: z.boolean().default(false),
-  items: z.array(z.object({ productId: z.string().min(1), qtdRecebida: z.number().nonnegative() })).min(1),
+  items: z.array(z.object({ itemId: z.string().min(1), qtdRecebida: z.number().nonnegative() })).min(1),
 });
 
 export async function receberPedidoCompraAction(input: z.input<typeof recebimentoCompraSchema>) {
-  return tx(async (tid, userId) => {
-    const d = recebimentoCompraSchema.parse(input);
+  const d = recebimentoCompraSchema.parse(input);
+  // Receber é do estoquista; pedir é de quem compra. Permissões diferentes.
+  return txpDepois("compras.receber", async (tid, userId, exigirLoja) => {
+    exigirLoja(await siteDoPedido(d.pedidoId));
     await receberPedidoCompra(tid, d.pedidoId, d.items, {
       numeroNota: d.numeroNota,
       gerarFinanceiro: d.gerarFinanceiro,
@@ -272,8 +382,8 @@ const ajusteSchema = z.object({
 });
 
 export async function registrarAjusteAction(input: z.input<typeof ajusteSchema>) {
-  return tx(async (tid, userId) => {
-    const d = ajusteSchema.parse(input);
+  const d = ajusteSchema.parse(input);
+  return txp("estoque.ajustar", d.siteId, async (tid, userId) => {
     await registrarAjuste(tid, d.siteId, d.productId, {
       fechado: d.deltaFechado,
       aberto: d.deltaAberto,
@@ -295,8 +405,8 @@ const devolucaoSchema = z.object({
 });
 
 export async function registrarDevolucaoAction(input: z.input<typeof devolucaoSchema>) {
-  return tx(async (tid, userId) => {
-    const d = devolucaoSchema.parse(input);
+  const d = devolucaoSchema.parse(input);
+  return txp("estoque.ajustar", d.siteId, async (tid, userId) => {
     await registrarDevolucao(
       tid,
       d.siteId,
@@ -321,8 +431,8 @@ const perdaSchema = z.object({
 });
 
 export async function registrarPerdaAction(input: z.input<typeof perdaSchema>) {
-  return tx(async (tid, userId) => {
-    const d = perdaSchema.parse(input);
+  const d = perdaSchema.parse(input);
+  return txp("estoque.ajustar", d.siteId, async (tid, userId) => {
     await registrarPerda(tid, d.siteId, d.productId, {
       fechado: d.deltaFechado,
       aberto: d.deltaAberto,
@@ -346,8 +456,11 @@ const transferenciaSchema = z.object({
 });
 
 export async function registrarTransferenciaAction(input: z.input<typeof transferenciaSchema>) {
-  return tx(async (tid, userId) => {
-    const d = transferenciaSchema.parse(input);
+  const d = transferenciaSchema.parse(input);
+  // Move estoque entre duas lojas — precisa ter acesso às DUAS pontas.
+  return txpDepois("estoque.transferir", async (tid, userId, exigirLoja) => {
+    exigirLoja(d.origemSiteId);
+    exigirLoja(d.destinoSiteId);
     if (d.origemSiteId === d.destinoSiteId) throw new Error("Origem e destino devem ser diferentes.");
     const id = await registrarTransferencia(tid, d.origemSiteId, d.destinoSiteId, d.items, {
       observacao: d.observacao,
@@ -370,8 +483,9 @@ const requisicaoSchema = z.object({
 });
 
 export async function criarRequisicaoAction(input: z.input<typeof requisicaoSchema>) {
-  return tx(async (tid, userId) => {
-    const d = requisicaoSchema.parse(input);
+  const d = requisicaoSchema.parse(input);
+  // Quem pede é a loja de destino; basta acesso a ela.
+  return txp("estoque.transferir", d.destinoSiteId, async (tid, userId) => {
     if (d.origemSiteId === d.destinoSiteId) throw new Error("Origem e destino devem ser diferentes.");
     const id = await criarRequisicao(tid, d.origemSiteId, d.destinoSiteId, d.items, {
       observacao: d.observacao,
@@ -391,8 +505,10 @@ const expedicaoSchema = z.object({
 });
 
 export async function expedirRequisicaoAction(input: z.input<typeof expedicaoSchema>) {
-  return tx(async (tid, userId) => {
-    const d = expedicaoSchema.parse(input);
+  const d = expedicaoSchema.parse(input);
+  // Quem expede é o CD de origem.
+  return txpDepois("estoque.transferir", async (tid, userId, exigirLoja) => {
+    exigirLoja((await sitesDaRequisicao(d.requisicaoId))[0]);
     const id = await expedirRequisicao(tid, d.requisicaoId, d.items, {
       observacao: d.observacao,
       createdBy: userId,
@@ -410,22 +526,26 @@ const recebimentoSchema = z.object({
 });
 
 export async function receberTransferenciaAction(input: z.input<typeof recebimentoSchema>) {
-  return tx(async (tid, userId) => {
-    const d = recebimentoSchema.parse(input);
+  const d = recebimentoSchema.parse(input);
+  // Quem recebe é a loja de destino.
+  return txpDepois("estoque.transferir", async (tid, userId, exigirLoja) => {
+    exigirLoja(await siteDestinoTransferencia(d.transferId));
     await receberTransferencia(tid, d.transferId, d.items, { createdBy: userId });
     ok();
   });
 }
 
 export async function cancelarRequisicaoAction(requisicaoId: string) {
-  return tx(async (tid) => {
+  return txpDepois("estoque.transferir", async (tid, _userId, exigirLoja) => {
+    exigirLoja((await sitesDaRequisicao(requisicaoId))[1]);
     await cancelarRequisicao(tid, requisicaoId);
     ok();
   });
 }
 
 export async function updateRecebimentoConfigAction(exige: boolean) {
-  return tx(async (tid) => {
+  // Regra do tenant inteiro — configuração, não operação.
+  return txp("config.gerenciar", null, async (tid) => {
     await db.tenant.update({ where: { id: tid }, data: { recebimentoExigeContagem: exige } });
     revalidatePath("/estoque", "layout");
     revalidatePath("/configuracoes", "layout");
@@ -435,7 +555,7 @@ export async function updateRecebimentoConfigAction(exige: boolean) {
 const topologiaSchema = z.enum(["LOCAL", "CD_ABASTECE", "MISTO"]);
 
 export async function updateTopologiaAction(topologia: z.infer<typeof topologiaSchema>) {
-  return tx(async (tid) => {
+  return txp("config.gerenciar", null, async (tid) => {
     const t = topologiaSchema.parse(topologia);
     await db.tenant.update({ where: { id: tid }, data: { topologia: t } });
     revalidatePath("/estoque", "layout");
@@ -458,8 +578,8 @@ const inventarioSchema = z.object({
 });
 
 export async function criarInventarioAction(input: z.input<typeof inventarioSchema>) {
-  return tx(async (tid, userId) => {
-    const d = inventarioSchema.parse(input);
+  const d = inventarioSchema.parse(input);
+  return txp("estoque.inventario", d.siteId, async (tid, userId) => {
     const id = await criarInventario(tid, d.siteId, {
       escopoTipo: d.escopoTipo,
       categoryId: d.categoryId,
@@ -477,7 +597,8 @@ export async function criarInventarioAction(input: z.input<typeof inventarioSche
 }
 
 export async function iniciarInventarioAction(inventoryId: string) {
-  return tx(async (tid) => {
+  return txpDepois("estoque.inventario", async (tid, _userId, exigirLoja) => {
+    exigirLoja(await siteDoInventario(inventoryId));
     await iniciarInventario(tid, inventoryId);
     ok();
   });
@@ -498,8 +619,9 @@ const salvarContagemSchema = z.object({
  * local do contador é a verdade durante a digitação.
  */
 export async function salvarContagemInventarioAction(input: z.input<typeof salvarContagemSchema>) {
-  return tx(async (tid) => {
-    const d = salvarContagemSchema.parse(input);
+  const d = salvarContagemSchema.parse(input);
+  return txpDepois("estoque.inventario", async (tid, _userId, exigirLoja) => {
+    exigirLoja(await siteDoInventario(d.inventoryId));
     await salvarContagemInventario(tid, d.inventoryId, d.items);
   });
 }
@@ -510,15 +632,17 @@ const fecharInventarioSchema = z.object({
 });
 
 export async function fecharInventarioAction(input: z.input<typeof fecharInventarioSchema>) {
-  return tx(async (tid, userId) => {
-    const d = fecharInventarioSchema.parse(input);
+  const d = fecharInventarioSchema.parse(input);
+  return txpDepois("estoque.inventario", async (tid, userId, exigirLoja) => {
+    exigirLoja(await siteDoInventario(d.inventoryId));
     await fecharInventario(tid, d.inventoryId, d.items, { createdBy: userId });
     ok();
   });
 }
 
 export async function cancelarInventarioAction(inventoryId: string) {
-  return tx(async (tid) => {
+  return txpDepois("estoque.inventario", async (tid, _userId, exigirLoja) => {
+    exigirLoja(await siteDoInventario(inventoryId));
     await cancelarInventario(tid, inventoryId);
     ok();
   });
@@ -526,8 +650,7 @@ export async function cancelarInventarioAction(inventoryId: string) {
 
 /** Catálogo de produtos p/ escopo "Produtos específicos" — carregado sob demanda ao abrir o formulário. */
 export async function fetchInventarioProdutosAction() {
-  const ctx = await requireActiveTenant();
-  return runWithTenant(ctx.tenant.id, async () => (await loadInventarioFormOptions()).products);
+  return tx(async () => (await loadInventarioFormOptions()).products);
 }
 
 // ── Produção ─────────────────────────────────────────────────
@@ -541,8 +664,8 @@ const producaoSchema = z.object({
 });
 
 export async function registrarProducaoAction(input: z.input<typeof producaoSchema>) {
-  return tx(async (tid, userId) => {
-    const d = producaoSchema.parse(input);
+  const d = producaoSchema.parse(input);
+  return txp("estoque.ajustar", d.siteId, async (tid, userId) => {
     const id = await registrarProducao(tid, d.siteId, d.productId, d.variantId ?? null, d.quantidade, {
       observacao: d.observacao,
       createdBy: userId,
@@ -555,8 +678,7 @@ export async function registrarProducaoAction(input: z.input<typeof producaoSche
 // ── Histórico de movimentações por produto ────────────────────
 
 export async function fetchHistoricoProductAction(productId: string, siteId: string | null) {
-  const ctx = await requireActiveTenant();
-  return runWithTenant(ctx.tenant.id, async () => {
+  return tx(async () => {
     const movements = await db.stockMovement.findMany({
       where: {
         productId,
@@ -634,13 +756,11 @@ export async function setSiteAction(siteId: string) {
 import { loadEntradaFormOptions, loadTransferenciaFormOptions } from "./_data";
 
 export async function fetchTransferenciaFormDataAction() {
-  const ctx = await requireActiveTenant();
-  return runWithTenant(ctx.tenant.id, () => loadTransferenciaFormOptions());
+  return tx(() => loadTransferenciaFormOptions());
 }
 
 export async function fetchEntradaFormDataAction() {
-  const ctx = await requireActiveTenant();
-  return runWithTenant(ctx.tenant.id, async () => {
+  return tx(async () => {
     const opts = await loadEntradaFormOptions();
     return {
       products: opts.products.map((p) => ({

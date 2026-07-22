@@ -4,6 +4,7 @@ import { getActiveSiteId, listSites } from "@/lib/sites";
 import { sessaoAtual, relatorioCaixa } from "@/lib/caixa";
 import { listSitePaymentMethods } from "@/lib/vendas";
 import { integracaoPdv } from "@/lib/pagamentos";
+import { db } from "@/lib/prisma";
 import { loadProdutosVenda } from "./_data";
 import { PdvClient } from "./_client";
 
@@ -22,6 +23,15 @@ export default async function VendasPage() {
         : Promise.resolve({ pixAutomatico: false, cartaoIntegrado: false, terminais: [] }),
     ]);
 
+    // Só acompanhamos a nota quando ela realmente vai ser emitida — módulo
+    // ligado, provedor ativo e emissão automática marcada.
+    const cfgFiscal = ctx.tenant.moduloFiscal
+      ? await db.fiscalConfig.findFirst({
+          select: { ativo: true, emissaoAutomaticaNfce: true },
+        })
+      : null;
+    const emiteNfce = Boolean(cfgFiscal?.ativo && cfgFiscal.emissaoAutomaticaNfce);
+
     const metodosAtivos = metodos.filter((m) => m.ativo).map((m) => m.metodo);
     const relatorio = sessao ? await relatorioCaixa(ctx.tenant.id, sessao.id) : null;
     const siteNome = sites.find((s) => s.id === siteId)?.nome ?? sites[0]?.nome ?? "";
@@ -34,6 +44,7 @@ export default async function VendasPage() {
         metodosAtivos={metodosAtivos}
         integracao={integracao}
         operador={ctx.user.name ?? ctx.user.email ?? "Operador"}
+        emiteNfce={emiteNfce}
         caixa={
           sessao
             ? {

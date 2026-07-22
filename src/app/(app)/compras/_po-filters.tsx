@@ -1,6 +1,6 @@
 "use client";
 
-import { Search, X } from "lucide-react";
+import { Gift, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PEDIDO_STATUS } from "./_ui";
 import type { PedidoView } from "./_pedidos";
@@ -15,19 +15,28 @@ export type PoFiltros = {
   periodo: string;     // dias de criação: "" | "7" | "30" | "90"
   valor: string;       // "" | "ate500" | "500a2000" | "2000mais"
   ordem: string;       // "recentes" | "entrega" | "valor-desc" | "valor-asc" | "numero"
+  bonificacao: boolean; // só pedidos com algum item bonificado/brinde/troca/amostra/serviço
 };
 
 export const PO_FILTROS_VAZIO: PoFiltros = {
   q: "",
   supplierId: "",
   status: "",
-  periodo: "",
+  periodo: "30",
   valor: "",
   ordem: "recentes",
+  bonificacao: false,
 };
 
 export function filtrosAtivos(f: PoFiltros): boolean {
-  return f.q.trim() !== "" || f.supplierId !== "" || f.status !== "" || f.periodo !== "" || f.valor !== "";
+  return (
+    f.q.trim() !== "" ||
+    f.supplierId !== "" ||
+    f.status !== "" ||
+    f.periodo !== PO_FILTROS_VAZIO.periodo ||
+    f.valor !== "" ||
+    f.bonificacao
+  );
 }
 
 /** Aplica filtros + ordenação — única fonte de verdade para as duas visualizações. */
@@ -42,6 +51,7 @@ export function aplicarFiltros(pedidos: PedidoView[], f: PoFiltros): PedidoView[
     if (f.valor === "ate500" && p.valorTotal > 500) return false;
     if (f.valor === "500a2000" && (p.valorTotal < 500 || p.valorTotal > 2000)) return false;
     if (f.valor === "2000mais" && p.valorTotal < 2000) return false;
+    if (f.bonificacao && !p.items.some((i) => i.tipo !== "COMPRA")) return false;
     if (termo) {
       const alvo = `${p.numero} ${p.supplierNome} ${p.siteNome} ${p.operador ?? ""} ${p.items.map((i) => `${i.nome} ${i.sku}`).join(" ")}`.toLowerCase();
       if (!alvo.includes(termo)) return false;
@@ -136,6 +146,18 @@ export function PurchaseOrderFilters({
         <option value="valor-asc">Menor valor</option>
         <option value="numero">Número</option>
       </select>
+
+      <button
+        type="button"
+        onClick={() => set({ bonificacao: !filtros.bonificacao })}
+        aria-pressed={filtros.bonificacao}
+        className={cn(
+          "flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-sm font-medium transition-colors",
+          filtros.bonificacao ? "border-violet/40 bg-violet-soft text-violet" : "border-line bg-surface text-muted hover:bg-surface-2",
+        )}
+      >
+        <Gift size={13} /> Com bonificação
+      </button>
 
       {ativos && (
         <button

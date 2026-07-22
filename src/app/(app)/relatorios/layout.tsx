@@ -1,11 +1,12 @@
-import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
+import { withTenant } from "@/lib/current-tenant";
+import { requirePermissao } from "@/lib/guard";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import { AnalyticsSiteSelector } from "./_controls";
 
 export default async function RelatoriosLayout({ children }: { children: React.ReactNode }) {
-  const ctx = await requireActiveTenant();
+  const ctx = await requirePermissao("relatorio.ver");
   const { sites, activeSiteId } = await withTenant(ctx, async () => {
     const [sites, activeSiteId] = await Promise.all([listSites(), getActiveSiteId()]);
     return { sites, activeSiteId };

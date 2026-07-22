@@ -10,10 +10,15 @@ export function LineChart({
   pontos,
   formato = brl,
   altura = 180,
+  onPointClick,
+  indiceSelecionado,
 }: {
   pontos: SeriePonto[];
   formato?: (v: number) => string;
   altura?: number;
+  /** Drill-down: clique num ponto devolve o índice na série. */
+  onPointClick?: (index: number) => void;
+  indiceSelecionado?: number | null;
 }) {
   const W = 600;
   const H = altura;
@@ -37,9 +42,19 @@ export function LineChart({
       <path d={area} fill="var(--brand)" opacity={0.08} />
       <path d={linha} fill="none" stroke="var(--brand)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
       {pontos.map((p, i) => (
-        <circle key={i} cx={x(i)} cy={y(p.valor)} r={2.5} fill="var(--brand)">
-          <title>{`${p.data}: ${formato(p.valor)}`}</title>
-        </circle>
+        <g key={i} onClick={onPointClick ? () => onPointClick(i) : undefined} className={onPointClick ? "cursor-pointer" : undefined}>
+          {onPointClick && <circle cx={x(i)} cy={y(p.valor)} r={9} fill="transparent" />}
+          <circle
+            cx={x(i)}
+            cy={y(p.valor)}
+            r={indiceSelecionado === i ? 4.5 : 2.5}
+            fill="var(--brand)"
+            stroke={indiceSelecionado === i ? "var(--surface)" : undefined}
+            strokeWidth={indiceSelecionado === i ? 2 : 0}
+          >
+            <title>{`${p.data}: ${formato(p.valor)}`}</title>
+          </circle>
+        </g>
       ))}
       {idxs.map((i) => (
         <text key={i} x={x(i)} y={H - 6} textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"} className="fill-faint" fontSize={11}>

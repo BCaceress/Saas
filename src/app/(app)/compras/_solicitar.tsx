@@ -32,6 +32,7 @@ export type ItemEnvio = {
   packagingNome: string | null;
   fatorConversao: number;
   custoUnitCompra: number | null;
+  observacao?: string | null;
 };
 
 export type GrupoEnvio = {
@@ -237,6 +238,7 @@ export function SolicitarSheet({
             packagingId: it.packagingId,
             qtdPedida: it.qtd,
             custoUnitario: it.custoUnitCompra ?? 0,
+            observacao: it.observacao ?? null,
           })),
         })),
       });

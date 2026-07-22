@@ -32,7 +32,14 @@ async function main() {
         moduloFiscal: true,
       },
     });
-    await tx.membership.create({ data: { userId: user.id, tenantId: tenant.id, role: "OWNER" } });
+    await tx.membership.create({
+      data: {
+        userId: user.id,
+        tenantId: tenant.id,
+        proprietario: true,
+        acessos: { create: { tenantId: tenant.id, perfil: "ADMINISTRADOR" } },
+      },
+    });
     await seedTenant(tx, tenant.id);
   });
 

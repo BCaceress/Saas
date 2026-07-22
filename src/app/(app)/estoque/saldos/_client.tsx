@@ -14,6 +14,7 @@ import {
   ChevronsUpDown,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   History,
   ArrowLeftRight,
   Zap,
@@ -26,16 +27,21 @@ import {
   Pencil,
   Wallet,
   MapPin,
+  Box,
+  Refrigerator,
+  Snowflake,
   Info,
   Filter,
   X,
   ShoppingCart,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "@/components/ui/toast";
 import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { NovaEntradaForm, type Item } from "../entradas/nova/_client";
 import { AdicionarCompraSheet } from "./_comprar";
+import { PEDIDO_STATUS } from "../../compras/_ui";
 import type { SaldoRow } from "../_data";
 import { fetchHistoricoProductAction, registrarAjusteAction, fetchEntradaFormDataAction } from "../actions";
 
@@ -56,21 +62,6 @@ const fmtDateTime = (iso: string) =>
 const fmtDate = (iso: string) =>
   new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
 
-/** Tempo relativo curto: "agora", "há 15 min", "ontem", "há 3 dias". */
-function relTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return "agora";
-  if (min < 60) return `há ${min} min`;
-  const h = Math.floor(min / 60);
-  if (h < 24) return `há ${h} h`;
-  const d = Math.floor(h / 24);
-  if (d === 1) return "ontem";
-  if (d < 30) return `há ${d} dias`;
-  const mo = Math.floor(d / 30);
-  return mo === 1 ? "há 1 mês" : `há ${mo} meses`;
-}
-
 /** Data de previsão em linguagem operacional: "hoje", "amanhã", "em 12/07". */
 function previsaoLabel(iso: string): string {
   const d = new Date(iso); d.setHours(0, 0, 0, 0);
@@ -81,10 +72,16 @@ function previsaoLabel(iso: string): string {
   return `em ${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}`;
 }
 
-const MOV_SHORT: Record<string, string> = {
-  SAIDA: "Venda", ENTRADA: "Compra", AJUSTE: "Ajuste", TRANSFERENCIA: "Transferência",
-  ABERTURA: "Abertura", PRODUCAO: "Produção", PERDA: "Perda",
-  DEVOLUCAO_CLIENTE: "Devolução", DEVOLUCAO_FORNECEDOR: "Devolução",
+const STORAGE_TIPO_ICON: Record<"AMBIENTE" | "REFRIGERADO" | "CONGELADO", React.ElementType> = {
+  AMBIENTE: Box,
+  REFRIGERADO: Refrigerator,
+  CONGELADO: Snowflake,
+};
+
+const STORAGE_TIPO_COLOR: Record<"AMBIENTE" | "REFRIGERADO" | "CONGELADO", string> = {
+  AMBIENTE: "text-brand",
+  REFRIGERADO: "text-ok",
+  CONGELADO: "text-blue-500",
 };
 
 const TIPO_LABEL: Record<string, string> = {
@@ -345,6 +342,7 @@ export function SaldosView({
   );
 
   const avancadoAtivo = avComEstoque || avSemLocal || avSemMeta || avPendenciaCadastro || !!avCategoria || !!avFornecedor || !!avLocal;
+  const advCount = [avComEstoque, avSemLocal, avSemMeta, avPendenciaCadastro, !!avCategoria, !!avFornecedor, !!avLocal].filter(Boolean).length;
   function limparAvancado() {
     setAvComEstoque(false);
     setAvSemLocal(false);
@@ -485,12 +483,11 @@ export function SaldosView({
   return (
     <div className="flex flex-col gap-4">
       {/* ── Indicadores ── */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
         <Kpi
           icon={Wallet}
           label="Valor em estoque"
           value={fmtMoneyShort(kpis.valor)}
-          hint={`${kpis.total} ${kpis.total === 1 ? "produto" : "produtos"}`}
         />
         <Kpi
           icon={PackageX}
@@ -499,7 +496,6 @@ export function SaldosView({
           tone="danger"
           selected={filtro === "sem"}
           onClick={() => setFiltro(filtro === "sem" ? "todos" : "sem")}
-          hint="Indisponíveis para venda"
         />
         <Kpi
           icon={AlertTriangle}
@@ -508,7 +504,6 @@ export function SaldosView({
           tone="danger"
           selected={filtro === "baixoMinimo"}
           onClick={() => setFiltro(filtro === "baixoMinimo" ? "todos" : "baixoMinimo")}
-          hint="Requerem atenção"
         />
         <Kpi
           icon={RefreshCw}
@@ -517,7 +512,6 @@ export function SaldosView({
           tone="brand"
           selected={filtro === "repor"}
           onClick={() => setFiltro(filtro === "repor" ? "todos" : "repor")}
-          hint="Precisam de reposição"
         />
       </div>
 
@@ -563,7 +557,7 @@ export function SaldosView({
               <button
                 type="button"
                 className={cn(
-                  "flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-colors",
+                  "flex h-9.5 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium transition-colors",
                   avancadoAtivo
                     ? "border-brand bg-brand-soft text-brand"
                     : "border-line bg-surface text-ink hover:border-line-strong hover:bg-surface-2",
@@ -571,6 +565,11 @@ export function SaldosView({
               >
                 <Filter size={15} className={avancadoAtivo ? "text-brand" : "text-muted"} />
                 <span>Filtros</span>
+                {advCount > 0 && (
+                  <span className="grid h-4.5 min-w-4.5 place-items-center rounded-full bg-brand px-1 text-[10px] font-semibold text-on-brand tabular-nums">
+                    {advCount}
+                  </span>
+                )}
               </button>
             }
           >
@@ -682,6 +681,7 @@ export function SaldosView({
                     />
                   </th>
                   <Th label="Produto" sortKey="nome" sort={sort} onSort={toggleSort} />
+                  <th className="px-4 py-2">Local</th>
                   <Th label="Estoque" sortKey="fechado" sort={sort} onSort={toggleSort} />
                   <th className="hidden px-4 py-2 lg:table-cell">
                     <span className="inline-flex items-center gap-1" title="Conteúdo restante da unidade aberta, vendida em doses/drinks">
@@ -689,8 +689,7 @@ export function SaldosView({
                       <Info size={12} className="text-faint" aria-label="Conteúdo restante da unidade aberta, vendida em doses/drinks" />
                     </span>
                   </th>
-                  <th className="hidden px-4 py-2 md:table-cell">Próxima compra</th>
-                  <Th label="Valor" sortKey="valor" sort={sort} onSort={toggleSort} align="right" className="hidden lg:table-cell" />
+                  <th className="hidden px-4 py-2 md:table-cell">Pedido</th>
                   <th className="w-px px-3 py-2" aria-hidden />
                 </tr>
               </thead>
@@ -722,6 +721,9 @@ export function SaldosView({
                       />
                     </td>
                     <td className="px-4 py-2">
+                      <LocalCell s={s} />
+                    </td>
+                    <td className="px-4 py-2">
                       <EstoqueCell s={s} />
                     </td>
                     <td className="hidden px-4 py-2 lg:table-cell">
@@ -729,11 +731,6 @@ export function SaldosView({
                     </td>
                     <td className="hidden px-4 py-2 md:table-cell">
                       <ReposicaoStatusCell s={s} />
-                    </td>
-                    <td className="hidden px-4 py-2 text-right lg:table-cell">
-                      <span className="font-mono text-sm tabular-nums text-ink">
-                        {s.custoMedio != null ? fmtMoneyShort(valorEstoque(s)) : "—"}
-                      </span>
                     </td>
                     <td className="px-3 py-2 text-right">
                       <ChevronRight size={16} className="ml-auto shrink-0 text-faint transition-colors group-hover:text-ink" />
@@ -743,14 +740,11 @@ export function SaldosView({
               </tbody>
               <tfoot>
                 <tr className="border-t border-line bg-surface-2 text-xs font-semibold text-muted">
-                  <td className="px-4 py-2" colSpan={3}>
+                  <td className="px-4 py-2" colSpan={4}>
                     {total} {total === 1 ? "produto" : "produtos"}
                   </td>
                   <td className="hidden px-4 py-2 lg:table-cell" />
                   <td className="hidden px-4 py-2 md:table-cell" />
-                  <td className="hidden px-4 py-2 text-right font-mono tabular-nums lg:table-cell">
-                    {fmtMoneyShort(filtrados.reduce((acc, s) => acc + valorEstoque(s), 0))}
-                  </td>
                   <td className="px-3 py-2" />
                 </tr>
               </tfoot>
@@ -897,7 +891,6 @@ function Kpi({
   icon: Icon,
   label,
   value,
-  hint,
   tone = "neutral",
   selected = false,
   onClick,
@@ -905,7 +898,6 @@ function Kpi({
   icon: React.ElementType;
   label: string;
   value: string;
-  hint?: string;
   tone?: "neutral" | "danger" | "warn" | "brand";
   selected?: boolean;
   onClick?: () => void;
@@ -913,7 +905,8 @@ function Kpi({
   const iconWrap =
     tone === "danger" ? "bg-danger-soft text-danger"
     : tone === "warn" ? "bg-warn-soft text-warn"
-    : "bg-brand-soft text-brand";
+    : tone === "brand" ? "bg-brand-soft text-brand"
+    : "bg-surface-2 text-muted";
   const valueCls =
     tone === "danger" ? "text-danger"
     : tone === "warn" ? "text-warn"
@@ -924,20 +917,17 @@ function Kpi({
     <Wrapper
       {...(onClick ? { type: "button" as const, onClick, "aria-pressed": selected } : {})}
       className={cn(
-        "flex flex-col gap-2.5 rounded-2xl border bg-surface p-4 text-left transition-all",
-        selected ? "border-brand ring-1 ring-brand/30" : "border-line",
-        onClick && !selected && "hover:border-line-strong hover:shadow-sm",
+        "flex items-center gap-3 rounded-xl border bg-surface px-3.5 py-2.5 text-left transition-colors",
+        selected ? "border-brand bg-brand-soft/40 ring-1 ring-brand/30" : "border-line",
+        onClick && !selected && "hover:border-line-strong hover:bg-surface-2",
       )}
     >
-      <div className="flex items-center gap-2">
-        <span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-xl", iconWrap)}>
-          <Icon size={16} strokeWidth={2} />
-        </span>
-        <span className="truncate text-[11px] font-semibold uppercase tracking-wide text-muted">{label}</span>
-      </div>
-      <div>
-        <p className={cn("font-display text-2xl font-bold leading-none tabular-nums", valueCls)}>{value}</p>
-        {hint && <p className="mt-1.5 truncate text-[11px] text-faint">{hint}</p>}
+      <span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg", iconWrap)}>
+        <Icon size={15} />
+      </span>
+      <div className="min-w-0">
+        <p className="truncate text-[11px] font-medium text-muted">{label}</p>
+        <p className={cn("truncate font-display text-base font-bold leading-tight tabular-nums", valueCls)}>{value}</p>
       </div>
     </Wrapper>
   );
@@ -960,11 +950,12 @@ function FilterPill({
 }) {
   // Contorno discreto; ativo destaca em laranja (brand) sem preenchimento sólido.
   // O contador ganha a cor do tom quando há itens — sinaliza sem exigir clique.
+  // Formato "chip" (rounded-full) distingue do botão de ação "Filtros" (rounded-lg).
   const countCls = active
     ? "bg-brand/15 text-brand"
-    : count > 0 && tone === "danger" ? "bg-danger-soft text-danger"
-    : count > 0 && tone === "warn" ? "bg-warn-soft text-warn"
-    : count > 0 && tone === "brand" ? "bg-brand-soft text-brand"
+    : tone === "danger" ? "bg-danger-soft text-danger"
+    : tone === "warn" ? "bg-warn-soft text-warn"
+    : tone === "brand" ? "bg-brand-soft text-brand"
     : "bg-surface-2 text-muted";
   return (
     <button
@@ -972,16 +963,18 @@ function FilterPill({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors",
+        "flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 py-1.5 text-sm font-medium transition-colors",
         active
           ? "border-brand bg-brand-soft text-brand"
           : "border-line bg-surface text-ink hover:border-line-strong hover:bg-surface-2",
       )}
     >
       {label}
-      <span className={cn("min-w-5 rounded-md px-1.5 py-0.5 text-center text-xs font-semibold tabular-nums", countCls)}>
-        {count}
-      </span>
+      {count > 0 && (
+        <span className={cn("min-w-5 rounded-full px-1.5 py-0.5 text-center text-xs font-semibold tabular-nums", countCls)}>
+          {count}
+        </span>
+      )}
     </button>
   );
 }
@@ -1103,6 +1096,17 @@ function temAbertaFrac(s: SaldoRow): boolean {
   return s.fracionavel && !!s.conteudoPorUnidade && s.conteudoPorUnidade > 0 && s.estoqueAberto > 0;
 }
 
+function LocalCell({ s }: { s: SaldoRow }) {
+  if (!s.locationNome) return <span className="text-[11px] text-faint">—</span>;
+  const Icon = s.locationTipo ? STORAGE_TIPO_ICON[s.locationTipo] : MapPin;
+  const color = s.locationTipo ? STORAGE_TIPO_COLOR[s.locationTipo] : "text-faint";
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-ink">
+      <Icon size={13} className={cn("shrink-0", color)} /> {s.locationNome}
+    </span>
+  );
+}
+
 function EstoqueCell({ s }: { s: SaldoRow }) {
   const st = statusOf(s);
   const m = STATUS_META[st];
@@ -1209,33 +1213,42 @@ function AbertaCell({ s }: { s: SaldoRow }) {
 
 // ── Célula de próxima compra (pedido de compra em aberto) ─────
 
-/** Badge com dot colorido. */
-function ReposBadge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-ok">
-      <span className="h-2 w-2 shrink-0 rounded-full bg-ok" />
-      {children}
-    </span>
-  );
-}
-
 /**
  * Coluna factual: mostra apenas pedidos de compra em aberto (o que já foi
- * decidido pelo operador). Recomendações de compra vivem na Reposição
- * Inteligente (/compras) — nunca aqui.
+ * decidido pelo operador), com o status real do pedido (enviado, confirmado,
+ * em trânsito, recebimento pendente) e a previsão de entrega. Clicar leva
+ * para o pedido em Compras. Recomendações de compra vivem na Reposição
+ * Inteligente (/compras/reposicao-inteligente) — nunca aqui.
  */
 function ReposicaoStatusCell({ s }: { s: SaldoRow }) {
-  if (s.reposEstado === "prevista") {
-    return (
-      <ReposBadge>
-        Próxima compra {s.reposPrevisao ? previsaoLabel(s.reposPrevisao) : ""}
-      </ReposBadge>
-    );
+  if (s.reposEstado === "nenhuma" || !s.reposNumero) {
+    return <span className="text-[11px] text-faint">—</span>;
   }
-  if (s.reposEstado === "pedido") {
-    return <ReposBadge>Próxima compra — pedido enviado</ReposBadge>;
-  }
-  return <span className="text-[11px] text-faint">—</span>;
+  const meta = PEDIDO_STATUS[s.reposEstado];
+  const Icon = meta.icon;
+  const prazo = s.reposPrevisao ? previsaoLabel(s.reposPrevisao) : null;
+  const chegaHoje = prazo === "hoje";
+  const outros = s.reposOrdersCount - 1;
+  return (
+    <Link
+      href={`/compras?q=${encodeURIComponent(s.reposNumero)}`}
+      onClick={(e) => e.stopPropagation()}
+      title={`${meta.label} · ${s.reposNumero}${s.reposSupplierNome ? ` · ${s.reposSupplierNome}` : ""} — ver pedido em Compras`}
+      className="-mx-1.5 -my-1 inline-flex flex-col gap-0.5 rounded-lg px-1.5 py-1 transition-colors hover:bg-surface-2"
+    >
+      <span className={cn("inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-medium", meta.text)}>
+        <Icon size={12} className="shrink-0" />
+        {meta.label}
+        {chegaHoje && <span className="rounded-full bg-brand px-1.5 py-px text-[10px] font-semibold text-on-brand">Chega hoje</span>}
+      </span>
+      <span className="whitespace-nowrap text-[11px] text-faint">
+        {s.reposNumero}
+        {s.reposSupplierNome && <> · {s.reposSupplierNome}</>}
+        {!chegaHoje && prazo && <> · previsão {prazo}</>}
+        {outros > 0 && <> · +{outros} {outros === 1 ? "pedido" : "pedidos"}</>}
+      </span>
+    </Link>
+  );
 }
 
 // ── Célula de produto (miniatura + nome + SKU/EAN + ícones) ────
@@ -1271,11 +1284,7 @@ function ProdutoCell({
   onOpen?: () => void;
 }) {
   const st = statusOf(s);
-  const semLocal = !s.locationNome;
   const cadGaps = dataGaps(s).filter((g) => g !== "local"); // custo, fornecedor
-  const mov = s.ultimaMovEm
-    ? `${MOV_SHORT[s.ultimaMovTipo ?? ""] ?? "Movimentação"} ${relTime(s.ultimaMovEm)}`
-    : "Sem movimentação";
   return (
     <div className="flex min-w-0 items-center gap-3">
       <Thumb url={s.imagemUrl} />
@@ -1297,19 +1306,7 @@ function ProdutoCell({
               <Zap size={9} className="-mt-px mr-0.5 inline" />Pers.
             </span>
           )}
-          {s.locationNome && (
-            <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-surface-2 px-1.5 py-px text-[10px] font-medium text-muted">
-              <MapPin size={9} /> {s.locationNome}
-            </span>
-          )}
-          {semLocal && (
-            <GapIcon
-              icon={MapPin}
-              color="text-faint"
-              title="Produto sem localização definida — clique para corrigir"
-              onClick={onPendencias}
-            />
-          )}
+    
           {cadGaps.length > 0 && (
             <GapIcon
               icon={AlertTriangle}
@@ -1321,7 +1318,6 @@ function ProdutoCell({
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
           <StatusCell status={st} />
-          <span className={s.ultimaMovEm ? "text-muted" : "text-faint"}>{mov}</span>
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
           <span className="font-mono text-faint">{s.sku}</span>
@@ -1505,6 +1501,7 @@ function ResumoTab({
   const deficit = s.estoqueIdeal > 0 && s.estoqueFechado < s.estoqueIdeal ? s.estoqueIdeal - s.estoqueFechado : 0;
   const pctAberta = temAbertaFrac(s) ? Math.round((s.estoqueAberto / s.conteudoPorUnidade!) * 100) : 0;
   const [ajuste, setAjuste] = useState(false);
+  const [comercialAberto, setComercialAberto] = useState(false);
 
   const gapMsg: Record<"custo" | "fornecedor" | "local", string> = {
     local: "Localização não cadastrada",
@@ -1626,16 +1623,26 @@ function ResumoTab({
         </div>
       </div>
 
-      {/* ── COMERCIAL ── */}
-      <div className="rounded-xl border border-line bg-surface p-4">
-        <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-faint">Comercial</h3>
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
-          <Field label="Venda" value={s.precoVenda != null ? fmtMoney(s.precoVenda) : "—"} />
-          <Field label="Custo" value={base != null ? fmtMoney(base) : "—"} />
-          <Field label="Médio" value={s.custoMedio != null ? fmtMoney(s.custoMedio) : "—"} />
-          <Field label="Fornecedor" value={s.fornecedorNome ?? "—"} />
-          <Field label="Valor em estoque" value={s.custoMedio != null ? fmtMoney(valorEstoque(s)) : "—"} />
-        </dl>
+      {/* ── COMERCIAL (colapsado por padrão — dado de menor uso no dia a dia) ── */}
+      <div className="rounded-xl border border-line bg-surface">
+        <button
+          type="button"
+          onClick={() => setComercialAberto((v) => !v)}
+          aria-expanded={comercialAberto}
+          className="flex w-full items-center justify-between p-4 text-left"
+        >
+          <h3 className="text-[11px] font-semibold uppercase tracking-wide text-faint">Dados comerciais</h3>
+          <ChevronDown size={15} className={cn("text-faint transition-transform", comercialAberto && "rotate-180")} />
+        </button>
+        {comercialAberto && (
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 px-4 pb-4">
+            <Field label="Venda" value={s.precoVenda != null ? fmtMoney(s.precoVenda) : "—"} />
+            <Field label="Custo" value={base != null ? fmtMoney(base) : "—"} />
+            <Field label="Médio" value={s.custoMedio != null ? fmtMoney(s.custoMedio) : "—"} />
+            <Field label="Fornecedor" value={s.fornecedorNome ?? "—"} />
+            <Field label="Valor em estoque" value={s.custoMedio != null ? fmtMoney(valorEstoque(s)) : "—"} />
+          </dl>
+        )}
       </div>
 
       {/* ── Ações ── */}
@@ -1712,6 +1719,10 @@ function AjusteInline({
         deltaAberto: 0,
         observacao: motivo.trim(),
       });
+      toast.success(
+        "Saldo ajustado",
+        `${s.nome}: ${fmt(s.estoqueFechado)} → ${fmt(nova)} un`,
+      );
       onAjustado();
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Falha ao ajustar.");
@@ -1793,6 +1804,10 @@ function AjusteInline({
 
 // ── Histórico de movimentações ────────────────────────────────
 
+// Janela de dias do histórico é preferência do operador, não do produto —
+// persiste entre trocas de produto (o drawer remonta a cada abertura).
+let historicoDiasPreferido: 7 | 15 | 30 = 7;
+
 function HistoricoTab({
   productId,
   unidadeBase,
@@ -1804,7 +1819,8 @@ function HistoricoTab({
 }) {
   const [items, setItems] = useState<HistoricoItem[] | null>(null);
   const [loading, setLoading] = useState(true);
-  const [dias, setDias] = useState<7 | 15 | 30>(7);
+  const [dias, setDiasState] = useState<7 | 15 | 30>(historicoDiasPreferido);
+  const setDias = (d: 7 | 15 | 30) => { historicoDiasPreferido = d; setDiasState(d); };
 
   useEffect(() => {
     let vivo = true;

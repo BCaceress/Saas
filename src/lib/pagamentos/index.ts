@@ -1,5 +1,5 @@
 import "server-only";
-import { basePrisma } from "@/lib/prisma";
+import { basePrisma, comTenant } from "@/lib/prisma";
 import { onlyDigits } from "@/lib/normalize";
 import { finalizarVenda, cancelarVenda } from "@/lib/vendas";
 import { mercadoPagoProvider } from "./mercadopago";
@@ -84,9 +84,9 @@ export type ConfigPagamentoPublica = {
 export async function getConfigPagamento(
   tenantId: string
 ): Promise<ConfigPagamentoPublica | null> {
-  const cfg = await basePrisma.paymentProviderConfig.findFirst({
+  const cfg = await comTenant(tenantId, basePrisma.paymentProviderConfig.findFirst({
     where: { tenantId },
-  });
+  }));
   if (!cfg) return null;
   return {
     provider: cfg.provider,
@@ -100,9 +100,9 @@ export async function getConfigPagamento(
 }
 
 async function getProviderCtx(tenantId: string) {
-  const cfg = await basePrisma.paymentProviderConfig.findFirst({
+  const cfg = await comTenant(tenantId, basePrisma.paymentProviderConfig.findFirst({
     where: { tenantId, ativo: true },
-  });
+  }));
   if (!cfg) return null;
   return { cfg, provider: buildProvider(cfg) };
 }
@@ -123,11 +123,11 @@ export async function integracaoPdv(
   // além do toggle, o provedor precisa suportar (Stone exige partnerRef)
   const cartaoHabilitado = ctx.cfg.cartaoIntegrado && ctx.provider.suportaCartaoIntegrado;
   const terminais = cartaoHabilitado
-    ? await basePrisma.paymentTerminal.findMany({
+    ? await comTenant(tenantId, basePrisma.paymentTerminal.findMany({
         where: { tenantId, siteId, ativo: true, provider: ctx.cfg.provider },
         select: { id: true, nome: true },
         orderBy: { nome: "asc" },
-      })
+      }))
     : [];
   return {
     pixAutomatico: ctx.cfg.pixAutomatico,
@@ -151,14 +151,14 @@ export async function criarCobrancaPixVenda(
   const ctx = await getProviderCtx(tenantId);
   if (!ctx || !ctx.cfg.pixAutomatico) return null;
 
-  const payment = await basePrisma.payment.findFirst({
+  const payment = await comTenant(tenantId, basePrisma.payment.findFirst({
     where: { saleId, tenantId, metodo: "PIX", status: "PENDENTE" },
     select: {
       id: true,
       valor: true,
       sale: { select: { customer: { select: { cpf: true } } } },
     },
-  });
+  }));
   if (!payment) throw new Error("Pagamento PIX pendente não encontrado na venda.");
 
   const tenant = await basePrisma.tenant.findUnique({
@@ -221,14 +221,20 @@ export async function criarIntencaoCartaoVenda(
 
   const metodo = input.tipo === "CREDITO" ? "CARTAO_CREDITO" : "CARTAO_DEBITO";
   const [payment, terminal] = await Promise.all([
-    basePrisma.payment.findFirst({
-      where: { saleId, tenantId, metodo, status: "PENDENTE" },
-      select: { id: true, valor: true },
-    }),
-    basePrisma.paymentTerminal.findFirst({
-      where: { id: input.terminalId, tenantId, ativo: true },
-      select: { id: true, externalId: true },
-    }),
+    comTenant(
+      tenantId,
+      basePrisma.payment.findFirst({
+        where: { saleId, tenantId, metodo, status: "PENDENTE" },
+        select: { id: true, valor: true },
+      }),
+    ),
+    comTenant(
+      tenantId,
+      basePrisma.paymentTerminal.findFirst({
+        where: { id: input.terminalId, tenantId, ativo: true },
+        select: { id: true, externalId: true },
+      }),
+    ),
   ]);
   if (!payment) throw new Error("Pagamento de cartão pendente não encontrado na venda.");
   if (!terminal) throw new Error("Maquininha não encontrada — vincule um terminal em Configurações.");
@@ -272,7 +278,7 @@ export async function sincronizarPagamentoIntegrado(
   paymentId: string,
   createdBy?: string
 ): Promise<ResultadoSync> {
-  const payment = await basePrisma.payment.findFirst({
+  const payment = await comTenant(tenantId, basePrisma.payment.findFirst({
     where: { id: paymentId, tenantId },
     select: {
       id: true,
@@ -284,7 +290,7 @@ export async function sincronizarPagamentoIntegrado(
       expiraEm: true,
       sale: { select: { status: true } },
     },
-  });
+  }));
   if (!payment) throw new Error("Pagamento não encontrado.");
 
   // estados finais: nada a consultar
@@ -350,10 +356,10 @@ async function finalizarSeCoberta(
   saleId: string,
   createdBy?: string
 ): Promise<ResultadoSync> {
-  const sale = await basePrisma.sale.findFirst({
+  const sale = await comTenant(tenantId, basePrisma.sale.findFirst({
     where: { id: saleId, tenantId },
     select: { status: true },
-  });
+  }));
   if (!sale || sale.status !== "ABERTA") return { status: "CONFIRMADO" };
   try {
     await finalizarVenda(tenantId, saleId, createdBy);
@@ -373,7 +379,7 @@ export async function cancelarPagamentoIntegrado(
   paymentId: string,
   opts?: { cancelarVendaTambem?: boolean; createdBy?: string }
 ): Promise<void> {
-  const payment = await basePrisma.payment.findFirst({
+  const payment = await comTenant(tenantId, basePrisma.payment.findFirst({
     where: { id: paymentId, tenantId },
     select: {
       id: true,
@@ -383,7 +389,7 @@ export async function cancelarPagamentoIntegrado(
       externalId: true,
       terminal: { select: { externalId: true } },
     },
-  });
+  }));
   if (!payment) throw new Error("Pagamento não encontrado.");
   if (payment.status === "CONFIRMADO") {
     throw new Error("Pagamento já confirmado — use o estorno da venda.");
@@ -414,18 +420,24 @@ export async function processarWebhookPagamento(input: {
   /** Valida a assinatura com o secret do tenant (chamado só se houver secret). */
   verificarAssinatura?: (secret: string) => boolean;
 }): Promise<{ found: boolean; unauthorized?: boolean; status?: PaymentStatus }> {
-  // lookup cross-tenant proposital: o webhook chega sem subdomínio.
-  // O tenant sai do próprio Payment e TODA escrita usa esse tenantId.
+  // ÚNICA leitura cross-tenant proposital do sistema: o webhook do PSP chega
+  // sem subdomínio, então o tenant só pode sair do próprio Payment. Por isso
+  // NÃO leva set_config — e por isso é a única query que vai precisar de um
+  // caminho privilegiado (SECURITY DEFINER) quando o RLS passar a valer.
+  // Daqui para baixo, tudo usa payment.tenantId.
   const payment = await basePrisma.payment.findFirst({
     where: { externalId: input.externalId },
     select: { id: true, tenantId: true },
   });
   if (!payment) return { found: false };
 
-  const cfg = await basePrisma.paymentProviderConfig.findFirst({
-    where: { tenantId: payment.tenantId },
-    select: { webhookSecret: true },
-  });
+  const cfg = await comTenant(
+    payment.tenantId,
+    basePrisma.paymentProviderConfig.findFirst({
+      where: { tenantId: payment.tenantId },
+      select: { webhookSecret: true },
+    }),
+  );
   if (cfg?.webhookSecret && input.verificarAssinatura) {
     if (!input.verificarAssinatura(cfg.webhookSecret)) {
       return { found: true, unauthorized: true };

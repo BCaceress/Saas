@@ -43,6 +43,7 @@ import type { PaymentMethod } from "@/generated/prisma";
 import { brl, mascararCpf, type CartItem, type ClienteSel } from "./_shared";
 import { PagamentoModal, ClienteModal, PersonalizadoModal } from "./_modais";
 import { FilaAutoatendimentoPanel } from "./_fila";
+import { NotaFiscalChip } from "./_nota-fiscal";
 
 type VendaTotemAtiva = { id: string; numero: string; terminal: string | null };
 type VendaSuspensa = {
@@ -64,6 +65,7 @@ export function PdvClient({
   operador,
   fundoTrocoPadrao,
   limiteGaveta,
+  emiteNfce,
 }: {
   sites: { id: string; nome: string; controleIdade?: boolean }[];
   defaultSiteId: string | null;
@@ -74,6 +76,8 @@ export function PdvClient({
   operador: string;
   fundoTrocoPadrao?: number | null;
   limiteGaveta?: number | null;
+  /** Módulo fiscal ligado E emissão automática: só então acompanhamos a nota. */
+  emiteNfce?: boolean;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -92,6 +96,10 @@ export function PdvClient({
   const [confirmaRemoverCliente, setConfirmaRemoverCliente] = useState(false);
   const [carregando, setCarregando] = useState(false);
   const [bump, setBump] = useState(0);
+
+  // Venda cuja nota ainda estamos acompanhando. Não trava o caixa: o operador
+  // já pode passar a próxima compra enquanto a NFC-e vai para a SEFAZ.
+  const [vendaFiscal, setVendaFiscal] = useState<string | null>(null);
 
   const [sheetOpen, setSheetOpen] = useState(false);
   const [pdvModal, setPdvModal] = useState<ProdutoVenda | null>(null);
@@ -354,6 +362,7 @@ export function PdvClient({
             quantidade: i.quantidade,
             selecoes: i.selecoes,
           }));
+          let saleId: string;
           if (vendaTotem) {
             await receberVendaTotemAction({
               saleId: vendaTotem.id,
@@ -363,8 +372,9 @@ export function PdvClient({
               maiorIdadeConfirmada: maiorIdade,
               pagamentos,
             });
+            saleId = vendaTotem.id;
           } else {
-            await finalizarVendaPdvAction({
+            saleId = await finalizarVendaPdvAction({
               siteId,
               customerId: cliente?.id ?? null,
               items,
@@ -373,6 +383,7 @@ export function PdvClient({
               pagamentos,
             });
           }
+          if (emiteNfce) setVendaFiscal(saleId);
           toast.success("Venda concluída!", brl(total));
           setPagamentoOpen(false);
           limpar();
@@ -416,7 +427,8 @@ export function PdvClient({
     });
   }
 
-  function concluirIntegrado() {
+  function concluirIntegrado(saleId?: string) {
+    if (emiteNfce && saleId) setVendaFiscal(saleId);
     toast.success("Venda concluída!", brl(total));
     setPagamentoOpen(false);
     limpar();
@@ -1045,6 +1057,17 @@ export function PdvClient({
         fundoTrocoPadrao={fundoTrocoPadrao}
         limiteGaveta={limiteGaveta}
       />
+
+      {/* Nota da última venda — canto inferior, sem roubar o foco do caixa. */}
+      {vendaFiscal && (
+        <div className="pointer-events-none fixed right-4 bottom-4 z-40 flex justify-end">
+          <NotaFiscalChip
+            key={vendaFiscal}
+            saleId={vendaFiscal}
+            onClose={() => setVendaFiscal(null)}
+          />
+        </div>
+      )}
 
       <style>{`
         @media (prefers-reduced-motion: reduce) { .animate-pulse { animation: none } }

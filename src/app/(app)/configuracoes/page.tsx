@@ -11,6 +11,7 @@ import {
   Wallet,
   Bell,
   MonitorSmartphone,
+  ReceiptText,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
@@ -59,6 +60,12 @@ const CARDS: {
     tone: "accent",
     title: "Fidelização",
     description: "Cupons de retorno e aniversário, envio automático por WhatsApp.",
+  },
+  {
+    href: "/configuracoes/fiscal",
+    icon: ReceiptText,
+    title: "Fiscal",
+    description: "Provedor de emissão, certificado A1, CSC e numeração das notas.",
   },
   {
     href: "/configuracoes/sites",

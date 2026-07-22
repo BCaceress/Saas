@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireActiveTenant } from "@/lib/current-tenant";
+import { guardAction, assertSite } from "@/lib/guard";
+import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import {
   criarVenda,
@@ -21,10 +22,36 @@ import {
   integracaoPdv,
 } from "@/lib/pagamentos";
 import type { PaymentStatus } from "@/generated/prisma";
+import type { StatusFiscalVenda } from "@/lib/fiscal/emissao";
 
+/** Baseline do PDV. Operações de uma loja usam `txp`; cancelar exige mais. */
 async function tx<T>(fn: (tid: string, userId: string) => Promise<T>): Promise<T> {
-  const ctx = await requireActiveTenant();
+  const ctx = await guardAction("venda.registrar");
   return runWithTenant(ctx.tenant.id, () => fn(ctx.tenant.id, ctx.user.id ?? ""));
+}
+
+async function txp<T>(
+  permissao: Permissao,
+  siteId: string,
+  fn: (tid: string, userId: string) => Promise<T>,
+): Promise<T> {
+  const ctx = await guardAction(permissao, siteId);
+  return runWithTenant(ctx.tenant.id, () => fn(ctx.tenant.id, ctx.user.id ?? ""));
+}
+
+/** Ações que só recebem o id da venda: a loja vem do registro. */
+async function txpVenda<T>(
+  permissao: Permissao,
+  saleId: string,
+  fn: (tid: string, userId: string) => Promise<T>,
+): Promise<T> {
+  const ctx = await guardAction(permissao);
+  return runWithTenant(ctx.tenant.id, async () => {
+    const s = await db.sale.findFirst({ where: { id: saleId }, select: { siteId: true } });
+    if (!s) throw new Error("Venda não encontrada.");
+    assertSite(ctx, permissao, s.siteId);
+    return fn(ctx.tenant.id, ctx.user.id ?? "");
+  });
 }
 
 const ok = () => revalidatePath("/vendas", "layout");
@@ -55,9 +82,8 @@ const finalizarPdvSchema = z.object({
 });
 
 export async function finalizarVendaPdvAction(input: z.input<typeof finalizarPdvSchema>) {
-  return tx(async (tid, userId) => {
-    const d = finalizarPdvSchema.parse(input);
-
+  const d = finalizarPdvSchema.parse(input);
+  return txp("venda.registrar", d.siteId, async (tid, userId) => {
     // PDV exige caixa aberto (§7)
     const sessao = await sessaoAtual(tid, d.siteId, userId);
     if (!sessao) throw new Error("Caixa fechado — abra o caixa para vender.");
@@ -76,6 +102,18 @@ export async function finalizarVendaPdvAction(input: z.input<typeof finalizarPdv
     await finalizarVenda(tid, saleId, userId);
     ok();
     return saleId;
+  });
+}
+
+/**
+ * Situação da NFC-e de uma venda — o PDV consulta em loop curto logo após
+ * fechar. A consulta também EMPURRA a transmissão: quem acabou de vender está
+ * com a tela aberta, e é o melhor momento para gastar o tempo de rede.
+ */
+export async function statusFiscalVendaAction(saleId: string): Promise<StatusFiscalVenda> {
+  return txpVenda("venda.registrar", saleId, async (tid) => {
+    const { statusFiscalDaVenda } = await import("@/lib/fiscal/emissao");
+    return statusFiscalDaVenda(tid, saleId);
   });
 }
 
@@ -109,9 +147,8 @@ export type InicioPagamentoIntegrado =
 export async function iniciarPagamentoIntegradoAction(
   input: z.input<typeof iniciarIntegradoSchema>
 ): Promise<InicioPagamentoIntegrado> {
-  return tx(async (tid, userId) => {
-    const d = iniciarIntegradoSchema.parse(input);
-
+  const d = iniciarIntegradoSchema.parse(input);
+  return txp("venda.registrar", d.siteId, async (tid, userId) => {
     const sessao = await sessaoAtual(tid, d.siteId, userId);
     if (!sessao) throw new Error("Caixa fechado — abra o caixa para vender.");
 
@@ -190,9 +227,8 @@ const totemSchema = z.object({
 });
 
 export async function criarVendaTotemAction(input: z.input<typeof totemSchema>) {
-  return tx(async (tid) => {
-    const d = totemSchema.parse(input);
-
+  const d = totemSchema.parse(input);
+  return txp("venda.registrar", d.siteId, async (tid) => {
     // Autoatendimento só opera com um caixa responsável aberto no site.
     const aberto = await caixaAbertoNoSite(tid, d.siteId);
     if (!aberto) throw new Error("Terminal indisponível — nenhum caixa aberto na loja.");
@@ -212,7 +248,7 @@ export async function criarVendaTotemAction(input: z.input<typeof totemSchema>) 
 }
 
 export async function confirmarPagamentoTotemAction(saleId: string) {
-  return tx(async (tid) => {
+  return txpVenda("venda.registrar", saleId, async (tid) => {
     const r = await confirmarPagamentoVenda(tid, saleId);
     ok();
     return r;
@@ -220,7 +256,8 @@ export async function confirmarPagamentoTotemAction(saleId: string) {
 }
 
 export async function cancelarVendaAction(saleId: string) {
-  return tx(async (tid, userId) => {
+  // Cancelar não é registrar: some com receita já lançada.
+  return txpVenda("venda.cancelar", saleId, async (tid, userId) => {
     await cancelarVenda(tid, saleId, userId);
     ok();
   });
@@ -264,7 +301,7 @@ export type FilaAutoatendimento = {
 };
 
 export async function pollAutoatendimentoAction(siteId: string): Promise<FilaAutoatendimento> {
-  return tx(async () => {
+  return txp("venda.registrar", siteId, async () => {
     const agora = Date.now();
     const [abertas, pagas, terminaisAtivos] = await Promise.all([
       // Modo B: venda ABERTA sem nenhum pagamento = cliente escolheu pagar no caixa.
@@ -436,9 +473,8 @@ const receberTotemSchema = z.object({
 });
 
 export async function receberVendaTotemAction(input: z.input<typeof receberTotemSchema>) {
-  return tx(async (tid, userId) => {
-    const d = receberTotemSchema.parse(input);
-
+  const d = receberTotemSchema.parse(input);
+  return txp("venda.registrar", d.siteId, async (tid, userId) => {
     const sessao = await sessaoAtual(tid, d.siteId, userId);
     if (!sessao) throw new Error("Caixa fechado — abra o caixa para receber.");
 

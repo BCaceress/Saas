@@ -3,10 +3,12 @@
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { revalidatePath } from "next/cache";
-import { db, basePrisma } from "@/lib/prisma";
+import { db, basePrisma, comTenant } from "@/lib/prisma";
 import { requireActiveTenant, type ActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { onlyDigits } from "@/lib/normalize";
+import { acessosSchema, isAdmin, type Acesso } from "@/lib/permissoes";
+import { novoToken, conviteExpiraEm, conviteUrl } from "@/lib/convites";
 
 // ============================================================
 // Actions das telas de Configurações. Tenant/Membership/Invite são tabelas de
@@ -14,11 +16,11 @@ import { onlyDigits } from "@/lib/normalize";
 // tenantId explícito; Tenant é atualizado via db pelo próprio id.
 // ============================================================
 
-/** Exige papel de gestão (OWNER/ADMIN) e entrega o contexto. */
+/** Exige perfil ADMINISTRADOR e entrega o contexto. */
 async function requireGestor(): Promise<ActiveTenant> {
   const ctx = await requireActiveTenant();
-  if (ctx.role !== "OWNER" && ctx.role !== "ADMIN") {
-    throw new Error("Apenas o proprietário ou um administrador pode alterar as configurações.");
+  if (!isAdmin(ctx.acessos)) {
+    throw new Error("Apenas um administrador pode alterar as configurações.");
   }
   return ctx;
 }
@@ -187,8 +189,22 @@ const okEquipe = () => revalidatePath("/configuracoes/usuarios");
 
 const inviteSchema = z.object({
   email: z.string().trim().toLowerCase().email("E-mail inválido."),
-  role: z.enum(["ADMIN", "MEMBER"]),
+  acessos: acessosSchema,
 });
+
+/**
+ * Confere que toda loja citada existe neste tenant. Sem isso um siteId de outro
+ * tenant vindo do client viraria acesso válido.
+ */
+async function validarSites(tenantId: string, acessos: Acesso[]) {
+  const ids = [...new Set(acessos.map((a) => a.siteId).filter((s): s is string => !!s))];
+  if (ids.length === 0) return;
+  const achados = await comTenant(
+    tenantId,
+    basePrisma.site.count({ where: { id: { in: ids }, tenantId } }),
+  );
+  if (achados !== ids.length) throw new Error("Loja inválida na lista de acessos.");
+}
 
 /**
  * Convida por e-mail. Se o usuário já existe, vira membro na hora; senão fica
@@ -197,9 +213,7 @@ const inviteSchema = z.object({
 export async function inviteMember(input: z.input<typeof inviteSchema>) {
   const ctx = await requireGestor();
   const d = inviteSchema.parse(input);
-  if (d.role === "ADMIN" && ctx.role !== "OWNER") {
-    throw new Error("Apenas o proprietário pode convidar administradores.");
-  }
+  await validarSites(ctx.tenant.id, d.acessos);
 
   const user = await basePrisma.user.findUnique({ where: { email: d.email } });
   if (user) {
@@ -208,19 +222,42 @@ export async function inviteMember(input: z.input<typeof inviteSchema>) {
     });
     if (existing) throw new Error("Essa pessoa já faz parte da equipe.");
     await basePrisma.membership.create({
-      data: { userId: user.id, tenantId: ctx.tenant.id, role: d.role },
+      data: {
+        userId: user.id,
+        tenantId: ctx.tenant.id,
+        acessos: {
+          create: d.acessos.map((a) => ({
+            tenantId: ctx.tenant.id,
+            perfil: a.perfil,
+            siteId: a.siteId,
+          })),
+        },
+      },
     });
     okEquipe();
     return { status: "member" as const };
   }
 
-  await basePrisma.invite.upsert({
+  // Reconvidar o mesmo e-mail troca o token: o link antigo morre na hora.
+  const inv = await basePrisma.invite.upsert({
     where: { tenantId_email: { tenantId: ctx.tenant.id, email: d.email } },
-    create: { tenantId: ctx.tenant.id, email: d.email, role: d.role },
-    update: { role: d.role },
+    create: {
+      tenantId: ctx.tenant.id,
+      email: d.email,
+      acessos: d.acessos,
+      token: novoToken(),
+      expiresAt: conviteExpiraEm(),
+      criadoPorId: ctx.user.id,
+    },
+    update: {
+      acessos: d.acessos,
+      token: novoToken(),
+      expiresAt: conviteExpiraEm(),
+      criadoPorId: ctx.user.id,
+    },
   });
   okEquipe();
-  return { status: "invited" as const };
+  return { status: "invited" as const, link: conviteUrl(inv.token) };
 }
 
 export async function revokeInvite(inviteId: string) {
@@ -231,17 +268,69 @@ export async function revokeInvite(inviteId: string) {
   okEquipe();
 }
 
-export async function updateMemberRole(membershipId: string, role: "ADMIN" | "MEMBER") {
+/** Gera um link novo e reinicia a validade. Invalida o link anterior. */
+export async function renovarConvite(inviteId: string): Promise<string> {
   const ctx = await requireGestor();
-  if (ctx.role !== "OWNER") throw new Error("Apenas o proprietário pode alterar papéis.");
+  const inv = await basePrisma.invite.findFirst({
+    where: { id: inviteId, tenantId: ctx.tenant.id },
+  });
+  if (!inv) throw new Error("Convite não encontrado.");
+
+  const atualizado = await basePrisma.invite.update({
+    where: { id: inv.id },
+    data: { token: novoToken(), expiresAt: conviteExpiraEm(), criadoPorId: ctx.user.id },
+  });
+  okEquipe();
+  return conviteUrl(atualizado.token);
+}
+
+/** Substitui a lista inteira de acessos de um membro (perfis × lojas). */
+export async function updateMemberAcessos(
+  membershipId: string,
+  acessos: z.input<typeof acessosSchema>,
+) {
+  const ctx = await requireGestor();
+  const lista = acessosSchema.parse(acessos);
+  await validarSites(ctx.tenant.id, lista);
 
   const m = await basePrisma.membership.findFirst({
     where: { id: membershipId, tenantId: ctx.tenant.id },
   });
   if (!m) throw new Error("Membro não encontrado.");
-  if (m.role === "OWNER") throw new Error("O papel do proprietário não pode ser alterado.");
+  if (m.proprietario && !lista.some((a) => a.perfil === "ADMINISTRADOR")) {
+    throw new Error("O dono da conta precisa continuar como administrador.");
+  }
+  if (m.userId === ctx.user.id && !lista.some((a) => a.perfil === "ADMINISTRADOR")) {
+    throw new Error("Você não pode tirar o próprio acesso de administrador.");
+  }
+  await garantirOutroAdmin(ctx.tenant.id, m.id, lista.some((a) => a.perfil === "ADMINISTRADOR"));
 
-  await basePrisma.membership.update({ where: { id: m.id }, data: { role } });
+  await basePrisma.$transaction([
+    basePrisma.membershipAccess.deleteMany({ where: { membershipId: m.id } }),
+    basePrisma.membershipAccess.createMany({
+      data: lista.map((a) => ({
+        tenantId: ctx.tenant.id,
+        membershipId: m.id,
+        perfil: a.perfil,
+        siteId: a.siteId,
+      })),
+    }),
+  ]);
+  okEquipe();
+}
+
+/** Bloqueia o login sem apagar o histórico da pessoa. */
+export async function setMemberAtivo(membershipId: string, ativo: boolean) {
+  const ctx = await requireGestor();
+  const m = await basePrisma.membership.findFirst({
+    where: { id: membershipId, tenantId: ctx.tenant.id },
+  });
+  if (!m) throw new Error("Membro não encontrado.");
+  if (m.userId === ctx.user.id) throw new Error("Você não pode desativar a si mesmo.");
+  if (m.proprietario) throw new Error("O dono da conta não pode ser desativado.");
+  if (!ativo) await garantirOutroAdmin(ctx.tenant.id, m.id, false);
+
+  await basePrisma.membership.update({ where: { id: m.id }, data: { ativo } });
   okEquipe();
 }
 
@@ -252,11 +341,32 @@ export async function removeMember(membershipId: string) {
   });
   if (!m) throw new Error("Membro não encontrado.");
   if (m.userId === ctx.user.id) throw new Error("Você não pode remover a si mesmo.");
-  if (m.role === "OWNER") throw new Error("O proprietário não pode ser removido.");
-  if (m.role === "ADMIN" && ctx.role !== "OWNER") {
-    throw new Error("Apenas o proprietário pode remover um administrador.");
-  }
+  if (m.proprietario) throw new Error("O dono da conta não pode ser removido.");
+  await garantirOutroAdmin(ctx.tenant.id, m.id, false);
 
   await basePrisma.membership.delete({ where: { id: m.id } });
   okEquipe();
+}
+
+/**
+ * Impede a conta ficar sem administrador ativo. `continuaAdmin` = se o próprio
+ * membro alvo seguirá administrador depois da mudança.
+ */
+async function garantirOutroAdmin(
+  tenantId: string,
+  membershipId: string,
+  continuaAdmin: boolean,
+) {
+  if (continuaAdmin) return;
+  const outros = await basePrisma.membership.count({
+    where: {
+      tenantId,
+      ativo: true,
+      id: { not: membershipId },
+      acessos: { some: { perfil: "ADMINISTRADOR" } },
+    },
+  });
+  if (outros === 0) {
+    throw new Error("A conta precisa de pelo menos um administrador ativo.");
+  }
 }

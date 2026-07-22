@@ -40,10 +40,12 @@ export type SugestaoRow = {
   // Referências de preço
   ultimoCustoUn: number | null; // por unidade de compra, na última entrada
   ultimaCompraEm: string | null; // ISO
+  ultimaVendaEm: string | null; // ISO — última saída registrada (janela de 30 dias)
   // Outros fornecedores vinculados ao produto — p/ permitir trocar sem poluir a tela.
   fornecedores: {
     supplierId: string;
     nome: string;
+    logoUrl: string | null;
     telefone: string | null;
     email: string | null;
     custoUnitCompra: number | null; // já convertido p/ unidade de compra
@@ -54,6 +56,7 @@ export type SugestaoRow = {
 export type GrupoReposicao = {
   supplierId: string | null; // null = produtos sem fornecedor vinculado
   supplierNome: string;
+  supplierLogoUrl: string | null;
   supplierTelefone: string | null; // p/ solicitar por WhatsApp
   supplierEmail: string | null; // p/ solicitar por e-mail
   leadTimeDias: number | null; // média enviado→recebido dos últimos pedidos
@@ -85,7 +88,7 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
             orderBy: { isPrincipal: "desc" },
             select: {
               custoFornecedor: true,
-              supplier: { select: { id: true, razaoSocial: true, nomeFantasia: true, telefone: true, email: true } },
+              supplier: { select: { id: true, razaoSocial: true, nomeFantasia: true, logoUrl: true, telefone: true, email: true } },
             },
           },
         },
@@ -138,8 +141,9 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
     }),
   ]);
 
-  // Consumo por janela
+  // Consumo por janela + última venda (dentro da janela de 30 dias)
   const consumoMap = new Map<string, { d7: number; d30: number }>();
+  const ultimaVenda = new Map<string, Date>();
   for (const v of vendas) {
     const q = Math.abs(n(v.deltaFechado)) || Math.abs(n(v.deltaAberto));
     if (q <= 0) continue;
@@ -147,6 +151,8 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
     c.d30 += q;
     if (v.createdAt >= d7) c.d7 += q;
     consumoMap.set(v.productId, c);
+    const ult = ultimaVenda.get(v.productId);
+    if (!ult || v.createdAt > ult) ultimaVenda.set(v.productId, v.createdAt);
   }
 
   // Pendente em unidades BASE (converte a embalagem do item pedido)
@@ -195,6 +201,7 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
   const rows: (SugestaoRow & {
     supplierId: string | null;
     supplierNome: string;
+    supplierLogoUrl: string | null;
     supplierTelefone: string | null;
     supplierEmail: string | null;
   })[] = [];
@@ -243,6 +250,7 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
       return {
         supplierId: f.supplier.id,
         nome: f.supplier.nomeFantasia ?? f.supplier.razaoSocial,
+        logoUrl: f.supplier.logoUrl,
         telefone: f.supplier.telefone,
         email: f.supplier.email,
         custoUnitCompra: custo != null ? Number((custo * fator).toFixed(2)) : null,
@@ -276,9 +284,11 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
       custoUnitCompra: custoBase != null ? Number((custoBase * fator).toFixed(2)) : null,
       ultimoCustoUn: ult?.custo != null ? Number((ult.custo * fator).toFixed(2)) : null,
       ultimaCompraEm: ult?.em.toISOString() ?? null,
+      ultimaVendaEm: ultimaVenda.get(s.productId)?.toISOString() ?? null,
       fornecedores,
       supplierId: vinc?.supplier.id ?? null,
       supplierNome: vinc ? (vinc.supplier.nomeFantasia ?? vinc.supplier.razaoSocial) : "Sem fornecedor",
+      supplierLogoUrl: vinc?.supplier.logoUrl ?? null,
       supplierTelefone: vinc?.supplier.telefone ?? null,
       supplierEmail: vinc?.supplier.email ?? null,
     });
@@ -293,6 +303,7 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
     const g = grupos.get(key) ?? {
       supplierId: r.supplierId,
       supplierNome: r.supplierNome,
+      supplierLogoUrl: r.supplierLogoUrl,
       supplierTelefone: r.supplierTelefone,
       supplierEmail: r.supplierEmail,
       leadTimeDias: r.supplierId ? (leadTime.get(r.supplierId) ?? null) : null,

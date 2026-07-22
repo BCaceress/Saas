@@ -1,11 +1,11 @@
 import { redirect } from "next/navigation";
-import { requireActiveTenant } from "@/lib/current-tenant";
+import { requireActiveTenant, touchUltimoAcesso } from "@/lib/current-tenant";
 import { AppShell } from "@/components/app/app-shell";
 import { Toaster } from "@/components/ui/toast";
 import { caixaAbertoDoOperador, relatorioCaixa } from "@/lib/caixa";
 import { listSitePaymentMethods } from "@/lib/vendas";
 import { signOutAction } from "./actions";
-import type { Role } from "@/generated/prisma";
+import { PERFIL_LABEL, isAdmin, type Acesso } from "@/lib/permissoes";
 
 function trialDaysLeft(trialEndsAt: Date | null): number | null {
   if (!trialEndsAt) return null;
@@ -13,12 +13,14 @@ function trialDaysLeft(trialEndsAt: Date | null): number | null {
   return Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)));
 }
 
-const CARGO_LABEL: Record<string, string> = {
-  OWNER: "Proprietário",
-  ADMIN: "Administrador",
-  MEMBER: "Operador",
-  VIEWER: "Visualização",
-};
+/** Rótulo curto do cargo: administrador manda; senão, os perfis que a pessoa tem. */
+function cargoLabel(acessos: Acesso[]): string {
+  if (isAdmin(acessos)) return PERFIL_LABEL.ADMINISTRADOR;
+  const perfis = [...new Set(acessos.map((a) => a.perfil))];
+  if (perfis.length === 0) return "Sem acesso";
+  if (perfis.length > 2) return `${PERFIL_LABEL[perfis[0]]} +${perfis.length - 1}`;
+  return perfis.map((p) => PERFIL_LABEL[p]).join(" · ");
+}
 
 const PLANO_LABEL: Record<string, string> = {
   TRIAL: "Teste",
@@ -33,10 +35,12 @@ export default async function ShellLayout({
   children: React.ReactNode;
 }) {
   const ctx = await requireActiveTenant();
-  const { tenant, user, role } = ctx;
+  const { tenant, user, acessos } = ctx;
 
   // Sem onboarding concluído, manda concluir antes de entrar no app.
   if (!tenant.onboardingDone) redirect("/onboarding");
+
+  await touchUltimoAcesso(ctx.membershipId);
 
   const vocabularioPonto = tenant.tipoOperacao === "AUTONOMO" ? "Ponto" : "Loja";
 
@@ -67,12 +71,15 @@ export default async function ShellLayout({
         moduloComodato: tenant.moduloComodato,
         moduloRota: tenant.moduloRota,
         moduloAutoatendimento: tenant.moduloAutoatendimento,
+        moduloFiscal: tenant.moduloFiscal,
       }}
+      acessos={acessos}
       tenantNome={tenant.nome}
       planoLabel={PLANO_LABEL[tenant.status] ?? tenant.status}
       userNome={user.name ?? ""}
       userEmail={user.email ?? ""}
-      userCargo={CARGO_LABEL[role as Role] ?? "Operador"}
+      userCargo={cargoLabel(acessos)}
+      podeConfigurar={isAdmin(acessos)}
       trialDias={tenant.status === "TRIAL" ? trialDaysLeft(tenant.trialEndsAt) : null}
       vocabularioPonto={vocabularioPonto}
       multiPonto={(tenant.numPontos ?? 1) > 1}

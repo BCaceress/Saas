@@ -1,30 +1,32 @@
+import { Suspense } from "react";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId, listSites } from "@/lib/sites";
-import { db } from "@/lib/prisma";
-import { resolvePeriodo, variacao, fmtData } from "@/lib/periodo";
-import { brl } from "@/lib/utils";
+import { resolvePeriodo } from "@/lib/periodo";
+import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import { ReportFilters } from "@/components/app/report-filters";
-import { KpiCard } from "@/components/charts/kpi-card";
-import { ChartCard, ChartEmpty } from "@/components/charts/chart-card";
-import { LineChart } from "@/components/charts/line-chart";
-import { DonutChart } from "@/components/charts/donut-chart";
-import { BarList } from "@/components/charts/bar-list";
+import { saudacao } from "./_insights";
+import { RefreshButton } from "./_refresh-button";
+import { DashboardSettings } from "./_dashboard-settings";
+import { getDashboardWidgetPref } from "./actions";
+import { resolveOrder, type WidgetId } from "./_widgets";
 import {
-  resumoVendas,
-  mixPagamento,
-  ruptura,
-  valorEstoqueAtual,
-  giroEstoque,
-  perdas,
-  vendasPorDia,
-  rankingProdutos,
-  type Range,
-} from "../relatorios/_data";
-import { PAYMENT_METHOD_LABELS } from "@/lib/presets";
-import type { PaymentMethod, TipoOperacao } from "@/generated/prisma";
+  AssistantSection,
+  AssistantFallback,
+  KpiSection,
+  KpiFallback,
+  WidgetSlot,
+  type DashCtx,
+} from "./_sections";
+import type { Range } from "../relatorios/_data";
 
+/**
+ * Centro de Operações. A página é só a casca: resolve período, site e
+ * preferências (leituras baratas) e entrega cada bloco pesado a um `<Suspense>`
+ * próprio — cabeçalho e filtros aparecem de imediato, o resto entra em
+ * streaming conforme fica pronto. As leituras vivem em `_sections.tsx`.
+ */
 export default async function DashboardPage({
   searchParams,
 }: {
@@ -33,267 +35,95 @@ export default async function DashboardPage({
   const ctx = await requireActiveTenant();
   const sp = await searchParams;
   const periodo = resolvePeriodo(sp);
+  const agora = new Date();
+
+  const [{ sites, siteId }, widgetPref] = await Promise.all([
+    withTenant(ctx, async () => {
+      const [sites, siteId] = await Promise.all([listSites(), getActiveSiteId()]);
+      return { sites, siteId };
+    }),
+    getDashboardWidgetPref(),
+  ]);
+
+  const multiSite = (ctx.tenant.numPontos ?? 1) > 1 || sites.length > 1;
+
+  // Os objetos Range nascem AQUI e são drilados por referência: os carregadores
+  // de `_sections.tsx` são memoizados com `cache()`, que casa por identidade de
+  // argumento — recriar o Range em cada seção refaria toda consulta.
   const range: Range = { inicio: periodo.inicio, fim: periodo.fim };
   const prevRange: Range = { inicio: periodo.prevInicio, fim: periodo.prevFim };
-  const tipo = (ctx.tenant.tipoOperacao ?? "MERCADINHO") as TipoOperacao;
-  const pdv = ctx.tenant.moduloPdv;
 
-  const data = await withTenant(ctx, async () => {
-    const siteId = await getActiveSiteId();
-    const [
-      sites,
-      resumo,
-      resumoPrev,
-      mix,
-      rupturaRows,
-      valorEstoque,
-      giro,
-      perdaAtual,
-      perdaPrev,
-      tendencia,
-      ranking,
-      porSite,
-    ] = await Promise.all([
-      listSites(),
-      resumoVendas(range, siteId),
-      resumoVendas(prevRange, siteId),
-      pdv ? mixPagamento(range, siteId) : Promise.resolve([]),
-      ruptura(siteId),
-      valorEstoqueAtual(siteId),
-      giroEstoque(range, siteId),
-      perdas(range, siteId),
-      perdas(prevRange, siteId),
-      vendasPorDia(range, siteId),
-      rankingProdutos(range, siteId),
-      faturamentoPorSite(range),
-    ]);
-    return {
-      siteId,
-      sites,
-      resumo,
-      resumoPrev,
-      mix,
-      rupturaRows,
-      valorEstoque,
-      giro,
-      perdaAtual,
-      perdaPrev,
-      tendencia,
-      ranking,
-      porSite,
-    };
-  });
+  const dash: DashCtx = {
+    ctx,
+    range,
+    prevRange,
+    siteId,
+    periodoLabel: periodo.label,
+    pdv: ctx.tenant.moduloPdv,
+    multiSite,
+    paradoDias: ctx.tenant.produtoParadoDias || 45,
+  };
 
-  const multiSite = (ctx.tenant.numPontos ?? 1) > 1 || data.sites.length > 1;
-  const { resumo, resumoPrev } = data;
-
-  // KPIs por preset (PRD §3) — só o que dói no modelo de operação.
-  const cards = montarCards(tipo, {
-    resumo,
-    resumoPrev,
-    ruptura: data.rupturaRows.length,
-    valorEstoque: data.valorEstoque,
-    giro: data.giro,
-    perdaAtual: data.perdaAtual.total,
-    perdaPrev: data.perdaPrev.total,
-  });
-
-  const semVendas = resumo.numVendas === 0;
+  const resolvedOrder = resolveOrder(widgetPref.ordem);
+  const visibleWidgets = resolvedOrder.filter((id) => !widgetPref.hidden.includes(id));
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="space-y-4 pb-6">
+      {/* Letterhead — só aparece no PDF (window.print); sidebar/navbar/ações já somem via print:hidden. */}
+      <div className="hidden print:block">
+        <p className="font-display text-lg font-semibold">{ctx.tenant.nome}</p>
+        <p className="text-sm text-muted">
+          Centro de Operações · {periodo.label} · emitido {agora.toLocaleDateString("pt-BR")} às{" "}
+          {agora.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+        </p>
+      </div>
+
       <PageHeader
-        title="Início"
+        title={`${saudacao(agora)}!`}
         icon={navIcon("/inicio")}
-        description={`Visão de ${periodo.label.toLowerCase()} — o que precisa de atenção primeiro.`}
+        description={`Resumo da operação de ${periodo.label.toLowerCase()}.`}
         innerClassName="max-w-none"
-        actions={<ReportFilters sites={data.sites} activeSiteId={data.siteId} multiSite={multiSite} />}
+        actions={
+          <>
+            <RefreshButton atualizadoEm={agora.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} />
+            <DashboardSettings order={resolvedOrder} hidden={widgetPref.hidden} />
+            <ReportFilters sites={sites} activeSiteId={siteId} multiSite={multiSite} />
+          </>
+        }
       />
 
-      {/* KPIs */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {cards.map((c, i) => (
-          <KpiCard key={c.label} {...c} destaque={i === 0} />
+      <Suspense fallback={<AssistantFallback />}>
+        <AssistantSection d={dash} />
+      </Suspense>
+
+      <div className="fade-up" style={{ animationDelay: "40ms" }}>
+        <Suspense fallback={<KpiFallback />}>
+          <KpiSection d={dash} />
+        </Suspense>
+      </div>
+
+      {/* `empty:hidden`: um widget que resolve para nada (ponto único, período
+          sem dado) não pode deixar um buraco do tamanho de um card na grade. */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:grid-flow-dense">
+        {visibleWidgets.map((id, i) => (
+          <div key={id} className={cn("fade-up empty:hidden", WIDGET_SPAN[id])} style={{ animationDelay: `${80 + i * 40}ms` }}>
+            <WidgetSlot id={id} d={dash} />
+          </div>
         ))}
-      </div>
-
-      {/* Tendência + composição/atenção */}
-      <div className="grid gap-4 lg:grid-cols-3">
-        <ChartCard title="Faturamento por dia" subtitle={periodo.label} className="lg:col-span-2">
-          {semVendas ? (
-            <ChartEmpty />
-          ) : (
-            <LineChart pontos={data.tendencia.map((p) => ({ data: fmtData(new Date(p.data)), valor: p.valor }))} />
-          )}
-        </ChartCard>
-
-        {pdv ? (
-          <ChartCard title="Mix de pagamento" subtitle="Recebido no período">
-            {data.mix.length === 0 ? (
-              <ChartEmpty />
-            ) : (
-              <DonutChart
-                fatias={data.mix.map((m) => ({
-                  label: PAYMENT_METHOD_LABELS[m.metodo as PaymentMethod] ?? m.metodo,
-                  value: m.valor,
-                  display: brl(m.valor),
-                }))}
-              />
-            )}
-          </ChartCard>
-        ) : (
-          <ChartCard
-            title="Ruptura"
-            subtitle="Abaixo do mínimo, agora"
-            action={<a href="/relatorios/estoque" className="text-xs font-medium text-brand hover:underline">Ver tudo</a>}
-          >
-            {data.rupturaRows.length === 0 ? (
-              <ChartEmpty mensagem="Nenhum produto em ruptura." />
-            ) : (
-              <BarList
-                tone="danger"
-                items={data.rupturaRows.slice(0, 6).map((r) => ({
-                  label: r.nome,
-                  value: r.deficit,
-                  sub: r.sku,
-                  display: `falta ${r.deficit.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`,
-                }))}
-              />
-            )}
-          </ChartCard>
-        )}
-      </div>
-
-      {/* Top produtos + (multi-site) por ponto */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <ChartCard
-          title="Produtos que mais vendem"
-          subtitle="Por faturamento"
-          action={<a href="/relatorios/vendas" className="text-xs font-medium text-brand hover:underline">Ver relatório</a>}
-        >
-          {data.ranking.length === 0 ? (
-            <ChartEmpty />
-          ) : (
-            <BarList items={data.ranking.slice(0, 6).map((p) => ({ label: p.nome, value: p.receita, sub: p.sku, display: brl(p.receita) }))} />
-          )}
-        </ChartCard>
-
-        {multiSite && data.porSite.length > 0 ? (
-          <ChartCard title="Faturamento por ponto" subtitle={periodo.label}>
-            <BarList tone="accent" items={data.porSite.map((s) => ({ label: s.nome, value: s.valor, display: brl(s.valor) }))} />
-          </ChartCard>
-        ) : (
-          <ChartCard
-            title="Maior margem"
-            subtitle="Receita − custo, por produto"
-            action={<a href="/relatorios/margem" className="text-xs font-medium text-brand hover:underline">Ver relatório</a>}
-          >
-            {data.ranking.filter((p) => p.custo > 0).length === 0 ? (
-              <ChartEmpty mensagem="Sem custo cadastrado para calcular margem." />
-            ) : (
-              <BarList
-                tone="accent"
-                items={[...data.ranking]
-                  .filter((p) => p.custo > 0)
-                  .sort((a, b) => b.margem - a.margem)
-                  .slice(0, 6)
-                  .map((p) => ({ label: p.nome, value: p.margem, sub: `${Math.round(p.margemPct)}%`, display: brl(p.margem) }))}
-              />
-            )}
-          </ChartCard>
-        )}
       </div>
     </div>
   );
 }
 
-/** Faturamento agregado por site (para multi-ponto). */
-async function faturamentoPorSite(range: Range) {
-  const [grupos, sites] = await Promise.all([
-    db.sale.groupBy({
-      by: ["siteId"],
-      where: { status: "PAGA", paidAt: { gte: range.inicio, lt: range.fim } },
-      _sum: { total: true },
-    }),
-    listSites(),
-  ]);
-  const nomeMap = new Map(sites.map((s) => [s.id, s.nome]));
-  return grupos
-    .map((g) => ({ nome: nomeMap.get(g.siteId) ?? g.siteId, valor: Number(g._sum.total ?? 0) }))
-    .filter((g) => g.valor > 0)
-    .sort((a, b) => b.valor - a.valor);
-}
-
-// ── Montagem de KPIs por preset ─────────────────────────────
-
-type CardProps = {
-  label: string;
-  value: string;
-  delta?: ReturnType<typeof variacao> | null;
-  hint?: string;
-  href?: string;
-  goodWhen?: "up" | "down";
+const WIDGET_SPAN: Record<WidgetId, string> = {
+  // Meia largura: a tendência abre a grade logo abaixo dos KPIs e divide a
+  // linha com o widget seguinte, em vez de ocupar a faixa inteira.
+  tendencia: "lg:col-span-1",
+  mix: "lg:col-span-1",
+  produtos: "lg:col-span-1",
+  margem: "lg:col-span-1",
+  insights: "lg:col-span-1",
+  sem_giro: "lg:col-span-1",
+  categorias: "lg:col-span-1",
+  por_site: "lg:col-span-2",
 };
-
-function montarCards(
-  tipo: TipoOperacao,
-  d: {
-    resumo: { faturamento: number; ticket: number; margemBruta: number; margemPct: number };
-    resumoPrev: { faturamento: number; ticket: number; margemBruta: number };
-    ruptura: number;
-    valorEstoque: number;
-    giro: number | null;
-    perdaAtual: number;
-    perdaPrev: number;
-  },
-): CardProps[] {
-  const faturamento: CardProps = {
-    label: "Faturamento",
-    value: brl(d.resumo.faturamento),
-    delta: variacao(d.resumo.faturamento, d.resumoPrev.faturamento),
-    href: "/relatorios/vendas",
-  };
-  const margem: CardProps = {
-    label: "Margem bruta",
-    value: brl(d.resumo.margemBruta),
-    delta: variacao(d.resumo.margemBruta, d.resumoPrev.margemBruta),
-    hint: `${Math.round(d.resumo.margemPct)}% da receita`,
-    href: "/relatorios/margem",
-  };
-  const ticket: CardProps = {
-    label: "Ticket médio",
-    value: brl(d.resumo.ticket),
-    delta: variacao(d.resumo.ticket, d.resumoPrev.ticket),
-    href: "/relatorios/vendas",
-  };
-  const rupturaCard: CardProps = {
-    label: "Em ruptura",
-    value: String(d.ruptura),
-    hint: "abaixo do mínimo",
-    goodWhen: "down",
-    href: "/relatorios/estoque",
-  };
-  const perdaCard: CardProps = {
-    label: "Perdas",
-    value: brl(d.perdaAtual),
-    delta: variacao(d.perdaAtual, d.perdaPrev),
-    goodWhen: "down",
-    href: "/relatorios/perdas",
-  };
-  const estoque: CardProps = {
-    label: "Valor de estoque",
-    value: brl(d.valorEstoque),
-    hint: "a custo médio",
-    href: "/relatorios/estoque",
-  };
-  const giro: CardProps = {
-    label: "Giro de estoque",
-    value: d.giro != null ? `${d.giro.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}×` : "—",
-    hint: d.giro == null ? "sem histórico ainda" : "no período",
-    href: "/relatorios/estoque",
-  };
-
-  if (tipo === "AUTONOMO") return [faturamento, rupturaCard, perdaCard, estoque];
-  if (tipo === "CONVENIENCIA_BEBIDAS") return [faturamento, margem, giro, rupturaCard];
-  return [faturamento, margem, ticket, estoque]; // MERCADINHO
-}

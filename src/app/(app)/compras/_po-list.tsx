@@ -1,9 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronLeft, ChevronRight, Copy, Eye, MoreHorizontal, Pencil, CircleX, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Gift, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Menu, MenuItem } from "@/components/ui/menu";
 import { estadoEntrega, fmtMoney, previsaoLabel, relTempo, PurchaseOrderStatusBadge, SupplierAvatar, PEDIDO_A_RECEBER } from "./_ui";
 import type { PedidoView } from "./_pedidos";
 
@@ -19,13 +18,21 @@ export type PoAcoes = {
 
 const POR_PAGINA = 25;
 
+function previsaoComAno(iso: string | null): string {
+  if (!iso) return previsaoLabel(iso);
+  return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
 export function PurchaseOrderList({
   pedidos,
   acoes,
+  statusPendingId = null,
   compacta = false,
 }: {
   pedidos: PedidoView[];
   acoes: PoAcoes;
+  /** Id do pedido cujo status está sendo alterado — mostra loading na coluna Status. */
+  statusPendingId?: string | null;
   /** Versão mobile — cards empilhados em vez de tabela. */
   compacta?: boolean;
 }) {
@@ -37,7 +44,7 @@ export function PurchaseOrderList({
   if (compacta) {
     return (
       <div className="flex flex-col gap-2">
-        {rows.map((p) => <PurchaseOrderCardRow key={p.id} pedido={p} acoes={acoes} />)}
+        {rows.map((p) => <PurchaseOrderCardRow key={p.id} pedido={p} acoes={acoes} statusPending={p.id === statusPendingId} />)}
         <Paginacao pagina={pg} total={totalPaginas} onPage={setPagina} count={pedidos.length} />
       </div>
     );
@@ -57,11 +64,10 @@ export function PurchaseOrderList({
               <th className="px-4 py-2.5">Entrega prevista</th>
               <th className="px-4 py-2.5">Última atualização</th>
               <th className="px-4 py-2.5">Responsável</th>
-              <th className="px-3 py-2.5 text-right">Ações</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {rows.map((p) => <PurchaseOrderRow key={p.id} pedido={p} acoes={acoes} />)}
+            {rows.map((p) => <PurchaseOrderRow key={p.id} pedido={p} acoes={acoes} statusPending={p.id === statusPendingId} />)}
           </tbody>
         </table>
       </div>
@@ -70,7 +76,7 @@ export function PurchaseOrderList({
   );
 }
 
-export function PurchaseOrderRow({ pedido: p, acoes }: { pedido: PedidoView; acoes: PoAcoes }) {
+export function PurchaseOrderRow({ pedido: p, acoes, statusPending = false }: { pedido: PedidoView; acoes: PoAcoes; statusPending?: boolean }) {
   const aberto = PEDIDO_A_RECEBER.includes(p.status);
   const prazo = aberto ? estadoEntrega(p.previsaoEntrega) : null;
   return (
@@ -79,49 +85,53 @@ export function PurchaseOrderRow({ pedido: p, acoes }: { pedido: PedidoView; aco
       className="group cursor-pointer transition-colors hover:bg-surface-2/60"
     >
       <td className="px-4 py-2.5">
-        <span className="font-mono text-[13px] font-semibold text-ink">{p.numero}</span>
+        <span className="flex items-center gap-1.5">
+          <span className="font-mono text-[13px] font-semibold text-ink">{p.numero}</span>
+          {p.items.some((i) => i.tipo !== "COMPRA") && (
+            <Gift size={12} className="shrink-0 text-violet" aria-label="Tem bonificação" />
+          )}
+        </span>
         <span className="block text-[11px] text-faint">{p.siteNome}</span>
       </td>
       <td className="px-4 py-2.5">
         <span className="flex items-center gap-2">
-          <SupplierAvatar nome={p.supplierNome} />
+          <SupplierAvatar nome={p.supplierNome} logoUrl={p.supplierLogoUrl} />
           <span className="max-w-44 truncate font-medium text-ink">{p.supplierNome}</span>
         </span>
       </td>
-      <td className="px-4 py-2.5"><PurchaseOrderStatusBadge status={p.status} /></td>
+      <td className="px-4 py-2.5">
+        {statusPending ? (
+          <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-surface-2 px-2.5 py-1 text-xs font-semibold text-muted">
+            <Loader2 size={12} className="animate-spin" /> Atualizando…
+          </span>
+        ) : (
+          <PurchaseOrderStatusBadge status={p.status} />
+        )}
+      </td>
       <td className="px-4 py-2.5 text-right tabular-nums text-ink">
         {p.totalItems} {p.totalItems === 1 ? "produto" : "produtos"}
       </td>
       <td className="px-4 py-2.5 text-right font-medium tabular-nums text-ink">{fmtMoney(p.valorTotal)}</td>
       <td className="px-4 py-2.5">
         {prazo ? (
-          <span className={cn("inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold", prazo.cls)}>
-            <prazo.icon size={11} /> {prazo.label}
+          <span className="flex flex-col items-start gap-1">
+            <span className={cn("inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold", prazo.cls)}>
+              <prazo.icon size={11} /> {prazo.label}
+            </span>
+            <span className="whitespace-nowrap text-[11px] text-faint">{previsaoComAno(p.previsaoEntrega)}</span>
           </span>
         ) : (
-          <span className="text-muted">{previsaoLabel(p.previsaoEntrega)}</span>
+          <span className="whitespace-nowrap text-muted">{previsaoComAno(p.previsaoEntrega)}</span>
         )}
       </td>
       <td className="whitespace-nowrap px-4 py-2.5 text-muted">{relTempo(p.updatedAt)}</td>
       <td className="max-w-32 truncate px-4 py-2.5 text-muted">{p.operador ?? "—"}</td>
-      <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
-        <span className="flex items-center justify-end gap-1">
-          <button
-            type="button"
-            onClick={() => acoes.onVer(p)}
-            className="flex items-center gap-1.5 whitespace-nowrap rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-2"
-          >
-            <Eye size={13} className="text-muted" /> Ver pedido
-          </button>
-          <AcoesMenu pedido={p} acoes={acoes} />
-        </span>
-      </td>
     </tr>
   );
 }
 
 /** Linha-card usada na versão mobile da lista. */
-function PurchaseOrderCardRow({ pedido: p, acoes }: { pedido: PedidoView; acoes: PoAcoes }) {
+function PurchaseOrderCardRow({ pedido: p, acoes, statusPending = false }: { pedido: PedidoView; acoes: PoAcoes; statusPending?: boolean }) {
   const aberto = PEDIDO_A_RECEBER.includes(p.status);
   const prazo = aberto ? estadoEntrega(p.previsaoEntrega) : null;
   return (
@@ -133,59 +143,40 @@ function PurchaseOrderCardRow({ pedido: p, acoes }: { pedido: PedidoView; acoes:
       className="flex cursor-pointer flex-col gap-2 rounded-xl border border-line bg-surface p-3.5 transition-colors hover:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-[13px] font-semibold text-ink">{p.numero}</span>
-        <PurchaseOrderStatusBadge status={p.status} />
+        <span className="flex items-center gap-1.5">
+          <span className="font-mono text-[13px] font-semibold text-ink">{p.numero}</span>
+          {p.items.some((i) => i.tipo !== "COMPRA") && (
+            <Gift size={12} className="shrink-0 text-violet" aria-label="Tem bonificação" />
+          )}
+        </span>
+        {statusPending ? (
+          <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-surface-2 px-2.5 py-1 text-xs font-semibold text-muted">
+            <Loader2 size={12} className="animate-spin" /> Atualizando…
+          </span>
+        ) : (
+          <PurchaseOrderStatusBadge status={p.status} />
+        )}
       </div>
       <div className="flex items-center gap-2">
-        <SupplierAvatar nome={p.supplierNome} />
+        <SupplierAvatar nome={p.supplierNome} logoUrl={p.supplierLogoUrl} />
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{p.supplierNome}</span>
-        <span onClick={(e) => e.stopPropagation()}><AcoesMenu pedido={p} acoes={acoes} /></span>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
         <span className="tabular-nums">{p.totalItems} {p.totalItems === 1 ? "produto" : "produtos"}</span>
         <span className="font-medium tabular-nums text-ink">{fmtMoney(p.valorTotal)}</span>
         {prazo ? (
-          <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold", prazo.cls)}>
-            <prazo.icon size={11} /> {prazo.label}
-          </span>
+          <>
+            <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold", prazo.cls)}>
+              <prazo.icon size={11} /> {prazo.label}
+            </span>
+            <span>Entrega {previsaoComAno(p.previsaoEntrega)}</span>
+          </>
         ) : (
-          p.previsaoEntrega && <span>Entrega {previsaoLabel(p.previsaoEntrega).toLowerCase()}</span>
+          p.previsaoEntrega && <span>Entrega {previsaoComAno(p.previsaoEntrega)}</span>
         )}
         <span className="text-faint">{relTempo(p.updatedAt)}</span>
       </div>
     </div>
-  );
-}
-
-function AcoesMenu({ pedido: p, acoes }: { pedido: PedidoView; acoes: PoAcoes }) {
-  const podeEditar = p.status === "RASCUNHO";
-  const podeExcluir = p.status === "RASCUNHO";
-  const podeCancelar = p.status !== "RECEBIDO" && p.status !== "CANCELADO";
-  return (
-    <Menu
-      align="end"
-      className="w-44"
-      trigger={
-        <button
-          type="button"
-          aria-label={`Ações do pedido ${p.numero}`}
-          className="grid h-7 w-7 place-items-center rounded-lg text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-        >
-          <MoreHorizontal size={15} />
-        </button>
-      }
-    >
-      {podeEditar && (
-        <MenuItem icon={<Pencil size={14} />} onClick={() => acoes.onEditar(p)}>Editar</MenuItem>
-      )}
-      <MenuItem icon={<Copy size={14} />} onClick={() => acoes.onDuplicar(p)}>Duplicar</MenuItem>
-      {podeCancelar && (
-        <MenuItem icon={<CircleX size={14} />} onClick={() => acoes.onCancelar(p)}>Cancelar</MenuItem>
-      )}
-      {podeExcluir && (
-        <MenuItem icon={<Trash2 size={14} />} onClick={() => acoes.onExcluir(p)}>Excluir</MenuItem>
-      )}
-    </Menu>
   );
 }
 

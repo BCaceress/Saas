@@ -29,11 +29,16 @@ GRANT USAGE ON SCHEMA public TO app_user;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user;
 
--- 3. Privilégios padrão p/ tabelas/sequences futuras (criadas pelo owner).
+-- Funções: a numeração fiscal (fiscal_proximo_numero) é chamada pela app.
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO app_user;
+
+-- 3. Privilégios padrão p/ tabelas/sequences/funções futuras (criadas pelo owner).
 ALTER DEFAULT PRIVILEGES FOR ROLE neondb_owner IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user;
 ALTER DEFAULT PRIVILEGES FOR ROLE neondb_owner IN SCHEMA public
   GRANT USAGE, SELECT ON SEQUENCES TO app_user;
+ALTER DEFAULT PRIVILEGES FOR ROLE neondb_owner IN SCHEMA public
+  GRANT EXECUTE ON FUNCTIONS TO app_user;
 
 -- Verificação rápida (deve mostrar rolbypassrls = false):
 -- SELECT rolname, rolbypassrls FROM pg_roles WHERE rolname = 'app_user';

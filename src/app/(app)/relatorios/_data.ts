@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { db } from "@/lib/prisma";
 
 /**
@@ -94,7 +95,7 @@ export async function resumoVendas(range: Range, siteId: SiteFilter): Promise<Re
 
 // ── Mix de pagamento ────────────────────────────────────────
 
-export type MixPagamento = { metodo: string; valor: number };
+export type MixPagamento = { metodo: string; valor: number; numVendas: number };
 
 export async function mixPagamento(range: Range, siteId: SiteFilter): Promise<MixPagamento[]> {
   const grupos = await db.payment.groupBy({
@@ -104,9 +105,10 @@ export async function mixPagamento(range: Range, siteId: SiteFilter): Promise<Mi
       sale: { is: saleWhere(range, siteId) },
     },
     _sum: { valor: true },
+    _count: true,
   });
   return grupos
-    .map((g) => ({ metodo: g.metodo as string, valor: n(g._sum.valor) }))
+    .map((g) => ({ metodo: g.metodo as string, valor: n(g._sum.valor), numVendas: g._count }))
     .filter((g) => g.valor > 0)
     .sort((a, b) => b.valor - a.valor);
 }
@@ -137,6 +139,69 @@ function chaveDia(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// ── Série financeira diária (receita, lucro, ticket, nº vendas) ─────
+
+export type PontoFinanceiro = {
+  data: string; // YYYY-MM-DD
+  receita: number;
+  cmv: number;
+  lucro: number;
+  numVendas: number;
+  ticket: number;
+};
+
+/** Série diária completa — base do gráfico principal do dashboard (troca de métrica sem refetch). */
+export async function serieFinanceiraDiaria(range: Range, siteId: SiteFilter): Promise<PontoFinanceiro[]> {
+  const [sales, movs] = await Promise.all([
+    db.sale.findMany({ where: saleWhere(range, siteId), select: { paidAt: true, total: true } }),
+    db.stockMovement.findMany({
+      where: {
+        tipo: { in: ["SAIDA", "PRODUCAO"] },
+        saleId: { not: null },
+        createdAt: { gte: range.inicio, lt: range.fim },
+        ...(siteId ? { siteId } : {}),
+      },
+      select: { productId: true, deltaFechado: true, deltaAberto: true, custoUnitario: true, createdAt: true },
+    }),
+  ]);
+  const conteudo = await conteudoMap([...new Set(movs.map((m) => m.productId))]);
+
+  const porDia = new Map<string, { receita: number; cmv: number; numVendas: number }>();
+  for (let d = new Date(range.inicio); d < range.fim; d = new Date(d.getTime() + 86400000)) {
+    porDia.set(chaveDia(d), { receita: 0, cmv: 0, numVendas: 0 });
+  }
+  for (const s of sales) {
+    if (!s.paidAt) continue;
+    const k = chaveDia(s.paidAt);
+    const cur = porDia.get(k) ?? { receita: 0, cmv: 0, numVendas: 0 };
+    cur.receita += n(s.total);
+    cur.numVendas += 1;
+    porDia.set(k, cur);
+  }
+  for (const m of movs) {
+    const cu = m.custoUnitario != null ? n(m.custoUnitario) : 0;
+    if (cu === 0) continue;
+    const k = chaveDia(m.createdAt);
+    const cur = porDia.get(k) ?? { receita: 0, cmv: 0, numVendas: 0 };
+    const cpu = conteudo.get(m.productId);
+    const unidadesAbertas = cpu && cpu > 0 ? Math.abs(n(m.deltaAberto)) / cpu : 0;
+    cur.cmv += cu * (Math.abs(n(m.deltaFechado)) + unidadesAbertas);
+    porDia.set(k, cur);
+  }
+
+  return [...porDia.entries()].map(([data, v]) => {
+    const lucro = v.receita - v.cmv;
+    return {
+      data,
+      receita: Math.round(v.receita * 100) / 100,
+      cmv: Math.round(v.cmv * 100) / 100,
+      lucro: Math.round(lucro * 100) / 100,
+      numVendas: v.numVendas,
+      ticket: v.numVendas > 0 ? Math.round((v.receita / v.numVendas) * 100) / 100 : 0,
+    };
+  });
+}
+
 // ── Vendas por origem / hora ────────────────────────────────
 
 export async function vendasPorHora(range: Range, siteId: SiteFilter): Promise<PontoTempo[]> {
@@ -160,6 +225,7 @@ export type ProdutoVendaAgg = {
   nome: string;
   sku: string;
   categoria: string | null;
+  imagemUrl: string | null;
   quantidade: number;
   receita: number;
   custo: number;
@@ -167,8 +233,18 @@ export type ProdutoVendaAgg = {
   margemPct: number;
 };
 
-/** Agregação por produto: receita (SaleItem), custo (movimentos), margem. */
-export async function rankingProdutos(range: Range, siteId: SiteFilter): Promise<ProdutoVendaAgg[]> {
+/**
+ * Agregação por produto: receita (SaleItem), custo (movimentos), margem.
+ *
+ * Memoizado por request (`cache`): é a leitura mais cara e mais reaproveitada —
+ * `vendasPorCategoria`, `crescimentoProdutos` e `categoriasComparativo` todas
+ * derivam dela, e o dashboard chegava a rodá-la 6× no mesmo render. A chave é a
+ * identidade dos argumentos, então quem quiser o reuso passa o MESMO objeto
+ * `Range` adiante (é o que o /inicio faz, ver `_sections.tsx`).
+ */
+export const rankingProdutos = cache(rankingProdutosRaw);
+
+async function rankingProdutosRaw(range: Range, siteId: SiteFilter): Promise<ProdutoVendaAgg[]> {
   const [itens, movs] = await Promise.all([
     db.saleItem.groupBy({
       by: ["productId"],
@@ -202,7 +278,7 @@ export async function rankingProdutos(range: Range, siteId: SiteFilter): Promise
   const productIds = itens.map((i) => i.productId);
   const prods = await db.product.findMany({
     where: { id: { in: productIds } },
-    select: { id: true, nome: true, sku: true, subcategory: { select: { category: { select: { nome: true } } } } },
+    select: { id: true, nome: true, sku: true, imagemUrl: true, subcategory: { select: { category: { select: { nome: true } } } } },
   });
   const prodMap = new Map(prods.map((p) => [p.id, p]));
 
@@ -217,6 +293,7 @@ export async function rankingProdutos(range: Range, siteId: SiteFilter): Promise
         nome: p?.nome ?? i.productId,
         sku: p?.sku ?? "",
         categoria: p?.subcategory?.category?.nome ?? null,
+        imagemUrl: p?.imagemUrl ?? null,
         quantidade: n(i._sum.quantidade),
         receita,
         custo,
@@ -229,16 +306,18 @@ export async function rankingProdutos(range: Range, siteId: SiteFilter): Promise
 
 // ── Vendas por categoria ────────────────────────────────────
 
-export type CategoriaAgg = { categoria: string; receita: number; quantidade: number };
+export type CategoriaAgg = { categoria: string; receita: number; quantidade: number; custo: number; margem: number };
 
 export async function vendasPorCategoria(range: Range, siteId: SiteFilter): Promise<CategoriaAgg[]> {
   const ranking = await rankingProdutos(range, siteId);
   const map = new Map<string, CategoriaAgg>();
   for (const p of ranking) {
     const cat = p.categoria ?? "Sem categoria";
-    const cur = map.get(cat) ?? { categoria: cat, receita: 0, quantidade: 0 };
+    const cur = map.get(cat) ?? { categoria: cat, receita: 0, quantidade: 0, custo: 0, margem: 0 };
     cur.receita += p.receita;
     cur.quantidade += p.quantidade;
+    cur.custo += p.custo;
+    cur.margem += p.margem;
     map.set(cat, cur);
   }
   return [...map.values()].sort((a, b) => b.receita - a.receita);

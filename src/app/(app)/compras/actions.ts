@@ -2,14 +2,25 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireActiveTenant } from "@/lib/current-tenant";
+import { guardAction } from "@/lib/guard";
+import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { criarPedidoCompra } from "@/lib/estoque";
 import { db } from "@/lib/prisma";
 import { loadHistoricoCompraProduto } from "./_data";
 
+/** Baseline de leitura do módulo. Escrita usa `txp` com a loja de destino. */
 async function tx<T>(fn: (tid: string, userId: string) => Promise<T>): Promise<T> {
-  const ctx = await requireActiveTenant();
+  const ctx = await guardAction("compras.ver");
+  return runWithTenant(ctx.tenant.id, () => fn(ctx.tenant.id, ctx.user.id ?? ""));
+}
+
+async function txp<T>(
+  permissao: Permissao,
+  siteId: string | null,
+  fn: (tid: string, userId: string) => Promise<T>,
+): Promise<T> {
+  const ctx = await guardAction(permissao, siteId);
   return runWithTenant(ctx.tenant.id, () => fn(ctx.tenant.id, ctx.user.id ?? ""));
 }
 
@@ -33,6 +44,7 @@ const reposicaoPedidoSchema = z.object({
         packagingId: z.string().optional().nullable(),
         qtdPedida: z.number().positive(),
         custoUnitario: z.number().nonnegative().default(0),
+        observacao: z.string().trim().max(500).optional().nullable(),
       }),
     )
     .min(1),
@@ -45,8 +57,8 @@ const reposicaoSchema = z.object({
 });
 
 export async function criarPedidosReposicaoAction(input: z.input<typeof reposicaoSchema>) {
-  return tx(async (tid, userId) => {
-    const d = reposicaoSchema.parse(input);
+  const d = reposicaoSchema.parse(input);
+  return txp("compras.pedir", d.siteId, async (tid, userId) => {
     const ids: string[] = [];
     // Sequencial de propósito: o número do pedido (PC-000NN) é gerado por
     // tenant e criações paralelas colidiriam no unique.

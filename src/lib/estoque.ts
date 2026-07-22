@@ -1,5 +1,5 @@
 import "server-only";
-import { basePrisma } from "./prisma";
+import { basePrisma, comTenant } from "./prisma";
 import type { MovementType } from "@/generated/prisma";
 
 // ============================================================
@@ -86,7 +86,7 @@ export async function registrarEntrada(
   items: EntradaItem[],
   opts: {
     tipo: "MANUAL" | "FORNECEDOR";
-    motivo?: "COMPRA_SEM_PEDIDO" | "BONIFICACAO" | "ESTOQUE_INICIAL" | "TRANSFERENCIA" | null;
+    motivo?: "COMPRA_SEM_PEDIDO" | "BONIFICACAO" | "ESTOQUE_INICIAL" | "TRANSFERENCIA" | "BRINDE" | "TROCA" | "AMOSTRA" | "SERVICO" | null;
     supplierId?: string | null;
     purchaseOrderId?: string | null;
     numeroNota?: string | null;
@@ -99,10 +99,10 @@ export async function registrarEntrada(
     items.map(async (item) => {
       let qtdBase = item.quantidade;
       if (item.packagingId) {
-        const pkg = await basePrisma.productPackaging.findUnique({
+        const pkg = await comTenant(tenantId, basePrisma.productPackaging.findUnique({
           where: { id: item.packagingId },
           select: { fatorConversao: true },
-        });
+        }));
         if (pkg) qtdBase = item.quantidade * Number(pkg.fatorConversao);
       }
       const custoUnitario = qtdBase > 0 ? item.custoTotal / qtdBase : 0;
@@ -161,21 +161,46 @@ export async function registrarEntrada(
 // conferência do recebimento (Fase 3). Aqui só criamos/editamos/enviamos/
 // cancelamos o pedido ao fornecedor.
 
+export type TipoItemPedido = "COMPRA" | "BONIFICACAO" | "BRINDE" | "TROCA" | "AMOSTRA" | "SERVICO";
+export type MotivoBonificacao = "COMERCIAL" | "CAMPANHA" | "REPOSICAO" | "TROCA" | "CORTESIA" | "OUTRO";
+
 export type PedidoItemInput = {
   productId: string;
   packagingId?: string | null;
+  tipo?: TipoItemPedido; // default COMPRA
+  motivoBonificacao?: MotivoBonificacao | null;
   qtdPedida: number;
-  custoUnitario: number; // por unidade de compra (embalagem)
+  custoUnitario: number; // por unidade de compra (embalagem) — sempre 0 quando tipo != COMPRA
+  observacao?: string | null;
+};
+
+/** Mapa tipo do item → motivo da entrada de estoque (Purchase.motivo) quando != COMPRA. */
+const MOTIVO_POR_TIPO: Record<Exclude<TipoItemPedido, "COMPRA">, "BONIFICACAO" | "BRINDE" | "TROCA" | "AMOSTRA" | "SERVICO"> = {
+  BONIFICACAO: "BONIFICACAO",
+  BRINDE: "BRINDE",
+  TROCA: "TROCA",
+  AMOSTRA: "AMOSTRA",
+  SERVICO: "SERVICO",
+};
+
+const PEDIDO_MOTIVO_LABEL: Record<"BONIFICACAO" | "BRINDE" | "TROCA" | "AMOSTRA" | "SERVICO", string> = {
+  BONIFICACAO: "bonificação",
+  BRINDE: "brinde",
+  TROCA: "troca",
+  AMOSTRA: "amostra",
+  SERVICO: "serviço",
 };
 
 /** Gera o próximo número sequencial PC-00001 por tenant. */
 async function proximoNumeroPedido(tenantId: string): Promise<string> {
-  const total = await basePrisma.purchaseOrder.count({ where: { tenantId } });
+  const total = await comTenant(tenantId, basePrisma.purchaseOrder.count({ where: { tenantId } }));
   return `PC-${String(total + 1).padStart(5, "0")}`;
 }
 
+// Bonificação/brinde/troca/amostra/serviço nunca entram no valor do pedido —
+// soma só o que é efetivamente COMPRA, independente do que veio no custoUnitario.
 const somaPedido = (items: PedidoItemInput[]) =>
-  items.reduce((acc, i) => acc + i.qtdPedida * i.custoUnitario, 0);
+  items.reduce((acc, i) => acc + ((i.tipo ?? "COMPRA") === "COMPRA" ? i.qtdPedida * i.custoUnitario : 0), 0);
 
 export async function criarPedidoCompra(
   tenantId: string,
@@ -213,8 +238,11 @@ export async function criarPedidoCompra(
             tenantId,
             productId: i.productId,
             packagingId: i.packagingId ?? null,
+            tipo: i.tipo ?? "COMPRA",
+            motivoBonificacao: (i.tipo ?? "COMPRA") !== "COMPRA" ? (i.motivoBonificacao ?? null) : null,
             qtdPedida: i.qtdPedida,
-            custoUnitario: i.custoUnitario,
+            custoUnitario: (i.tipo ?? "COMPRA") === "COMPRA" ? i.custoUnitario : 0,
+            observacao: i.observacao ?? null,
           })),
         },
       },
@@ -235,10 +263,10 @@ export async function atualizarPedidoCompra(
     items: PedidoItemInput[];
   }
 ): Promise<void> {
-  const po = await basePrisma.purchaseOrder.findFirst({
+  const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
     select: { status: true },
-  });
+  }));
   if (!po) throw new Error("Pedido não encontrado.");
   if (po.status !== "RASCUNHO") throw new Error("Só pedidos em rascunho podem ser editados.");
 
@@ -261,8 +289,11 @@ export async function atualizarPedidoCompra(
             tenantId,
             productId: i.productId,
             packagingId: i.packagingId ?? null,
+            tipo: i.tipo ?? "COMPRA",
+            motivoBonificacao: (i.tipo ?? "COMPRA") !== "COMPRA" ? (i.motivoBonificacao ?? null) : null,
             qtdPedida: i.qtdPedida,
-            custoUnitario: i.custoUnitario,
+            custoUnitario: (i.tipo ?? "COMPRA") === "COMPRA" ? i.custoUnitario : 0,
+            observacao: i.observacao ?? null,
           })),
         },
       },
@@ -270,12 +301,53 @@ export async function atualizarPedidoCompra(
   });
 }
 
-/** RASCUNHO → ENVIADO (manda ao fornecedor). */
-export async function enviarPedidoCompra(tenantId: string, pedidoId: string): Promise<void> {
-  const po = await basePrisma.purchaseOrder.findFirst({
+/**
+ * Acrescenta itens sem custo (bonificação/brinde/troca/amostra) a um pedido
+ * já confirmado pelo fornecedor — sem mexer nos itens de COMPRA nem no
+ * valorTotal (sempre custo 0). Só depois de AGUARDANDO: é aqui que a
+ * negociação com o fornecedor normalmente traz esse tipo de acréscimo.
+ */
+export async function adicionarBonificacaoPedido(
+  tenantId: string,
+  pedidoId: string,
+  items: PedidoItemInput[]
+): Promise<void> {
+  const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
     select: { status: true },
+  }));
+  if (!po) throw new Error("Pedido não encontrado.");
+  if (!["AGUARDANDO", "RECEBIDO_PARCIAL"].includes(po.status)) {
+    throw new Error("Bonificação só pode ser adicionada depois que o fornecedor confirmar o pedido.");
+  }
+
+  const validos = items.filter((i) => i.productId && i.qtdPedida > 0);
+  if (validos.length === 0) throw new Error("Adicione ao menos um item.");
+
+  await basePrisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`;
+    await tx.purchaseOrderItem.createMany({
+      data: validos.map((i) => ({
+        tenantId,
+        purchaseOrderId: pedidoId,
+        productId: i.productId,
+        packagingId: i.packagingId ?? null,
+        tipo: i.tipo ?? "BONIFICACAO",
+        motivoBonificacao: i.motivoBonificacao ?? null,
+        qtdPedida: i.qtdPedida,
+        custoUnitario: 0,
+        observacao: i.observacao ?? null,
+      })),
+    });
   });
+}
+
+/** RASCUNHO → ENVIADO (manda ao fornecedor). */
+export async function enviarPedidoCompra(tenantId: string, pedidoId: string): Promise<void> {
+  const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
+    where: { id: pedidoId, tenantId },
+    select: { status: true },
+  }));
   if (!po) throw new Error("Pedido não encontrado.");
   if (po.status !== "RASCUNHO") throw new Error("Este pedido já foi enviado.");
   await basePrisma.$transaction([
@@ -289,27 +361,27 @@ export async function enviarPedidoCompra(tenantId: string, pedidoId: string): Pr
 
 /** Marca um pedido ENVIADO como AGUARDANDO entrega (confirmado pelo fornecedor). */
 export async function marcarAguardandoPedido(tenantId: string, pedidoId: string): Promise<void> {
-  const po = await basePrisma.purchaseOrder.findFirst({
+  const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
     select: { status: true },
-  });
+  }));
   if (!po) throw new Error("Pedido não encontrado.");
   if (po.status !== "ENVIADO") throw new Error("Só pedidos enviados podem aguardar entrega.");
   await basePrisma.$transaction([
     basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
     basePrisma.purchaseOrder.update({
       where: { id: pedidoId },
-      data: { status: "AGUARDANDO" },
+      data: { status: "AGUARDANDO", confirmadoEm: new Date() },
     }),
   ]);
 }
 
 /** ENVIADO/AGUARDANDO → EM_TRANSITO (mercadoria a caminho). */
 export async function marcarEmTransitoPedido(tenantId: string, pedidoId: string): Promise<void> {
-  const po = await basePrisma.purchaseOrder.findFirst({
+  const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
     select: { status: true },
-  });
+  }));
   if (!po) throw new Error("Pedido não encontrado.");
   if (!["ENVIADO", "AGUARDANDO"].includes(po.status)) {
     throw new Error("Só pedidos enviados ou confirmados podem entrar em trânsito.");
@@ -318,17 +390,17 @@ export async function marcarEmTransitoPedido(tenantId: string, pedidoId: string)
     basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
     basePrisma.purchaseOrder.update({
       where: { id: pedidoId },
-      data: { status: "EM_TRANSITO" },
+      data: { status: "EM_TRANSITO", emTransitoEm: new Date() },
     }),
   ]);
 }
 
 /** Cancela um pedido que ainda não foi (totalmente) recebido. */
 export async function cancelarPedidoCompra(tenantId: string, pedidoId: string): Promise<void> {
-  const po = await basePrisma.purchaseOrder.findFirst({
+  const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
     select: { status: true },
-  });
+  }));
   if (!po) throw new Error("Pedido não encontrado.");
   if (po.status === "RECEBIDO") throw new Error("Pedido já recebido não pode ser cancelado.");
   if (po.status === "CANCELADO") throw new Error("Pedido já está cancelado.");
@@ -343,10 +415,10 @@ export async function cancelarPedidoCompra(tenantId: string, pedidoId: string): 
 
 /** Apaga um pedido ainda em RASCUNHO (itens somem em cascata). */
 export async function excluirPedidoCompra(tenantId: string, pedidoId: string): Promise<void> {
-  const po = await basePrisma.purchaseOrder.findFirst({
+  const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
     select: { status: true },
-  });
+  }));
   if (!po) throw new Error("Pedido não encontrado.");
   if (po.status !== "RASCUNHO") throw new Error("Só pedidos em rascunho podem ser excluídos.");
   await basePrisma.$transaction([
@@ -360,7 +432,10 @@ export async function excluirPedidoCompra(tenantId: string, pedidoId: string): P
 // estoque (Purchase + movimentos + custo médio) e atualiza qtdRecebida/status
 // do pedido. Suporta recebimento parcial (recebe o resto depois).
 
-export type RecebimentoCompraInput = { productId: string; qtdRecebida: number };
+// Chave é o id do PurchaseOrderItem (não o productId) — um pedido pode ter
+// mais de uma linha do mesmo produto (ex.: 10 caixas compradas + 2 de
+// bonificação), e productId sozinho não distingue as duas na conferência.
+export type RecebimentoCompraInput = { itemId: string; qtdRecebida: number };
 
 export async function receberPedidoCompra(
   tenantId: string,
@@ -368,10 +443,10 @@ export async function receberPedidoCompra(
   contagem: RecebimentoCompraInput[],
   opts: { numeroNota?: string | null; gerarFinanceiro?: boolean; createdBy?: string }
 ): Promise<void> {
-  const po = await basePrisma.purchaseOrder.findFirst({
+  const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
     include: { items: true },
-  });
+  }));
   if (!po) throw new Error("Pedido não encontrado.");
   if (!["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"].includes(po.status)) {
     throw new Error("Este pedido não está aberto para recebimento.");
@@ -380,7 +455,7 @@ export async function receberPedidoCompra(
   // Itens efetivamente recebidos nesta conferência (qtd na unidade de compra).
   const recebidos = po.items
     .map((it) => {
-      const conta = contagem.find((c) => c.productId === it.productId);
+      const conta = contagem.find((c) => c.itemId === it.id);
       const qtd = conta ? Math.max(0, conta.qtdRecebida) : 0;
       return { it, qtd };
     })
@@ -390,24 +465,63 @@ export async function receberPedidoCompra(
 
   // 1. Gera a entrada no estoque (reusa o motor de entrada — converte embalagem
   //    e atualiza custo médio). custoTotal = qtd × custo unitário do pedido.
-  await registrarEntrada(
-    tenantId,
-    po.siteId,
-    recebidos.map((r) => ({
-      productId: r.it.productId,
-      quantidade: r.qtd,
-      custoTotal: r.qtd * Number(r.it.custoUnitario),
-      packagingId: r.it.packagingId,
-    })),
-    {
-      tipo: "FORNECEDOR",
-      supplierId: po.supplierId,
-      purchaseOrderId: po.id,
-      numeroNota: opts.numeroNota ?? null,
-      observacao: `Recebimento do pedido ${po.numero}`,
-      createdBy: opts.createdBy,
-    }
-  );
+  //    Itens de COMPRA e itens sem custo (bonificação/brinde/troca/amostra/
+  //    serviço) geram Purchases separadas — nunca a mesma entrada — para o
+  //    histórico do produto e o financeiro distinguirem as duas origens.
+  const comprados = recebidos.filter((r) => r.it.tipo === "COMPRA");
+  const semCusto = recebidos.filter((r) => r.it.tipo !== "COMPRA");
+
+  if (comprados.length > 0) {
+    await registrarEntrada(
+      tenantId,
+      po.siteId,
+      comprados.map((r) => ({
+        productId: r.it.productId,
+        quantidade: r.qtd,
+        custoTotal: r.qtd * Number(r.it.custoUnitario),
+        packagingId: r.it.packagingId,
+      })),
+      {
+        tipo: "FORNECEDOR",
+        supplierId: po.supplierId,
+        purchaseOrderId: po.id,
+        numeroNota: opts.numeroNota ?? null,
+        observacao: `Recebimento do pedido ${po.numero}`,
+        createdBy: opts.createdBy,
+      }
+    );
+  }
+
+  // Um grupo por motivo (normalmente só BONIFICACAO) — cada motivo vira sua
+  // própria Purchase, sempre com custoTotal 0 (nunca gera custo/financeiro).
+  const gruposSemCusto = new Map<"BONIFICACAO" | "BRINDE" | "TROCA" | "AMOSTRA" | "SERVICO", typeof semCusto>();
+  for (const r of semCusto) {
+    const motivo = MOTIVO_POR_TIPO[r.it.tipo as Exclude<TipoItemPedido, "COMPRA">] ?? "BONIFICACAO";
+    const grupo = gruposSemCusto.get(motivo) ?? [];
+    grupo.push(r);
+    gruposSemCusto.set(motivo, grupo);
+  }
+  for (const [motivo, grupo] of gruposSemCusto) {
+    await registrarEntrada(
+      tenantId,
+      po.siteId,
+      grupo.map((r) => ({
+        productId: r.it.productId,
+        quantidade: r.qtd,
+        custoTotal: 0,
+        packagingId: r.it.packagingId,
+      })),
+      {
+        tipo: "FORNECEDOR",
+        motivo,
+        supplierId: po.supplierId,
+        purchaseOrderId: po.id,
+        numeroNota: opts.numeroNota ?? null,
+        observacao: `Recebimento do pedido ${po.numero} — ${PEDIDO_MOTIVO_LABEL[motivo]}`,
+        createdBy: opts.createdBy,
+      }
+    );
+  }
 
   // 2. Acumula qtdRecebida em cada item e recalcula o status do pedido.
   const recebidoMap = new Map(recebidos.map((r) => [r.it.id, r.qtd]));
@@ -441,17 +555,17 @@ async function recalcularCustoMedio(
   qtdEntrada: number,
   custoTotalEntrada: number
 ) {
-  const produto = await basePrisma.product.findFirst({
+  const produto = await comTenant(tenantId, basePrisma.product.findFirst({
     where: { id: productId, tenantId },
     select: { custoMedio: true },
-  });
+  }));
   if (!produto) return;
 
   // Saldo total antes da entrada (soma de todos os sites)
-  const agg = await basePrisma.stock.aggregate({
+  const agg = await comTenant(tenantId, basePrisma.stock.aggregate({
     where: { productId, tenantId },
     _sum: { estoqueFechado: true },
-  });
+  }));
   const saldoAntes = Number(agg._sum.estoqueFechado ?? 0);
   const custoMedioAtual = Number(produto.custoMedio ?? 0);
 
@@ -546,16 +660,16 @@ export async function registrarTransferencia(
 ): Promise<string> {
   // Valida saldo na origem
   for (const item of items) {
-    const stock = await basePrisma.stock.findFirst({
+    const stock = await comTenant(tenantId, basePrisma.stock.findFirst({
       where: { productId: item.productId, siteId: origemSiteId, tenantId },
       select: { estoqueFechado: true },
-    });
+    }));
     const saldo = Number(stock?.estoqueFechado ?? 0);
     if (saldo < item.quantidade) {
-      const prod = await basePrisma.product.findFirst({
+      const prod = await comTenant(tenantId, basePrisma.product.findFirst({
         where: { id: item.productId },
         select: { nome: true },
-      });
+      }));
       throw new Error(
         `Saldo insuficiente de "${prod?.nome}" na origem para transferir ${item.quantidade} un — disponível: ${saldo}`
       );
@@ -585,10 +699,10 @@ export async function registrarTransferencia(
   // Aplica as duas pernas
   for (const item of items) {
     // Custo médio do produto para registrar nas movimentações
-    const prod = await basePrisma.product.findFirst({
+    const prod = await comTenant(tenantId, basePrisma.product.findFirst({
       where: { id: item.productId },
       select: { custoMedio: true },
-    });
+    }));
     const custo = Number(prod?.custoMedio ?? 0);
 
     await aplicarMovimento(tenantId, origemSiteId, item.productId, "TRANSFERENCIA", {
@@ -657,10 +771,10 @@ export async function expedirRequisicao(
   itensExpedidos: ExpedicaoItemInput[],
   opts: { observacao?: string | null; createdBy?: string }
 ): Promise<string> {
-  const req = await basePrisma.requisicao.findFirst({
+  const req = await comTenant(tenantId, basePrisma.requisicao.findFirst({
     where: { id: requisicaoId, tenantId },
     include: { items: true },
-  });
+  }));
   if (!req) throw new Error("Requisição não encontrada.");
   if (req.status !== "ABERTA") throw new Error("Requisição já foi atendida ou cancelada.");
 
@@ -670,13 +784,13 @@ export async function expedirRequisicao(
 
   // Valida saldo no CD para todos os itens antes de mexer em qualquer saldo.
   for (const item of expedidos) {
-    const stock = await basePrisma.stock.findFirst({
+    const stock = await comTenant(tenantId, basePrisma.stock.findFirst({
       where: { productId: item.productId, siteId: origemSiteId, tenantId },
       select: { estoqueFechado: true },
-    });
+    }));
     const saldo = Number(stock?.estoqueFechado ?? 0);
     if (saldo < item.qtdExpedida) {
-      const prod = await basePrisma.product.findFirst({ where: { id: item.productId }, select: { nome: true } });
+      const prod = await comTenant(tenantId, basePrisma.product.findFirst({ where: { id: item.productId }, select: { nome: true } }));
       throw new Error(
         `Saldo insuficiente de "${prod?.nome}" no CD para expedir ${item.qtdExpedida} un — disponível: ${saldo}`
       );
@@ -733,7 +847,7 @@ export async function expedirRequisicao(
 
   // Pernas no razão: saída do CD sempre; entrada na loja só se auto-confirma.
   for (const item of expedidos) {
-    const prod = await basePrisma.product.findFirst({ where: { id: item.productId }, select: { custoMedio: true } });
+    const prod = await comTenant(tenantId, basePrisma.product.findFirst({ where: { id: item.productId }, select: { custoMedio: true } }));
     const custo = Number(prod?.custoMedio ?? 0);
 
     await aplicarMovimento(tenantId, origemSiteId, item.productId, "TRANSFERENCIA", {
@@ -762,10 +876,10 @@ export async function receberTransferencia(
   contagem: RecebimentoItemInput[],
   opts: { createdBy?: string }
 ): Promise<void> {
-  const transfer = await basePrisma.transfer.findFirst({
+  const transfer = await comTenant(tenantId, basePrisma.transfer.findFirst({
     where: { id: transferId, tenantId },
     include: { items: true },
-  });
+  }));
   if (!transfer) throw new Error("Transferência não encontrada.");
   if (transfer.status !== "EXPEDIDO") throw new Error("Esta transferência não está em trânsito.");
 
@@ -777,7 +891,7 @@ export async function receberTransferencia(
     const conta = contagem.find((c) => c.productId === ti.productId);
     const recebida = conta ? Math.max(0, conta.qtdRecebida) : expedida;
 
-    const prod = await basePrisma.product.findFirst({ where: { id: ti.productId }, select: { custoMedio: true } });
+    const prod = await comTenant(tenantId, basePrisma.product.findFirst({ where: { id: ti.productId }, select: { custoMedio: true } }));
     const custo = Number(prod?.custoMedio ?? 0);
 
     // Entra na loja o expedido cheio; a divergência é baixada como PERDA logo
@@ -816,10 +930,10 @@ export async function receberTransferencia(
 
 /** Cancela uma requisição ainda ABERTA. */
 export async function cancelarRequisicao(tenantId: string, requisicaoId: string): Promise<void> {
-  const req = await basePrisma.requisicao.findFirst({
+  const req = await comTenant(tenantId, basePrisma.requisicao.findFirst({
     where: { id: requisicaoId, tenantId },
     select: { status: true },
-  });
+  }));
   if (!req) throw new Error("Requisição não encontrada.");
   if (req.status !== "ABERTA") throw new Error("Só requisições abertas podem ser canceladas.");
   await basePrisma.$transaction([
@@ -898,7 +1012,7 @@ function proximaOcorrencia(diasSemana: number[], apos: Date): Date {
 
 /** Inicia a contagem: resolve o escopo agora e fotografa o saldo fechado por produto. */
 export async function iniciarInventario(tenantId: string, inventoryId: string): Promise<void> {
-  const inv = await basePrisma.inventory.findFirst({ where: { id: inventoryId, tenantId } });
+  const inv = await comTenant(tenantId, basePrisma.inventory.findFirst({ where: { id: inventoryId, tenantId } }));
   if (!inv) throw new Error("Inventário não encontrado.");
   if (inv.status !== "PROGRAMADO") throw new Error("Só inventários programados podem ser iniciados.");
 
@@ -908,22 +1022,22 @@ export async function iniciarInventario(tenantId: string, inventoryId: string): 
     if (productIdFilter.length === 0) throw new Error("Nenhum produto selecionado para este inventário.");
   } else if (inv.escopoTipo === "CATEGORIA") {
     if (!inv.categoryId) throw new Error("Categoria não definida para este inventário.");
-    const produtos = await basePrisma.product.findMany({
+    const produtos = await comTenant(tenantId, basePrisma.product.findMany({
       where: { tenantId, subcategory: { categoryId: inv.categoryId } },
       select: { id: true },
-    });
+    }));
     productIdFilter = produtos.map((p) => p.id);
     if (productIdFilter.length === 0) throw new Error("Nenhum produto nessa categoria.");
   }
 
-  const stocks = await basePrisma.stock.findMany({
+  const stocks = await comTenant(tenantId, basePrisma.stock.findMany({
     where: {
       siteId: inv.siteId,
       tenantId,
       ...(productIdFilter ? { productId: { in: productIdFilter } } : {}),
     },
     select: { productId: true, estoqueFechado: true },
-  });
+  }));
   if (stocks.length === 0) {
     throw new Error("Nenhum produto com estoque neste site para inventariar.");
   }
@@ -957,10 +1071,10 @@ export async function salvarContagemInventario(
   inventoryId: string,
   contagens: ContagemInput[]
 ): Promise<void> {
-  const inv = await basePrisma.inventory.findFirst({
+  const inv = await comTenant(tenantId, basePrisma.inventory.findFirst({
     where: { id: inventoryId, tenantId },
     select: { status: true, items: { select: { id: true, productId: true } } },
-  });
+  }));
   if (!inv) throw new Error("Inventário não encontrado.");
   if (inv.status !== "ABERTO") throw new Error("A contagem só pode ser salva com o inventário em andamento.");
 
@@ -988,10 +1102,10 @@ export async function fecharInventario(
   contagens: ContagemInput[],
   opts: { createdBy?: string }
 ): Promise<void> {
-  const inv = await basePrisma.inventory.findFirst({
+  const inv = await comTenant(tenantId, basePrisma.inventory.findFirst({
     where: { id: inventoryId, tenantId },
     include: { items: true },
-  });
+  }));
   if (!inv) throw new Error("Inventário não encontrado.");
   if (inv.status !== "ABERTO") throw new Error("Inventário já fechado ou cancelado.");
 
@@ -1017,10 +1131,10 @@ export async function fecharInventario(
     const contada = Math.max(0, valorContado);
 
     // Saldo atual no momento do fechamento (não o snapshot — pode ter havido venda).
-    const stock = await basePrisma.stock.findFirst({
+    const stock = await comTenant(tenantId, basePrisma.stock.findFirst({
       where: { productId: item.productId, siteId, tenantId },
       select: { estoqueFechado: true },
-    });
+    }));
     const atual = Number(stock?.estoqueFechado ?? 0);
     const delta = contada - atual;
 
@@ -1070,10 +1184,10 @@ export async function fecharInventario(
 
 /** Cancela um inventário programado ou em andamento, sem aplicar ajustes. */
 export async function cancelarInventario(tenantId: string, inventoryId: string): Promise<void> {
-  const inv = await basePrisma.inventory.findFirst({
+  const inv = await comTenant(tenantId, basePrisma.inventory.findFirst({
     where: { id: inventoryId, tenantId },
     select: { status: true },
-  });
+  }));
   if (!inv) throw new Error("Inventário não encontrado.");
   if (inv.status !== "PROGRAMADO" && inv.status !== "ABERTO") {
     throw new Error("Só inventários programados ou em andamento podem ser cancelados.");
@@ -1101,7 +1215,7 @@ export async function registrarProducao(
   }
 ): Promise<string> {
   // Carrega o personalizado com TODOS os componentes (soltos + de grupos)
-  const produto = await basePrisma.product.findFirst({
+  const produto = await comTenant(tenantId, basePrisma.product.findFirst({
     where: { id: productId, tenantId, tipo: "PERSONALIZADO" },
     include: {
       components: {
@@ -1111,7 +1225,7 @@ export async function registrarProducao(
       },
       variants: variantId ? { where: { id: variantId } } : false,
     },
-  });
+  }));
   if (!produto) throw new Error("Produto personalizado não encontrado.");
 
   // Define quais componentes consumir:
@@ -1155,10 +1269,10 @@ export async function registrarProducao(
       await consumirFracionado(tenantId, siteId, c, doseTotal, production.id, opts.createdBy, opts.saleId);
     } else {
       // Consome unidades fechadas diretamente
-      const stock = await basePrisma.stock.findFirst({
+      const stock = await comTenant(tenantId, basePrisma.stock.findFirst({
         where: { productId: c.id, siteId, tenantId },
         select: { estoqueFechado: true },
-      });
+      }));
       const saldo = Number(stock?.estoqueFechado ?? 0);
       if (saldo < doseTotal) {
         throw new Error(`Saldo insuficiente de "${c.nome}" — disponível: ${saldo} un, necessário: ${doseTotal} un`);
@@ -1188,10 +1302,10 @@ async function consumirFracionado(
 
   while (restante > 0.0001) {
     // Lê saldo atual (fora da tx para ter o valor mais recente a cada iteração)
-    const stock = await basePrisma.stock.findFirst({
+    const stock = await comTenant(tenantId, basePrisma.stock.findFirst({
       where: { productId: component.id, siteId, tenantId },
       select: { estoqueFechado: true, estoqueAberto: true },
-    });
+    }));
     const fechado = Number(stock?.estoqueFechado ?? 0);
     const aberto = Number(stock?.estoqueAberto ?? 0);
 

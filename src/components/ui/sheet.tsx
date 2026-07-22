@@ -13,6 +13,7 @@ export function Sheet({
   onClose,
   title,
   description,
+  headerActions,
   children,
   footer,
   width = "md",
@@ -21,9 +22,11 @@ export function Sheet({
   onClose: () => void;
   title: string;
   description?: string;
+  /** Ações extras no cabeçalho (ex.: menu "…"), entre o título e o botão de fechar. */
+  headerActions?: React.ReactNode;
   children: React.ReactNode;
   footer?: React.ReactNode;
-  width?: "md" | "lg" | "xl" | "2xl";
+  width?: "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl";
 }) {
   React.useEffect(() => {
     if (!open) return;
@@ -38,7 +41,7 @@ export function Sheet({
 
   if (!open) return null;
 
-  const widths = { md: "max-w-md", lg: "max-w-lg", xl: "max-w-2xl", "2xl": "max-w-3xl" };
+  const widths = { md: "max-w-md", lg: "max-w-lg", xl: "max-w-2xl", "2xl": "max-w-3xl", "3xl": "max-w-4xl", "4xl": "max-w-5xl" };
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label={title}>
@@ -59,13 +62,16 @@ export function Sheet({
             <h2 className="font-display text-lg font-semibold text-ink">{title}</h2>
             {description && <p className="mt-0.5 text-sm text-muted">{description}</p>}
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Fechar"
-            className="grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            {headerActions}
+            <button
+              onClick={onClose}
+              aria-label="Fechar"
+              className="grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </header>
         <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
         {footer && (

@@ -68,14 +68,25 @@ export function StatusBadge({ status }: { status: string }) {
 /** Nome exigido pela arquitetura do módulo de Pedidos de Compra — mesmo componente. */
 export const PurchaseOrderStatusBadge = StatusBadge;
 
-/** Avatar discreto com as iniciais do fornecedor — sem logotipo. */
-export function SupplierAvatar({ nome, size = 28 }: { nome: string; size?: number }) {
+/** Logo do fornecedor quando existir; fallback para iniciais. */
+export function SupplierAvatar({ nome, logoUrl, size = 28 }: { nome: string; logoUrl?: string | null; size?: number }) {
   const iniciais = nome
     .split(/\s+/)
     .filter(Boolean)
     .slice(0, 2)
     .map((p) => p[0]!.toUpperCase())
     .join("");
+  if (logoUrl) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={logoUrl}
+        alt=""
+        className="shrink-0 rounded-lg border border-line bg-surface object-contain p-0.5"
+        style={{ width: size, height: size }}
+      />
+    );
+  }
   return (
     <span
       aria-hidden
@@ -225,18 +236,23 @@ export function Stepper({
   onChange,
   disabled = false,
   min = 0,
+  size = "md",
 }: {
   value: number;
   onChange: (v: number) => void;
   disabled?: boolean;
   min?: number;
+  size?: "md" | "sm";
 }) {
-  const btn =
-    "grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-line bg-surface text-muted transition-colors hover:bg-surface-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring) disabled:opacity-35 disabled:hover:bg-surface";
+  const sm = size === "sm";
+  const btn = cn(
+    "grid shrink-0 place-items-center rounded-lg border border-line bg-surface text-muted transition-colors hover:bg-surface-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring) disabled:opacity-35 disabled:hover:bg-surface",
+    sm ? "h-7 w-7" : "h-9 w-9",
+  );
   return (
     <div className={cn("flex items-center gap-1", disabled && "opacity-50")}>
       <button type="button" disabled={disabled || value <= min} onClick={() => onChange(Math.max(min, value - 1))} className={btn} aria-label="Diminuir">
-        <Minus size={14} />
+        <Minus size={sm ? 12 : 14} />
       </button>
       <input
         inputMode="numeric"
@@ -246,11 +262,14 @@ export function Stepper({
           const v = parseInt(e.target.value.replace(/\D/g, ""), 10);
           onChange(Number.isNaN(v) ? min : Math.max(min, v));
         }}
-        className="h-9 w-12 rounded-lg border border-line bg-surface text-center text-sm font-semibold tabular-nums text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+        className={cn(
+          "rounded-lg border border-line bg-surface text-center font-semibold tabular-nums text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)",
+          sm ? "h-7 w-9 text-xs" : "h-9 w-12 text-sm",
+        )}
         aria-label="Quantidade"
       />
       <button type="button" disabled={disabled} onClick={() => onChange(value + 1)} className={btn} aria-label="Aumentar">
-        <Plus size={14} />
+        <Plus size={sm ? 12 : 14} />
       </button>
     </div>
   );
