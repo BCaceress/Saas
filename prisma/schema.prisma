@@ -33,10 +33,14 @@ datasource db {
 // CONTROLE / AUTH (mesmo banco)
 // ============================================================
 
+/// Planos de venda. O plano define o TETO do que o tenant pode usar; os toggles
+/// `modulo*` definem o que ele de fato ligou. Add-ons (Tenant.addons) destravam
+/// features fora do plano — usados no que tem custo variável (fiscal, totem).
+/// Matriz plano → features → limites: src/lib/planos.ts (fonte única).
 enum Plan {
-  STARTER
-  PRO
-  MULTI
+  PRATA
+  OURO
+  DIAMANTE
 }
 
 enum TenantStatus {
@@ -78,9 +82,17 @@ model Tenant {
   subdomain String @unique // x.app.com -> resolvido no middleware
   nome      String
 
-  plano       Plan         @default(STARTER)
+  plano       Plan         @default(PRATA)
   status      TenantStatus @default(TRIAL)
   trialEndsAt DateTime?
+
+  /// Add-ons contratados por fora do plano (slugs de `Addon`, src/lib/planos.ts).
+  /// Existem para o que tem custo variável ou por unidade: emissão fiscal
+  /// (a Nuvem Fiscal cobra por documento) e autoatendimento (por totem).
+  addons String[] @default([])
+
+  /// Lojas contratadas além das que o plano já inclui (add-on `loja-extra`).
+  lojasExtras Int @default(0)
 
   // Perfil da empresa (Configurações → Empresa)
   cnpj         String?
@@ -1228,6 +1240,11 @@ model Sale {
 
   maiorIdadeConfirmada Boolean @default(false) // +18 confirmado no fechamento
 
+  // "CPF na nota" digitado no fechamento — vai ao dest da NFC-e sem criar um
+  // Customer. O caso do balcão: o cliente quer CPF na nota, não quer cadastro.
+  // Só dígitos. Cliente identificado (customerId) tem prioridade.
+  cpfNota String?
+
   createdAt DateTime  @default(now())
   paidAt    DateTime?
 
@@ -1305,6 +1322,19 @@ model Payment {
 
   // Cartão integrado — terminal que recebeu a intenção de pagamento
   terminalId String?
+
+  // Cartão — devolvidos pelo PSP na APROVAÇÃO, nunca digitados pelo operador.
+  // Bandeira é dado do adquirente: perguntar ao caixa gera erro e atraso, e o
+  // que ele digita não vale nada perante a SEFAZ. Alimentam o grupo `card` da
+  // NFC-e (YA04a) e a conciliação com o extrato do PSP.
+  bandeira       String? // normalizada: VISA, MASTERCARD, ELO, AMEX, HIPERCARD, …
+  parcelas       Int?
+  nsu            String? // número sequencial único do adquirente
+  autorizacao    String? // authorization_code → cAut da NFC-e
+  adquirenteCnpj String? // credenciadora → card.CNPJ da NFC-e
+  // Id da TRANSAÇÃO no PSP. Diferente de externalId (que é a intenção/pedido
+  // enviada à maquininha) — o estorno e a conciliação precisam deste.
+  pspPaymentId String?
 
   createdAt DateTime @default(now())
 

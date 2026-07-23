@@ -4,6 +4,7 @@ import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/prisma";
 import { guardAction } from "@/lib/guard";
+import { assertCabeProduto } from "@/lib/limites";
 import { runWithTenant } from "@/lib/tenant-context";
 import { normalizeBrand, normalizeSkuPrefix, onlyDigits } from "@/lib/normalize";
 import { getOrCreateDefaultSite } from "@/lib/sites";
@@ -520,6 +521,7 @@ export async function createProduct(input: ProductInput) {
     }
     const brandId = await resolveBrandId(tid, d.brandId, d.marcaNome);
 
+    await assertCabeProduto(tid);
     const product = await db.product.create({
       data: {
         tenantId: tid,
@@ -722,6 +724,7 @@ export async function createCombo(input: ComboInput) {
     const sku = await generateSku(sub?.category.skuPrefix ?? "KIT", sub?.skuPrefix ?? "CMB");
     const brandId = await resolveBrandId(tid, d.brandId, d.marcaNome);
 
+    await assertCabeProduto(tid);
     const product = await db.product.create({
       data: {
         tenantId: tid,
@@ -903,6 +906,7 @@ export async function createReceita(input: ReceitaInput) {
     const sku = await generateSku(sub.category.skuPrefix, sub.skuPrefix);
     const brandId = await resolveBrandId(tid, d.brandId, d.marcaNome);
 
+    await assertCabeProduto(tid);
     const product = await db.product.create({
       data: {
         tenantId: tid,

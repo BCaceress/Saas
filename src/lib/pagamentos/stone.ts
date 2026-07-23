@@ -1,10 +1,15 @@
 import "server-only";
-import type {
-  CobrancaPix,
-  IntencaoCartao,
-  PagamentoProvider,
-  StatusCobranca,
-  TerminalInfo,
+import {
+  CNPJ_CREDENCIADORA,
+  normalizarBandeira,
+  SEM_DETALHE,
+  type CobrancaPix,
+  type DetalheCartao,
+  type IntencaoCartao,
+  type PagamentoProvider,
+  type ResultadoIntencao,
+  type StatusCobranca,
+  type TerminalInfo,
 } from "./types";
 
 // ============================================================
@@ -98,8 +103,32 @@ function mapOrderStatus(status: string): StatusCobranca {
 type PagarmeCharge = {
   id: string;
   status: string;
-  last_transaction?: { qr_code?: string; qr_code_url?: string; expires_at?: string };
+  last_transaction?: {
+    // PIX
+    qr_code?: string;
+    qr_code_url?: string;
+    expires_at?: string;
+    // Cartão — o que o adquirente devolve na aprovação
+    acquirer_auth_code?: string | null;
+    acquirer_nsu?: string | null;
+    installments?: number | null;
+    card?: { brand?: string | null } | null;
+  };
 };
+
+/** Cartão aprovado no POS → o que a NFC-e e a conciliação precisam. */
+function detalheDaCharge(charge: PagarmeCharge | undefined): DetalheCartao {
+  const tx = charge?.last_transaction;
+  return {
+    ...SEM_DETALHE,
+    bandeira: normalizarBandeira(tx?.card?.brand),
+    parcelas: tx?.installments ?? null,
+    nsu: tx?.acquirer_nsu ?? null,
+    autorizacao: tx?.acquirer_auth_code ?? null,
+    adquirenteCnpj: CNPJ_CREDENCIADORA.STONE ?? null,
+    pspPaymentId: charge?.id ?? null,
+  };
+}
 
 export function stoneProvider(
   secretKey: string,
@@ -204,13 +233,48 @@ export function stoneProvider(
       return { externalId: body.id }; // or_…
     },
 
-    async consultarIntencao(externalId): Promise<StatusCobranca> {
-      const body = await pagarme<{ status: string }>(
+    async consultarIntencao(externalId): Promise<ResultadoIntencao> {
+      const body = await pagarme<{ status: string; charges?: PagarmeCharge[] }>(
         secretKey,
         `/orders/${externalId}`,
         { partnerRef }
       );
-      return mapOrderStatus(body.status);
+      const status = mapOrderStatus(body.status);
+      if (status !== "CONFIRMADO") return { status };
+      // O pedido do POS gera uma charge por tentativa — a paga é a que vale.
+      const paga = body.charges?.find((c) => c.status === "paid") ?? body.charges?.[0];
+      return { status, detalhe: detalheDaCharge(paga) };
+    },
+
+    async estornarCobranca(input): Promise<void> {
+      // PIX: o externalId é a própria charge. Cartão: é o pedido — a charge
+      // paga sai dele (ou já veio gravada na aprovação).
+      let chargeId = input.pspPaymentId ?? null;
+      if (!chargeId) {
+        if (!input.cartao) {
+          chargeId = input.externalId;
+        } else {
+          const order = await pagarme<{ charges?: PagarmeCharge[] }>(
+            secretKey,
+            `/orders/${input.externalId}`,
+            { partnerRef }
+          );
+          chargeId =
+            (order.charges?.find((c) => c.status === "paid") ?? order.charges?.[0])?.id ?? null;
+        }
+      }
+      if (!chargeId) {
+        throw new Error(
+          "Stone/Pagar.me: cobrança não identificada no pedido — estorne pelo painel."
+        );
+      }
+      // No Pagar.me o DELETE da charge é o estorno (total sem body, parcial com amount).
+      await pagarme(secretKey, `/charges/${chargeId}`, {
+        method: "DELETE",
+        ...(input.valor == null
+          ? {}
+          : { body: JSON.stringify({ amount: Math.round(input.valor * 100) }) }),
+      });
     },
 
     async cancelarIntencao(_deviceId, externalId): Promise<void> {

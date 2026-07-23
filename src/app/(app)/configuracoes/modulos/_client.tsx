@@ -2,7 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ShoppingCart, ReceiptText, Recycle, Truck, MonitorSmartphone } from "lucide-react";
+import Link from "next/link";
+import { ShoppingCart, ReceiptText, Recycle, Truck, MonitorSmartphone, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
@@ -63,7 +64,14 @@ const MODULOS: {
   },
 ];
 
-export function ModulosClient({ initial }: { initial: Modulos }) {
+export function ModulosClient({
+  initial,
+  bloqueio,
+}: {
+  initial: Modulos;
+  /** Texto de upgrade por módulo fora do plano. `null` = liberado. */
+  bloqueio: Record<keyof Modulos, string | null>;
+}) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [mods, setMods] = useState(initial);
@@ -86,31 +94,44 @@ export function ModulosClient({ initial }: { initial: Modulos }) {
 
   return (
     <div className="flex flex-col gap-4">
-      {MODULOS.map((m) => (
-        <SettingCard
-          key={m.key}
-          icon={m.icon}
-          title={m.title}
-          description={
-            <>
-              {m.description}
-              {m.emBreve && (
-                <>
-                  {" "}
-                  <Badge tone="warn">em breve</Badge>
-                </>
-              )}
-            </>
-          }
-          right={
-            <Switch
-              checked={mods[m.key]}
-              onChange={(v) => setMods((prev) => ({ ...prev, [m.key]: v }))}
-              label={m.title}
-            />
-          }
-        />
-      ))}
+      {MODULOS.map((m) => {
+        const travado = bloqueio[m.key];
+        return (
+          <SettingCard
+            key={m.key}
+            icon={m.icon}
+            title={m.title}
+            description={
+              <>
+                {m.description}
+                {m.emBreve && !travado && (
+                  <>
+                    {" "}
+                    <Badge tone="warn">em breve</Badge>
+                  </>
+                )}
+                {travado && (
+                  <span className="mt-1 flex items-center gap-1.5 text-accent">
+                    <Lock size={13} />
+                    {travado}{" "}
+                    <Link href="/configuracoes/plano" className="underline underline-offset-2">
+                      Ver planos
+                    </Link>
+                  </span>
+                )}
+              </>
+            }
+            right={
+              <Switch
+                checked={mods[m.key] && !travado}
+                disabled={!!travado}
+                onChange={(v) => setMods((prev) => ({ ...prev, [m.key]: v }))}
+                label={m.title}
+              />
+            }
+          />
+        );
+      })}
       <p className="text-xs text-muted">
         Módulos marcados como “em breve” podem ser ligados desde já — a tela
         aparece no menu assim que o módulo for lançado.

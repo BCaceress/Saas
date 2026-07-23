@@ -5,6 +5,7 @@ import type {
   Topologia,
   TipoOperacao,
 } from "@/generated/prisma";
+import { FEATURE_TOGGLE, FEATURES_COM_TOGGLE, type FeatureComToggle } from "./planos";
 
 /**
  * Motor de presets (PRD §6). O "tipo de operação" só escolhe defaults sobre três
@@ -85,9 +86,14 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   OUTRO: "Outro",
 };
 
-/** Tier sugerido a partir do nº de pontos. */
+/** Plano sugerido pelo nº de pontos — piso, antes de olhar os módulos. */
 export function tierFromPontos(faixa: "1" | "2-5" | "6+"): Plan {
-  if (faixa === "6+") return "MULTI";
-  if (faixa === "2-5") return "PRO";
-  return "STARTER";
+  if (faixa === "6+") return "DIAMANTE";
+  if (faixa === "2-5") return "OURO";
+  return "PRATA";
+}
+
+/** Toggles ligados → features correspondentes. Ponte preset → planos.ts. */
+export function featuresDosToggles(t: ModuleToggles): FeatureComToggle[] {
+  return FEATURES_COM_TOGGLE.filter((f) => t[FEATURE_TOGGLE[f]]);
 }

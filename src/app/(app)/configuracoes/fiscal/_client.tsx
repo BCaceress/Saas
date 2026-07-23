@@ -504,8 +504,9 @@ function EmitenteBloco({
   function salvar() {
     start(async () => {
       try {
-        await salvarEmitenteAction(form);
-        toast.success("Dados fiscais da loja salvos.");
+        const r = await salvarEmitenteAction(form);
+        if (r?.aviso) toast.info(r.aviso);
+        else toast.success("Dados fiscais da loja salvos.");
         set({ csc: "" });
         onSaved();
       } catch (e) {

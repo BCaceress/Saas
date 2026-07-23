@@ -112,6 +112,22 @@ export type PagamentoFiscal = {
   valor: number;
   /** Troco — só faz sentido em DINHEIRO. */
   troco?: number;
+  /**
+   * Grupo `card` (YA04a) — obrigatório quando tPag é 03/04. Tudo aqui vem do
+   * adquirente, nunca do operador. Ausente = cartão não integrado: a nota sai
+   * com tpIntegra 2 ("pagamento não integrado", maquininha solta), que é a
+   * verdade e é aceito.
+   */
+  cartao?: {
+    /** Bandeira normalizada (VISA, MASTERCARD, ELO, …) → tBand. */
+    bandeira: string | null;
+    /** Código de autorização do adquirente → cAut. */
+    autorizacao: string | null;
+    /** CNPJ da credenciadora → card.CNPJ. */
+    credenciadoraCnpj: string | null;
+    /** true = valor foi à maquininha pela API (tpIntegra 1). */
+    integrado: boolean;
+  };
 };
 
 export type DocumentoParaEmitir = {
@@ -192,6 +208,13 @@ export interface FiscalProvider {
 
   /** Leitura barata que só passa com credencial válida. */
   validarCredenciais?(): Promise<void>;
+
+  /**
+   * Espelha o cadastro do emitente no provedor. Provedores reais exigem a
+   * empresa cadastrada por CNPJ antes de aceitar certificado ou nota; o
+   * simulado não precisa de nada, por isso é opcional.
+   */
+  sincronizarEmpresa?(input: { emitente: EmitenteFiscal; email: string }): Promise<void>;
 
   // ── Certificado A1 ──
   /**

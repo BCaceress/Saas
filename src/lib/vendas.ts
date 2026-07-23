@@ -180,6 +180,8 @@ export async function criarVenda(
     items: NovoItemVenda[];
     descontoVenda?: number;
     maiorIdadeConfirmada?: boolean;
+    /** "CPF na nota" digitado no fechamento (só dígitos). */
+    cpfNota?: string | null;
     pagamentos?: NovoPagamento[];
     /** Totem/self-service: gera 1 pagamento PENDENTE pelo total calculado. */
     pagamentoIntegralPendente?: PaymentMethod;
@@ -210,6 +212,7 @@ export async function criarVenda(
         desconto: descontoVenda,
         total,
         maiorIdadeConfirmada: input.maiorIdadeConfirmada ?? false,
+        cpfNota: input.cpfNota || null,
         items: { create: itensResolvidos.map((i) => ({ tenantId, ...i })) },
         payments: pagamentos.length
           ? {
@@ -422,6 +425,7 @@ export async function receberVendaTotem(
     customerId?: string | null;
     items: NovoItemVenda[];
     maiorIdadeConfirmada?: boolean;
+    cpfNota?: string | null;
     pagamentos: NovoPagamento[];
   }
 ): Promise<void> {
@@ -448,6 +452,7 @@ export async function receberVendaTotem(
         subtotal,
         total: subtotal,
         maiorIdadeConfirmada: input.maiorIdadeConfirmada ?? false,
+        cpfNota: input.cpfNota || undefined,
         items: { create: itensResolvidos.map((i) => ({ tenantId, ...i })) },
         payments: {
           create: input.pagamentos.map((p) => ({
@@ -465,13 +470,96 @@ export async function receberVendaTotem(
   await finalizarVenda(tenantId, input.saleId, input.operatorUserId);
 }
 
+// ── Modo B integrado: prepara a venda do totem para cobrança no PSP ──
+// Espelha receberVendaTotem, mas NÃO finaliza nem confirma pagamento: atualiza
+// itens/sessão/cliente e cria UMA perna PENDENTE para o método escolhido. Quem
+// finaliza (baixa + fiscal) é o polling da cobrança, ao confirmar — igual ao
+// PDV. Sem isso, o totem só aceitava recebimento manual no caixa.
+export async function prepararRecebimentoTotemIntegrado(
+  tenantId: string,
+  input: {
+    saleId: string;
+    cashSessionId: string;
+    operatorUserId: string;
+    customerId?: string | null;
+    items: NovoItemVenda[];
+    maiorIdadeConfirmada?: boolean;
+    cpfNota?: string | null;
+    metodo: PaymentMethod; // a perna que vai ao PSP (PIX ou cartão)
+  },
+): Promise<void> {
+  const sale = await comTenant(tenantId, basePrisma.sale.findFirst({
+    where: { id: input.saleId, tenantId },
+    select: { id: true, status: true, origem: true },
+  }));
+  if (!sale) throw new Error("Venda não encontrada.");
+  if (sale.status !== "ABERTA") throw new Error("Esta venda já foi recebida ou cancelada.");
+  if (sale.origem === "PDV") throw new Error("Venda não é do autoatendimento.");
+
+  const { itensResolvidos, subtotal } = await resolverItensVenda(tenantId, input.items);
+
+  await basePrisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`;
+    await tx.saleItem.deleteMany({ where: { saleId: input.saleId, tenantId } });
+    // Zera pagamentos não-confirmados: a venda volta ao estado "uma perna
+    // pendente só". (Modo B chega sem pagamento; ser idempotente cobre o retry.)
+    await tx.payment.deleteMany({
+      where: { saleId: input.saleId, tenantId, status: { not: "CONFIRMADO" } },
+    });
+    await tx.sale.update({
+      where: { id: input.saleId },
+      data: {
+        cashSessionId: input.cashSessionId,
+        operatorUserId: input.operatorUserId,
+        customerId: input.customerId ?? undefined,
+        cpfNota: input.cpfNota || undefined,
+        subtotal,
+        total: subtotal,
+        maiorIdadeConfirmada: input.maiorIdadeConfirmada ?? false,
+        items: { create: itensResolvidos.map((i) => ({ tenantId, ...i })) },
+        payments: {
+          create: { tenantId, metodo: input.metodo, valor: subtotal, status: "PENDENTE" },
+        },
+      },
+    });
+  });
+}
+
+/**
+ * Modo B integrado: devolve a venda à fila apagando as pernas em voo (não
+ * confirmadas). A venda continua ABERTA sem pagamento — reaparece na fila do
+ * autoatendimento (que filtra `payments: none`). Inclui CANCELADO para cobrir
+ * o abort, em que a cobrança do PSP já foi cancelada antes de reverter.
+ */
+export async function reverterRecebimentoTotem(
+  tenantId: string,
+  saleId: string,
+): Promise<void> {
+  await basePrisma.$transaction([
+    basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
+    basePrisma.payment.deleteMany({
+      where: { saleId, tenantId, status: { in: ["PENDENTE", "PROCESSANDO", "CANCELADO"] } },
+    }),
+  ]);
+}
+
 // ── Cancelamento / estorno (§9) ─────────────────────────────
-// Venda PAGA: movimentos compensatórios (devolve saldo) + pagamentos ESTORNADO.
+// Venda PAGA: devolve o dinheiro no PSP + movimentos compensatórios (devolve
+// saldo) + pagamentos ESTORNADO.
+//
+// A devolução vem PRIMEIRO e de propósito. Marcar ESTORNADO no banco sem
+// devolver deixa o cliente cobrado com a venda cancelada no sistema — o pior
+// dos dois mundos. O que o PSP não conseguiu devolver volta em
+// `pendenciasEstorno` para a tela mostrar; o cancelamento não trava por isso
+// (o operador já mandou cancelar e o estoque precisa voltar), mas ninguém
+// descobre a pendência só no extrato do fim do mês.
+export type ResultadoCancelamento = { pendenciasEstorno: string[] };
+
 export async function cancelarVenda(
   tenantId: string,
   saleId: string,
   createdBy?: string
-): Promise<void> {
+): Promise<ResultadoCancelamento> {
   const sale = await comTenant(tenantId, basePrisma.sale.findFirst({
     where: { id: saleId, tenantId },
     select: { id: true, status: true, siteId: true },
@@ -479,7 +567,13 @@ export async function cancelarVenda(
   if (!sale) throw new Error("Venda não encontrada.");
   if (sale.status === "CANCELADA") throw new Error("Venda já cancelada.");
 
+  // import dinâmico: lib/pagamentos importa este módulo (finalizarVenda), e o
+  // ciclo estático quebraria os dois. Mesmo padrão do hook fiscal.
+  let pendenciasEstorno: string[] = [];
   if (sale.status === "PAGA") {
+    const { estornarPagamentosDaVenda } = await import("./pagamentos");
+    pendenciasEstorno = (await estornarPagamentosDaVenda(tenantId, saleId)).pendencias;
+
     // Agrega os deltas aplicados pela venda por produto e aplica o inverso.
     // Reverter ABERTURA (fechado-1, aberto+conteudo) pelo inverso devolve a
     // garrafa ao fechado — compensação exata sem reconstruir o passo a passo.
@@ -511,4 +605,6 @@ export async function cancelarVenda(
     }),
     basePrisma.sale.update({ where: { id: saleId }, data: { status: "CANCELADA" } }),
   ]);
+
+  return { pendenciasEstorno };
 }

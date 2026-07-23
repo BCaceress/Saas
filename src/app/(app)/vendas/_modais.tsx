@@ -44,7 +44,14 @@ import type { IntegracaoPdv } from "@/lib/pagamentos";
 import type { ComponentGroupVenda, ProdutoVenda } from "./_data";
 import type { PaymentMethod } from "@/generated/prisma";
 import type { CustomerRow } from "../clientes/_types";
-import { brl, parseCentavos, fmtCentavos, mascararCpf, type ClienteSel } from "./_shared";
+import {
+  brl,
+  parseCentavos,
+  fmtCentavos,
+  mascararCpf,
+  formatarCpf,
+  type ClienteSel,
+} from "./_shared";
 
 // método → ícone (cards de pagamento)
 const METODO_ICON: Record<PaymentMethod, typeof Banknote> = {
@@ -72,7 +79,7 @@ const METODO_ATALHO: Record<PaymentMethod, string> = {
   OUTRO: "F10",
 };
 
-const BANDEIRAS = ["Visa", "Mastercard", "Elo", "Amex", "Hipercard"];
+const TERMINAL_PREFERIDO_KEY = "nohub.pdv.terminalPreferido";
 
 const inputCls =
   "rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink tabular-nums placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]";
@@ -137,10 +144,13 @@ export function PagamentoModal({
   origemTotem,
   metodosAtivos,
   integracao,
+  mistoIntegradoDisponivel,
+  pedeCpfNota,
   pending,
   onClose,
   onReceber,
   onIniciarIntegrado,
+  onAbortarIntegrado,
   onConcluidoIntegrado,
 }: {
   total: number;
@@ -149,23 +159,40 @@ export function PagamentoModal({
   /** Rótulo discreto quando a venda veio do autoatendimento. */
   origemTotem?: string | null;
   metodosAtivos: PaymentMethod[];
-  /** Pagamento integrado (null = só fluxo manual, ex.: venda do totem). */
+  /** Pagamento integrado (null = só fluxo manual). */
   integracao?: IntegracaoPdv | null;
+  /**
+   * Misto pode mandar a perna de cartão à maquininha? Falso no recebimento do
+   * totem (Modo B), cuja cobrança integrada é de método único.
+   */
+  mistoIntegradoDisponivel?: boolean;
+  /** Loja emite NFC-e: oferece o campo "CPF na nota" no fechamento. */
+  pedeCpfNota?: boolean;
   pending: boolean;
   onClose: () => void;
   onReceber: (
     pagamentos: { metodo: PaymentMethod; valor: number; troco?: number | null }[],
+    opts?: { cpfNota?: string | null },
   ) => Promise<boolean>;
   onIniciarIntegrado?: (
     metodo: "PIX" | "CARTAO_CREDITO" | "CARTAO_DEBITO",
-    opts: { parcelas?: number; terminalId?: string | null },
+    opts: { parcelas?: number; terminalId?: string | null; cpfNota?: string | null },
   ) => Promise<InicioPagamentoIntegrado>;
+  /**
+   * Abort da cobrança viva. Ausente = comportamento PDV (cancela a venda nova).
+   * Presente = totem: cancela só a cobrança e devolve a venda à fila.
+   */
+  onAbortarIntegrado?: (paymentId: string) => void;
   onConcluidoIntegrado?: (saleId?: string) => void;
 }) {
   const [metodo, setMetodo] = useState<ModalMetodo | null>(null);
   const [recebido, setRecebido] = useState("");
-  const [bandeira, setBandeira] = useState<string | null>(null);
   const [parcelas, setParcelas] = useState(1);
+  // "CPF na nota" — cliente identificado já leva o próprio doc; o campo é para
+  // o balcão anônimo que quer CPF na nota sem virar cadastro.
+  const [cpfNota, setCpfNota] = useState("");
+  const cpfDigitos = cpfNota.replace(/\D/g, "");
+  const cpfValido = cpfDigitos.length === 0 || cpfDigitos.length === 11;
   const [pixConfirmado, setPixConfirmado] = useState(false);
   const [misto, setMisto] = useState<MistoLinha[]>([]);
   const [isTouch] = useState(
@@ -191,6 +218,17 @@ export function PagamentoModal({
   const ehIntegrado = (m: ModalMetodo | null) =>
     (m === "PIX" && pixIntegrado) ||
     ((m === "CARTAO_CREDITO" || m === "CARTAO_DEBITO") && cartaoIntegrado);
+
+  // MISTO: a perna de cartão vai à maquininha quando a integração está ligada.
+  // Só uma por venda — o painel de misto bloqueia a segunda. Enquanto houver
+  // perna de cartão, o misto conclui pela maquininha, não pelo botão "Receber".
+  const legMistoCartao =
+    metodo === "MISTO" && cartaoIntegrado && mistoIntegradoDisponivel !== false
+      ? misto.find((l) => l.metodo === "CARTAO_CREDITO" || l.metodo === "CARTAO_DEBITO")
+      : undefined;
+  const mistoIntegrado = !!legMistoCartao;
+  const mistoProntoParaCartao = mistoIntegrado && mistoFalta <= 0.005;
+
   // trava troca de método/fechamento enquanto há cobrança viva
   const fluxoTravado =
     fluxo?.fase === "iniciando" ||
@@ -198,24 +236,30 @@ export function PagamentoModal({
     fluxo?.fase === "confirmado";
 
   const pronto = (() => {
+    if (!cpfValido) return false; // CPF na nota digitado pela metade trava o recebimento
     if (ehIntegrado(metodo)) return false; // conclui sozinho na confirmação
     if (metodo === "DINHEIRO") return recebidoNum >= total - 0.005;
-    if (metodo === "CARTAO_CREDITO") return !!bandeira;
-    if (metodo === "CARTAO_DEBITO") return true;
+    if (metodo === "CARTAO_CREDITO" || metodo === "CARTAO_DEBITO") return true;
     if (metodo === "PIX") return pixConfirmado;
-    if (metodo === "MISTO") return mistoPago >= total - 0.005;
+    // MISTO com cartão integrado conclui pela maquininha (fluxo), não aqui.
+    if (metodo === "MISTO") return !mistoIntegrado && mistoPago >= total - 0.005;
     return false;
   })();
 
   async function iniciarFluxo(
     m: "PIX" | "CARTAO_CREDITO" | "CARTAO_DEBITO",
-    opts: { parcelas?: number; terminalId?: string | null },
+    opts: {
+      parcelas?: number;
+      terminalId?: string | null;
+      /** MISTO: divisão completa da venda (a perna do cartão vai à maquininha). */
+      pagamentos?: { metodo: PaymentMethod; valor: number; troco?: number | null }[];
+    },
   ) {
-    if (!onIniciarIntegrado || fluxoTravado) return;
+    if (!onIniciarIntegrado || fluxoTravado || !cpfValido) return;
     const tipo = m === "PIX" ? ("PIX" as const) : ("CARTAO" as const);
     setFluxo({ tipo, fase: "iniciando" });
     try {
-      const r = await onIniciarIntegrado(m, opts);
+      const r = await onIniciarIntegrado(m, { ...opts, cpfNota: cpfDigitos || null });
       if (!r.integrado) {
         setFluxo(null); // provedor desligado — painéis manuais assumem
         return;
@@ -243,7 +287,9 @@ export function PagamentoModal({
     if (fluxoTravado) return;
     setFluxo(null);
     setMetodo(m);
-    if (m === "PIX" && pixIntegrado) iniciarFluxo("PIX", {});
+    // PIX integrado só dispara sozinho com o CPF válido — senão o cliente
+    // digita o CPF depois da cobrança já criada e ela sai sem destinatário.
+    if (m === "PIX" && pixIntegrado && cpfValido) iniciarFluxo("PIX", {});
   }
 
   // polling: consulta o status a cada 3s até estado final (o webhook do
@@ -296,14 +342,21 @@ export function PagamentoModal({
     const pid = fluxo?.paymentId;
     setFluxo(null);
     setMetodo(null);
-    if (pid) cancelarPagamentoIntegradoAction(pid).catch(() => {});
+    if (pid) abortarCobranca(pid);
+  }
+
+  // Abort da cobrança viva: no PDV cancela a venda nova; no totem (Modo B)
+  // devolve a venda à fila via onAbortarIntegrado.
+  function abortarCobranca(pid: string) {
+    if (onAbortarIntegrado) onAbortarIntegrado(pid);
+    else cancelarPagamentoIntegradoAction(pid).catch(() => {});
   }
 
   // fechar o modal com cobrança viva cancela a cobrança junto
   function fechar() {
     if (fluxo?.fase === "iniciando" || fluxo?.fase === "confirmado") return;
     if (fluxo?.fase === "aguardando" && fluxo.paymentId) {
-      cancelarPagamentoIntegradoAction(fluxo.paymentId).catch(() => {});
+      abortarCobranca(fluxo.paymentId);
     }
     onClose();
   }
@@ -322,7 +375,7 @@ export function PagamentoModal({
     } else {
       pagamentos = [{ metodo: metodo as PaymentMethod, valor: total }];
     }
-    onReceber(pagamentos);
+    onReceber(pagamentos, { cpfNota: cpfDigitos || null });
   }
 
   // seleção por atalho + Enter recebe
@@ -410,6 +463,41 @@ export function PagamentoModal({
 
         {/* Corpo */}
         <div className="scrollbar-thin flex-1 overflow-y-auto px-6 py-5">
+          {/* CPF na nota — só quando a loja emite e o cliente é anônimo. O
+              cliente identificado já leva o próprio documento para a NFC-e. */}
+          {pedeCpfNota && !cliente && (
+            <div className="mb-4">
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-semibold uppercase tracking-wide text-muted">
+                  CPF na nota <span className="font-normal normal-case">(opcional)</span>
+                </span>
+                <div className="flex items-center gap-2">
+                  <input
+                    inputMode="numeric"
+                    autoComplete="off"
+                    value={formatarCpf(cpfNota)}
+                    onChange={(e) => setCpfNota(e.target.value.replace(/\D/g, "").slice(0, 11))}
+                    placeholder="000.000.000-00"
+                    aria-invalid={!cpfValido}
+                    className={cn(
+                      inputCls,
+                      "max-w-[12rem]",
+                      !cpfValido && "border-danger focus-visible:border-danger",
+                    )}
+                  />
+                  {cpfDigitos.length === 11 && (
+                    <Check size={16} className="shrink-0 text-ok" aria-hidden />
+                  )}
+                </div>
+                {!cpfValido && (
+                  <span className="text-xs text-danger">
+                    Informe os 11 dígitos ou deixe em branco.
+                  </span>
+                )}
+              </label>
+            </div>
+          )}
+
           {/* Cartões de método */}
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
             {metodoCards.map((m) => {
@@ -480,8 +568,6 @@ export function PagamentoModal({
                 />
               ) : (
                 <CreditoPanel
-                  bandeira={bandeira}
-                  setBandeira={setBandeira}
                   parcelas={parcelas}
                   setParcelas={setParcelas}
                   total={total}
@@ -526,14 +612,39 @@ export function PagamentoModal({
               ))}
 
             {metodo === "MISTO" && (
-              <MistoPanel
-                total={total}
-                metodosAtivos={metodosAtivos}
-                linhas={misto}
-                setLinhas={setMisto}
-                falta={mistoFalta}
-                pago={mistoPago}
-              />
+              <>
+                <MistoPanel
+                  total={total}
+                  metodosAtivos={metodosAtivos}
+                  linhas={misto}
+                  setLinhas={setMisto}
+                  falta={mistoFalta}
+                  pago={mistoPago}
+                  cartaoIntegrado={cartaoIntegrado && mistoIntegradoDisponivel !== false}
+                  travado={fluxoTravado}
+                />
+                {mistoProntoParaCartao && legMistoCartao && (
+                  <div className="mt-5 border-t border-line pt-5">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                      Cartão na maquininha · {brl(legMistoCartao.valor)}
+                    </p>
+                    <CartaoIntegradoPanel
+                      tipo={legMistoCartao.metodo === "CARTAO_CREDITO" ? "CREDITO" : "DEBITO"}
+                      total={legMistoCartao.valor}
+                      terminais={integracao!.terminais}
+                      fluxo={fluxo?.tipo === "CARTAO" ? fluxo : null}
+                      onEnviar={(terminalId, p) =>
+                        iniciarFluxo(
+                          legMistoCartao.metodo as "CARTAO_CREDITO" | "CARTAO_DEBITO",
+                          { terminalId, parcelas: p, pagamentos: misto },
+                        )
+                      }
+                      onCancelar={cancelarFluxo}
+                      onTentarDeNovo={() => setFluxo(null)}
+                    />
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -546,18 +657,23 @@ export function PagamentoModal({
           >
             Cancelar
           </button>
-          <button
-            onClick={receber}
-            disabled={!pronto || pending}
-            className="flex min-h-[3.25rem] flex-1 cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] bg-brand px-6 text-lg font-bold text-on-brand transition-colors hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none sm:min-w-[16rem]"
-          >
-            {pending ? (
-              <Loader2 size={20} className="animate-spin" />
-            ) : (
-              <CheckCircle2 size={20} />
-            )}
-            Receber venda
-          </button>
+          {/* No misto integrado a conclusão vem da maquininha (painel do
+              cartão acima) — o botão de receber some para não haver dois
+              caminhos de finalização competindo. */}
+          {!(metodo === "MISTO" && mistoIntegrado) && (
+            <button
+              onClick={receber}
+              disabled={!pronto || pending}
+              className="flex min-h-[3.25rem] flex-1 cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] bg-brand px-6 text-lg font-bold text-on-brand transition-colors hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none sm:min-w-[16rem]"
+            >
+              {pending ? (
+                <Loader2 size={20} className="animate-spin" />
+              ) : (
+                <CheckCircle2 size={20} />
+              )}
+              Receber venda
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -686,42 +802,27 @@ function DinheiroPanel({
   );
 }
 
+// Sem seletor de bandeira, de propósito. Quem sabe a bandeira é o adquirente,
+// e ele só conta depois da aprovação — o que o operador escolheria antes é
+// palpite, atrasa a fila e não vale nada na nota. No cartão integrado o dado
+// vem do PSP (lib/pagamentos); na maquininha solta a NFC-e sai com tpIntegra 2
+// e sem tBand, que é a verdade e é aceito pela SEFAZ.
 function CreditoPanel({
-  bandeira,
-  setBandeira,
   parcelas,
   setParcelas,
   total,
 }: {
-  bandeira: string | null;
-  setBandeira: (b: string) => void;
   parcelas: number;
   setParcelas: (n: number) => void;
   total: number;
 }) {
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-          Bandeira
-        </p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-          {BANDEIRAS.map((b) => (
-            <button
-              key={b}
-              onClick={() => setBandeira(b)}
-              className={cn(
-                "min-h-[3.25rem] cursor-pointer rounded-[var(--radius)] border-2 px-2 text-sm font-semibold transition-colors",
-                bandeira === b
-                  ? "border-brand bg-brand text-on-brand"
-                  : "border-line bg-surface text-ink hover:border-brand hover:text-brand",
-              )}
-            >
-              {b}
-            </button>
-          ))}
-        </div>
-      </div>
+      <ConfirmacaoPanel
+        icon={<CreditCard size={28} />}
+        titulo="Cartão de crédito"
+        texto="Passe o valor na maquininha e escolha o parcelamento abaixo."
+      />
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
           Parcelamento
@@ -939,7 +1040,21 @@ function CartaoIntegradoPanel({
   onCancelar: () => void;
   onTentarDeNovo: () => void;
 }) {
-  const [terminalId, setTerminalId] = useState(terminais[0]?.id ?? "");
+  // Lembra a última maquininha escolhida neste caixa (por navegador): com duas
+  // na loja, evita o operador reescolher no <select> a cada venda.
+  const [terminalId, setTerminalId] = useState(() => {
+    if (typeof window !== "undefined") {
+      const salvo = window.localStorage.getItem(TERMINAL_PREFERIDO_KEY);
+      if (salvo && terminais.some((t) => t.id === salvo)) return salvo;
+    }
+    return terminais[0]?.id ?? "";
+  });
+  const escolherTerminal = (id: string) => {
+    setTerminalId(id);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(TERMINAL_PREFERIDO_KEY, id);
+    }
+  };
   const [parcelas, setParcelas] = useState(1);
 
   if (fluxo?.fase === "confirmado") return <FluxoConfirmado />;
@@ -1006,7 +1121,7 @@ function CartaoIntegradoPanel({
           </span>
           <select
             value={terminalId}
-            onChange={(e) => setTerminalId(e.target.value)}
+            onChange={(e) => escolherTerminal(e.target.value)}
             className={cn(inputCls, "cursor-pointer")}
           >
             {terminais.map((t) => (
@@ -1041,6 +1156,8 @@ function MistoPanel({
   setLinhas,
   falta,
   pago,
+  cartaoIntegrado,
+  travado,
 }: {
   total: number;
   metodosAtivos: PaymentMethod[];
@@ -1048,13 +1165,25 @@ function MistoPanel({
   setLinhas: (l: MistoLinha[]) => void;
   falta: number;
   pago: number;
+  /** Integração de cartão ligada: a perna de cartão vai à maquininha. */
+  cartaoIntegrado: boolean;
+  /** Fluxo da maquininha ativo: congela edição das pernas. */
+  travado: boolean;
 }) {
   const [metodo, setMetodo] = useState<PaymentMethod>(
     metodosAtivos[0] ?? "DINHEIRO",
   );
   const [valor, setValor] = useState("");
 
+  const ehCartao = (m: PaymentMethod) => m === "CARTAO_CREDITO" || m === "CARTAO_DEBITO";
+  // Com integração, só uma perna de cartão por venda (a maquininha recebe um
+  // valor só). A segunda ficaria PENDENTE sem nunca ser enviada — trava a venda.
+  const jaTemCartao = linhas.some((l) => ehCartao(l.metodo));
+  const bloqueiaCartao = cartaoIntegrado && jaTemCartao;
+
   function adicionar() {
+    if (travado) return;
+    if (bloqueiaCartao && ehCartao(metodo)) return;
     const v = parseCentavos(valor) || falta;
     if (v <= 0) return;
     setLinhas([...linhas, { metodo, valor: Math.min(v, falta || v) }]);
@@ -1092,9 +1221,10 @@ function MistoPanel({
                   {brl(l.valor)}
                 </span>
                 <button
-                  onClick={() => setLinhas(linhas.filter((_, i) => i !== idx))}
+                  onClick={() => !travado && setLinhas(linhas.filter((_, i) => i !== idx))}
+                  disabled={travado}
                   aria-label="Remover"
-                  className="cursor-pointer text-faint hover:text-danger"
+                  className="cursor-pointer text-faint hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Trash2 size={16} />
                 </button>
@@ -1104,17 +1234,20 @@ function MistoPanel({
         </div>
       )}
 
-      {falta > 0.005 && (
+      {falta > 0.005 && !travado && (
         <div className="flex flex-col gap-2 rounded-[var(--radius-lg)] border border-line bg-surface p-3">
           <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
             {metodosAtivos.map((m) => {
               const Icon = METODO_ICON[m];
+              const bloqueado = bloqueiaCartao && ehCartao(m);
               return (
                 <button
                   key={m}
-                  onClick={() => setMetodo(m)}
+                  onClick={() => !bloqueado && setMetodo(m)}
+                  disabled={bloqueado}
+                  title={bloqueado ? "Só uma perna de cartão na maquininha por venda." : undefined}
                   className={cn(
-                    "flex min-h-[2.75rem] cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius)] border text-xs font-semibold transition-colors",
+                    "flex min-h-[2.75rem] cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius)] border text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40",
                     metodo === m
                       ? "border-brand bg-brand text-on-brand"
                       : "border-line bg-surface text-ink hover:border-brand",
@@ -1136,11 +1269,17 @@ function MistoPanel({
             />
             <button
               onClick={adicionar}
-              className="flex min-h-[3rem] cursor-pointer items-center gap-1.5 rounded-[var(--radius)] bg-brand px-5 text-sm font-semibold text-on-brand hover:bg-brand-strong"
+              disabled={bloqueiaCartao && ehCartao(metodo)}
+              className="flex min-h-[3rem] cursor-pointer items-center gap-1.5 rounded-[var(--radius)] bg-brand px-5 text-sm font-semibold text-on-brand hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Plus size={16} /> Adicionar
             </button>
           </div>
+          {cartaoIntegrado && (
+            <p className="text-[11px] text-muted">
+              A perna de cartão vai para a maquininha ao concluir o misto.
+            </p>
+          )}
         </div>
       )}
 

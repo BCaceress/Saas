@@ -1,6 +1,8 @@
 import "server-only";
 import { basePrisma } from "@/lib/prisma";
+import { featureAtiva } from "@/lib/planos";
 import { fiscalSimuladoProvider } from "./simulado";
+import { fiscalNuvemProvider } from "./nuvem-fiscal";
 import type { FiscalProvider } from "./types";
 import type {
   FiscalAmbiente,
@@ -39,7 +41,8 @@ export function usaCsosn(regime: RegimeTributario): boolean {
   return regime !== "REGIME_NORMAL";
 }
 
-function buildProvider(cfg: {
+/** Fábrica única do adapter — não duplique este switch em outro arquivo. */
+export function buildProvider(cfg: {
   provider: FiscalProviderKind;
   apiToken: string | null;
   ambiente: FiscalAmbiente;
@@ -47,14 +50,15 @@ function buildProvider(cfg: {
   switch (cfg.provider) {
     case "SIMULADO":
       return fiscalSimuladoProvider();
-    // Adapters reais entram aqui (Fase 6). Até lá, falhar alto é melhor que
-    // aceitar a configuração e só quebrar na hora de emitir.
     case "NUVEM_FISCAL":
+      return fiscalNuvemProvider({ apiToken: cfg.apiToken, ambiente: cfg.ambiente });
+    // Os demais entram como novos adapters. Falhar alto é melhor que aceitar a
+    // configuração e só quebrar na hora de emitir.
     case "PLUGNOTAS":
     case "FOCUS":
     case "TECNOSPEED":
       throw new Error(
-        `Provedor fiscal ${cfg.provider} ainda não implementado. Use SIMULADO em desenvolvimento.`,
+        `Provedor fiscal ${cfg.provider} ainda não implementado. Use NUVEM_FISCAL ou SIMULADO.`,
       );
   }
 }
@@ -142,9 +146,11 @@ export async function emitirHookFiscal(
   try {
     const tenant = await basePrisma.tenant.findUnique({
       where: { id: tenantId },
-      select: { moduloFiscal: true },
+      select: { moduloFiscal: true, plano: true, addons: true, lojasExtras: true },
     });
-    if (!tenant?.moduloFiscal) return; // sem módulo fiscal, nada a fazer
+    // Add-on contratado E módulo ligado. Sem os dois, nada a fazer — emitir
+    // fora do contrato geraria custo na Nuvem Fiscal que ninguém está pagando.
+    if (!tenant || !featureAtiva(tenant, "fiscal")) return;
 
     const cfg = await carregarConfigFiscal(tenantId);
     if (!cfg?.ativo || !cfg.emissaoAutomaticaNfce) return;

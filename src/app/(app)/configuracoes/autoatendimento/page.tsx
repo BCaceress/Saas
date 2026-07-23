@@ -1,5 +1,6 @@
 import { MonitorSmartphone } from "lucide-react";
 import { requireActiveTenant } from "@/lib/current-tenant";
+import { featureAtiva } from "@/lib/planos";
 import { PageHeader } from "@/components/app/page-header";
 import { AutoatendimentoConfigClient } from "./_client";
 
@@ -18,7 +19,7 @@ export default async function AutoatendimentoConfigPage() {
       />
       <AutoatendimentoConfigClient
         temPin={!!tenant.totemPinHash}
-        moduloAtivo={tenant.moduloAutoatendimento}
+        moduloAtivo={featureAtiva(tenant, "autoatendimento")}
       />
     </div>
   );

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/prisma";
 import { guardAction } from "@/lib/guard";
+import { assertCabeProduto } from "@/lib/limites";
 import { runWithTenant } from "@/lib/tenant-context";
 import { normalizeBrand, normalizeSkuPrefix, onlyDigits } from "@/lib/normalize";
 import { getOrCreateDefaultSite } from "@/lib/sites";
@@ -46,6 +47,10 @@ export async function commitImport(rows: CsvRow[]): Promise<ImportResult> {
     });
     const brandCache = new Map<string, string>();
     const result: ImportResult = { criados: 0, erros: [] };
+
+    // Limite conferido de uma vez, antes de gravar: importar metade da planilha
+    // e parar no meio deixaria o catálogo num estado que ninguém pediu.
+    await assertCabeProduto(tid, rows.length);
 
     for (let i = 0; i < rows.length; i++) {
       const linha = i + 2; // +1 cabeçalho, +1 base-1

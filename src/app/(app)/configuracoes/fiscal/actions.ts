@@ -6,7 +6,7 @@ import { guardAction } from "@/lib/guard";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { onlyDigits } from "@/lib/normalize";
-import { providerDoTenant } from "@/lib/fiscal";
+import { providerDoTenant, CRT_POR_REGIME } from "@/lib/fiscal";
 
 // ============================================================
 // Configurações fiscais. Duas permissões distintas de propósito:
@@ -149,7 +149,58 @@ export async function salvarEmitenteAction(input: z.input<typeof emitenteSchema>
       await db.fiscalEmitente.create({ data: { tenantId: tid, siteId: d.siteId, ...dados } });
     }
     revalidatePath(ROTA);
+    return { aviso: await espelharEmitenteNoProvedor(tid, d) };
   });
+}
+
+/**
+ * Provedores reais só aceitam certificado e nota de CNPJ já cadastrado como
+ * empresa. Espelhamos aqui, mas o cadastro local não pode falhar por causa
+ * disso — o operador salva os dados e resolve a credencial depois.
+ */
+async function espelharEmitenteNoProvedor(
+  tenantId: string,
+  d: z.output<typeof emitenteSchema>,
+): Promise<string | undefined> {
+  try {
+    const provider = await providerDoTenant(tenantId, { exigirAtivo: false });
+    if (!provider.sincronizarEmpresa) return undefined;
+
+    const tenant = await db.tenant.findFirst({ select: { emailContato: true } });
+    const email = tenant?.emailContato?.trim();
+    if (!email) {
+      return "Dados salvos, mas o provedor exige um e-mail de contato. Preencha em Configurações → Empresa.";
+    }
+
+    await provider.sincronizarEmpresa({
+      emitente: {
+        cnpj: d.cnpj,
+        razaoSocial: d.razaoSocial,
+        nomeFantasia: d.nomeFantasia || null,
+        ie: d.ie,
+        im: d.im || null,
+        crt: CRT_POR_REGIME[d.regime],
+        cep: d.cep,
+        logradouro: d.logradouro,
+        numero: d.numero,
+        complemento: d.complemento || null,
+        bairro: d.bairro,
+        municipio: d.municipio,
+        codigoMunicipio: d.codigoMunicipio,
+        uf: d.uf,
+        telefone: d.telefone || null,
+        certificadoId: null,
+        cscId: d.cscId || null,
+        csc: d.csc || null,
+      },
+      email,
+    });
+    return undefined;
+  } catch (e) {
+    return `Dados salvos, mas o provedor não aceitou o cadastro: ${
+      e instanceof Error ? e.message : "erro desconhecido"
+    }`;
+  }
 }
 
 // ── Certificado A1 ──────────────────────────────────────────

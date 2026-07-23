@@ -1,0 +1,22 @@
+# Empacotamento do PDV desktop (Electron) — Fase 1.
+# Alvo inicial: Windows (público de caixa). Assinatura de código e auto-update
+# entram quando o pipeline de release for definido.
+#
+# ATENÇÃO: nesta fase o app carrega o Next JÁ SERVIDO (PDV_URL). Empacotar o
+# Next standalone DENTRO do executável (para rodar sem depender de um servidor)
+# é o passo seguinte — envolve incluir o build standalone em `files` e subir um
+# servidor local no main. Ver docs/pdv-pagamentos-roadmap.md (Fase 1/3).
+
+appId: market.nohub.pdv
+productName: NoHub PDV
+directories:
+  output: dist-desktop
+files:
+  - electron/**/*
+win:
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true

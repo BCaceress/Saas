@@ -9,6 +9,13 @@ import { runWithTenant } from "@/lib/tenant-context";
 import { onlyDigits } from "@/lib/normalize";
 import { acessosSchema, isAdmin, type Acesso } from "@/lib/permissoes";
 import { novoToken, conviteExpiraEm, conviteUrl } from "@/lib/convites";
+import { assertCabeUsuario } from "@/lib/limites";
+import {
+  temFeature,
+  FEATURE_TOGGLE,
+  FEATURES_COM_TOGGLE,
+  PlanoInsuficienteError,
+} from "@/lib/planos";
 
 // ============================================================
 // Actions das telas de Configurações. Tenant/Membership/Invite são tabelas de
@@ -98,6 +105,15 @@ const modulosSchema = z.object({
 export async function updateModulos(input: z.input<typeof modulosSchema>) {
   return txGestor(async ({ tenant }) => {
     const d = modulosSchema.parse(input);
+
+    // A tela já esconde o que o plano não cobre, mas o toggle é um POST como
+    // qualquer outro — sem esta checagem, dá para ligar módulo pago na mão.
+    for (const feature of FEATURES_COM_TOGGLE) {
+      if (d[FEATURE_TOGGLE[feature]] && !temFeature(tenant, feature)) {
+        throw new PlanoInsuficienteError(feature);
+      }
+    }
+
     await db.tenant.update({ where: { id: tenant.id }, data: d });
     // Toggles mudam o menu (sidebar) — revalida o shell inteiro.
     revalidatePath("/", "layout");
@@ -214,6 +230,7 @@ export async function inviteMember(input: z.input<typeof inviteSchema>) {
   const ctx = await requireGestor();
   const d = inviteSchema.parse(input);
   await validarSites(ctx.tenant.id, d.acessos);
+  await assertCabeUsuario(ctx.tenant.id);
 
   const user = await basePrisma.user.findUnique({ where: { email: d.email } });
   if (user) {

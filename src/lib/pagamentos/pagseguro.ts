@@ -91,7 +91,7 @@ function mapChargeStatus(status: string): StatusCobranca {
 type PagbankOrder = {
   id: string;
   qr_codes?: { id: string; text: string; amount?: { value: number }; expiration_date?: string }[];
-  charges?: { status: string }[];
+  charges?: { id: string; status: string }[];
 };
 
 export function pagseguroProvider(
@@ -181,6 +181,30 @@ export function pagseguroProvider(
       if (!qr) return;
       await pagseguro(api, accessToken, `/orders/${externalId}/qr_codes/${qr.id}`, {
         method: "DELETE",
+      });
+    },
+
+    async estornarCobranca(input): Promise<void> {
+      // Guardamos o pedido no externalId; o estorno é por COBRANÇA. Só cartão
+      // integrado não existe aqui — chega sempre como PIX.
+      let chargeId = input.pspPaymentId ?? null;
+      if (!chargeId) {
+        const order = await pagseguro<PagbankOrder>(
+          api,
+          accessToken,
+          `/orders/${input.externalId}`
+        );
+        chargeId =
+          (order.charges?.find((c) => c.status === "PAID") ?? order.charges?.[0])?.id ?? null;
+      }
+      if (!chargeId) {
+        throw new Error("PagSeguro: cobrança paga não encontrada no pedido — estorne pelo painel.");
+      }
+      await pagseguro(api, accessToken, `/charges/${chargeId}/cancel`, {
+        method: "POST",
+        body: JSON.stringify(
+          input.valor == null ? {} : { amount: { value: Math.round(input.valor * 100) } }
+        ),
       });
     },
   };

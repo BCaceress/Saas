@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { guardAction, assertSite } from "@/lib/guard";
+import { assertCabeSite } from "@/lib/limites";
 import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
@@ -92,6 +93,7 @@ export async function createSite(input: z.input<typeof siteSchema>) {
     const nome = d.nome.trim();
     const dup = await db.site.findFirst({ where: { nome: { equals: nome, mode: "insensitive" } } });
     if (dup) throw new Error(`Já existe um site com o nome "${nome}".`);
+    await assertCabeSite(tid);
     const site = await db.site.create({
       data: {
         tenantId: tid,

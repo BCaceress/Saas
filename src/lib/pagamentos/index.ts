@@ -6,7 +6,12 @@ import { mercadoPagoProvider } from "./mercadopago";
 import { stoneProvider } from "./stone";
 import { pagseguroProvider } from "./pagseguro";
 import { simuladoProvider } from "./simulado";
-import type { PagamentoProvider, StatusCobranca, TerminalInfo } from "./types";
+import type {
+  DetalheCartao,
+  PagamentoProvider,
+  StatusCobranca,
+  TerminalInfo,
+} from "./types";
 import type { PaymentAmbiente, PaymentProviderKind, PaymentStatus } from "@/generated/prisma";
 
 // ============================================================
@@ -239,16 +244,34 @@ export async function criarIntencaoCartaoVenda(
   if (!payment) throw new Error("Pagamento de cartão pendente não encontrado na venda.");
   if (!terminal) throw new Error("Maquininha não encontrada — vincule um terminal em Configurações.");
 
-  const intencao = await ctx.provider.criarIntencaoCartao({
-    deviceId: terminal.externalId,
-    valor: num(payment.valor),
-    tipo: input.tipo,
-    parcelas: input.parcelas,
-    // Só rótulo informativo no PSP — nunca usado de volta pra lookup (o
-    // webhook resolve pelo externalId do PSP). PagBank limita a 64 chars,
-    // então não concatena tenantId/saleId — o payment.id já é único.
-    referencia: payment.id,
-  });
+  const enviar = () =>
+    ctx.provider.criarIntencaoCartao!({
+      deviceId: terminal.externalId,
+      valor: num(payment.valor),
+      tipo: input.tipo,
+      parcelas: input.parcelas,
+      // Só rótulo informativo no PSP — nunca usado de volta pra lookup (o
+      // webhook resolve pelo externalId do PSP). PagBank limita a 64 chars,
+      // então não concatena tenantId/saleId — o payment.id já é único.
+      referencia: payment.id,
+    });
+
+  // A Point precisa estar em operating_mode "PDV" para receber intenções. Se
+  // alguém tirou a maquininha desse modo (mexeu no menu, reiniciou), a primeira
+  // intenção falha e ficava assim até re-cadastrar. Re-prepara e tenta de novo,
+  // uma vez — transparente para o operador.
+  let intencao;
+  try {
+    intencao = await enviar();
+  } catch (e) {
+    if (!ctx.provider.prepararTerminal) throw e;
+    try {
+      await ctx.provider.prepararTerminal(terminal.externalId);
+    } catch {
+      throw e; // re-preparo falhou — devolve o erro original, mais informativo
+    }
+    intencao = await enviar();
+  }
 
   await basePrisma.$transaction([
     basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
@@ -309,11 +332,17 @@ export async function sincronizarPagamentoIntegrado(
   if (!ctx) return { status: payment.status };
 
   const ehPix = payment.metodo === "PIX";
-  let remoto: StatusCobranca = ehPix
-    ? await ctx.provider.consultarCobranca(payment.externalId)
-    : ctx.provider.consultarIntencao
-      ? await ctx.provider.consultarIntencao(payment.externalId)
-      : "PROCESSANDO";
+  let remoto: StatusCobranca;
+  let detalhe: DetalheCartao | null = null;
+  if (ehPix) {
+    remoto = await ctx.provider.consultarCobranca(payment.externalId);
+  } else if (ctx.provider.consultarIntencao) {
+    const r = await ctx.provider.consultarIntencao(payment.externalId);
+    remoto = r.status;
+    detalhe = r.detalhe ?? null;
+  } else {
+    remoto = "PROCESSANDO";
+  }
 
   // PIX vencido no relógio local e ainda pendente no PSP → expira
   if (
@@ -332,7 +361,10 @@ export async function sincronizarPagamentoIntegrado(
     return { status: remoto };
   }
 
-  await atualizarStatus(tenantId, payment.id, remoto);
+  // Grava o detalhe do adquirente JUNTO com o status: a NFC-e é enfileirada
+  // logo abaixo, dentro de finalizarVenda, e lê o Payment do banco. Gravar
+  // depois seria emitir a nota sem bandeira nem autorização.
+  await atualizarStatus(tenantId, payment.id, remoto, detalhe);
   if (remoto === "CONFIRMADO") {
     return finalizarSeCoberta(tenantId, payment.saleId, createdBy);
   }
@@ -342,11 +374,27 @@ export async function sincronizarPagamentoIntegrado(
 async function atualizarStatus(
   tenantId: string,
   paymentId: string,
-  status: PaymentStatus
+  status: PaymentStatus,
+  detalhe?: DetalheCartao | null
 ) {
   await basePrisma.$transaction([
     basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
-    basePrisma.payment.update({ where: { id: paymentId }, data: { status } }),
+    basePrisma.payment.update({
+      where: { id: paymentId },
+      data: {
+        status,
+        ...(detalhe
+          ? {
+              bandeira: detalhe.bandeira,
+              parcelas: detalhe.parcelas,
+              nsu: detalhe.nsu,
+              autorizacao: detalhe.autorizacao,
+              adquirenteCnpj: detalhe.adquirenteCnpj,
+              pspPaymentId: detalhe.pspPaymentId,
+            }
+          : {}),
+      },
+    }),
   ]);
 }
 
@@ -412,6 +460,75 @@ export async function cancelarPagamentoIntegrado(
   if (opts?.cancelarVendaTambem) {
     await cancelarVenda(tenantId, payment.saleId, opts.createdBy);
   }
+}
+
+// ── Estorno depois de confirmado ────────────────────────────
+// Cancelar uma venda PAGA sem devolver o dinheiro no PSP deixa o cliente
+// cobrado com a venda cancelada no sistema. Esta função devolve de verdade e
+// reporta o que NÃO deu — quem cancela precisa saber para resolver no painel.
+
+export type ResultadoEstorno = {
+  /** Pagamentos devolvidos no PSP (ou que não precisavam: dinheiro, manual). */
+  estornados: number;
+  /**
+   * Falhas por pagamento — o cancelamento segue mesmo assim (o estoque já
+   * voltou), mas o operador precisa ver isso na tela, não no log.
+   */
+  pendencias: string[];
+};
+
+export async function estornarPagamentosDaVenda(
+  tenantId: string,
+  saleId: string
+): Promise<ResultadoEstorno> {
+  const payments = await comTenant(tenantId, basePrisma.payment.findMany({
+    where: { saleId, tenantId, status: "CONFIRMADO" },
+    select: {
+      id: true,
+      metodo: true,
+      valor: true,
+      gateway: true,
+      externalId: true,
+      pspPaymentId: true,
+    },
+  }));
+  if (payments.length === 0) return { estornados: 0, pendencias: [] };
+
+  // Sem gateway = recebimento manual (dinheiro, maquininha solta): não há o
+  // que estornar por API — o operador devolve no caixa ou na própria máquina.
+  const integrados = payments.filter((p) => p.gateway && p.externalId);
+  const manuais = payments.length - integrados.length;
+  if (integrados.length === 0) return { estornados: manuais, pendencias: [] };
+
+  const ctx = await getProviderCtx(tenantId);
+  const pendencias: string[] = [];
+  let estornados = manuais;
+
+  for (const p of integrados) {
+    const rotulo = `${p.metodo} de ${num(p.valor).toFixed(2)}`;
+    if (!ctx?.provider.estornarCobranca) {
+      pendencias.push(`${rotulo}: provedor sem estorno por API — devolva pelo painel.`);
+      continue;
+    }
+    // Provedor trocado depois da venda: o token atual não fala com a cobrança antiga.
+    if (p.gateway !== ctx.cfg.provider) {
+      pendencias.push(`${rotulo}: cobrado no ${p.gateway}, hoje ativo o ${ctx.cfg.provider} — devolva pelo painel.`);
+      continue;
+    }
+    try {
+      await ctx.provider.estornarCobranca({
+        externalId: p.externalId as string,
+        pspPaymentId: p.pspPaymentId,
+        cartao: p.metodo !== "PIX",
+        valor: num(p.valor),
+      });
+      estornados++;
+    } catch (e) {
+      pendencias.push(`${rotulo}: ${e instanceof Error ? e.message : "falha ao estornar"}`);
+    }
+  }
+
+  return { estornados, pendencias };
 }
 
 // ── Webhook: acha o pagamento pelo id do PSP e sincroniza ───

@@ -1,6 +1,7 @@
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { resolvePeriodo, variacao, fmtData } from "@/lib/periodo";
+import { featureAtiva } from "@/lib/planos";
 import { brl } from "@/lib/utils";
 import { KpiCard } from "@/components/charts/kpi-card";
 import { ChartCard, ChartEmpty } from "@/components/charts/chart-card";
@@ -31,7 +32,7 @@ export default async function DashboardAnalisesPage({
   const periodo = resolvePeriodo(sp);
   const range: Range = { inicio: periodo.inicio, fim: periodo.fim };
   const prevRange: Range = { inicio: periodo.prevInicio, fim: periodo.prevFim };
-  const pdv = ctx.tenant.moduloPdv;
+  const pdv = featureAtiva(ctx.tenant, "pdv");
 
   const d = await withTenant(ctx, async () => {
     const siteId = await getActiveSiteId();

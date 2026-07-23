@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Processo Electron (CJS) e service worker: fora do lint do app Next.
+    "electron/**",
+    "public/sw.js",
+    "dist-desktop/**",
   ]),
 ]);
 

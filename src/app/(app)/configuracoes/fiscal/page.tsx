@@ -2,6 +2,7 @@ import { ReceiptText } from "lucide-react";
 import { requirePermissao } from "@/lib/guard";
 import { runWithTenant } from "@/lib/tenant-context";
 import { listSites } from "@/lib/sites";
+import { featureAtiva } from "@/lib/planos";
 import { db } from "@/lib/prisma";
 import { PageHeader } from "@/components/app/page-header";
 import { FiscalConfigClient } from "./_client";
@@ -75,7 +76,7 @@ export default async function ConfiguracoesFiscalPage() {
           innerClassName="max-w-none"
         />
         <FiscalConfigClient
-          moduloLigado={ctx.tenant.moduloFiscal}
+          moduloLigado={featureAtiva(ctx.tenant, "fiscal")}
           sites={sites.map((s) => ({ id: s.id, nome: s.nome }))}
           config={
             config

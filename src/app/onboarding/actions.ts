@@ -4,7 +4,8 @@ import { z } from "zod";
 import { redirect } from "next/navigation";
 import { basePrisma } from "@/lib/prisma";
 import { requireActiveTenant } from "@/lib/current-tenant";
-import { PRESETS, tierFromPontos } from "@/lib/presets";
+import { PRESETS, tierFromPontos, featuresDosToggles } from "@/lib/presets";
+import { assinaturaParaFeatures } from "@/lib/planos";
 import { isAdmin } from "@/lib/permissoes";
 
 const schema = z.object({
@@ -34,6 +35,14 @@ export async function saveOnboarding(input: OnboardingInput) {
 
   const numPontos = parsed.pontos === "1" ? 1 : parsed.pontos === "2-5" ? 3 : 6;
 
+  // O plano sai do que a operação precisa: piso pelo nº de pontos, subindo até
+  // cobrir os módulos do preset. Sem isso o onboarding ligaria módulo fora do
+  // plano e o tenant cairia num app meio bloqueado no primeiro acesso.
+  const { plano, addons } = assinaturaParaFeatures(
+    featuresDosToggles(toggles),
+    tierFromPontos(parsed.pontos),
+  );
+
   await basePrisma.tenant.update({
     where: { id: ctx.tenant.id },
     data: {
@@ -41,7 +50,8 @@ export async function saveOnboarding(input: OnboardingInput) {
       atendimento: preset.atendimento,
       topologia: parsed.topologia,
       numPontos,
-      plano: tierFromPontos(parsed.pontos),
+      plano,
+      addons,
       ...toggles,
       onboardingDone: true,
       ...(parsed.nomeMercado ? { nome: parsed.nomeMercado } : {}),

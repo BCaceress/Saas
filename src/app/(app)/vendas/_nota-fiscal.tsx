@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Loader2, WifiOff, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, Loader2, Printer, WifiOff, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { statusFiscalVendaAction } from "./actions";
 import type { StatusFiscalVenda } from "@/lib/fiscal/emissao";
@@ -18,9 +18,35 @@ const MAX_TENTATIVAS = 20;
 
 const EM_ANDAMENTO = ["PENDENTE", "PROCESSANDO"];
 
+/**
+ * Imprime o DANFCE via iframe oculto: carrega o PDF do provedor e dispara o
+ * diálogo de impressão sozinho. Se o navegador bloquear impressão de PDF em
+ * iframe (Firefox), cai para abrir em nova aba — o operador imprime de lá.
+ */
+export function imprimirCupom(saleId: string, iframe: HTMLIFrameElement | null) {
+  const url = `/api/vendas/${saleId}/cupom`;
+  if (!iframe) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  const abrirEmAba = () => window.open(url, "_blank", "noopener");
+  iframe.onload = () => {
+    try {
+      const w = iframe.contentWindow;
+      if (!w) return abrirEmAba();
+      w.focus();
+      w.print();
+    } catch {
+      abrirEmAba();
+    }
+  };
+  iframe.src = url;
+}
+
 export function NotaFiscalChip({ saleId, onClose }: { saleId: string; onClose: () => void }) {
   const [info, setInfo] = useState<StatusFiscalVenda>(null);
   const [desistiu, setDesistiu] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   useEffect(() => {
     let vivo = true;
@@ -98,37 +124,53 @@ export function NotaFiscalChip({ saleId, onClose }: { saleId: string; onClose: (
   }[visual.tone];
 
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      className={cn(
-        "pointer-events-auto flex max-w-sm items-start gap-2.5 rounded-[var(--radius-md)] border px-3 py-2.5 shadow-[var(--shadow-float)]",
-        cls,
-      )}
-    >
-      <span className="mt-0.5 shrink-0">{visual.icon}</span>
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium">{visual.titulo}</p>
-        {visual.detalhe && <p className="mt-0.5 text-xs opacity-80">{visual.detalhe}</p>}
-        {info.status === "AUTORIZADO" && info.urlConsulta && (
-          <a
-            href={info.urlConsulta}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-1 inline-block text-xs font-medium underline"
-          >
-            Consultar na SEFAZ
-          </a>
+    <>
+      <div
+        role="status"
+        aria-live="polite"
+        className={cn(
+          "pointer-events-auto flex max-w-sm items-start gap-2.5 rounded-[var(--radius-md)] border px-3 py-2.5 shadow-[var(--shadow-float)]",
+          cls,
         )}
-      </div>
-      <button
-        type="button"
-        onClick={onClose}
-        aria-label="Fechar aviso da nota"
-        className="shrink-0 opacity-60 transition-opacity hover:opacity-100"
       >
-        <X size={14} />
-      </button>
-    </div>
+        <span className="mt-0.5 shrink-0">{visual.icon}</span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">{visual.titulo}</p>
+          {visual.detalhe && <p className="mt-0.5 text-xs opacity-80">{visual.detalhe}</p>}
+          {info.status === "AUTORIZADO" && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => imprimirCupom(saleId, iframeRef.current)}
+                className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-ok/40 px-2 py-1 text-xs font-semibold transition-colors hover:bg-ok/10"
+              >
+                <Printer size={13} />
+                Imprimir cupom
+              </button>
+              {info.urlConsulta && (
+                <a
+                  href={info.urlConsulta}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs font-medium underline"
+                >
+                  Consultar na SEFAZ
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Fechar aviso da nota"
+          className="shrink-0 opacity-60 transition-opacity hover:opacity-100"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      {/* iframe oculto que carrega o PDF para impressão direta */}
+      <iframe ref={iframeRef} title="Cupom fiscal" className="hidden" aria-hidden />
+    </>
   );
 }

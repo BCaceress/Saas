@@ -12,6 +12,7 @@ import {
   Bell,
   MonitorSmartphone,
   ReceiptText,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
@@ -84,6 +85,13 @@ const CARDS: {
     icon: Blocks,
     title: "Módulos",
     description: "Ligue PDV, fiscal, comodato e rota conforme a operação.",
+  },
+  {
+    href: "/configuracoes/plano",
+    icon: Sparkles,
+    tone: "accent",
+    title: "Plano e add-ons",
+    description: "O que sua assinatura cobre, limites de uso e o que muda ao subir.",
   },
   {
     href: "/configuracoes/notificacoes",

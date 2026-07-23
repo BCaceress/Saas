@@ -1,5 +1,6 @@
 import { Wallet } from "lucide-react";
 import { requireActiveTenant } from "@/lib/current-tenant";
+import { featureAtiva } from "@/lib/planos";
 import { PageHeader } from "@/components/app/page-header";
 import { CaixaConfigClient } from "./_client";
 
@@ -17,7 +18,7 @@ export default async function CaixaConfigPage() {
         innerClassName="max-w-none"
       />
       <CaixaConfigClient
-        moduloPdv={tenant.moduloPdv}
+        moduloPdv={featureAtiva(tenant, "pdv")}
         initial={{
           caixaFundoTroco:
             tenant.caixaFundoTroco != null ? Number(tenant.caixaFundoTroco) : null,

@@ -9,6 +9,7 @@ import {
   Gift,
   Link2,
   PackageCheck,
+  RefreshCw,
   Search,
   Trash2,
   Upload,
@@ -25,9 +26,12 @@ import {
   buscarProdutosAction,
   descartarNotaAction,
   importarXmlAction,
+  manifestarNotaAction,
+  notasAguardandoManifestacaoAction,
   pedidosDoFornecedorAction,
   receberNotaAction,
   relacionarItemAction,
+  sincronizarSefazAction,
   vincularPedidoAction,
 } from "./actions";
 
@@ -92,9 +96,12 @@ function custoItem(i: ItemNota): number {
 export function NotasRecebidasClient({
   notas,
   podeImportar,
+  distribuicaoAtiva,
 }: {
   notas: NotaRecebida[];
   podeImportar: boolean;
+  /** Provedor com distribuição DF-e configurado nesta loja. */
+  distribuicaoAtiva: boolean;
 }) {
   const router = useRouter();
   const [enviando, setEnviando] = useState(false);
@@ -160,6 +167,8 @@ export function NotasRecebidasClient({
           </p>
         </div>
       )}
+
+      {distribuicaoAtiva && <PainelSefaz podeImportar={podeImportar} />}
 
       <div className="flex flex-wrap items-center gap-2">
         {podeImportar && (
@@ -252,6 +261,225 @@ export function NotasRecebidasClient({
         />
       )}
     </>
+  );
+}
+
+// ── Distribuição DF-e (notas direto da SEFAZ) ───────────────
+
+type NotaSefaz = Awaited<ReturnType<typeof notasAguardandoManifestacaoAction>>[number];
+
+const MANIFESTACOES = [
+  {
+    tipo: "CIENCIA",
+    label: "Dar ciência",
+    ajuda: "Só avisa a SEFAZ que você viu a nota. Libera o XML completo e não assume nada.",
+  },
+  {
+    tipo: "CONFIRMACAO",
+    label: "Confirmar operação",
+    ajuda: "A mercadoria chegou e a nota está correta. É definitivo.",
+  },
+  {
+    tipo: "DESCONHECIMENTO",
+    label: "Desconhecer",
+    ajuda: "Você não reconhece essa compra. Exige justificativa.",
+  },
+  {
+    tipo: "NAO_REALIZADA",
+    label: "Operação não realizada",
+    ajuda: "A nota existe mas a entrega não aconteceu (recusa, devolução). Exige justificativa.",
+  },
+] as const;
+
+type TipoManifestacao = (typeof MANIFESTACOES)[number]["tipo"];
+
+/**
+ * A SEFAZ entrega primeiro só um resumo da nota do fornecedor; o XML com itens
+ * depende de manifestação. Por isso este painel é separado da lista: são notas
+ * que ainda não existem como entrada, só como aviso.
+ */
+function PainelSefaz({ podeImportar }: { podeImportar: boolean }) {
+  const router = useRouter();
+  const [buscando, setBuscando] = useState(false);
+  const [notas, setNotas] = useState<NotaSefaz[] | null>(null);
+  const [alvo, setAlvo] = useState<NotaSefaz | null>(null);
+
+  async function sincronizar() {
+    setBuscando(true);
+    try {
+      const r = await sincronizarSefazAction();
+      const pendentes = await notasAguardandoManifestacaoAction();
+      setNotas(pendentes);
+
+      if (r.importadas > 0) {
+        toast.success(
+          `${r.importadas} nota(s) baixada(s) da SEFAZ.`,
+          "Já entraram na fila de conciliação.",
+        );
+      } else if (pendentes.length > 0) {
+        toast.info(
+          `${pendentes.length} nota(s) esperando manifestação.`,
+          "Dê ciência para liberar o XML completo.",
+        );
+      } else {
+        toast.info("Nada novo na SEFAZ.", `${r.consultadas} documento(s) já conhecidos.`);
+      }
+      router.refresh();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha ao consultar a SEFAZ.");
+    } finally {
+      setBuscando(false);
+    }
+  }
+
+  return (
+    <div className="rounded-[var(--radius-lg)] border border-line bg-surface">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <div className="min-w-0">
+          <p className="font-medium text-ink">Notas direto da SEFAZ</p>
+          <p className="text-xs text-muted">
+            O que os fornecedores emitiram contra o seu CNPJ — sem depender de o fornecedor
+            mandar o arquivo.
+          </p>
+        </div>
+        {podeImportar && (
+          <Button variant="outline" onClick={sincronizar} disabled={buscando}>
+            <RefreshCw size={16} className={buscando ? "animate-spin" : undefined} />
+            {buscando ? "Consultando…" : "Buscar na SEFAZ"}
+          </Button>
+        )}
+      </div>
+
+      {notas && notas.length > 0 && (
+        <ul className="divide-y divide-line border-t border-line">
+          {notas.map((n) => (
+            <li key={n.chave} className="flex flex-wrap items-center gap-3 px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-medium text-ink">{n.emitRazaoSocial}</p>
+                <p className="font-mono text-[11px] text-faint">
+                  {maskCnpj(n.emitCnpj)} · NF-e {n.numero}/{n.serie}
+                  {n.dataEmissao ? ` · ${relDia(n.dataEmissao)}` : ""}
+                </p>
+              </div>
+              <span className="font-mono text-sm text-ink-2">
+                {n.valorTotal == null ? "—" : fmtMoney(n.valorTotal)}
+              </span>
+              {podeImportar && (
+                <Button variant="outline" onClick={() => setAlvo(n)}>
+                  Manifestar
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {notas && notas.length === 0 && (
+        <p className="border-t border-line px-4 py-3 text-sm text-muted">
+          Nenhuma nota esperando manifestação.
+        </p>
+      )}
+
+      {alvo && (
+        <ModalManifestacao
+          nota={alvo}
+          onClose={() => setAlvo(null)}
+          onFeito={() => {
+            setNotas((atual) => atual?.filter((n) => n.chave !== alvo.chave) ?? null);
+            setAlvo(null);
+            router.refresh();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ModalManifestacao({
+  nota,
+  onClose,
+  onFeito,
+}: {
+  nota: NotaSefaz;
+  onClose: () => void;
+  onFeito: () => void;
+}) {
+  const [tipo, setTipo] = useState<TipoManifestacao>("CIENCIA");
+  const [justificativa, setJustificativa] = useState("");
+  const [pending, start] = useTransition();
+
+  const escolha = MANIFESTACOES.find((m) => m.tipo === tipo)!;
+  const precisaJustificativa = tipo === "DESCONHECIMENTO" || tipo === "NAO_REALIZADA";
+
+  function confirmar() {
+    start(async () => {
+      try {
+        const r = await manifestarNotaAction({
+          chave: nota.chave,
+          tipo,
+          justificativa: precisaJustificativa ? justificativa : undefined,
+        });
+        if (r.ok) toast.success(r.mensagem);
+        else toast.error(r.mensagem);
+        onFeito();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Falha ao manifestar.");
+      }
+    });
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Manifestar nota"
+      description={`${nota.emitRazaoSocial} — NF-e ${nota.numero}/${nota.serie}`}
+      width="md"
+    >
+      <div className="flex flex-col gap-4">
+        <Field label="O que você quer registrar" htmlFor="tipo" hint={escolha.ajuda}>
+          <Select
+            id="tipo"
+            value={tipo}
+            onChange={(e) => setTipo(e.target.value as TipoManifestacao)}
+          >
+            {MANIFESTACOES.map((m) => (
+              <option key={m.tipo} value={m.tipo}>
+                {m.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        {precisaJustificativa && (
+          <Field
+            label="Justificativa"
+            htmlFor="justificativa"
+            hint="Mínimo de 15 caracteres — a SEFAZ recusa textos curtos."
+          >
+            <Input
+              id="justificativa"
+              value={justificativa}
+              onChange={(e) => setJustificativa(e.target.value)}
+              placeholder="Ex.: mercadoria recusada na portaria por avaria"
+            />
+          </Field>
+        )}
+
+        <p className="text-xs text-muted">
+          Manifestação não tem desfazer na SEFAZ. A chave fica registrada no histórico fiscal.
+        </p>
+      </div>
+
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="ghost" onClick={onClose} disabled={pending}>
+          Cancelar
+        </Button>
+        <Button onClick={confirmar} disabled={pending}>
+          {pending ? "Enviando…" : escolha.label}
+        </Button>
+      </div>
+    </Modal>
   );
 }
 

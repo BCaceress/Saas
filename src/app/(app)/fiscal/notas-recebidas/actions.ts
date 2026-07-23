@@ -15,7 +15,13 @@ import {
   descartarNota,
   type ResultadoImportacao,
 } from "@/lib/fiscal/entrada";
+import {
+  sincronizarDistribuicao,
+  listarAguardandoManifestacao,
+  manifestarNota,
+} from "@/lib/fiscal/distribuicao";
 import type { ActiveTenant } from "@/lib/current-tenant";
+import type { ManifestacaoTipo } from "@/generated/prisma";
 
 const ROTA = "/fiscal/notas-recebidas";
 const ok = () => revalidatePath(ROTA);
@@ -70,6 +76,54 @@ export async function importarXmlAction(form: FormData): Promise<ResultadoImport
 
     ok();
     return resultado;
+  });
+}
+
+// ── Distribuição DF-e ───────────────────────────────────────
+
+/** Pergunta à SEFAZ o que os fornecedores emitiram contra o nosso CNPJ. */
+export async function sincronizarSefazAction() {
+  return tx("fiscal.importar", async (ctx) => {
+    const siteId = await siteDaEntrada(ctx);
+    const r = await sincronizarDistribuicao({
+      tenantId: ctx.tenant.id,
+      siteId,
+      userId: ctx.user.id,
+    });
+    ok();
+    return r;
+  });
+}
+
+/** Notas que a SEFAZ já mostra mas cujo XML depende de manifestação. */
+export async function notasAguardandoManifestacaoAction() {
+  return tx("fiscal.ver", async (ctx) => {
+    const siteId = await siteDaEntrada(ctx);
+    return listarAguardandoManifestacao(ctx.tenant.id, siteId);
+  });
+}
+
+const manifestarSchema = z.object({
+  chave: z.string().trim().length(44, "A chave de acesso tem 44 dígitos."),
+  tipo: z.enum(["CIENCIA", "CONFIRMACAO", "DESCONHECIMENTO", "NAO_REALIZADA"]),
+  justificativa: z.string().trim().optional(),
+});
+
+export async function manifestarNotaAction(input: z.input<typeof manifestarSchema>) {
+  return tx("fiscal.importar", async (ctx) => {
+    const d = manifestarSchema.parse(input);
+    const siteId = await siteDaEntrada(ctx);
+    const r = await manifestarNota({
+      tenantId: ctx.tenant.id,
+      siteId,
+      chave: d.chave,
+      tipo: d.tipo as ManifestacaoTipo,
+      justificativa: d.justificativa,
+      userId: ctx.user.id,
+    });
+    ok();
+    revalidatePath("/fiscal/eventos");
+    return r;
   });
 }
 

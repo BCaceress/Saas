@@ -5,7 +5,7 @@
 // destaque; quem já pagou fica ancorado no rodapé, só para acompanhamento.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Loader2, MonitorSmartphone, Volume2, VolumeX, X } from "lucide-react";
+import { Check, Loader2, MonitorSmartphone, RotateCcw, Volume2, VolumeX, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   pollAutoatendimentoAction,
@@ -14,6 +14,7 @@ import {
   type VendaTotemFila,
 } from "./actions";
 import { brl } from "./_shared";
+import { toast } from "@/components/ui/toast";
 
 const POLL_MS = 5_000;
 const SOM_KEY = "nohub.pdv.som";
@@ -106,6 +107,8 @@ export function FilaAutoatendimentoPanel({
   const [somOpen, setSomOpen] = useState(false);
   const [descartando, setDescartando] = useState<string | null>(null);
   const [pendingDescarte, setPendingDescarte] = useState(false);
+  const [estornando, setEstornando] = useState<string | null>(null);
+  const [pendingEstorno, setPendingEstorno] = useState(false);
   const idsAnteriores = useRef<Set<string> | null>(null);
 
   // Destrava o áudio no primeiro gesto (clique/tecla) da sessão.
@@ -167,6 +170,31 @@ export function FilaAutoatendimentoPanel({
       await atualizar();
     } finally {
       setPendingDescarte(false);
+    }
+  }
+
+  // Estorna uma venda JÁ PAGA: devolve estoque + dinheiro no PSP. O que o
+  // provedor não conseguiu devolver volta em pendenciasEstorno — o operador
+  // precisa ver na hora para resolver no painel, não descobrir no extrato.
+  async function estornar(id: string) {
+    setPendingEstorno(true);
+    try {
+      const r = await cancelarVendaAction(id);
+      setEstornando(null);
+      const pend = r?.pendenciasEstorno ?? [];
+      if (pend.length > 0) {
+        toast.error(
+          "Venda estornada, mas há devolução pendente",
+          `${pend.join(" · ")} Resolva no painel do provedor.`,
+        );
+      } else {
+        toast.success("Venda estornada", "Estoque e pagamento devolvidos.");
+      }
+      await atualizar();
+    } catch (e) {
+      toast.error("Erro ao estornar", e instanceof Error ? e.message : "Tente novamente.");
+    } finally {
+      setPendingEstorno(false);
     }
   }
 
@@ -357,24 +385,61 @@ export function FilaAutoatendimentoPanel({
             Concluídas recentemente
           </p>
           <div className="scrollbar-thin flex max-h-40 flex-col overflow-y-auto">
-            {concluidas.map((v) => (
-              <div
-                key={v.id}
-                className="flex items-center gap-2 border-b border-line/60 py-1.5 last:border-0"
-              >
-                <Check size={12} className="shrink-0 text-ok" />
-                <span className="min-w-0 flex-1 truncate text-[12px] text-ink-2">
-                  {v.terminal ?? "Terminal"}
-                  <span className="text-muted"> · {v.numItens} {v.numItens === 1 ? "item" : "itens"}</span>
-                </span>
-                <span className="shrink-0 font-mono text-[12px] tabular-nums text-ink-2">
-                  {brl(v.total)}
-                </span>
-                <span className="w-14 shrink-0 text-right text-[10px] text-faint">
-                  {v.metodo ? METODO_LABEL[v.metodo] ?? v.metodo : ""} · {tempoRel(v.pagaEm, agora)}
-                </span>
-              </div>
-            ))}
+            {concluidas.map((v) =>
+              estornando === v.id ? (
+                <div
+                  key={v.id}
+                  className="flex items-center gap-2 border-b border-line/60 py-1.5 last:border-0"
+                >
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-danger">
+                    Estornar {brl(v.total)}? Devolve estoque e dinheiro.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => estornar(v.id)}
+                    disabled={pendingEstorno}
+                    className="flex shrink-0 items-center gap-1 rounded-[var(--radius-sm)] bg-danger px-2 py-1 text-[11px] font-semibold text-on-brand disabled:opacity-50"
+                  >
+                    {pendingEstorno ? <Loader2 size={11} className="animate-spin" /> : null}
+                    Estornar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEstornando(null)}
+                    disabled={pendingEstorno}
+                    className="shrink-0 rounded-[var(--radius-sm)] px-2 py-1 text-[11px] font-medium text-muted hover:text-ink"
+                  >
+                    Não
+                  </button>
+                </div>
+              ) : (
+                <div
+                  key={v.id}
+                  className="group flex items-center gap-2 border-b border-line/60 py-1.5 last:border-0"
+                >
+                  <Check size={12} className="shrink-0 text-ok" />
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-ink-2">
+                    {v.terminal ?? "Terminal"}
+                    <span className="text-muted"> · {v.numItens} {v.numItens === 1 ? "item" : "itens"}</span>
+                  </span>
+                  <span className="shrink-0 font-mono text-[12px] tabular-nums text-ink-2">
+                    {brl(v.total)}
+                  </span>
+                  <span className="w-14 shrink-0 text-right text-[10px] text-faint">
+                    {v.metodo ? METODO_LABEL[v.metodo] ?? v.metodo : ""} · {tempoRel(v.pagaEm, agora)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setEstornando(v.id)}
+                    aria-label="Estornar venda"
+                    title="Estornar venda"
+                    className="shrink-0 text-faint opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                </div>
+              ),
+            )}
           </div>
         </div>
       )}

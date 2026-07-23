@@ -2,6 +2,8 @@ import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { podeEmAlguma } from "@/lib/permissoes";
+import { getActiveSiteId, getOrCreateDefaultSite } from "@/lib/sites";
+import { distribuicaoDisponivel } from "@/lib/fiscal/distribuicao";
 import { NotasRecebidasClient } from "./_client";
 
 export const metadata = { title: "Notas recebidas — NoHub Market" };
@@ -69,9 +71,15 @@ export default async function NotasRecebidasPage() {
       : [];
     const porProduto = new Map(produtos.map((p) => [p.id, p]));
 
+    // Distribuição DF-e depende do provedor e do CNPJ da loja — sem isso o
+    // painel de busca na SEFAZ nem aparece.
+    const siteAtivo = (await getActiveSiteId()) ?? (await getOrCreateDefaultSite(ctx.tenant.id)).id;
+    const distribuicaoAtiva = await distribuicaoDisponivel(ctx.tenant.id, siteAtivo);
+
     return (
       <NotasRecebidasClient
         podeImportar={podeEmAlguma(ctx.acessos, "fiscal.importar")}
+        distribuicaoAtiva={distribuicaoAtiva}
         notas={notas.map((n) => ({
           id: n.id,
           status: n.status,

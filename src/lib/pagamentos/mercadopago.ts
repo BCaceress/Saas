@@ -1,10 +1,15 @@
 import "server-only";
-import type {
-  CobrancaPix,
-  IntencaoCartao,
-  PagamentoProvider,
-  StatusCobranca,
-  TerminalInfo,
+import {
+  CNPJ_CREDENCIADORA,
+  normalizarBandeira,
+  SEM_DETALHE,
+  type CobrancaPix,
+  type DetalheCartao,
+  type IntencaoCartao,
+  type PagamentoProvider,
+  type ResultadoIntencao,
+  type StatusCobranca,
+  type TerminalInfo,
 } from "./types";
 
 // ============================================================
@@ -88,6 +93,51 @@ function mapIntentState(state: string): StatusCobranca {
 }
 
 export function mercadoPagoProvider(accessToken: string): PagamentoProvider {
+  /** Id da transação por trás de uma payment intent do Point. */
+  async function pagamentoDaIntencao(intentId: string): Promise<string | null> {
+    const body = await mp<{ payment?: { id?: number | string } }>(
+      accessToken,
+      `/point/integration-api/payment-intents/${intentId}`
+    );
+    return body.payment?.id ? String(body.payment.id) : null;
+  }
+
+  /**
+   * Lê o pagamento aprovado e extrai o que a NFC-e e a conciliação pedem.
+   * Best-effort de propósito: falhar aqui não pode derrubar uma venda que o
+   * cliente já pagou — sem detalhe a nota sai só com tpIntegra.
+   */
+  async function detalheDoPagamento(
+    pspPaymentId: string | null
+  ): Promise<DetalheCartao | null> {
+    if (!pspPaymentId) return null;
+    try {
+      const p = await mp<{
+        id: number | string;
+        payment_method_id?: string;
+        installments?: number;
+        authorization_code?: string | null;
+        transaction_details?: { acquirer_reference?: string | null };
+      }>(accessToken, `/v1/payments/${pspPaymentId}`);
+      return {
+        // "master", "visa", "elo"… — rótulo do adquirente, não do operador.
+        bandeira: normalizarBandeira(p.payment_method_id),
+        parcelas: p.installments ?? null,
+        nsu: p.transaction_details?.acquirer_reference ?? null,
+        autorizacao: p.authorization_code ?? null,
+        adquirenteCnpj: CNPJ_CREDENCIADORA.MERCADO_PAGO ?? null,
+        pspPaymentId: String(p.id),
+      };
+    } catch {
+      // A credenciadora não depende da consulta — é o próprio PSP.
+      return {
+        ...SEM_DETALHE,
+        adquirenteCnpj: CNPJ_CREDENCIADORA.MERCADO_PAGO ?? null,
+        pspPaymentId,
+      };
+    }
+  }
+
   return {
     slug: "MERCADO_PAGO",
     suportaCartaoIntegrado: true,
@@ -193,12 +243,37 @@ export function mercadoPagoProvider(accessToken: string): PagamentoProvider {
       return { externalId: body.id };
     },
 
-    async consultarIntencao(externalId): Promise<StatusCobranca> {
-      const body = await mp<{ state: string }>(
+    async consultarIntencao(externalId): Promise<ResultadoIntencao> {
+      const body = await mp<{ state: string; payment?: { id?: number | string } }>(
         accessToken,
         `/point/integration-api/payment-intents/${externalId}`
       );
-      return mapIntentState(body.state);
+      const status = mapIntentState(body.state);
+      if (status !== "CONFIRMADO") return { status };
+
+      // A intenção só diz que terminou. Bandeira, parcelas e código de
+      // autorização moram no pagamento — uma chamada a mais, uma única vez,
+      // na transição para aprovado.
+      const pspPaymentId = body.payment?.id ? String(body.payment.id) : null;
+      return { status, detalhe: await detalheDoPagamento(pspPaymentId) };
+    },
+
+    async estornarCobranca(input): Promise<void> {
+      // PIX: o externalId já É o pagamento. Cartão: é a intenção — o id da
+      // transação veio na aprovação, e se não veio, relemos a intenção.
+      const alvo = input.cartao
+        ? (input.pspPaymentId ?? (await pagamentoDaIntencao(input.externalId)))
+        : input.externalId;
+      if (!alvo) {
+        throw new Error(
+          "Mercado Pago: transação do cartão não identificada — estorne pelo painel."
+        );
+      }
+      await mp(accessToken, `/v1/payments/${alvo}/refunds`, {
+        method: "POST",
+        // O MP trata refund sem valor como total; com valor, parcial.
+        body: JSON.stringify(input.valor == null ? {} : { amount: Number(input.valor.toFixed(2)) }),
+      });
     },
 
     async cancelarIntencao(deviceId, externalId): Promise<void> {

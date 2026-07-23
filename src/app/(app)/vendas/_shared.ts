@@ -40,3 +40,14 @@ export function mascararCpf(cpf: string | null): string {
   if (d.length !== 11) return cpf ?? "—";
   return `${d.slice(0, 3)}.•••.•••-${d.slice(9)}`;
 }
+
+/** CPF formatado progressivamente enquanto se digita (000.000.000-00). */
+export function formatarCpf(valor: string): string {
+  const d = valor.replace(/\D/g, "").slice(0, 11);
+  const p = [d.slice(0, 3), d.slice(3, 6), d.slice(6, 9), d.slice(9, 11)];
+  let out = p[0];
+  if (p[1]) out += `.${p[1]}`;
+  if (p[2]) out += `.${p[2]}`;
+  if (p[3]) out += `-${p[3]}`;
+  return out;
+}

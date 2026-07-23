@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { resolvePeriodo } from "@/lib/periodo";
+import { featureAtiva } from "@/lib/planos";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
@@ -59,7 +60,7 @@ export default async function DashboardPage({
     prevRange,
     siteId,
     periodoLabel: periodo.label,
-    pdv: ctx.tenant.moduloPdv,
+    pdv: featureAtiva(ctx.tenant, "pdv"),
     multiSite,
     paradoDias: ctx.tenant.produtoParadoDias || 45,
   };
@@ -126,4 +127,5 @@ const WIDGET_SPAN: Record<WidgetId, string> = {
   sem_giro: "lg:col-span-1",
   categorias: "lg:col-span-1",
   por_site: "lg:col-span-2",
+  fiscal: "lg:col-span-1",
 };

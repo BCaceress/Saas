@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { Space_Grotesk, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+import { ServiceWorkerRegister } from "@/components/app/sw-register";
 
 const spaceGrotesk = Space_Grotesk({
   variable: "--font-space-grotesk",
@@ -49,6 +50,7 @@ export default async function RootLayout({
         suppressHydrationWarning
       >
         {children}
+        <ServiceWorkerRegister />
       </body>
     </html>
   );

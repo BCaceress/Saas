@@ -1,4 +1,5 @@
-import { requireActiveTenant } from "@/lib/current-tenant";
+import { requireFeature } from "@/lib/guard";
+import { featureAtiva } from "@/lib/planos";
 import { runWithTenant } from "@/lib/tenant-context";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { sessaoAtual, relatorioCaixa } from "@/lib/caixa";
@@ -9,7 +10,7 @@ import { loadProdutosVenda } from "./_data";
 import { PdvClient } from "./_client";
 
 export default async function VendasPage() {
-  const ctx = await requireActiveTenant();
+  const ctx = await requireFeature("pdv");
 
   return runWithTenant(ctx.tenant.id, async () => {
     const siteId = await getActiveSiteId();
@@ -25,7 +26,7 @@ export default async function VendasPage() {
 
     // Só acompanhamos a nota quando ela realmente vai ser emitida — módulo
     // ligado, provedor ativo e emissão automática marcada.
-    const cfgFiscal = ctx.tenant.moduloFiscal
+    const cfgFiscal = featureAtiva(ctx.tenant, "fiscal")
       ? await db.fiscalConfig.findFirst({
           select: { ativo: true, emissaoAutomaticaNfce: true },
         })

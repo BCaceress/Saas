@@ -25,6 +25,8 @@ import {
   CornerUpLeft,
   ScanBarcode,
   Sparkles,
+  History,
+  WifiOff,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
@@ -34,6 +36,8 @@ import {
   carregarVendaTotemAction,
   receberVendaTotemAction,
   iniciarPagamentoIntegradoAction,
+  iniciarRecebimentoTotemIntegradoAction,
+  abortarRecebimentoTotemAction,
   type VendaTotemFila,
   type InicioPagamentoIntegrado,
 } from "./actions";
@@ -44,6 +48,8 @@ import { brl, mascararCpf, type CartItem, type ClienteSel } from "./_shared";
 import { PagamentoModal, ClienteModal, PersonalizadoModal } from "./_modais";
 import { FilaAutoatendimentoPanel } from "./_fila";
 import { NotaFiscalChip } from "./_nota-fiscal";
+import { HistoricoVendasModal } from "./_historico";
+import { useOnline } from "@/lib/hooks/use-online";
 
 type VendaTotemAtiva = { id: string; numero: string; terminal: string | null };
 type VendaSuspensa = {
@@ -97,6 +103,8 @@ export function PdvClient({
   const [carregando, setCarregando] = useState(false);
   const [bump, setBump] = useState(0);
 
+  const online = useOnline();
+
   // Venda cuja nota ainda estamos acompanhando. Não trava o caixa: o operador
   // já pode passar a próxima compra enquanto a NFC-e vai para a SEFAZ.
   const [vendaFiscal, setVendaFiscal] = useState<string | null>(null);
@@ -105,9 +113,51 @@ export function PdvClient({
   const [pdvModal, setPdvModal] = useState<ProdutoVenda | null>(null);
   const [clienteOpen, setClienteOpen] = useState(false);
   const [pagamentoOpen, setPagamentoOpen] = useState(false);
+  const [historicoOpen, setHistoricoOpen] = useState(false);
 
   const [flashKey, setFlashKey] = useState<string | null>(null);
   const buscaRef = useRef<HTMLInputElement>(null);
+
+  // ── Rascunho local (Fase 0) — recuperar a venda após recarregar/travar ──
+  // Só o carrinho normal do balcão; venda do totem é do servidor, não rascunho.
+  const rascunhoKey = `nohub.pdv.rascunho.${siteId}`;
+  const restauradoRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (vendaTotem) return; // venda do totem não é rascunho local
+    if (cart.length === 0) {
+      window.localStorage.removeItem(rascunhoKey);
+      return;
+    }
+    window.localStorage.setItem(rascunhoKey, JSON.stringify({ cart, cliente, maiorIdade }));
+  }, [cart, cliente, maiorIdade, rascunhoKey, vendaTotem]);
+
+  useEffect(() => {
+    // Uma tentativa de restauração por loja, e só com o carrinho vazio.
+    if (vendaTotem || restauradoRef.current === siteId) return;
+    restauradoRef.current = siteId;
+    const t = window.setTimeout(() => {
+      if (cart.length > 0) return;
+      const raw = window.localStorage.getItem(`nohub.pdv.rascunho.${siteId}`);
+      if (!raw) return;
+      try {
+        const d = JSON.parse(raw) as {
+          cart?: CartItem[];
+          cliente?: ClienteSel | null;
+          maiorIdade?: boolean;
+        };
+        if (Array.isArray(d.cart) && d.cart.length > 0) {
+          setCart(d.cart);
+          setCliente(d.cliente ?? null);
+          setMaiorIdade(!!d.maiorIdade);
+          toast.info("Venda recuperada", "Retomamos o carrinho de antes.");
+        }
+      } catch {
+        // rascunho corrompido — ignora
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [siteId, vendaTotem, cart.length]);
 
   const caixaOk = !!caixa;
   const siteNome = sites.find((s) => s.id === siteId)?.nome ?? "";
@@ -352,6 +402,7 @@ export function PdvClient({
       valor: number;
       troco?: number | null;
     }[],
+    opts?: { cpfNota?: string | null },
   ) {
     return new Promise<boolean>((resolve) => {
       startTransition(async () => {
@@ -370,6 +421,7 @@ export function PdvClient({
               customerId: cliente?.id ?? null,
               items,
               maiorIdadeConfirmada: maiorIdade,
+              cpfNota: opts?.cpfNota ?? null,
               pagamentos,
             });
             saleId = vendaTotem.id;
@@ -380,6 +432,7 @@ export function PdvClient({
               items,
               descontoVenda: 0,
               maiorIdadeConfirmada: maiorIdade,
+              cpfNota: opts?.cpfNota ?? null,
               pagamentos,
             });
           }
@@ -407,7 +460,13 @@ export function PdvClient({
   // polling e chama concluirIntegrado quando o provedor confirmar.
   async function iniciarIntegrado(
     metodo: "PIX" | "CARTAO_CREDITO" | "CARTAO_DEBITO",
-    opts: { parcelas?: number; terminalId?: string | null },
+    opts: {
+      parcelas?: number;
+      terminalId?: string | null;
+      cpfNota?: string | null;
+      /** MISTO: divisão completa da venda (a perna do cartão vai à maquininha). */
+      pagamentos?: { metodo: PaymentMethod; valor: number; troco?: number | null }[];
+    },
   ): Promise<InicioPagamentoIntegrado> {
     const items = cart.map((i) => ({
       productId: i.productId,
@@ -415,15 +474,32 @@ export function PdvClient({
       quantidade: i.quantidade,
       selecoes: i.selecoes,
     }));
+    // Venda do totem recebida no caixa (Modo B): cobra a venda existente no
+    // PSP em vez de criar uma nova. Método único — misto no totem segue manual.
+    if (vendaTotem) {
+      return iniciarRecebimentoTotemIntegradoAction({
+        saleId: vendaTotem.id,
+        siteId,
+        customerId: cliente?.id ?? null,
+        items,
+        maiorIdadeConfirmada: maiorIdade,
+        cpfNota: opts.cpfNota ?? null,
+        metodo,
+        parcelas: opts.parcelas ?? 1,
+        terminalId: opts.terminalId ?? null,
+      });
+    }
     return iniciarPagamentoIntegradoAction({
       siteId,
       customerId: cliente?.id ?? null,
       items,
       descontoVenda: 0,
       maiorIdadeConfirmada: maiorIdade,
+      cpfNota: opts.cpfNota ?? null,
       metodo,
       parcelas: opts.parcelas ?? 1,
       terminalId: opts.terminalId ?? null,
+      pagamentos: opts.pagamentos,
     });
   }
 
@@ -483,6 +559,16 @@ export function PdvClient({
 
   return (
     <>
+      {!online && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center justify-center gap-2 rounded-[var(--radius)] border border-warn/40 bg-warn-soft px-3 py-1.5 text-sm font-medium text-warn"
+        >
+          <WifiOff size={15} />
+          Sem conexão — pagamento e nota fiscal ficam indisponíveis até a rede voltar.
+        </div>
+      )}
       <div className="flex flex-col gap-2.5 pt-2 lg:h-full lg:min-h-0">
         <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_330px] lg:overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]">
           {/* ── Venda atual ── */}
@@ -832,6 +918,15 @@ export function PdvClient({
                 </select>
               )}
               <button
+                onClick={() => setHistoricoOpen(true)}
+                title="Últimas vendas — reimprimir cupom ou estornar"
+                aria-label="Últimas vendas"
+                className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-sm font-semibold text-ink transition-colors hover:border-brand hover:text-brand"
+              >
+                <History size={16} />
+                <span className="hidden sm:inline">Vendas</span>
+              </button>
+              <button
                 onClick={() => setSheetOpen(true)}
                 className={cn(
                   "flex flex-1 cursor-pointer items-center justify-between gap-3 rounded-full border py-1.5 pl-4 pr-4 transition-colors",
@@ -1037,11 +1132,20 @@ export function PdvClient({
               : null
           }
           metodosAtivos={metodosAtivos}
-          integracao={vendaTotem ? null : integracao}
+          integracao={integracao}
+          mistoIntegradoDisponivel={!vendaTotem}
+          pedeCpfNota={emiteNfce}
           pending={pending}
           onClose={() => setPagamentoOpen(false)}
           onReceber={finalizar}
           onIniciarIntegrado={iniciarIntegrado}
+          onAbortarIntegrado={
+            vendaTotem
+              ? (pid) => {
+                  abortarRecebimentoTotemAction(pid).catch(() => {});
+                }
+              : undefined
+          }
           onConcluidoIntegrado={concluirIntegrado}
         />
       )}
@@ -1057,6 +1161,17 @@ export function PdvClient({
         fundoTrocoPadrao={fundoTrocoPadrao}
         limiteGaveta={limiteGaveta}
       />
+
+      {historicoOpen && (
+        <HistoricoVendasModal
+          siteId={siteId}
+          onClose={() => setHistoricoOpen(false)}
+          onEstornado={() => {
+            setBump((b) => b + 1);
+            router.refresh();
+          }}
+        />
+      )}
 
       {/* Nota da última venda — canto inferior, sem roubar o foco do caixa. */}
       {vendaFiscal && (

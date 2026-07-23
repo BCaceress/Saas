@@ -1,5 +1,5 @@
 import "server-only";
-import type { PagamentoProvider, StatusCobranca } from "./types";
+import { SEM_DETALHE, type PagamentoProvider, type StatusCobranca } from "./types";
 
 // ============================================================
 // Provedor SIMULADO — desenvolvimento/demonstração sem conta em PSP.
@@ -51,8 +51,22 @@ export function simuladoProvider(): PagamentoProvider {
     },
     async consultarIntencao(externalId) {
       const s = statusPorIdade(externalId, CARTAO_APROVA_MS);
-      return s === "PENDENTE" ? "PROCESSANDO" : s;
+      if (s === "PENDENTE") return { status: "PROCESSANDO" as StatusCobranca };
+      // Devolve detalhe como um adquirente real devolveria — é o que faz o
+      // grupo `card` da NFC-e ser exercitado sem conta em PSP.
+      return {
+        status: s,
+        detalhe: {
+          ...SEM_DETALHE,
+          bandeira: "MASTERCARD",
+          parcelas: 1,
+          nsu: externalId.slice(-6),
+          autorizacao: "SIM123",
+          pspPaymentId: externalId,
+        },
+      };
     },
     async cancelarIntencao() {},
+    async estornarCobranca() {},
   };
 }

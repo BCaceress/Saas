@@ -12,7 +12,8 @@ export type WidgetId =
   | "insights"
   | "sem_giro"
   | "categorias"
-  | "por_site";
+  | "por_site"
+  | "fiscal";
 
 export const WIDGET_ORDER_DEFAULT: WidgetId[] = [
   "tendencia",
@@ -23,6 +24,7 @@ export const WIDGET_ORDER_DEFAULT: WidgetId[] = [
   "sem_giro",
   "categorias",
   "por_site",
+  "fiscal",
 ];
 
 export const WIDGET_LABEL: Record<WidgetId, string> = {
@@ -34,6 +36,7 @@ export const WIDGET_LABEL: Record<WidgetId, string> = {
   sem_giro: "Produtos sem giro",
   categorias: "Categorias",
   por_site: "Faturamento por ponto",
+  fiscal: "Situação fiscal",
 };
 
 /** Junta a ordem salva com widgets novos (não presentes na preferência salva ainda), no final. */

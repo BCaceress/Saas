@@ -4,6 +4,7 @@ import Link from "next/link";
 import { withTenant, type ActiveTenant } from "@/lib/current-tenant";
 import { db } from "@/lib/prisma";
 import { listSites } from "@/lib/sites";
+import { featureAtiva } from "@/lib/planos";
 import { brl } from "@/lib/utils";
 import { BarList } from "@/components/charts/bar-list";
 import { ChartCard } from "@/components/charts/chart-card";
@@ -29,6 +30,7 @@ import {
   feedbackInsights,
   produtosSemGiro,
   categoriasComparativo,
+  situacaoFiscal,
 } from "./_data";
 import { buildInsights, resumoAssistente, type Insight } from "./_insights";
 import { AssistantPanel } from "./_assistant-panel";
@@ -39,6 +41,7 @@ import { InsightCards } from "./_insight-cards";
 import { ProductCards, MarginProducts } from "./_product-cards";
 import { DeadStock } from "./_dead-stock";
 import { Categories } from "./_categories";
+import { FiscalStatus } from "./_fiscal";
 import type { WidgetId } from "./_widgets";
 
 /**
@@ -86,6 +89,7 @@ const carregarHistorico = cache((d: DashCtx) => historicoDiario(d.prevRange, d.s
 const carregarSemGiro = cache((d: DashCtx) => produtosSemGiro(d.siteId, d.paradoDias));
 const carregarCategoriasComp = cache((d: DashCtx) => categoriasComparativo(d.range, d.prevRange, d.siteId));
 const carregarFeedback = cache((_d: DashCtx) => feedbackInsights());
+const carregarFiscal = cache((d: DashCtx) => situacaoFiscal(d.range, d.siteId));
 
 // Sem PDV não há venda com forma de pagamento — devolver vazio evita a query.
 const carregarMix = cache((d: DashCtx) => (d.pdv ? mixPagamento(d.range, d.siteId) : Promise.resolve([])));
@@ -308,6 +312,11 @@ async function PorSite({ d }: { d: DashCtx }) {
   );
 }
 
+async function FiscalWidget({ d }: { d: DashCtx }) {
+  const s = await dentro(d, () => carregarFiscal(d));
+  return <FiscalStatus s={s} periodoLabel={d.periodoLabel} />;
+}
+
 const WIDGETS: Record<WidgetId, (props: { d: DashCtx }) => ReactNode | Promise<ReactNode>> = {
   tendencia: Tendencia,
   mix: MixOuRuptura,
@@ -317,6 +326,7 @@ const WIDGETS: Record<WidgetId, (props: { d: DashCtx }) => ReactNode | Promise<R
   sem_giro: SemGiro,
   categorias: CategoriasWidget,
   por_site: PorSite,
+  fiscal: FiscalWidget,
 };
 
 /**
@@ -326,6 +336,9 @@ const WIDGETS: Record<WidgetId, (props: { d: DashCtx }) => ReactNode | Promise<R
  */
 export function WidgetSlot({ id, d }: { id: WidgetId; d: DashCtx }) {
   if (id === "por_site" && !d.multiSite) return null;
+  // Sem módulo fiscal ligado não há documento nenhum — o bloco não renderiza e
+  // a consulta nunca sai.
+  if (id === "fiscal" && !featureAtiva(d.ctx.tenant, "fiscal")) return null;
   const Widget = WIDGETS[id];
   return (
     <Suspense fallback={<SkChart />}>

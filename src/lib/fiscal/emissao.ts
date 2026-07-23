@@ -1,21 +1,20 @@
 import "server-only";
 import { basePrisma, txComTenant } from "@/lib/prisma";
-import { carregarConfigFiscal, proximoNumero, CRT_POR_REGIME, usaCsosn } from "./index";
-import { fiscalSimuladoProvider } from "./simulado";
+import { whereFeature } from "@/lib/planos";
+import {
+  buildProvider,
+  carregarConfigFiscal,
+  proximoNumero,
+  CRT_POR_REGIME,
+  usaCsosn,
+} from "./index";
 import type {
   DocumentoParaEmitir,
-  FiscalProvider,
   ItemFiscal,
   PagamentoFiscal,
   ResultadoFiscal,
 } from "./types";
-import type {
-  FiscalStatus,
-  PaymentMethod,
-  FiscalProviderKind,
-  FiscalAmbiente,
-  Prisma,
-} from "@/generated/prisma";
+import type { FiscalStatus, PaymentMethod, Prisma } from "@/generated/prisma";
 
 // ============================================================
 // Emissão de NFC-e a partir da venda. ASSÍNCRONA POR DESENHO.
@@ -46,17 +45,6 @@ const num = (v: unknown): number => (v == null ? 0 : Number(v));
  */
 const comTenant = <T>(tenantId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>) =>
   txComTenant(tenantId, fn);
-
-function buildProvider(cfg: {
-  provider: FiscalProviderKind;
-  apiToken: string | null;
-  ambiente: FiscalAmbiente;
-}): FiscalProvider {
-  if (cfg.provider === "SIMULADO") return fiscalSimuladoProvider();
-  throw new Error(
-    `Provedor fiscal ${cfg.provider} ainda não implementado. Use SIMULADO em desenvolvimento.`,
-  );
-}
 
 /** tPag da SEFAZ a partir do método de pagamento do PDV. */
 const FORMA_POR_METODO: Record<PaymentMethod, PagamentoFiscal["forma"]> = {
@@ -103,6 +91,7 @@ export async function enfileirarNfceDaVenda(
         desconto: true,
         total: true,
         customerId: true,
+        cpfNota: true,
         items: {
           select: {
             productId: true,
@@ -256,7 +245,10 @@ export async function enfileirarNfceDaVenda(
         saleId: venda.id,
         customerId: venda.customerId,
         destNome: cliente?.nome ?? null,
-        destDocumento: cliente?.cpf ?? cliente?.cnpj ?? null,
+        // Cliente identificado tem prioridade; senão, o "CPF na nota" digitado
+        // no fechamento. Consumidor anônimo continua sem destinatário (NFC-e
+        // aceita — o caso normal do balcão).
+        destDocumento: cliente?.cpf ?? cliente?.cnpj ?? venda.cpfNota ?? null,
         valorProdutos: num(venda.subtotal),
         valorDesconto: num(venda.desconto),
         valorTotal: num(venda.total),
@@ -367,7 +359,15 @@ async function montarDocumento(
     ? await comTenant(tenantId, (tx) =>
         tx.payment.findMany({
           where: { saleId: doc.saleId as string, status: "CONFIRMADO" },
-          select: { metodo: true, valor: true, troco: true },
+          select: {
+            metodo: true,
+            valor: true,
+            troco: true,
+            bandeira: true,
+            autorizacao: true,
+            adquirenteCnpj: true,
+            gateway: true,
+          },
         }),
       )
     : [];
@@ -433,13 +433,26 @@ async function montarDocumento(
         }
       : null,
     itens,
-    pagamentos: pagamentos.map(
-      (p): PagamentoFiscal => ({
+    pagamentos: pagamentos.map((p): PagamentoFiscal => {
+      const ehCartao = p.metodo === "CARTAO_CREDITO" || p.metodo === "CARTAO_DEBITO";
+      return {
         forma: FORMA_POR_METODO[p.metodo],
         valor: num(p.valor),
         troco: p.troco == null ? undefined : num(p.troco),
-      }),
-    ),
+        // tPag 03/04 exige o grupo card. O gateway marca a integração: valor
+        // que passou pela API é tpIntegra 1; maquininha solta é 2.
+        ...(ehCartao
+          ? {
+              cartao: {
+                bandeira: p.bandeira,
+                autorizacao: p.autorizacao,
+                credenciadoraCnpj: p.adquirenteCnpj,
+                integrado: !!p.gateway,
+              },
+            }
+          : {}),
+      };
+    }),
     valorProdutos: num(doc.valorProdutos),
     valorDesconto: num(doc.valorDesconto),
     valorTotal: num(doc.valorTotal),
@@ -626,14 +639,18 @@ export async function processarFilaFiscal(
   return { processados: docs.length, autorizados, pendentes };
 }
 
-/** Fila de todos os tenants com módulo fiscal ligado — usado pelo job. */
+/** Fila dos tenants com o fiscal contratado E ligado — usado pelo job. */
 export async function processarFilaFiscalTodos(): Promise<{
   tenants: number;
   processados: number;
   autorizados: number;
 }> {
   const tenants = await basePrisma.tenant.findMany({
-    where: { moduloFiscal: true, fiscalConfig: { ativo: true } },
+    where: {
+      moduloFiscal: true,
+      fiscalConfig: { ativo: true },
+      ...whereFeature("fiscal"),
+    },
     select: { id: true },
   });
 

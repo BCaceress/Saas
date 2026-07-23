@@ -343,3 +343,57 @@ export async function categoriasComparativo(range: Range, prevRange: Range, site
     }))
     .sort((a, b) => b.receita - a.receita);
 }
+
+// ── Situação fiscal ─────────────────────────────────────────
+
+export type SituacaoFiscal = {
+  autorizadas: number;
+  /** Na fila: pendente, processando ou emitida em contingência. */
+  emAndamento: number;
+  /** Rejeitada/denegada — exige ação do operador. */
+  travadas: number;
+  /** Notas de fornecedor esperando de-para de itens. */
+  entradasPendentes: number;
+  /** Dias até o certificado A1 mais próximo do vencimento. */
+  certificadoDias: number | null;
+  certificadoLoja: string | null;
+};
+
+/**
+ * Panorama fiscal do período. Existe para uma pergunta só: "tem nota travada?".
+ * Rejeição silenciosa é o pior modo de falha do módulo — a venda aconteceu e o
+ * documento não saiu, e ninguém descobre até o contador reclamar.
+ */
+export async function situacaoFiscal(range: Range, siteId: SiteFilter): Promise<SituacaoFiscal> {
+  const doSite = siteId ? { siteId } : {};
+
+  const [porStatus, entradasPendentes, emitentes] = await Promise.all([
+    db.fiscalDocument.groupBy({
+      by: ["status"],
+      where: { ...doSite, direcao: "SAIDA", createdAt: { gte: range.inicio, lt: range.fim } },
+      _count: { _all: true },
+    }),
+    db.fiscalInbound.count({ where: { ...doSite, status: "PENDENTE" } }),
+    db.fiscalEmitente.findMany({
+      where: { ...doSite, certificadoValidade: { not: null } },
+      select: { certificadoValidade: true, site: { select: { nome: true } } },
+      orderBy: { certificadoValidade: "asc" },
+      take: 1,
+    }),
+  ]);
+
+  const total = (...alvos: string[]) =>
+    porStatus.filter((g) => alvos.includes(g.status)).reduce((s, g) => s + g._count._all, 0);
+
+  const validade = emitentes[0]?.certificadoValidade ?? null;
+
+  return {
+    autorizadas: total("AUTORIZADO"),
+    emAndamento: total("PENDENTE", "PROCESSANDO", "CONTINGENCIA"),
+    travadas: total("REJEITADO", "DENEGADO"),
+    entradasPendentes,
+    certificadoDias:
+      validade == null ? null : Math.floor((validade.getTime() - Date.now()) / DIA),
+    certificadoLoja: emitentes[0]?.site.nome ?? null,
+  };
+}

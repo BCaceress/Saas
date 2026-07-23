@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
+import { featureAtiva } from "@/lib/planos";
 import { getActiveSiteId } from "@/lib/sites";
 import { listSitePaymentMethods } from "@/lib/vendas";
 import { db } from "@/lib/prisma";
@@ -13,7 +14,7 @@ export default async function TotemPage() {
   const ctx = await requireActiveTenant();
   // Fora do grupo (app): os guards do shell não valem aqui.
   if (!ctx.tenant.onboardingDone) redirect("/onboarding");
-  if (!ctx.tenant.moduloAutoatendimento) redirect("/inicio");
+  if (!featureAtiva(ctx.tenant, "autoatendimento")) redirect("/inicio");
 
   return runWithTenant(ctx.tenant.id, async () => {
     const siteId = await getActiveSiteId();

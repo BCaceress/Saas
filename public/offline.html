@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sem conexão — NoHub</title>
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: #f6f7f9;
+        color: #16181d;
+        padding: 24px;
+      }
+      @media (prefers-color-scheme: dark) {
+        body { background: #16181d; color: #e7e9ee; }
+        .card { background: #1e2128 !important; border-color: #2b2f38 !important; }
+        .hint { color: #9aa0ab !important; }
+      }
+      .card {
+        max-width: 26rem;
+        width: 100%;
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 16px;
+        padding: 32px 28px;
+        text-align: center;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.06);
+      }
+      .icon {
+        width: 56px; height: 56px;
+        margin: 0 auto 16px;
+        display: grid; place-items: center;
+        border-radius: 999px;
+        background: #fff7ed; color: #c2410c;
+      }
+      h1 { font-size: 1.25rem; margin: 0 0 8px; }
+      p { margin: 0; line-height: 1.5; }
+      .hint { color: #6b7280; font-size: 0.9rem; margin-top: 14px; }
+      button {
+        margin-top: 22px;
+        cursor: pointer;
+        border: 0;
+        border-radius: 10px;
+        background: #0891b2;
+        color: #fff;
+        font-weight: 600;
+        font-size: 0.95rem;
+        padding: 12px 22px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="icon" aria-hidden="true">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M1 1l22 22" />
+          <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" />
+          <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" />
+          <path d="M10.71 5.05A16 16 0 0 1 22.58 9" />
+          <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" />
+          <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+          <line x1="12" y1="20" x2="12.01" y2="20" />
+        </svg>
+      </div>
+      <h1>Sem conexão</h1>
+      <p>O NoHub precisa de internet para carregar esta tela.</p>
+      <p class="hint">Assim que a rede voltar, é só recarregar. Vendas em andamento no caixa continuam salvas no aparelho.</p>
+      <button onclick="location.reload()">Tentar de novo</button>
+    </div>
+  </body>
+</html>

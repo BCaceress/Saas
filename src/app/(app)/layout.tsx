@@ -6,6 +6,7 @@ import { caixaAbertoDoOperador, relatorioCaixa } from "@/lib/caixa";
 import { listSitePaymentMethods } from "@/lib/vendas";
 import { signOutAction } from "./actions";
 import { PERFIL_LABEL, isAdmin, type Acesso } from "@/lib/permissoes";
+import { togglesEfetivos, PLANOS } from "@/lib/planos";
 
 function trialDaysLeft(trialEndsAt: Date | null): number | null {
   if (!trialEndsAt) return null;
@@ -22,12 +23,20 @@ function cargoLabel(acessos: Acesso[]): string {
   return perfis.map((p) => PERFIL_LABEL[p]).join(" · ");
 }
 
-const PLANO_LABEL: Record<string, string> = {
-  TRIAL: "Teste",
-  ACTIVE: "Pro",
+const STATUS_LABEL: Record<string, string> = {
   PAST_DUE: "Pendente",
+  SUSPENDED: "Suspenso",
   CANCELED: "Cancelado",
 };
+
+/**
+ * Selo do topo: em teste ou com pendência, o STATUS é a informação urgente;
+ * assinatura em dia mostra o plano contratado, que é o que dá upsell.
+ */
+function planoLabel(tenant: { plano: keyof typeof PLANOS; status: string }): string {
+  if (tenant.status === "TRIAL") return "Teste";
+  return STATUS_LABEL[tenant.status] ?? PLANOS[tenant.plano].nome;
+}
 
 export default async function ShellLayout({
   children,
@@ -44,7 +53,10 @@ export default async function ShellLayout({
 
   const vocabularioPonto = tenant.tipoOperacao === "AUTONOMO" ? "Ponto" : "Loja";
 
-  const sessaoAberta = tenant.moduloPdv
+  // Plano + toggle. Ler o toggle cru abriria módulo de graça depois de downgrade.
+  const toggles = togglesEfetivos(tenant);
+
+  const sessaoAberta = toggles.moduloPdv
     ? await caixaAbertoDoOperador(tenant.id, user.id ?? "")
     : null;
 
@@ -66,16 +78,10 @@ export default async function ShellLayout({
 
   return (
     <AppShell
-      toggles={{
-        moduloPdv: tenant.moduloPdv,
-        moduloComodato: tenant.moduloComodato,
-        moduloRota: tenant.moduloRota,
-        moduloAutoatendimento: tenant.moduloAutoatendimento,
-        moduloFiscal: tenant.moduloFiscal,
-      }}
+      toggles={toggles}
       acessos={acessos}
       tenantNome={tenant.nome}
-      planoLabel={PLANO_LABEL[tenant.status] ?? tenant.status}
+      planoLabel={planoLabel(tenant)}
       userNome={user.name ?? ""}
       userEmail={user.email ?? ""}
       userCargo={cargoLabel(acessos)}

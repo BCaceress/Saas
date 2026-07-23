@@ -2,6 +2,17 @@ import "server-only";
 import { redirect } from "next/navigation";
 import { requireActiveTenant, type ActiveTenant } from "./current-tenant";
 import { podeEmAlguma, can, SemPermissaoError, type Permissao } from "./permissoes";
+import {
+  featureAtiva,
+  temFeature,
+  togglesEfetivos,
+  cabeMais,
+  limitesDe,
+  mensagemLimite,
+  PlanoInsuficienteError,
+  type Feature,
+  type Limites,
+} from "./planos";
 import { rotaInicial } from "@/components/app/nav-config";
 
 // ============================================================
@@ -50,12 +61,55 @@ export async function requirePermissao(permissao: Permissao): Promise<ActiveTena
   const ctx = await requireActiveTenant();
   if (podeEmAlguma(ctx.acessos, permissao)) return ctx;
 
-  const destino = rotaInicial(ctx.acessos, {
-    moduloPdv: ctx.tenant.moduloPdv,
-    moduloComodato: ctx.tenant.moduloComodato,
-    moduloRota: ctx.tenant.moduloRota,
-    moduloAutoatendimento: ctx.tenant.moduloAutoatendimento,
-    moduloFiscal: ctx.tenant.moduloFiscal,
-  });
-  redirect(destino ?? "/sem-acesso");
+  redirect(rotaInicial(ctx.acessos, togglesEfetivos(ctx.tenant)) ?? "/sem-acesso");
+}
+
+// ============================================================
+// Guard de PLANO. Permissão responde "essa pessoa pode?"; plano responde "essa
+// conta contratou?". São perguntas independentes — um administrador tem todas
+// as permissões e mesmo assim não abre um módulo fora do plano.
+// ============================================================
+
+/**
+ * Exige a feature ATIVA (plano libera + operador ligou) para abrir a tela.
+ * Manda para a tela de planos quando falta contrato — é upsell, não erro — e
+ * para Módulos quando só falta ligar o toggle.
+ */
+export async function requireFeature(feature: Feature): Promise<ActiveTenant> {
+  const ctx = await requireActiveTenant();
+  if (featureAtiva(ctx.tenant, feature)) return ctx;
+  redirect(temFeature(ctx.tenant, feature) ? "/configuracoes/modulos" : "/configuracoes/plano");
+}
+
+/**
+ * Guard de plano para server action. Lança `PlanoInsuficienteError`, que a
+ * action converte em toast com o texto de upgrade.
+ */
+export function assertFeature(ctx: ActiveTenant, feature: Feature): void {
+  if (!featureAtiva(ctx.tenant, feature)) throw new PlanoInsuficienteError(feature);
+}
+
+/** Permissão + plano numa chamada só — o par que toda action de módulo pago precisa. */
+export async function guardFeature(
+  feature: Feature,
+  permissao: Permissao,
+  siteId?: string | null,
+): Promise<ActiveTenant> {
+  const ctx = await guardAction(permissao, siteId);
+  assertFeature(ctx, feature);
+  return ctx;
+}
+
+/**
+ * Exige que ainda caiba mais um (loja, usuário, produto). `usados` é a contagem
+ * atual — conte DENTRO da mesma transação para não passar do limite em corrida.
+ */
+export function assertLimite(
+  ctx: ActiveTenant,
+  chave: keyof Limites,
+  usados: number,
+): void {
+  if (cabeMais(ctx.tenant, chave, usados)) return;
+  const limite = limitesDe(ctx.tenant)[chave] ?? 0;
+  throw new PlanoInsuficienteError(null, mensagemLimite(chave, limite));
 }

@@ -11,6 +11,8 @@ import {
   cancelarVenda,
   confirmarPagamentoVenda,
   receberVendaTotem,
+  prepararRecebimentoTotemIntegrado,
+  reverterRecebimentoTotem,
 } from "@/lib/vendas";
 import { sessaoAtual, caixaAbertoNoSite } from "@/lib/caixa";
 import { db } from "@/lib/prisma";
@@ -71,6 +73,17 @@ const pagamentoSchema = z.object({
   troco: z.number().nonnegative().optional().nullable(),
 });
 
+// "CPF na nota": opcional, mas se vier tem que ser um CPF de 11 dígitos —
+// mandar lixo ao dest da NFC-e é rejeição garantida na SEFAZ. Normaliza para só
+// dígitos; vazio vira null (consumidor anônimo, o caso normal do balcão).
+const cpfNotaField = z
+  .string()
+  .optional()
+  .nullable()
+  .transform((v) => (v ?? "").replace(/\D/g, ""))
+  .refine((v) => v === "" || v.length === 11, "CPF na nota inválido — informe 11 dígitos.")
+  .transform((v) => (v === "" ? null : v));
+
 // ── PDV: finaliza a venda completa numa ação (carrinho client-side) ──
 const finalizarPdvSchema = z.object({
   siteId: z.string().min(1, "Selecione o site."),
@@ -78,6 +91,7 @@ const finalizarPdvSchema = z.object({
   items: z.array(itemSchema).min(1, "Adicione ao menos um item."),
   descontoVenda: z.number().nonnegative().default(0),
   maiorIdadeConfirmada: z.boolean().default(false),
+  cpfNota: cpfNotaField,
   pagamentos: z.array(pagamentoSchema).min(1, "Registre ao menos um pagamento."),
 });
 
@@ -97,6 +111,7 @@ export async function finalizarVendaPdvAction(input: z.input<typeof finalizarPdv
       items: d.items,
       descontoVenda: d.descontoVenda,
       maiorIdadeConfirmada: d.maiorIdadeConfirmada,
+      cpfNota: d.cpfNota,
       pagamentos: d.pagamentos.map((p) => ({ ...p, status: "CONFIRMADO" as const })),
     });
     await finalizarVenda(tid, saleId, userId);
@@ -129,6 +144,12 @@ const iniciarIntegradoSchema = finalizarPdvSchema.omit({ pagamentos: true }).ext
   metodo: z.enum(["PIX", "CARTAO_CREDITO", "CARTAO_DEBITO"]),
   parcelas: z.number().int().min(1).max(12).default(1),
   terminalId: z.string().optional().nullable(),
+  /**
+   * MISTO: a divisão completa da venda. A perna cujo método == `metodo` (o
+   * cartão) nasce PENDENTE e vai à maquininha; as demais (dinheiro/PIX/…)
+   * nascem CONFIRMADO. Ausente = venda de um método só (o caminho normal).
+   */
+  pagamentos: z.array(pagamentoSchema).optional(),
 });
 
 export type InicioPagamentoIntegrado =
@@ -157,6 +178,18 @@ export async function iniciarPagamentoIntegradoAction(
     if (ehPix && !integracao.pixAutomatico) return { integrado: false };
     if (!ehPix && !integracao.cartaoIntegrado) return { integrado: false };
 
+    // MISTO: divide a venda em várias pernas. A perna do cartão (== d.metodo)
+    // fica PENDENTE para ir à maquininha; o resto entra CONFIRMADO. Exatamente
+    // UMA perna pendente — duas travariam a venda (nunca cobririam o total).
+    const ehMisto = !!d.pagamentos && d.pagamentos.length > 0;
+    if (ehMisto) {
+      if (ehPix) throw new Error("No misto, a perna integrada é sempre o cartão.");
+      const pendentes = d.pagamentos!.filter((p) => p.metodo === d.metodo);
+      if (pendentes.length !== 1) {
+        throw new Error("O misto integrado aceita exatamente uma perna de cartão na maquininha.");
+      }
+    }
+
     const saleId = await criarVenda(tid, {
       siteId: d.siteId,
       origem: "PDV",
@@ -166,7 +199,18 @@ export async function iniciarPagamentoIntegradoAction(
       items: d.items,
       descontoVenda: d.descontoVenda,
       maiorIdadeConfirmada: d.maiorIdadeConfirmada,
-      pagamentoIntegralPendente: d.metodo,
+      cpfNota: d.cpfNota,
+      ...(ehMisto
+        ? {
+            pagamentos: d.pagamentos!.map((p) => ({
+              metodo: p.metodo,
+              valor: p.valor,
+              troco: p.troco ?? null,
+              // só a perna do cartão espera a maquininha; as outras já entraram
+              status: p.metodo === d.metodo ? ("PENDENTE" as const) : ("CONFIRMADO" as const),
+            })),
+          }
+        : { pagamentoIntegralPendente: d.metodo }),
     });
 
     try {
@@ -192,6 +236,68 @@ export async function iniciarPagamentoIntegradoAction(
   });
 }
 
+// Modo B integrado: cobra a venda do totem (já existente) no PSP em vez de
+// receber manual. Prepara a venda (itens/sessão + perna PENDENTE) e dispara a
+// cobrança; se a cobrança não sai, devolve a venda para a fila.
+const iniciarTotemIntegradoSchema = z.object({
+  saleId: z.string().min(1),
+  siteId: z.string().min(1),
+  customerId: z.string().optional().nullable(),
+  items: z.array(itemSchema).min(1, "Adicione ao menos um item."),
+  maiorIdadeConfirmada: z.boolean().default(false),
+  cpfNota: cpfNotaField,
+  metodo: z.enum(["PIX", "CARTAO_CREDITO", "CARTAO_DEBITO"]),
+  parcelas: z.number().int().min(1).max(12).default(1),
+  terminalId: z.string().optional().nullable(),
+});
+
+export async function iniciarRecebimentoTotemIntegradoAction(
+  input: z.input<typeof iniciarTotemIntegradoSchema>
+): Promise<InicioPagamentoIntegrado> {
+  const d = iniciarTotemIntegradoSchema.parse(input);
+  return txp("venda.registrar", d.siteId, async (tid, userId) => {
+    const sessao = await sessaoAtual(tid, d.siteId, userId);
+    if (!sessao) throw new Error("Caixa fechado — abra o caixa para receber.");
+
+    const integracao = await integracaoPdv(tid, d.siteId);
+    const ehPix = d.metodo === "PIX";
+    if (ehPix && !integracao.pixAutomatico) return { integrado: false };
+    if (!ehPix && !integracao.cartaoIntegrado) return { integrado: false };
+
+    await prepararRecebimentoTotemIntegrado(tid, {
+      saleId: d.saleId,
+      cashSessionId: sessao.id,
+      operatorUserId: userId,
+      customerId: d.customerId ?? null,
+      items: d.items,
+      maiorIdadeConfirmada: d.maiorIdadeConfirmada,
+      cpfNota: d.cpfNota,
+      metodo: d.metodo,
+    });
+
+    try {
+      if (ehPix) {
+        const cobranca = await criarCobrancaPixVenda(tid, d.saleId);
+        if (!cobranca) throw new Error("Provedor de PIX indisponível.");
+        return { integrado: true, tipo: "PIX", saleId: d.saleId, ...cobranca };
+      }
+      const terminalId = d.terminalId ?? integracao.terminais[0]?.id;
+      if (!terminalId) throw new Error("Nenhuma maquininha vinculada a esta loja.");
+      const intencao = await criarIntencaoCartaoVenda(tid, d.saleId, {
+        terminalId,
+        tipo: d.metodo === "CARTAO_CREDITO" ? "CREDITO" : "DEBITO",
+        parcelas: d.parcelas,
+      });
+      if (!intencao) throw new Error("Provedor de cartão indisponível.");
+      return { integrado: true, tipo: "CARTAO", saleId: d.saleId, paymentId: intencao.paymentId };
+    } catch (e) {
+      // cobrança não saiu — devolve a venda do totem para a fila (Modo B)
+      await reverterRecebimentoTotem(tid, d.saleId).catch(() => {});
+      throw e;
+    }
+  });
+}
+
 export async function statusPagamentoIntegradoAction(
   paymentId: string
 ): Promise<{ status: PaymentStatus; erroFinalizacao?: string }> {
@@ -208,6 +314,23 @@ export async function cancelarPagamentoIntegradoAction(paymentId: string) {
       cancelarVendaTambem: true,
       createdBy: userId,
     });
+    ok();
+  });
+}
+
+// Abort do recebimento integrado de uma venda do TOTEM: cancela a cobrança no
+// PSP mas NÃO cancela a venda — ela volta à fila (Modo B) para nova tentativa.
+// Cancelar a venda a mandaria para CANCELADA, e o retry no mesmo pedido falharia.
+export async function abortarRecebimentoTotemAction(paymentId: string) {
+  return tx(async (tid) => {
+    const p = await db.payment.findFirst({
+      where: { id: paymentId },
+      select: { saleId: true },
+    });
+    await cancelarPagamentoIntegrado(tid, paymentId, { cancelarVendaTambem: false }).catch(
+      () => {},
+    );
+    if (p) await reverterRecebimentoTotem(tid, p.saleId);
     ok();
   });
 }
@@ -258,8 +381,11 @@ export async function confirmarPagamentoTotemAction(saleId: string) {
 export async function cancelarVendaAction(saleId: string) {
   // Cancelar não é registrar: some com receita já lançada.
   return txpVenda("venda.cancelar", saleId, async (tid, userId) => {
-    await cancelarVenda(tid, saleId, userId);
+    const r = await cancelarVenda(tid, saleId, userId);
     ok();
+    // Estorno que o PSP recusou não pode morrer no log — quem cancelou tem
+    // que sair da tela sabendo que precisa devolver pelo painel.
+    return { pendenciasEstorno: r.pendenciasEstorno };
   });
 }
 
@@ -469,6 +595,7 @@ const receberTotemSchema = z.object({
   customerId: z.string().optional().nullable(),
   items: z.array(itemSchema).min(1, "Adicione ao menos um item."),
   maiorIdadeConfirmada: z.boolean().default(false),
+  cpfNota: cpfNotaField,
   pagamentos: z.array(pagamentoSchema).min(1, "Registre ao menos um pagamento."),
 });
 
@@ -485,9 +612,69 @@ export async function receberVendaTotemAction(input: z.input<typeof receberTotem
       customerId: d.customerId ?? null,
       items: d.items,
       maiorIdadeConfirmada: d.maiorIdadeConfirmada,
+      cpfNota: d.cpfNota,
       pagamentos: d.pagamentos.map((p) => ({ ...p, status: "CONFIRMADO" as const })),
     });
     ok();
     return d.saleId;
+  });
+}
+
+// ── Histórico recente do PDV (para reimprimir cupom / estornar) ──
+// Vendas do próprio balcão (origem PDV), pagas na janela recente. É o espelho
+// da lista de concluídas do totem, mas para as vendas do operador — que antes
+// não tinham onde ser reimpressas nem estornadas depois do fechamento.
+
+export type VendaPdvRecente = {
+  id: string;
+  numero: string;
+  total: number;
+  metodo: string | null;
+  pagaEm: string; // ISO
+  status: "PAGA" | "CANCELADA";
+  temCupom: boolean; // NFC-e autorizada → dá para reimprimir
+};
+
+export async function pollVendasPdvAction(siteId: string): Promise<VendaPdvRecente[]> {
+  return txp("venda.registrar", siteId, async () => {
+    const desde = new Date(Date.now() - CONCLUIDA_JANELA_MS);
+    const vendas = await db.sale.findMany({
+      where: {
+        siteId,
+        origem: "PDV",
+        status: { in: ["PAGA", "CANCELADA"] },
+        // pagas recentes ou canceladas recentes (createdAt como piso barato)
+        createdAt: { gte: desde },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 15,
+      select: {
+        id: true,
+        total: true,
+        status: true,
+        paidAt: true,
+        createdAt: true,
+        payments: {
+          where: { status: "CONFIRMADO" },
+          select: { metodo: true },
+          take: 1,
+        },
+        fiscalDocs: {
+          where: { status: "AUTORIZADO" },
+          select: { id: true },
+          take: 1,
+        },
+      },
+    });
+
+    return vendas.map((s) => ({
+      id: s.id,
+      numero: numeroVenda(s.id),
+      total: num(s.total),
+      metodo: s.payments[0]?.metodo ?? null,
+      pagaEm: (s.paidAt ?? s.createdAt).toISOString(),
+      status: s.status as "PAGA" | "CANCELADA",
+      temCupom: s.fiscalDocs.length > 0,
+    }));
   });
 }
