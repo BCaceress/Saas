@@ -92,6 +92,21 @@ export type NovoPagamento = {
   valor: number;
   troco?: number | null;
   status?: "PENDENTE" | "CONFIRMADO";
+  /**
+   * Detalhe de cartão já capturado (TEF/pinpad). Diferente do fluxo integrado
+   * de nuvem (que grava o detalhe depois, no polling): no TEF o pinpad já
+   * aprovou antes de a venda existir, então o detalhe vem junto na criação.
+   */
+  detalheCartao?: {
+    gateway: string; // "TEF"
+    externalId?: string | null; // tefId
+    bandeira?: string | null;
+    parcelas?: number | null;
+    nsu?: string | null;
+    autorizacao?: string | null;
+    adquirenteCnpj?: string | null;
+    comprovante?: string | null;
+  };
 };
 
 /** Resolve preço/total de cada item no servidor (não confia no cliente). */
@@ -182,6 +197,8 @@ export async function criarVenda(
     maiorIdadeConfirmada?: boolean;
     /** "CPF na nota" digitado no fechamento (só dígitos). */
     cpfNota?: string | null;
+    /** Idempotência de venda offline: id gerado no cliente (uuid). */
+    clientId?: string | null;
     pagamentos?: NovoPagamento[];
     /** Totem/self-service: gera 1 pagamento PENDENTE pelo total calculado. */
     pagamentoIntegralPendente?: PaymentMethod;
@@ -213,6 +230,7 @@ export async function criarVenda(
         total,
         maiorIdadeConfirmada: input.maiorIdadeConfirmada ?? false,
         cpfNota: input.cpfNota || null,
+        clientId: input.clientId || null,
         items: { create: itensResolvidos.map((i) => ({ tenantId, ...i })) },
         payments: pagamentos.length
           ? {
@@ -222,6 +240,18 @@ export async function criarVenda(
                 valor: p.valor,
                 troco: p.troco ?? null,
                 status: p.status ?? "CONFIRMADO",
+                ...(p.detalheCartao
+                  ? {
+                      gateway: p.detalheCartao.gateway,
+                      externalId: p.detalheCartao.externalId ?? null,
+                      bandeira: p.detalheCartao.bandeira ?? null,
+                      parcelas: p.detalheCartao.parcelas ?? null,
+                      nsu: p.detalheCartao.nsu ?? null,
+                      autorizacao: p.detalheCartao.autorizacao ?? null,
+                      adquirenteCnpj: p.detalheCartao.adquirenteCnpj ?? null,
+                      comprovante: p.detalheCartao.comprovante ?? null,
+                    }
+                  : {}),
               })),
             }
           : undefined,
@@ -245,7 +275,12 @@ async function aplicarBaixaItem(
     selectedComponentIds?: string[];
   },
   saleId: string,
-  createdBy?: string
+  createdBy?: string,
+  // Reconciliação de venda OFFLINE: a venda física já aconteceu, então o saldo
+  // insuficiente não pode bloquear a gravação. Deixa o estoque ir a negativo
+  // (a verdade: vendeu mais do que o sistema sabia) e marca no razão para o
+  // operador reconciliar. Sem isso, a venda offline travava a fila para sempre.
+  opts: { permitirSaldoNegativo?: boolean } = {},
 ) {
   const product = await comTenant(tenantId, basePrisma.product.findFirst({
     where: { id: item.productId, tenantId },
@@ -284,7 +319,8 @@ async function aplicarBaixaItem(
       const dose = num(comp.quantidade) * qtd;
       const isUn = comp.unidade === "UN";
       const saldo = await disponibilidadeSimples(tenantId, siteId, comp.component.id);
-      if (isUn && saldo < dose) {
+      const faltou = isUn && saldo < dose;
+      if (faltou && !opts.permitirSaldoNegativo) {
         throw new Error(`Saldo insuficiente de um componente do combo — disponível: ${saldo}`);
       }
       await aplicarMovimento(
@@ -293,7 +329,12 @@ async function aplicarBaixaItem(
         comp.component.id,
         "SAIDA",
         isUn ? { deltaFechado: -dose } : { deltaAberto: -dose },
-        { saleId, custoUnitario: num(comp.component.custoMedio), createdBy }
+        {
+          saleId,
+          custoUnitario: num(comp.component.custoMedio),
+          createdBy,
+          observacao: faltou ? "Venda offline: saldo insuficiente — reconciliar" : undefined,
+        }
       );
     }
     return;
@@ -301,13 +342,15 @@ async function aplicarBaixaItem(
 
   // SIMPLES / INSUMO — baixa unidade fechada
   const saldo = await disponibilidadeSimples(tenantId, siteId, product.id);
-  if (saldo < qtd) {
+  const faltou = saldo < qtd;
+  if (faltou && !opts.permitirSaldoNegativo) {
     throw new Error(`Saldo insuficiente: ${saldo} disponíveis de "${product.nome}".`);
   }
   await aplicarMovimento(tenantId, siteId, product.id, "SAIDA", { deltaFechado: -qtd }, {
     saleId,
     custoUnitario: num(product.custoMedio),
     createdBy,
+    observacao: faltou ? "Venda offline: saldo insuficiente — reconciliar" : undefined,
   });
 }
 
@@ -315,7 +358,10 @@ async function aplicarBaixaItem(
 export async function finalizarVenda(
   tenantId: string,
   saleId: string,
-  createdBy?: string
+  createdBy?: string,
+  // Reconciliação de venda offline: a venda já ocorreu fisicamente, então o
+  // saldo insuficiente vira estoque negativo + marca no razão, sem bloquear.
+  opts: { permitirSaldoNegativo?: boolean } = {},
 ): Promise<void> {
   const sale = await comTenant(tenantId, basePrisma.sale.findFirst({
     where: { id: saleId, tenantId },
@@ -369,7 +415,8 @@ export async function finalizarVenda(
         selectedComponentIds: item.selectedComponentIds,
       },
       saleId,
-      createdBy
+      createdBy,
+      { permitirSaldoNegativo: opts.permitirSaldoNegativo },
     );
   }
 

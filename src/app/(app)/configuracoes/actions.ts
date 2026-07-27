@@ -157,6 +157,7 @@ export async function updateEstoqueConfig(input: z.input<typeof estoqueConfigSch
 const caixaConfigSchema = z.object({
   caixaFundoTroco: z.number().min(0).max(99_999).nullable(),
   caixaLimiteGaveta: z.number().min(0).max(999_999).nullable(),
+  controleEstoquePdv: z.enum(["BLOQUEAR", "CONFIRMAR", "IGNORAR"]),
 });
 
 export async function updateCaixaConfig(input: z.input<typeof caixaConfigSchema>) {
@@ -167,6 +168,7 @@ export async function updateCaixaConfig(input: z.input<typeof caixaConfigSchema>
       data: {
         caixaFundoTroco: d.caixaFundoTroco,
         caixaLimiteGaveta: d.caixaLimiteGaveta,
+        controleEstoquePdv: d.controleEstoquePdv,
       },
     });
     revalidatePath("/", "layout"); // navbar/PDV leem esses valores

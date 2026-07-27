@@ -3,7 +3,12 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
+  ArrowDown,
+  ArrowUp,
+  Boxes,
   Check,
+  Coins,
+  Copy,
   CornerDownLeft,
   CookingPot,
   Eye,
@@ -16,8 +21,11 @@ import {
   Plus,
   Search,
   ShieldCheck,
+  TrendingDown,
+  TrendingUp,
   Trash2,
   Utensils,
+  Wand2,
   X,
 } from "lucide-react";
 import { cn, brl, margem, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
@@ -63,20 +71,6 @@ type Group = {
   busca: string;
   items: GroupItem[];
 };
-
-type VariantRow = {
-  nome: string;
-  volumeMl: string;
-  fatorEscala: string;
-  precoVenda: string;
-  isDefault: boolean;
-};
-
-const VARIANT_PRESETS: { nome: string; volumeMl: string; fatorEscala: string }[] = [
-  { nome: "P", volumeMl: "300", fatorEscala: "0,75" },
-  { nome: "M", volumeMl: "400", fatorEscala: "1" },
-  { nome: "G", volumeMl: "600", fatorEscala: "1,5" },
-];
 
 const parseNum = (s: string) => {
   const x = Number(String(s).replace(",", "."));
@@ -193,6 +187,14 @@ export function ReceitaForm({
   const router = useRouter();
   const [pending, start] = useTransition();
   const [pdvOpen, setPdvOpen] = useState(false);
+  const [triedSave, setTriedSave] = useState(false);
+  const [margemAlvo, setMargemAlvo] = useState("60");
+  // URL da imagem só aparece quando o operador pede (evita ruído no caminho comum).
+  const [showImgUrl, setShowImgUrl] = useState(
+    !!receita?.imagemUrl && !receita.imagemUrl.startsWith("data:"),
+  );
+  // Impede o aviso de "sair sem salvar" logo após um save bem-sucedido.
+  const savedRef = useRef(false);
   const nomeRef = useRef<HTMLInputElement>(null);
   const imgFileRef = useRef<HTMLInputElement>(null);
 
@@ -225,16 +227,6 @@ export function ReceitaForm({
     setChannels((prev) => prev.map((r) => (r.canal === canal ? { ...r, ...patch } : r)));
 
   const [groups, setGroups] = useState<Group[]>(() => initGroups(receita));
-
-  const [variants, setVariants] = useState<VariantRow[]>(
-    receita?.variants.map((v) => ({
-      nome: v.nome,
-      volumeMl: v.volumeMl?.toString() ?? "",
-      fatorEscala: String(v.fatorEscala).replace(".", ","),
-      precoVenda: moneyToMask(v.precoVenda),
-      isDefault: v.isDefault,
-    })) ?? [],
-  );
 
   const copy = COPY[tipoReceita];
 
@@ -297,6 +289,26 @@ export function ReceitaForm({
 
   const totalItems = groups.reduce((acc, g) => acc + g.items.length, 0);
 
+  // Margem com 3 níveis semânticos: verde ≥15% · âmbar 0-15% · vermelho negativo.
+  const margemColor: "ok" | "warn" | "danger" | null =
+    margemPct === null
+      ? null
+      : margemPct < 0
+        ? "danger"
+        : margemPct < 15
+          ? "warn"
+          : "ok";
+
+  // Preço sugerido a partir da margem-alvo: preço = custo / (1 − margem/100).
+  const alvoNum = Number(String(margemAlvo).replace(",", "."));
+  const precoSugerido =
+    derived.custoTotal != null && Number.isFinite(alvoNum) && alvoNum > 0 && alvoNum < 100
+      ? derived.custoTotal / (1 - alvoNum / 100)
+      : null;
+
+  // Rótulo da disponibilidade derivada (doses/porções montáveis com o estoque atual).
+  const disponivelLabel = copy.disponivel;
+
   // ── Gestão de grupos ─────────────────────────────────────
 
   function addGroup() {
@@ -316,6 +328,35 @@ export function ReceitaForm({
 
   function removeGroup(key: string) {
     setGroups((prev) => prev.filter((g) => g.key !== key));
+  }
+
+  function moveGroup(key: string, dir: -1 | 1) {
+    setGroups((prev) => {
+      const idx = prev.findIndex((g) => g.key === key);
+      const alvo = idx + dir;
+      if (idx < 0 || alvo < 0 || alvo >= prev.length) return prev;
+      const next = [...prev];
+      [next[idx], next[alvo]] = [next[alvo], next[idx]];
+      return next;
+    });
+  }
+
+  function duplicateGroup(key: string) {
+    setGroups((prev) => {
+      const idx = prev.findIndex((g) => g.key === key);
+      if (idx < 0) return prev;
+      const g = prev[idx];
+      const copia: Group = {
+        ...g,
+        key: newKey(),
+        nome: g.nome ? `${g.nome} (cópia)` : "",
+        busca: "",
+        items: g.items.map((i) => ({ ...i })),
+      };
+      const next = [...prev];
+      next.splice(idx + 1, 0, copia);
+      return next;
+    });
   }
 
   function updateGroup(key: string, patch: Partial<Omit<Group, "key" | "items">>) {
@@ -435,45 +476,6 @@ export function ReceitaForm({
       .slice(0, 8);
   }
 
-  // ── Variações ─────────────────────────────────────────────
-
-  function addVariant(preset?: { nome: string; volumeMl: string; fatorEscala: string }) {
-    setVariants((prev) => [
-      ...prev,
-      {
-        nome: preset?.nome ?? "",
-        volumeMl: preset?.volumeMl ?? "",
-        fatorEscala: preset?.fatorEscala ?? "1",
-        precoVenda: "",
-        isDefault: prev.length === 0,
-      },
-    ]);
-  }
-  function setVariant(idx: number, patch: Partial<VariantRow>) {
-    setVariants((prev) => prev.map((v, i) => (i === idx ? { ...v, ...patch } : v)));
-  }
-  function setVariantDefault(idx: number) {
-    setVariants((prev) => prev.map((v, i) => ({ ...v, isDefault: i === idx })));
-  }
-  function removeVariant(idx: number) {
-    setVariants((prev) => {
-      const next = prev.filter((_, i) => i !== idx);
-      if (next.length && !next.some((v) => v.isDefault)) next[0].isDefault = true;
-      return next;
-    });
-  }
-  function addPresets() {
-    setVariants(
-      VARIANT_PRESETS.map((p, i) => ({
-        nome: p.nome,
-        volumeMl: p.volumeMl,
-        fatorEscala: p.fatorEscala,
-        precoVenda: "",
-        isDefault: i === 1,
-      })),
-    );
-  }
-
   // ── Imagem ────────────────────────────────────────────────
 
   function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
@@ -498,6 +500,7 @@ export function ReceitaForm({
   // ── Salvar ────────────────────────────────────────────────
 
   function salvar() {
+    setTriedSave(true);
     const fail = (msg: string) => {
       toast.error("Não foi possível salvar", msg);
     };
@@ -564,15 +567,7 @@ export function ReceitaForm({
           }))
           .filter((i) => i.quantidade > 0),
       })),
-      variants: variants
-        .map((v) => ({
-          nome: v.nome.trim(),
-          volumeMl: v.volumeMl ? parseNum(v.volumeMl) : undefined,
-          fatorEscala: parseNum(v.fatorEscala) || 1,
-          precoVenda: parseMoney(v.precoVenda) ?? undefined,
-          isDefault: v.isDefault,
-        }))
-        .filter((v) => v.nome.length > 0),
+      variants: [],
       salesChannels,
     };
 
@@ -580,9 +575,11 @@ export function ReceitaForm({
       try {
         if (receita) await updateReceita(receita.id, input);
         else await createReceita(input);
+        savedRef.current = true;
         router.push("/produtos");
         router.refresh();
       } catch (e) {
+        savedRef.current = false;
         toast.error(
           "Não foi possível salvar",
           e instanceof Error ? e.message : "Falha ao salvar.",
@@ -597,6 +594,25 @@ export function ReceitaForm({
       salvar();
     }
   }
+
+  // Aviso de sair sem salvar — só no cadastro novo com algo preenchido.
+  const isDirty =
+    mode === "new" &&
+    (nome.trim() !== "" ||
+      precoVenda !== "" ||
+      imagemUrl !== "" ||
+      modoPreparo.trim() !== "" ||
+      groups.length > 0);
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      if (savedRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
 
   // ── Render ────────────────────────────────────────────────
 
@@ -716,6 +732,108 @@ export function ReceitaForm({
                   </div>
                 </Field>
               </div>
+
+              {/* Custo & margem derivados da ficha técnica */}
+              <div className="flex flex-col gap-3 border-t border-line pt-3">
+                {derived.totalComponentes === 0 ? (
+                  <p className="flex items-center gap-1.5 text-xs text-muted">
+                    <Coins size={13} className="shrink-0 text-faint" />
+                    Adicione itens à ficha para ver custo e margem.
+                  </p>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-3 divide-x divide-line overflow-hidden rounded-(--radius-sm) border border-line bg-surface-2">
+                      <div className="px-3 py-2">
+                        <p className="font-mono text-[9px] font-semibold uppercase tracking-[0.15em] text-muted">
+                          Custo ficha
+                        </p>
+                        <p
+                          className={cn(
+                            "font-mono text-sm font-semibold tabular-nums",
+                            derived.custoIncompleto ? "text-warn" : "text-ink",
+                          )}
+                        >
+                          {derived.custoTotal != null ? brl(derived.custoTotal) : "—"}
+                        </p>
+                      </div>
+                      <div className="px-3 py-2">
+                        <p className="font-mono text-[9px] font-semibold uppercase tracking-[0.15em] text-muted">
+                          Margem
+                        </p>
+                        <p
+                          className={cn(
+                            "flex items-center gap-1 font-mono text-sm font-semibold tabular-nums",
+                            margemColor === "ok" && "text-ok",
+                            margemColor === "warn" && "text-warn",
+                            margemColor === "danger" && "text-danger",
+                            !margemColor && "text-faint",
+                          )}
+                        >
+                          {margemPct != null ? (
+                            <>
+                              {margemColor === "danger" ? (
+                                <TrendingDown size={13} className="shrink-0" />
+                              ) : (
+                                <TrendingUp size={13} className="shrink-0" />
+                              )}
+                              {margemPct}%
+                            </>
+                          ) : (
+                            "—"
+                          )}
+                        </p>
+                      </div>
+                      <div className="px-3 py-2">
+                        <p className="font-mono text-[9px] font-semibold uppercase tracking-[0.15em] text-muted">
+                          Lucro
+                        </p>
+                        <p className="font-mono text-sm font-semibold tabular-nums text-ink">
+                          {lucro != null ? brl(lucro) : "—"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {derived.custoIncompleto && (
+                      <p className="text-xs text-warn">
+                        Algum componente não tem custo cadastrado — a margem fica
+                        incompleta.
+                      </p>
+                    )}
+
+                    {/* Margem-alvo → sugere preço a partir do custo */}
+                    <div className="flex items-end gap-2">
+                      <Field label="Margem-alvo (%)" htmlFor="malvo" className="w-24">
+                        <Input
+                          id="malvo"
+                          value={margemAlvo}
+                          onChange={(e) =>
+                            setMargemAlvo(e.target.value.replace(/\D/g, "").slice(0, 2))
+                          }
+                          inputMode="numeric"
+                          placeholder="60"
+                          className="font-mono"
+                        />
+                      </Field>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        disabled={precoSugerido == null}
+                        onClick={() =>
+                          precoSugerido != null &&
+                          setPrecoVenda(moneyToMask(Math.round(precoSugerido * 100) / 100))
+                        }
+                        className="mb-0.5"
+                      >
+                        <Wand2 size={14} />
+                        {precoSugerido != null
+                          ? `Sugerir ${brl(precoSugerido)}`
+                          : "Sugerir preço"}
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </div>
             </SectionCard>
 
             {/* Imagem */}
@@ -762,12 +880,27 @@ export function ReceitaForm({
                     )}
                     <span className="text-xs text-muted">JPG, PNG ou WebP, até 2 MB.</span>
                   </div>
-                  <Input
-                    value={imagemUrl}
-                    onChange={(e) => setImagemUrl(e.target.value)}
-                    placeholder="Ou cole a URL da imagem"
-                    className="text-[12px]"
-                  />
+                  {showImgUrl ? (
+                    <Input
+                      value={imagemUrl.startsWith("data:") ? "" : imagemUrl}
+                      onChange={(e) => setImagemUrl(e.target.value)}
+                      placeholder={
+                        imagemUrl.startsWith("data:")
+                          ? "Imagem enviada do computador"
+                          : "https://…"
+                      }
+                      inputMode="url"
+                      className="font-mono text-[12px] placeholder:font-sans"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowImgUrl(true)}
+                      className="flex items-center gap-1 self-start text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
+                    >
+                      <ImagePlus size={12} /> Colar URL de imagem
+                    </button>
+                  )}
                 </div>
               </div>
             </SectionCard>
@@ -834,10 +967,18 @@ export function ReceitaForm({
               title={copy.ficha}
               badge={
                 totalItems > 0 ? (
-                  <Badge tone="brand">
-                    {groups.length} {groups.length === 1 ? "grupo" : "grupos"} · {totalItems}{" "}
-                    {totalItems === 1 ? "item" : "itens"}
-                  </Badge>
+                  <span className="ml-auto flex flex-wrap items-center gap-1.5">
+                    <Badge tone="brand">
+                      {groups.length} {groups.length === 1 ? "grupo" : "grupos"} · {totalItems}{" "}
+                      {totalItems === 1 ? "item" : "itens"}
+                    </Badge>
+                    {derived.disponibilidade > 0 && (
+                      <Badge tone="neutral">
+                        <Boxes size={11} className="shrink-0" />≈ {derived.disponibilidade}{" "}
+                        {disponivelLabel}
+                      </Badge>
+                    )}
+                  </span>
                 ) : undefined
               }
             >
@@ -862,12 +1003,18 @@ export function ReceitaForm({
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">
-                  {groups.map((g) => {
+                  {groups.map((g, gi) => {
                     const resultados = getResultados(g);
+                    const nomeInvalido = triedSave && !g.nome.trim();
+                    const vazioInvalido = triedSave && g.items.length === 0;
+                    const grupoInvalido = nomeInvalido || vazioInvalido;
                     return (
                       <div
                         key={g.key}
-                        className="overflow-visible rounded-sm border border-line bg-surface-2"
+                        className={cn(
+                          "overflow-visible rounded-sm border bg-surface-2",
+                          grupoInvalido ? "border-danger/50" : "border-line",
+                        )}
                       >
                         {/* Cabeçalho do grupo */}
                         <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2.5">
@@ -875,7 +1022,10 @@ export function ReceitaForm({
                             value={g.nome}
                             onChange={(e) => updateGroup(g.key, { nome: e.target.value })}
                             placeholder="Nome do grupo (ex.: Destilado)"
-                            className="h-8 min-w-0 flex-1 text-[13px] font-semibold"
+                            className={cn(
+                              "h-8 min-w-0 flex-1 text-[13px] font-semibold",
+                              nomeInvalido && "border-danger ring-1 ring-danger/40",
+                            )}
                           />
                           <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-ink-2">
                             <input
@@ -917,14 +1067,42 @@ export function ReceitaForm({
                               />
                             </div>
                           )}
-                          <button
-                            type="button"
-                            aria-label="Remover grupo"
-                            onClick={() => removeGroup(g.key)}
-                            className="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-faint transition-colors hover:bg-danger-soft hover:text-danger"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                          <div className="flex shrink-0 items-center">
+                            <button
+                              type="button"
+                              aria-label="Mover grupo para cima"
+                              onClick={() => moveGroup(g.key, -1)}
+                              disabled={gi === 0}
+                              className="grid h-7 w-7 place-items-center rounded-sm text-faint transition-colors hover:bg-surface hover:text-ink-2 disabled:opacity-30 disabled:hover:bg-transparent"
+                            >
+                              <ArrowUp size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="Mover grupo para baixo"
+                              onClick={() => moveGroup(g.key, 1)}
+                              disabled={gi === groups.length - 1}
+                              className="grid h-7 w-7 place-items-center rounded-sm text-faint transition-colors hover:bg-surface hover:text-ink-2 disabled:opacity-30 disabled:hover:bg-transparent"
+                            >
+                              <ArrowDown size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="Duplicar grupo"
+                              onClick={() => duplicateGroup(g.key)}
+                              className="grid h-7 w-7 place-items-center rounded-sm text-faint transition-colors hover:bg-surface hover:text-ink-2"
+                            >
+                              <Copy size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="Remover grupo"
+                              onClick={() => removeGroup(g.key)}
+                              className="grid h-7 w-7 place-items-center rounded-sm text-faint transition-colors hover:bg-danger-soft hover:text-danger"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
                         </div>
 
                         {/* Busca dentro do grupo */}
@@ -969,6 +1147,14 @@ export function ReceitaForm({
                                         )}
                                       </div>
                                     </div>
+                                    {c.custo != null && (
+                                      <span className="shrink-0 font-mono text-[11px] font-semibold tabular-nums text-muted">
+                                        {brl(c.custo)}
+                                        <span className="text-faint">
+                                          /{c.fracionavel ? c.unidadeBase.toLowerCase() : "un"}
+                                        </span>
+                                      </span>
+                                    )}
                                     <Plus size={14} className="shrink-0 text-brand-strong" />
                                   </button>
                                 ))
@@ -979,8 +1165,15 @@ export function ReceitaForm({
 
                         {/* Itens do grupo */}
                         {g.items.length === 0 ? (
-                          <p className="px-3 py-3 text-center text-xs text-faint">
-                            Busque acima e adicione opções a este grupo.
+                          <p
+                            className={cn(
+                              "px-3 py-3 text-center text-xs",
+                              vazioInvalido ? "text-danger" : "text-faint",
+                            )}
+                          >
+                            {vazioInvalido
+                              ? "Este grupo está vazio — busque e adicione ao menos uma opção."
+                              : "Busque acima e adicione opções a este grupo."}
                           </p>
                         ) : (
                           <div className="overflow-x-auto p-3 pt-2">

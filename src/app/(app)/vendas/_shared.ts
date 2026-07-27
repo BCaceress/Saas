@@ -20,7 +20,13 @@ export type CartItem = {
   detalhe: string | null;
 };
 
-export type ClienteSel = { id: string; nome: string; cpf: string | null };
+export type ClienteSel = {
+  id: string;
+  nome: string;
+  cpf: string | null;
+  /** Pontos de fidelidade — exibido na venda pra estimular o operador. */
+  pontos?: number;
+};
 
 // centavos digitados → número (campos monetários)
 export const parseCentavos = (s: string) =>

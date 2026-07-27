@@ -46,6 +46,7 @@ export default async function VendasPage() {
         integracao={integracao}
         operador={ctx.user.name ?? ctx.user.email ?? "Operador"}
         emiteNfce={emiteNfce}
+        controleEstoque={ctx.tenant.controleEstoquePdv}
         caixa={
           sessao
             ? {

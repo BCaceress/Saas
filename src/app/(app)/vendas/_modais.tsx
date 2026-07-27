@@ -24,15 +24,18 @@ import {
   ImageOff,
   ChevronDown,
   Circle,
-  User,
   UserPlus,
   UserCheck,
   Delete,
   Copy,
   Smartphone,
   XCircle,
+  WifiOff,
+  Phone,
+  Coins,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Sheet } from "@/components/ui/sheet";
 import { PixQr } from "@/components/app/pix-qr";
 import { searchCustomers, createCustomer } from "../clientes/actions";
 import {
@@ -145,6 +148,9 @@ export function PagamentoModal({
   metodosAtivos,
   integracao,
   mistoIntegradoDisponivel,
+  tefDisponivel,
+  onCartaoTef,
+  online,
   pedeCpfNota,
   pending,
   onClose,
@@ -166,6 +172,18 @@ export function PagamentoModal({
    * totem (Modo B), cuja cobrança integrada é de método único.
    */
   mistoIntegradoDisponivel?: boolean;
+  /** Cartão via TEF (pinpad) disponível — runtime nativo (Electron). */
+  tefDisponivel?: boolean;
+  /**
+   * Cobra o cartão no pinpad (dois-fases resolvido no cliente) e finaliza a
+   * venda; devolve o saleId. Presente só quando `tefDisponivel`.
+   */
+  onCartaoTef?: (
+    metodo: "CARTAO_CREDITO" | "CARTAO_DEBITO",
+    opts: { parcelas?: number; cpfNota?: string | null },
+  ) => Promise<string>;
+  /** Rede disponível. Falso restringe o recebimento a dinheiro (offline). */
+  online?: boolean;
   /** Loja emite NFC-e: oferece o campo "CPF na nota" no fechamento. */
   pedeCpfNota?: boolean;
   pending: boolean;
@@ -219,6 +237,13 @@ export function PagamentoModal({
     (m === "PIX" && pixIntegrado) ||
     ((m === "CARTAO_CREDITO" || m === "CARTAO_DEBITO") && cartaoIntegrado);
 
+  // Cartão via TEF (pinpad) tem prioridade sobre o cartão de nuvem quando o
+  // runtime nativo está presente — é o cartão "de verdade" da loja.
+  const ehTef = (m: ModalMetodo | null) =>
+    !!tefDisponivel &&
+    !!onCartaoTef &&
+    (m === "CARTAO_CREDITO" || m === "CARTAO_DEBITO");
+
   // MISTO: a perna de cartão vai à maquininha quando a integração está ligada.
   // Só uma por venda — o painel de misto bloqueia a segunda. Enquanto houver
   // perna de cartão, o misto conclui pela maquininha, não pelo botão "Receber".
@@ -238,6 +263,7 @@ export function PagamentoModal({
   const pronto = (() => {
     if (!cpfValido) return false; // CPF na nota digitado pela metade trava o recebimento
     if (ehIntegrado(metodo)) return false; // conclui sozinho na confirmação
+    if (ehTef(metodo)) return false; // conclui pelo pinpad (painel TEF)
     if (metodo === "DINHEIRO") return recebidoNum >= total - 0.005;
     if (metodo === "CARTAO_CREDITO" || metodo === "CARTAO_DEBITO") return true;
     if (metodo === "PIX") return pixConfirmado;
@@ -386,15 +412,14 @@ export function PagamentoModal({
         fechar();
         return;
       }
-      const map: Record<string, ModalMetodo> = {
+      const map: Record<string, PaymentMethod> = {
         F5: "DINHEIRO",
         F6: "CARTAO_CREDITO",
         F7: "CARTAO_DEBITO",
         F8: "PIX",
-        F9: "MISTO",
       };
       const m = map[e.key];
-      if (m && (m === "MISTO" || metodosAtivos.includes(m))) {
+      if (m && metodosAtivos.includes(m)) {
         e.preventDefault();
         selecionarMetodo(m);
         return;
@@ -414,7 +439,10 @@ export function PagamentoModal({
       window.setTimeout(() => recebidoRef.current?.focus(), 50);
   }, [metodo, isTouch]);
 
-  const metodoCards: ModalMetodo[] = [...metodosAtivos, "MISTO"];
+  // Offline: só dinheiro fecha (cartão/PIX/integrado exigem rede).
+  // Misto aparece, mas desabilitado ("em breve") — ainda não liberado.
+  const metodoCards: ModalMetodo[] =
+    online === false ? ["DINHEIRO"] : [...metodosAtivos, "MISTO"];
 
   return (
     <div
@@ -498,6 +526,13 @@ export function PagamentoModal({
             </div>
           )}
 
+          {online === false && (
+            <div className="mb-4 flex items-center gap-2 rounded-[var(--radius)] border border-warn/40 bg-warn-soft px-3 py-2 text-sm font-medium text-warn">
+              <WifiOff size={15} />
+              Sem conexão — só dinheiro. A venda sincroniza quando a rede voltar.
+            </div>
+          )}
+
           {/* Cartões de método */}
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
             {metodoCards.map((m) => {
@@ -505,11 +540,13 @@ export function PagamentoModal({
               const label = m === "MISTO" ? "Misto" : METODO_LABEL_CURTO[m];
               const atalho = m === "MISTO" ? "F9" : METODO_ATALHO[m];
               const sel = metodo === m;
+              // Misto ainda não liberado — visível, mas desabilitado.
+              const emBreve = m === "MISTO";
               return (
                 <button
                   key={m}
-                  onClick={() => selecionarMetodo(m)}
-                  disabled={fluxoTravado && !sel}
+                  onClick={() => !emBreve && selecionarMetodo(m)}
+                  disabled={emBreve || (fluxoTravado && !sel)}
                   className={cn(
                     "flex min-h-[5.5rem] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-[var(--radius)] border-2 px-2 py-3 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40",
                     sel
@@ -519,16 +556,22 @@ export function PagamentoModal({
                 >
                   <Icon size={24} />
                   <span className="text-sm font-semibold">{label}</span>
-                  <kbd
-                    className={cn(
-                      "rounded border px-1.5 text-[10px] font-medium",
-                      sel
-                        ? "border-on-brand/40 text-on-brand"
-                        : "border-line text-muted",
-                    )}
-                  >
-                    {atalho}
-                  </kbd>
+                  {emBreve ? (
+                    <span className="rounded-full bg-surface-2 px-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
+                      Em breve
+                    </span>
+                  ) : (
+                    <kbd
+                      className={cn(
+                        "rounded border px-1.5 text-[10px] font-medium",
+                        sel
+                          ? "border-on-brand/40 text-on-brand"
+                          : "border-line text-muted",
+                      )}
+                    >
+                      {atalho}
+                    </kbd>
+                  )}
                 </button>
               );
             })}
@@ -554,7 +597,15 @@ export function PagamentoModal({
             )}
 
             {metodo === "CARTAO_CREDITO" &&
-              (cartaoIntegrado ? (
+              (ehTef("CARTAO_CREDITO") ? (
+                <TefCartaoPanel
+                  tipo="CREDITO"
+                  total={total}
+                  desabilitado={!cpfValido}
+                  onPagar={(p) => onCartaoTef!("CARTAO_CREDITO", { parcelas: p, cpfNota: cpfDigitos || null })}
+                  onSucesso={onConcluidoIntegrado}
+                />
+              ) : cartaoIntegrado ? (
                 <CartaoIntegradoPanel
                   tipo="CREDITO"
                   total={total}
@@ -575,7 +626,15 @@ export function PagamentoModal({
               ))}
 
             {metodo === "CARTAO_DEBITO" &&
-              (cartaoIntegrado ? (
+              (ehTef("CARTAO_DEBITO") ? (
+                <TefCartaoPanel
+                  tipo="DEBITO"
+                  total={total}
+                  desabilitado={!cpfValido}
+                  onPagar={() => onCartaoTef!("CARTAO_DEBITO", { cpfNota: cpfDigitos || null })}
+                  onSucesso={onConcluidoIntegrado}
+                />
+              ) : cartaoIntegrado ? (
                 <CartaoIntegradoPanel
                   tipo="DEBITO"
                   total={total}
@@ -660,7 +719,7 @@ export function PagamentoModal({
           {/* No misto integrado a conclusão vem da maquininha (painel do
               cartão acima) — o botão de receber some para não haver dois
               caminhos de finalização competindo. */}
-          {!(metodo === "MISTO" && mistoIntegrado) && (
+          {!(metodo === "MISTO" && mistoIntegrado) && !ehTef(metodo) && (
             <button
               onClick={receber}
               disabled={!pronto || pending}
@@ -1149,6 +1208,100 @@ function CartaoIntegradoPanel({
   );
 }
 
+// Cartão via TEF (pinpad no runtime nativo). Diferente do integrado de nuvem:
+// não há polling — `onPagar` bloqueia até o pinpad concluir e a venda ser
+// gravada (dois-fases resolvido no cliente), devolvendo o saleId.
+function TefCartaoPanel({
+  tipo,
+  total,
+  desabilitado,
+  onPagar,
+  onSucesso,
+}: {
+  tipo: "CREDITO" | "DEBITO";
+  total: number;
+  desabilitado?: boolean;
+  onPagar: (parcelas?: number) => Promise<string>;
+  onSucesso?: (saleId?: string) => void;
+}) {
+  const [parcelas, setParcelas] = useState(1);
+  const [fase, setFase] = useState<"pronto" | "processando" | "falha">("pronto");
+  const [erro, setErro] = useState<string | null>(null);
+
+  async function enviar() {
+    if (desabilitado || fase === "processando") return;
+    setFase("processando");
+    setErro(null);
+    try {
+      const saleId = await onPagar(tipo === "CREDITO" ? parcelas : undefined);
+      onSucesso?.(saleId);
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : "Falha no pagamento.");
+      setFase("falha");
+    }
+  }
+
+  if (fase === "processando") {
+    return (
+      <div className="flex flex-col items-center gap-4 py-8 text-center">
+        <span className="grid h-16 w-16 animate-pulse place-items-center rounded-full bg-brand-soft text-brand">
+          <CreditCard size={30} />
+        </span>
+        <p className="font-display text-2xl font-bold tabular-nums text-brand">{brl(total)}</p>
+        <p className="max-w-sm text-sm text-muted">
+          Peça o cartão ao cliente — o valor está na maquininha (pinpad).
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-5">
+      {fase === "falha" && erro && (
+        <p className="rounded-[var(--radius)] border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">
+          {erro}
+        </p>
+      )}
+
+      {tipo === "CREDITO" && (
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+            Parcelamento
+          </p>
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+            {[1, 2, 3, 4, 5, 6].map((n) => (
+              <button
+                key={n}
+                onClick={() => setParcelas(n)}
+                className={cn(
+                  "min-h-[3.25rem] cursor-pointer rounded-[var(--radius)] border-2 px-2 text-sm font-semibold transition-colors",
+                  parcelas === n
+                    ? "border-brand bg-brand text-on-brand"
+                    : "border-line bg-surface text-ink hover:border-brand hover:text-brand",
+                )}
+              >
+                {n}x{n === 1 ? "" : ` ${brl(total / n)}`}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-col items-center gap-3 py-2 text-center">
+        <button
+          onClick={enviar}
+          disabled={desabilitado}
+          className="flex min-h-[3.25rem] cursor-pointer items-center gap-2 rounded-[var(--radius)] bg-brand px-8 text-base font-bold text-on-brand hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <CreditCard size={18} />
+          {fase === "falha" ? "Tentar de novo" : `Enviar ${brl(total)} ao pinpad`}
+        </button>
+        <p className="text-xs text-muted">Pagamento pelo TEF — sem digitar valor.</p>
+      </div>
+    </div>
+  );
+}
+
 function MistoPanel({
   total,
   metodosAtivos,
@@ -1296,6 +1449,23 @@ function MistoPanel({
 // Modal de cliente — busca rápida + cadastro express (§ cliente)
 // ============================================================
 
+/** Telefone (10/11 dígitos) formatado para exibição. */
+function formatarTelefone(tel: string | null): string {
+  const d = (tel ?? "").replace(/\D/g, "");
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return tel ?? "";
+}
+
+/** Iniciais: 1ª letra do primeiro nome + 1ª letra do último. */
+function iniciais(nome: string): string {
+  const partes = nome.trim().split(/\s+/).filter(Boolean);
+  if (partes.length === 0) return "?";
+  const primeiro = partes[0][0] ?? "";
+  const ultimo = partes.length > 1 ? (partes[partes.length - 1][0] ?? "") : "";
+  return (primeiro + ultimo).toUpperCase();
+}
+
 export function ClienteModal({
   onClose,
   onSelect,
@@ -1317,11 +1487,8 @@ export function ClienteModal({
   const [erro, setErro] = useState<string | null>(null);
 
   useEffect(() => {
-    window.setTimeout(() => buscaRef.current?.focus(), 50);
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    window.setTimeout(() => buscaRef.current?.focus(), 60);
+  }, []);
 
   // debounce da busca
   useEffect(() => {
@@ -1353,7 +1520,7 @@ export function ClienteModal({
           cpf: cpf || null,
           whatsapp: telefone || null,
         });
-        onSelect({ id, nome: nome.trim(), cpf: cpf.replace(/\D/g, "") || null });
+        onSelect({ id, nome: nome.trim(), cpf: cpf.replace(/\D/g, "") || null, pontos: 0 });
       } catch (e) {
         setErro(e instanceof Error ? e.message : "Erro ao cadastrar cliente.");
       }
@@ -1361,171 +1528,167 @@ export function ClienteModal({
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Identificar cliente"
-      className="fixed inset-0 z-[55] flex items-start justify-center p-3 pt-[8vh] sm:p-6 sm:pt-[10vh]"
-    >
-      <div
-        className="absolute inset-0 bg-ink/50 backdrop-blur-[3px]"
-        onClick={onClose}
-        aria-hidden
-      />
-      <div className="relative z-10 flex max-h-[80dvh] w-full flex-col overflow-hidden rounded-[var(--radius-xl)] border border-line bg-surface shadow-[var(--shadow-2)] sm:max-w-lg">
-        <div className="flex items-center justify-between border-b border-line px-5 py-4">
-          <h2 className="font-display text-lg font-bold text-ink">
-            {modo === "busca" ? "Identificar cliente" : "Novo cliente"}
-          </h2>
+    <Sheet
+      open
+      onClose={onClose}
+      title={modo === "busca" ? "Identificar cliente" : "Novo cliente"}
+      description={
+        modo === "busca"
+          ? "Busque por nome, CPF ou telefone."
+          : "Cadastro rápido — só o nome é obrigatório."
+      }
+      footer={
+        modo === "busca" ? (
           <button
-            onClick={onClose}
-            aria-label="Fechar"
-            className="grid h-9 w-9 cursor-pointer place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-ink"
+            onClick={() => {
+              const t = busca.trim();
+              if (t && !/\d/.test(t)) setNome(t);
+              setModo("novo");
+            }}
+            className="flex min-h-[3rem] w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] border border-line text-sm font-semibold text-ink hover:border-brand hover:text-brand"
           >
-            <X size={18} />
+            <UserPlus size={16} /> Cadastrar novo cliente
           </button>
-        </div>
-
-        {modo === "busca" ? (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="px-5 pt-4">
-              <div className="relative">
-                <Search
-                  size={18}
-                  className="absolute left-3.5 top-1/2 -translate-y-1/2 text-faint"
-                />
-                <input
-                  ref={buscaRef}
-                  value={busca}
-                  onChange={(e) => setBusca(e.target.value)}
-                  placeholder="Nome, CPF ou telefone…"
-                  className="w-full rounded-[var(--radius)] border border-line bg-surface py-3.5 pl-11 pr-3 text-base text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                />
-              </div>
-            </div>
-
-            <div className="scrollbar-thin min-h-[120px] flex-1 overflow-y-auto px-5 py-3">
-              {buscando && (
-                <p className="py-6 text-center text-sm text-muted">Buscando…</p>
-              )}
-              {!buscando && busca.trim().length >= 2 && listar.length === 0 && (
-                <p className="py-6 text-center text-sm text-muted">
-                  Nenhum cliente encontrado.
-                </p>
-              )}
-              {!buscando && busca.trim().length < 2 && (
-                <p className="py-6 text-center text-sm text-muted">
-                  Digite ao menos 2 caracteres para buscar.
-                </p>
-              )}
-              <div className="flex flex-col gap-1.5">
-                {listar.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() =>
-                      onSelect({ id: c.id, nome: c.nome, cpf: c.cpf })
-                    }
-                    className="flex min-h-[3.25rem] cursor-pointer items-center gap-3 rounded-[var(--radius)] border border-line px-3 py-2 text-left hover:border-brand hover:bg-brand-soft"
-                  >
-                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-surface-2 text-muted">
-                      <User size={16} />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-semibold text-ink">
-                        {c.nome}
-                      </span>
-                      <span className="block truncate font-mono text-xs text-muted">
-                        {mascararCpf(c.cpf)}
-                      </span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="border-t border-line p-3">
-              <button
-                onClick={() => {
-                  // pré-preenche nome se buscou por texto
-                  const t = busca.trim();
-                  if (t && !/\d/.test(t)) setNome(t);
-                  setModo("novo");
-                }}
-                className="flex min-h-[3rem] w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] border border-line text-sm font-semibold text-ink hover:border-brand hover:text-brand"
-              >
-                <UserPlus size={16} /> Cadastrar novo cliente
-              </button>
-            </div>
-          </div>
         ) : (
-          <div className="flex flex-col gap-3 px-5 py-4">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setModo("busca")}
+              className="min-h-[3rem] flex-1 cursor-pointer rounded-[var(--radius)] border border-line text-sm font-semibold text-muted hover:bg-surface-2 hover:text-ink"
+            >
+              Voltar
+            </button>
+            <button
+              onClick={salvarNovo}
+              disabled={nome.trim().length < 2 || salvando}
+              className="flex min-h-[3rem] flex-[2] cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] bg-brand text-sm font-semibold text-on-brand hover:bg-brand-strong disabled:opacity-50"
+            >
+              {salvando ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <UserCheck size={16} />
+              )}
+              Salvar e usar
+            </button>
+          </div>
+        )
+      }
+    >
+      {modo === "busca" ? (
+        <div className="flex flex-col gap-3">
+          <div className="relative">
+            <Search
+              size={18}
+              className="absolute left-3.5 top-1/2 -translate-y-1/2 text-faint"
+            />
+            <input
+              ref={buscaRef}
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              placeholder="Nome, CPF ou telefone…"
+              className="w-full rounded-[var(--radius)] border border-line bg-surface py-3.5 pl-11 pr-3 text-base text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            />
+          </div>
+
+          {buscando && (
+            <p className="py-6 text-center text-sm text-muted">Buscando…</p>
+          )}
+          {!buscando && busca.trim().length >= 2 && listar.length === 0 && (
+            <p className="py-6 text-center text-sm text-muted">
+              Nenhum cliente encontrado.
+            </p>
+          )}
+          {!buscando && busca.trim().length < 2 && (
+            <p className="py-6 text-center text-sm text-muted">
+              Digite ao menos 2 caracteres para buscar.
+            </p>
+          )}
+
+          <div className="flex flex-col gap-2">
+            {listar.map((c) => (
+              <button
+                key={c.id}
+                onClick={() =>
+                  onSelect({ id: c.id, nome: c.nome, cpf: c.cpf, pontos: c.pontos })
+                }
+                className="flex cursor-pointer items-center gap-3 rounded-[var(--radius-lg)] border border-line px-3 py-3 text-left transition-colors hover:border-brand hover:bg-brand-soft"
+              >
+                <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-surface-2 font-mono text-sm font-semibold text-muted">
+                  {iniciais(c.nome)}
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col gap-1">
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-semibold text-ink">
+                      {c.nome}
+                    </span>
+                    {c.pontos > 0 && (
+                      <span className="flex shrink-0 items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-accent">
+                        <Coins size={11} /> {c.pontos}
+                      </span>
+                    )}
+                  </span>
+                  <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-muted">
+                    {c.cpf && (
+                      <span className="font-mono">{mascararCpf(c.cpf)}</span>
+                    )}
+                    {c.whatsapp && (
+                      <span className="flex items-center gap-1">
+                        <Phone size={11} /> {formatarTelefone(c.whatsapp)}
+                      </span>
+                    )}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">
+              Nome
+            </span>
+            <input
+              autoFocus
+              value={nome}
+              onChange={(e) => setNome(e.target.value)}
+              placeholder="Nome do cliente"
+              className={cn(inputCls, "py-3 text-base")}
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-3">
             <label className="flex flex-col gap-1.5">
               <span className="text-xs font-semibold uppercase tracking-wide text-muted">
-                Nome
+                CPF
               </span>
               <input
-                autoFocus
-                value={nome}
-                onChange={(e) => setNome(e.target.value)}
-                placeholder="Nome do cliente"
+                value={cpf}
+                onChange={(e) => setCpf(e.target.value)}
+                inputMode="numeric"
+                placeholder="Opcional"
                 className={cn(inputCls, "py-3 text-base")}
               />
             </label>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="flex flex-col gap-1.5">
-                <span className="text-xs font-semibold uppercase tracking-wide text-muted">
-                  CPF
-                </span>
-                <input
-                  value={cpf}
-                  onChange={(e) => setCpf(e.target.value)}
-                  inputMode="numeric"
-                  placeholder="Opcional"
-                  className={cn(inputCls, "py-3 text-base")}
-                />
-              </label>
-              <label className="flex flex-col gap-1.5">
-                <span className="text-xs font-semibold uppercase tracking-wide text-muted">
-                  Telefone
-                </span>
-                <input
-                  value={telefone}
-                  onChange={(e) => setTelefone(e.target.value)}
-                  inputMode="numeric"
-                  placeholder="Opcional"
-                  className={cn(inputCls, "py-3 text-base")}
-                />
-              </label>
-            </div>
-            {erro && (
-              <p className="rounded-[var(--radius)] bg-danger-soft px-3 py-2 text-sm text-danger">
-                {erro}
-              </p>
-            )}
-            <div className="mt-1 flex gap-2">
-              <button
-                onClick={() => setModo("busca")}
-                className="min-h-[3rem] flex-1 cursor-pointer rounded-[var(--radius)] border border-line text-sm font-semibold text-muted hover:bg-surface-2 hover:text-ink"
-              >
-                Voltar
-              </button>
-              <button
-                onClick={salvarNovo}
-                disabled={nome.trim().length < 2 || salvando}
-                className="flex min-h-[3rem] flex-[2] cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] bg-brand text-sm font-semibold text-on-brand hover:bg-brand-strong disabled:opacity-50"
-              >
-                {salvando ? (
-                  <Loader2 size={16} className="animate-spin" />
-                ) : (
-                  <UserCheck size={16} />
-                )}
-                Salvar e usar
-              </button>
-            </div>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted">
+                Telefone
+              </span>
+              <input
+                value={telefone}
+                onChange={(e) => setTelefone(e.target.value)}
+                inputMode="numeric"
+                placeholder="Opcional"
+                className={cn(inputCls, "py-3 text-base")}
+              />
+            </label>
           </div>
-        )}
-      </div>
-    </div>
+          {erro && (
+            <p className="rounded-[var(--radius)] bg-danger-soft px-3 py-2 text-sm text-danger">
+              {erro}
+            </p>
+          )}
+        </div>
+      )}
+    </Sheet>
   );
 }
 

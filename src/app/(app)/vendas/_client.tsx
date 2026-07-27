@@ -5,7 +5,7 @@
 // do autoatendimento (vendas dos terminais, em tempo real). Sem catálogo,
 // sem métricas, sem navegação extra: só o necessário para vender.
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus,
@@ -17,16 +17,17 @@ import {
   AlertTriangle,
   Wine,
   X,
-  UserPlus,
-  UserCheck,
+  ChevronDown,
   UserX,
   MonitorSmartphone,
   PauseCircle,
   CornerUpLeft,
   ScanBarcode,
-  Sparkles,
-  History,
   WifiOff,
+  Percent,
+  User,
+  ShoppingBag,
+  CreditCard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
@@ -38,13 +39,34 @@ import {
   iniciarPagamentoIntegradoAction,
   iniciarRecebimentoTotemIntegradoAction,
   abortarRecebimentoTotemAction,
+  finalizarVendaTefCartaoAction,
+  sincronizarVendaOfflineAction,
   type VendaTotemFila,
   type InicioPagamentoIntegrado,
 } from "./actions";
+import { tefBridge, tefDisponivel } from "@/lib/tef/ipc";
+import {
+  enfileirarVendaOffline,
+  listarVendasOffline,
+  removerVendaOffline,
+  contarVendasOffline,
+} from "@/lib/offline/fila-vendas";
 import type { IntegracaoPdv } from "@/lib/pagamentos";
 import type { ProdutoVenda } from "./_data";
 import type { PaymentMethod } from "@/generated/prisma";
-import { brl, mascararCpf, type CartItem, type ClienteSel } from "./_shared";
+
+type ControleEstoque = "BLOQUEAR" | "CONFIRMAR" | "IGNORAR";
+/** Item aguardando confirmação de venda acima do estoque (modo CONFIRMAR). */
+type PendenteEstoque = {
+  p: ProdutoVenda;
+  variantId: string | null;
+  qty: number;
+  selecoes: string[];
+  precoUnit?: number;
+  detalhe: string | null;
+  disponivel: number;
+};
+import { brl, mascararCpf, parseCentavos, type CartItem, type ClienteSel } from "./_shared";
 import { PagamentoModal, ClienteModal, PersonalizadoModal } from "./_modais";
 import { FilaAutoatendimentoPanel } from "./_fila";
 import { NotaFiscalChip } from "./_nota-fiscal";
@@ -61,6 +83,25 @@ type VendaSuspensa = {
 const selectCls =
   "cursor-pointer rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]";
 
+/** Rótulo curto da venda para o comprovante/conciliação do TEF (não é id). */
+function refVendaTef(): string {
+  return "#" + Date.now().toString(36).slice(-6).toUpperCase();
+}
+
+/** "3*7891…" ou "2x água" → quantidade + termo. Sem prefixo, qty 1. */
+function parseMultiplicador(raw: string): { qty: number; termo: string } {
+  const m = raw.trim().match(/^(\d{1,4})\s*[*xX]\s*(.+)$/);
+  if (m) return { qty: Math.max(1, Math.min(9999, parseInt(m[1], 10))), termo: m[2].trim() };
+  return { qty: 1, termo: raw.trim() };
+}
+
+/** Id de idempotência da venda offline (módulo: mantém o render puro). */
+function novoClientId(): string {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `off_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
 export function PdvClient({
   sites,
   defaultSiteId,
@@ -72,6 +113,7 @@ export function PdvClient({
   fundoTrocoPadrao,
   limiteGaveta,
   emiteNfce,
+  controleEstoque = "BLOQUEAR",
 }: {
   sites: { id: string; nome: string; controleIdade?: boolean }[];
   defaultSiteId: string | null;
@@ -84,6 +126,8 @@ export function PdvClient({
   limiteGaveta?: number | null;
   /** Módulo fiscal ligado E emissão automática: só então acompanhamos a nota. */
   emiteNfce?: boolean;
+  /** Como o PDV trata saldo insuficiente (Configurações → Estoque). */
+  controleEstoque?: ControleEstoque;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -100,10 +144,22 @@ export function PdvClient({
   const [conflito, setConflito] = useState<VendaTotemFila | null>(null);
   const [confirmaCancelar, setConfirmaCancelar] = useState(false);
   const [confirmaRemoverCliente, setConfirmaRemoverCliente] = useState(false);
+  const [pendenteEstoque, setPendenteEstoque] = useState<PendenteEstoque | null>(null);
   const [carregando, setCarregando] = useState(false);
   const [bump, setBump] = useState(0);
 
   const online = useOnline();
+  // TEF só existe no runtime nativo (Electron). Detecta no mount (evita mismatch
+  // de hidratação — no SSR window.tef não existe).
+  const [tefOn, setTefOn] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => setTefOn(tefDisponivel()), 0);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  // Fila de vendas offline (Fase 3) — só dinheiro fecha sem rede.
+  const [pendentesOffline, setPendentesOffline] = useState(0);
+  const drenando = useRef(false);
 
   // Venda cuja nota ainda estamos acompanhando. Não trava o caixa: o operador
   // já pode passar a próxima compra enquanto a NFC-e vai para a SEFAZ.
@@ -114,8 +170,22 @@ export function PdvClient({
   const [clienteOpen, setClienteOpen] = useState(false);
   const [pagamentoOpen, setPagamentoOpen] = useState(false);
   const [historicoOpen, setHistoricoOpen] = useState(false);
+  const [drinksOpen, setDrinksOpen] = useState(false);
+  // Painel do autoatendimento: colapsa quando não há terminal/venda ativa,
+  // liberando a largura toda para o carrinho. Com atividade, fica travado aberto.
+  const [filaAberta, setFilaAberta] = useState(true);
+  const [filaAtiva, setFilaAtiva] = useState(false);
 
   const [flashKey, setFlashKey] = useState<string | null>(null);
+  // Desconto da venda (balcão) — reduz o total; vai como `descontoVenda`.
+  const [desconto, setDesconto] = useState(0);
+  const [descontoOpen, setDescontoOpen] = useState(false);
+  // Confirmação leve do último bip (chip abaixo da busca).
+  const [ultimaAdicao, setUltimaAdicao] = useState<{ nome: string; qty: number } | null>(null);
+  // Flash verde no total ao concluir a venda.
+  const [vendaFlash, setVendaFlash] = useState(false);
+  // Pilha de desfazer (Ctrl+Z) — snapshots do carrinho antes de cada adição.
+  const undoRef = useRef<CartItem[][]>([]);
   const buscaRef = useRef<HTMLInputElement>(null);
 
   // ── Rascunho local (Fase 0) — recuperar a venda após recarregar/travar ──
@@ -164,13 +234,51 @@ export function PdvClient({
   const siteControlaIdade =
     sites.find((s) => s.id === siteId)?.controleIdade ?? false;
 
+  // Caixa fechou → esvazia o carrinho (não dá para vender sem caixa aberto).
+  useEffect(() => {
+    if (caixaOk) return;
+    const t = window.setTimeout(() => {
+      setCart([]);
+      setMaiorIdade(false);
+      setCliente(null);
+      setVendaTotem(null);
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [caixaOk]);
+
+  // Atividade do autoatendimento comanda o colapso: abre ao surgir atividade,
+  // fecha ao cessar. Só reage à MUDANÇA REAL de filaAtiva — o card nasce aberto
+  // e o valor inicial (false) não deve fechá-lo. Rastreia o valor anterior num
+  // ref (resiste ao double-invoke do StrictMode em dev).
+  const filaAtivaPrev = useRef(filaAtiva);
+  useEffect(() => {
+    if (filaAtivaPrev.current === filaAtiva) return;
+    filaAtivaPrev.current = filaAtiva;
+    const t = window.setTimeout(() => setFilaAberta(filaAtiva), 0);
+    return () => window.clearTimeout(t);
+  }, [filaAtiva]);
+
+  // Chip "última adição" some sozinho após um instante.
+  useEffect(() => {
+    if (!ultimaAdicao) return;
+    const t = window.setTimeout(() => setUltimaAdicao(null), 1600);
+    return () => window.clearTimeout(t);
+  }, [ultimaAdicao]);
+
   // Busca: nome, SKU ou EAN — resultado enxuto, direto ao ponto.
   const filtrados = useMemo(() => {
-    const q = busca.trim().toLowerCase();
+    const q = parseMultiplicador(busca).termo.toLowerCase();
     if (!q) return [];
     return produtos
       .filter((p) => {
-        if (p.estoqueFechado != null && p.estoqueFechado <= 0) return false;
+        // Só o modo BLOQUEAR esconde produto zerado da busca; nos outros modos
+        // ele aparece (com aviso "sem estoque") e pode ser vendido.
+        if (
+          controleEstoque === "BLOQUEAR" &&
+          p.estoqueFechado != null &&
+          p.estoqueFechado <= 0
+        )
+          return false;
         if (p.tipo === "PERSONALIZADO" && !p.disponivel) return false;
         return (
           p.nome.toLowerCase().includes(q) ||
@@ -179,7 +287,16 @@ export function PdvClient({
         );
       })
       .slice(0, 8);
-  }, [busca, produtos]);
+  }, [busca, produtos, controleEstoque]);
+
+  // Saldo do produto no carrinho (SIMPLES: estoque é por produto, soma variações).
+  const qtdNoCarrinho = useCallback(
+    (productId: string) =>
+      cart
+        .filter((i) => i.productId === productId)
+        .reduce((s, i) => s + i.quantidade, 0),
+    [cart],
+  );
 
   // Personalizados (drinks/pratos montados) não têm código de barras —
   // acesso rápido por chips abaixo da busca.
@@ -188,7 +305,10 @@ export function PdvClient({
     [produtos],
   );
 
-  const total = cart.reduce((s, i) => s + i.preco * i.quantidade, 0);
+  const subtotal = cart.reduce((s, i) => s + i.preco * i.quantidade, 0);
+  // Desconto só no balcão (venda do totem já vem fechada do terminal).
+  const descontoAplicado = vendaTotem ? 0 : Math.min(desconto, subtotal);
+  const total = Math.max(0, subtotal - descontoAplicado);
   const numItens = cart.reduce((s, i) => s + i.quantidade, 0);
   const precisaIdade = siteControlaIdade && cart.some((i) => i.restricaoIdade);
   const podePagar =
@@ -202,6 +322,12 @@ export function PdvClient({
     window.setTimeout(() => setFlashKey((k) => (k === key ? null : k)), 260);
   }
 
+  /** Flash verde no total ao concluir a venda. */
+  function flashVenda() {
+    setVendaFlash(true);
+    window.setTimeout(() => setVendaFlash(false), 750);
+  }
+
   function addItem(
     p: ProdutoVenda,
     variantId: string | null,
@@ -209,16 +335,51 @@ export function PdvClient({
     selecoes: string[] = [],
     precoUnit?: number,
     detalhe: string | null = null,
+    confirmado = false,
   ) {
     if (!caixaOk) {
       setSheetOpen(true);
       return;
+    }
+    // Controle de estoque (Configurações → Estoque). estoqueFechado null =
+    // combo/personalizado — a baixa é por insumo, não checa aqui.
+    if (
+      !confirmado &&
+      controleEstoque !== "IGNORAR" &&
+      p.estoqueFechado != null
+    ) {
+      const desejado = qtdNoCarrinho(p.id) + qty;
+      if (desejado > p.estoqueFechado) {
+        if (controleEstoque === "BLOQUEAR") {
+          toast.error(
+            "Sem estoque",
+            p.estoqueFechado <= 0
+              ? `"${p.nome}" está zerado.`
+              : `"${p.nome}" tem só ${p.estoqueFechado} em estoque.`,
+          );
+          return;
+        }
+        // CONFIRMAR — pede confirmação antes de passar do saldo.
+        setPendenteEstoque({
+          p,
+          variantId,
+          qty,
+          selecoes,
+          precoUnit,
+          detalhe,
+          disponivel: p.estoqueFechado,
+        });
+        return;
+      }
     }
     const variant = variantId
       ? (p.variants.find((v) => v.id === variantId) ?? null)
       : null;
     const selKey = selecoes.length ? ":" + [...selecoes].sort().join(",") : "";
     const key = p.id + ":" + (variantId ?? "") + selKey;
+    // Snapshot para o Ctrl+Z (desfaz a última adição).
+    undoRef.current.push(cart);
+    if (undoRef.current.length > 30) undoRef.current.shift();
     setCart((prev) => {
       const ex = prev.find((i) => i.key === key);
       if (ex)
@@ -243,21 +404,44 @@ export function PdvClient({
       ];
     });
     pulsar(key);
+    setUltimaAdicao({ nome: p.nome, qty });
     setBusca("");
     buscaRef.current?.focus();
   }
 
-  function escolher(p: ProdutoVenda) {
+  /** Desfaz a última adição (Ctrl+Z). */
+  function desfazerUltimo() {
+    const prev = undoRef.current.pop();
+    if (prev) {
+      setCart(prev);
+      buscaRef.current?.focus();
+    }
+  }
+
+  function escolher(p: ProdutoVenda, qty = 1) {
     if (p.tipo === "PERSONALIZADO") {
       setPdvModal(p);
       setBusca("");
     } else {
-      addItem(p, p.variants[0]?.id ?? null);
+      addItem(p, p.variants[0]?.id ?? null, qty);
     }
   }
 
   function setQtd(key: string, q: number) {
     if (q <= 0) return setCart((prev) => prev.filter((i) => i.key !== key));
+    // No modo BLOQUEAR, não deixa a quantidade passar do saldo do produto.
+    if (controleEstoque === "BLOQUEAR") {
+      const item = cart.find((i) => i.key === key);
+      const prod = item && produtos.find((p) => p.id === item.productId);
+      if (prod && prod.estoqueFechado != null && q > prod.estoqueFechado) {
+        toast.error(
+          "Sem estoque",
+          `"${prod.nome}" tem só ${prod.estoqueFechado} em estoque.`,
+        );
+        q = prod.estoqueFechado;
+        if (q <= 0) return setCart((prev) => prev.filter((i) => i.key !== key));
+      }
+    }
     setCart((prev) =>
       prev.map((i) => (i.key === key ? { ...i, quantidade: q } : i)),
     );
@@ -268,23 +452,22 @@ export function PdvClient({
     setMaiorIdade(false);
     setCliente(null);
     setVendaTotem(null);
+    setDesconto(0);
+    setDescontoOpen(false);
+    undoRef.current = [];
   }
 
   // Leitor de código de barras: digita o código e envia Enter no campo de busca.
   function onBuscaEnter() {
-    const q = busca.trim();
-    if (!q) return;
+    const { qty, termo } = parseMultiplicador(busca);
+    if (!termo) return;
     const exato = produtos.find(
-      (p) => p.ean === q || p.sku.toLowerCase() === q.toLowerCase(),
+      (p) => p.ean === termo || p.sku.toLowerCase() === termo.toLowerCase(),
     );
     const alvo = exato ?? filtrados[hi] ?? filtrados[0] ?? null;
     if (!alvo) return;
-    const semEstoque = alvo.estoqueFechado != null && alvo.estoqueFechado <= 0;
-    if (semEstoque) {
-      toast.error("Sem estoque", `"${alvo.nome}" está zerado.`);
-      return;
-    }
-    escolher(alvo);
+    // O controle de estoque (bloquear/confirmar/ignorar) é decidido em addItem.
+    escolher(alvo, qty);
   }
 
   function onBuscaKeyDown(e: React.KeyboardEvent) {
@@ -329,6 +512,8 @@ export function PdvClient({
       );
       setCliente(d.cliente);
       setMaiorIdade(d.maiorIdadeConfirmada);
+      setDesconto(0);
+      setDescontoOpen(false);
       setVendaTotem({ id: d.id, numero: d.numero, terminal: d.terminal });
       setConflito(null);
       buscaRef.current?.focus();
@@ -404,6 +589,61 @@ export function PdvClient({
     }[],
     opts?: { cpfNota?: string | null },
   ) {
+    // OFFLINE: fecha a venda na fila local (só dinheiro, só balcão). A venda do
+    // totem e cartão/PIX precisam de rede — o modal já bloqueia, isto é a rede.
+    if (!online) {
+      return new Promise<boolean>((resolve) => {
+        if (vendaTotem) {
+          toast.error("Sem conexão", "Venda do totem precisa de rede.");
+          return resolve(false);
+        }
+        if (!caixa) {
+          toast.error("Caixa fechado", "Abra o caixa para vender.");
+          return resolve(false);
+        }
+        if (!pagamentos.every((p) => p.metodo === "DINHEIRO")) {
+          toast.error("Sem conexão", "Offline só aceita dinheiro.");
+          return resolve(false);
+        }
+        const payload = {
+          clientId: novoClientId(),
+          siteId,
+          cashSessionId: caixa.id,
+          customerId: cliente?.id ?? null,
+          items: cart.map((i) => ({
+            productId: i.productId,
+            variantId: i.variantId,
+            quantidade: i.quantidade,
+            selecoes: i.selecoes,
+          })),
+          descontoVenda: descontoAplicado,
+          maiorIdadeConfirmada: maiorIdade,
+          cpfNota: opts?.cpfNota ?? null,
+          pagamentos: pagamentos.map((p) => ({
+            metodo: "DINHEIRO" as const,
+            valor: p.valor,
+            troco: p.troco ?? null,
+          })),
+          criadaEm: new Date().toISOString(),
+          totalEstimado: total,
+        };
+        enfileirarVendaOffline(payload)
+          .then(() => {
+            setPendentesOffline((n) => n + 1);
+            toast.success("Venda salva (offline)", "Sincroniza quando a rede voltar.");
+            flashVenda();
+            setPagamentoOpen(false);
+            limpar();
+            window.setTimeout(() => buscaRef.current?.focus(), 60);
+            resolve(true);
+          })
+          .catch(() => {
+            toast.error("Erro ao salvar offline", "Tente de novo.");
+            resolve(false);
+          });
+      });
+    }
+
     return new Promise<boolean>((resolve) => {
       startTransition(async () => {
         try {
@@ -430,7 +670,7 @@ export function PdvClient({
               siteId,
               customerId: cliente?.id ?? null,
               items,
-              descontoVenda: 0,
+              descontoVenda: descontoAplicado,
               maiorIdadeConfirmada: maiorIdade,
               cpfNota: opts?.cpfNota ?? null,
               pagamentos,
@@ -438,6 +678,7 @@ export function PdvClient({
           }
           if (emiteNfce) setVendaFiscal(saleId);
           toast.success("Venda concluída!", brl(total));
+          flashVenda();
           setPagamentoOpen(false);
           limpar();
           setBump((b) => b + 1);
@@ -493,7 +734,7 @@ export function PdvClient({
       siteId,
       customerId: cliente?.id ?? null,
       items,
-      descontoVenda: 0,
+      descontoVenda: descontoAplicado,
       maiorIdadeConfirmada: maiorIdade,
       cpfNota: opts.cpfNota ?? null,
       metodo,
@@ -506,11 +747,105 @@ export function PdvClient({
   function concluirIntegrado(saleId?: string) {
     if (emiteNfce && saleId) setVendaFiscal(saleId);
     toast.success("Venda concluída!", brl(total));
+    flashVenda();
     setPagamentoOpen(false);
     limpar();
     setBump((b) => b + 1);
     router.refresh();
     window.setTimeout(() => buscaRef.current?.focus(), 60);
+  }
+
+  // ── Sincronização da fila offline ────────────────────────────
+  const drenarFilaOffline = useCallback(async () => {
+    if (drenando.current) return;
+    drenando.current = true;
+    try {
+      const fila = await listarVendasOffline();
+      let sincronizou = false;
+      let falhou = false;
+      for (const v of fila) {
+        try {
+          await sincronizarVendaOfflineAction(v);
+          await removerVendaOffline(v.clientId);
+          sincronizou = true;
+        } catch {
+          // Erro numa venda (rede oscilou ou saldo insuficiente) não pode travar
+          // as outras — segue para a próxima; a falha fica na fila para depois.
+          falhou = true;
+        }
+      }
+      setPendentesOffline(await contarVendasOffline());
+      if (sincronizou) {
+        toast.success("Vendas sincronizadas", "A fila offline foi enviada.");
+        router.refresh();
+      }
+      if (falhou) {
+        toast.error("Algumas vendas não sincronizaram", "Vamos tentar de novo.");
+      }
+    } finally {
+      drenando.current = false;
+    }
+  }, [router]);
+
+  // Conta as pendentes ao montar (podem ter sobrado de uma sessão anterior).
+  useEffect(() => {
+    contarVendasOffline().then(setPendentesOffline).catch(() => {});
+  }, []);
+
+  // Ao (re)conectar, drena a fila.
+  useEffect(() => {
+    if (online) drenarFilaOffline();
+  }, [online, drenarFilaOffline]);
+
+  // ── Cartão via TEF (pinpad, Electron) ────────────────────────
+  // Dois-fases: pinpad aprova → grava a venda → confirma. Se a gravação falhar,
+  // desfaz a autorização (senão fica dinheiro capturado sem venda). Se o confirmar
+  // falhar depois de gravar, a venda está paga e o TEF resolve a pendência no
+  // próximo fechamento — não desfazemos (a venda existe).
+  async function pagarCartaoTef(
+    metodo: "CARTAO_CREDITO" | "CARTAO_DEBITO",
+    opts: { parcelas?: number; cpfNota?: string | null },
+  ): Promise<string> {
+    const items = cart.map((i) => ({
+      productId: i.productId,
+      variantId: i.variantId,
+      quantidade: i.quantidade,
+      selecoes: i.selecoes,
+    }));
+    const tipo = metodo === "CARTAO_CREDITO" ? "CREDITO" : "DEBITO";
+    const referencia = refVendaTef();
+
+    const r = await tefBridge().pagar({ valor: total, tipo, parcelas: opts.parcelas, referencia });
+    if (r.status !== "APROVADO") {
+      throw new Error(r.mensagem || "Cartão não aprovado no pinpad.");
+    }
+    try {
+      const saleId = await finalizarVendaTefCartaoAction({
+        siteId,
+        customerId: cliente?.id ?? null,
+        items,
+        descontoVenda: descontoAplicado,
+        maiorIdadeConfirmada: maiorIdade,
+        cpfNota: opts.cpfNota ?? null,
+        metodo,
+        valor: total,
+        tefId: r.tefId ?? referencia,
+        bandeira: r.bandeira,
+        parcelas: r.parcelas,
+        nsu: r.nsu,
+        autorizacao: r.autorizacao,
+        adquirenteCnpj: r.adquirenteCnpj,
+        comprovante: r.comprovanteCliente,
+      });
+      // 2ª fase: confirma a transação. Falha aqui não desfaz a venda (já paga);
+      // o TEF resolve pendência no fechamento.
+      if (r.tefId) tefBridge().confirmar(r.tefId).catch(() => {});
+      return saleId;
+    } catch (e) {
+      // gravação falhou → desfaz a autorização para não deixar dinheiro preso.
+      if (r.tefId) tefBridge().desfazer(r.tefId).catch(() => {});
+      throw e;
+    }
   }
 
   // Atalhos de balcão na tela principal.
@@ -539,6 +874,26 @@ export function PdvClient({
       } else if (e.key === "F3") {
         e.preventDefault();
         setClienteOpen(true);
+      } else if (e.key === "F4") {
+        e.preventDefault();
+        setSheetOpen(true);
+      } else if (e.key === "Delete" && cart.length > 0) {
+        // Del cancela a venda. Não usamos Esc: em tela cheia o navegador o
+        // reserva pra sair do fullscreen e suprime o evento. Ignora se estiver
+        // digitando num campo (senão Del apagaria texto).
+        const alvo = e.target as HTMLElement | null;
+        const digitando =
+          alvo instanceof HTMLInputElement ||
+          alvo instanceof HTMLTextAreaElement ||
+          alvo instanceof HTMLSelectElement ||
+          alvo?.isContentEditable;
+        if (!digitando) {
+          e.preventDefault();
+          setConfirmaCancelar(true);
+        }
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        desfazerUltimo();
       } else if (e.key === "/") {
         // "/" foca a busca quando não se está digitando em outro campo.
         const alvo = e.target as HTMLElement | null;
@@ -566,119 +921,262 @@ export function PdvClient({
           className="flex items-center justify-center gap-2 rounded-[var(--radius)] border border-warn/40 bg-warn-soft px-3 py-1.5 text-sm font-medium text-warn"
         >
           <WifiOff size={15} />
-          Sem conexão — pagamento e nota fiscal ficam indisponíveis até a rede voltar.
+          Sem conexão — só vendas em dinheiro.
+          {pendentesOffline > 0 && (
+            <span className="rounded-full bg-warn/20 px-2 py-0.5 text-xs font-semibold">
+              {pendentesOffline} na fila
+            </span>
+          )}
+        </div>
+      )}
+      {online && pendentesOffline > 0 && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center justify-center gap-2 rounded-[var(--radius)] border border-brand/30 bg-brand-soft px-3 py-1.5 text-sm font-medium text-brand-strong"
+        >
+          <Loader2 size={14} className="animate-spin" />
+          Sincronizando {pendentesOffline} {pendentesOffline === 1 ? "venda" : "vendas"} offline…
         </div>
       )}
       <div className="flex flex-col gap-2.5 pt-2 lg:h-full lg:min-h-0">
-        <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_330px] lg:overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]">
-          {/* ── Venda atual ── */}
-          <section className="flex min-h-0 min-w-0 flex-col gap-2.5 lg:h-full">
-            {/* Busca única, grande */}
-            <div className="relative">
-              <ScanBarcode
-                size={19}
-                className="absolute left-4 top-1/2 -translate-y-1/2 text-faint"
-              />
-              <input
-                ref={buscaRef}
-                autoFocus
-                value={busca}
-                onChange={(e) => {
-                  setBusca(e.target.value);
-                  setHi(0);
-                }}
-                onKeyDown={onBuscaKeyDown}
-                placeholder="Buscar produto ou ler código de barras"
-                className="w-full rounded-[var(--radius)] border border-line bg-surface py-3.5 pl-12 pr-12 text-base text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-              />
-              <kbd className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 rounded border border-line px-1.5 py-0.5 text-[10px] font-medium text-faint">
-                F1
-              </kbd>
-              {/* Resultados */}
-              {busca.trim() && (
-                <div className="absolute inset-x-0 top-full z-20 mt-1.5 overflow-hidden rounded-[var(--radius)] border border-line bg-surface shadow-[var(--shadow-2)]">
-                  {filtrados.length === 0 ? (
-                    <p className="px-4 py-4 text-sm text-muted">
-                      Nenhum produto encontrado para “{busca.trim()}”.
-                    </p>
-                  ) : (
-                    filtrados.map((p, idx) => (
-                      <div
-                        key={p.id}
-                        className={cn(
-                          "flex items-center gap-3 border-b border-line/60 px-3 py-2 last:border-0",
-                          idx === hi && "bg-brand-soft",
-                        )}
+        {/* Linha superior: busca + drinks + autoatendimento + caixa */}
+        <div className="flex items-start gap-2">
+          <div className="relative min-w-0 flex-1">
+            <ScanBarcode
+              size={19}
+              className="absolute left-4 top-1/2 -translate-y-1/2 text-faint dark:text-ink"
+            />
+            <input
+              ref={buscaRef}
+              autoFocus
+              value={busca}
+              onChange={(e) => {
+                const v = e.target.value;
+                setBusca(v);
+                setHi(0);
+                // Leitor de código de barras: adiciona sozinho assim que o valor
+                // casar exatamente com um EAN (sem Enter/clique). Só dispara se
+                // nenhum outro EAN começar por esse (evita disparar num prefixo).
+                const { qty, termo } = parseMultiplicador(v);
+                if (/^\d{8,14}$/.test(termo)) {
+                  const prod = produtos.find((p) => p.ean === termo);
+                  const ambiguo = produtos.some(
+                    (p) => p.ean && p.ean !== termo && p.ean.startsWith(termo),
+                  );
+                  if (prod && !ambiguo) escolher(prod, qty);
+                }
+              }}
+              onKeyDown={onBuscaKeyDown}
+              placeholder="Buscar produto ou ler código de barras"
+              className="w-full rounded-full border border-line bg-surface py-3.5 pl-12 pr-12 text-base text-ink placeholder:text-faint focus:border-brand focus:outline-none focus:ring-2 focus:ring-[var(--ring)] dark:placeholder:text-ink"
+            />
+            <kbd className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 rounded border border-line px-1.5 py-0.5 text-[10px] font-medium text-faint">
+              F1
+            </kbd>
+            {/* Resultados */}
+            {busca.trim() && (
+              <div className="absolute inset-x-0 top-full z-30 mt-1.5 overflow-hidden rounded-[var(--radius)] border border-line bg-surface shadow-[var(--shadow-2)]">
+                {filtrados.length === 0 ? (
+                  <p className="px-4 py-4 text-sm text-muted">
+                    Nenhum produto encontrado para “{busca.trim()}”.
+                  </p>
+                ) : (
+                  filtrados.map((p, idx) => (
+                    <div
+                      key={p.id}
+                      className={cn(
+                        "flex items-center gap-3 border-b border-line/60 px-3 py-2 last:border-0",
+                        idx === hi && "bg-brand-soft",
+                      )}
+                    >
+                      <button
+                        onClick={() => escolher(p)}
+                        onMouseEnter={() => setHi(idx)}
+                        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
                       >
-                        <button
-                          onClick={() => escolher(p)}
-                          onMouseEnter={() => setHi(idx)}
-                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
-                        >
-                          <span className="grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-[var(--radius-sm)] bg-surface-2 text-faint">
-                            {p.imagemUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={p.imagemUrl}
-                                alt=""
-                                className="h-full w-full object-contain p-0.5"
-                              />
-                            ) : (
-                              <Wine size={15} />
-                            )}
+                        <span className="grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-[var(--radius-sm)] bg-surface-2 text-faint">
+                          {p.imagemUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={p.imagemUrl}
+                              alt=""
+                              className="h-full w-full object-contain p-0.5"
+                            />
+                          ) : (
+                            <Wine size={15} />
+                          )}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-medium text-ink">
+                            {p.nome}
                           </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-medium text-ink">
-                              {p.nome}
-                            </span>
-                            <span className="block font-mono text-[11px] text-muted">
-                              {p.sku}
-                              {p.estoqueFechado != null &&
-                                ` · ${p.estoqueFechado} un`}
-                            </span>
+                          <span className="block font-mono text-[11px] text-muted">
+                            {p.sku}
+                            {p.estoqueFechado != null &&
+                              ` · ${p.estoqueFechado} un`}
                           </span>
-                          <span className="shrink-0 font-mono text-sm font-semibold tabular-nums text-ink">
-                            {brl(p.preco)}
-                          </span>
-                        </button>
-                        {p.variants.length > 1 && (
-                          <span className="flex shrink-0 gap-1">
-                            {p.variants.slice(0, 3).map((v) => (
-                              <button
-                                key={v.id}
-                                onClick={() => addItem(p, v.id)}
-                                className="cursor-pointer rounded-full border border-line px-2 py-1 text-[11px] font-medium text-muted hover:border-brand hover:text-brand"
-                              >
-                                {v.nome}
-                              </button>
-                            ))}
-                          </span>
-                        )}
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Personalizados — sem código de barras, um toque abre a montagem */}
-            {personalizados.length > 0 && (
-              <div className="scrollbar-none flex gap-1.5 overflow-x-auto">
-                {personalizados.map((p) => (
-                  <button
-                    key={p.id}
-                    onClick={() =>
-                      caixaOk ? setPdvModal(p) : setSheetOpen(true)
-                    }
-                    className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[13px] font-medium text-ink transition-colors hover:border-brand hover:bg-brand-soft hover:text-brand"
-                  >
-                    <Sparkles size={13} className="text-brand" />
-                    {p.nome}
-                  </button>
-                ))}
+                        </span>
+                        <span className="shrink-0 font-mono text-sm font-semibold tabular-nums text-ink">
+                          {brl(p.preco)}
+                        </span>
+                      </button>
+                      {p.variants.length > 1 && (
+                        <span className="flex shrink-0 gap-1">
+                          {p.variants.slice(0, 3).map((v) => (
+                            <button
+                              key={v.id}
+                              onClick={() => addItem(p, v.id)}
+                              className="cursor-pointer rounded-full border border-line px-2 py-1 text-[11px] font-medium text-muted hover:border-brand hover:text-brand"
+                            >
+                              {v.nome}
+                            </button>
+                          ))}
+                        </span>
+                      )}
+                    </div>
+                  ))
+                )}
               </div>
             )}
+            {/* Confirmação leve do último bip */}
+            {ultimaAdicao && !busca.trim() && (
+              <div className="absolute inset-x-0 top-full z-20 mt-1.5 flex items-center gap-2 rounded-[var(--radius)] border border-ok/40 bg-ok-soft px-3 py-1.5 text-[13px] font-medium text-ok">
+                <Plus size={14} className="shrink-0" />
+                <span className="truncate">
+                  {ultimaAdicao.qty}× {ultimaAdicao.nome} adicionado
+                </span>
+              </div>
+            )}
+          </div>
 
+          {/* Drinks — personalizados sem código de barras, abertos num menu */}
+          {personalizados.length > 0 && (
+            <div className="relative shrink-0">
+              <button
+                onClick={() => setDrinksOpen((v) => !v)}
+                aria-expanded={drinksOpen}
+                className={cn(
+                  "flex h-[3.375rem] cursor-pointer items-center gap-2 rounded-full border px-5 text-sm font-semibold transition-colors",
+                  drinksOpen
+                    ? "border-brand bg-brand-soft text-brand"
+                    : "border-line bg-surface text-ink hover:border-brand hover:text-brand",
+                )}
+              >
+                <Wine size={17} />
+                Drinks
+                <ChevronDown
+                  size={15}
+                  className={cn("transition-transform", drinksOpen && "rotate-180")}
+                />
+              </button>
+              {drinksOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-20"
+                    onClick={() => setDrinksOpen(false)}
+                    aria-hidden
+                  />
+                  <div className="absolute right-0 top-full z-30 mt-1.5 max-h-[60vh] w-80 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-[var(--radius)] border border-line bg-surface py-1 shadow-[var(--shadow-2)]">
+                    {personalizados.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => {
+                          setDrinksOpen(false);
+                          if (caixaOk) setPdvModal(p);
+                          else setSheetOpen(true);
+                        }}
+                        className="flex w-full cursor-pointer items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-brand-soft"
+                      >
+                        <span className="min-w-0 flex-1 text-sm font-medium text-ink">
+                          {p.nome}
+                        </span>
+                        <span className="shrink-0 font-mono text-xs font-semibold tabular-nums text-muted">
+                          {brl(p.preco)}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {sites.length > 1 && (
+            <select
+              value={siteId}
+              onChange={(e) => setSiteId(e.target.value)}
+              className={cn(selectCls, "h-[3.375rem] shrink-0")}
+              aria-label="Loja"
+            >
+              {sites.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.nome}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {!filaAberta && (
+            <button
+              onClick={() => setFilaAberta(true)}
+              title="Exibir autoatendimento"
+              className="flex h-[3.375rem] shrink-0 cursor-pointer items-center gap-2 rounded-full border border-line bg-surface px-4 text-sm font-semibold text-ink transition-colors hover:border-brand hover:text-brand"
+            >
+              <MonitorSmartphone size={18} />
+              Autoatendimento
+            </button>
+          )}
+
+          <button
+            onClick={() => setSheetOpen(true)}
+            className={cn(
+              "flex h-[3.375rem] min-w-[12rem] shrink-0 cursor-pointer items-center justify-between gap-3 rounded-full border pl-4 pr-4 transition-colors",
+              caixaOk
+                ? "border-ok/40 bg-ok-soft text-ok hover:bg-ok-soft/70"
+                : "animate-pulse border-danger bg-danger text-on-brand hover:opacity-90",
+            )}
+          >
+            <span
+              className={cn(
+                "flex shrink-0 items-center gap-2",
+                !caixaOk && "mx-auto",
+              )}
+            >
+              {caixaOk ? <Unlock size={16} /> : <Lock size={16} />}
+              <span className="flex flex-col items-start leading-tight">
+                <span className="text-base font-semibold">
+                  {caixaOk ? "Caixa aberto" : "Caixa fechado"}
+                </span>
+                {!caixaOk && (
+                  <span className="text-[11px] font-medium opacity-90">
+                    Toque para abrir · F4
+                  </span>
+                )}
+              </span>
+            </span>
+            {caixaOk && (
+              <span className="min-w-0 text-right">
+                <span className="block truncate text-[13px] font-medium leading-tight">
+                  {operador}
+                </span>
+                <span className="block truncate text-[13px] font-medium leading-tight text-ok/80">
+                  {siteNome}
+                </span>
+              </span>
+            )}
+          </button>
+        </div>
+        <div
+          className={cn(
+            "grid min-h-0 flex-1 gap-3 lg:overflow-hidden lg:transition-[grid-template-columns] lg:duration-300 lg:ease-out",
+            filaAberta
+              ? "lg:grid-cols-[minmax(0,1fr)_330px] xl:grid-cols-[minmax(0,1fr)_360px]"
+              : "lg:grid-cols-[minmax(0,1fr)_0px]",
+          )}
+        >
+          {/* ── Venda atual ── */}
+          <section className="flex min-h-0 min-w-0 flex-col gap-2.5 lg:h-full">
             {/* Venda suspensa — retomar quando o caixa estiver livre */}
             {suspensa && (
               <div className="flex items-center gap-2.5 rounded-[var(--radius)] border border-line bg-surface-2 px-3 py-2">
@@ -740,7 +1238,10 @@ export function PdvClient({
                     </p>
                   </div>
                 ) : (
-                  cart.map((i) => (
+                  cart
+                    .slice()
+                    .reverse()
+                    .map((i) => (
                     <div
                       key={i.key}
                       className={cn(
@@ -750,7 +1251,7 @@ export function PdvClient({
                           : "hover:bg-surface-2",
                       )}
                     >
-                      <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-[var(--radius-sm)] bg-surface-2 text-faint">
+                      <span className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-[var(--radius-sm)] bg-surface-2 text-faint">
                         {i.imagemUrl ? (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img
@@ -759,11 +1260,11 @@ export function PdvClient({
                             className="h-full w-full object-contain p-0.5"
                           />
                         ) : (
-                          <Wine size={15} />
+                          <Wine size={18} />
                         )}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-ink">
+                        <p className="truncate text-[15px] font-medium text-ink">
                           {i.nome}
                           {i.variantNome && (
                             <span className="text-muted">
@@ -773,19 +1274,23 @@ export function PdvClient({
                           )}
                         </p>
                         {i.detalhe && (
-                          <p className="truncate text-[11px] text-muted">
+                          <p className="truncate text-xs text-muted">
                             {i.detalhe}
                           </p>
                         )}
-                        <p className="font-mono text-xs text-ink-2">
+                        <p className="font-mono text-[13px] text-ink-2">
                           {brl(i.preco)} un.
                         </p>
                       </div>
-                      <div className="flex items-center gap-1">
+                      <div className="flex shrink-0 items-center gap-1">
                         <button
-                          onClick={() => setQtd(i.key, i.quantidade - 1)}
+                          onClick={() => {
+                            const era = i.quantidade;
+                            setQtd(i.key, era - 1);
+                            if (era <= 1) buscaRef.current?.focus();
+                          }}
                           aria-label="Diminuir"
-                          className="grid h-8 w-8 cursor-pointer place-items-center rounded-full border border-line text-muted hover:bg-surface-2"
+                          className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full border border-line text-muted hover:bg-surface-2"
                         >
                           {i.quantidade <= 1 ? (
                             <Trash2 size={13} />
@@ -793,18 +1298,28 @@ export function PdvClient({
                             <Minus size={14} />
                           )}
                         </button>
-                        <span className="w-6 text-center font-mono text-sm tabular-nums">
-                          {i.quantidade}
-                        </span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          aria-label={`Quantidade de ${i.nome}`}
+                          value={i.quantidade}
+                          onFocus={(e) => e.currentTarget.select()}
+                          onChange={(e) => {
+                            const v = e.target.value.replace(/\D/g, "");
+                            if (v === "") return; // não zera enquanto digita
+                            setQtd(i.key, Math.min(9999, parseInt(v, 10)));
+                          }}
+                          className="w-12 rounded-[var(--radius-sm)] border border-line bg-surface px-1 py-1 text-center font-mono text-sm tabular-nums text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[var(--ring)]"
+                        />
                         <button
                           onClick={() => setQtd(i.key, i.quantidade + 1)}
                           aria-label="Aumentar"
-                          className="grid h-8 w-8 cursor-pointer place-items-center rounded-full border border-line text-muted hover:bg-surface-2"
+                          className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full border border-line text-muted hover:bg-surface-2"
                         >
                           <Plus size={14} />
                         </button>
                       </div>
-                      <span className="w-16 text-right font-mono text-sm font-semibold tabular-nums text-ink">
+                      <span className="shrink-0 whitespace-nowrap text-right font-mono text-sm font-semibold tabular-nums text-ink">
                         {brl(i.preco * i.quantidade)}
                       </span>
                     </div>
@@ -826,143 +1341,214 @@ export function PdvClient({
                 </label>
               )}
 
-              {/* Rodapé da venda */}
-              <div className="border-t border-line px-4 pb-3 pt-2.5">
-                {/* Cliente — uma linha, discreto */}
-                <div className="flex min-h-[2rem] items-center gap-2">
-                  {cliente ? (
-                    <span className="flex min-w-0 items-baseline gap-2">
-                      <UserCheck
-                        size={15}
-                        className="shrink-0 self-center text-brand"
-                      />
-                      <span className="truncate text-lg font-medium text-ink">
-                        {cliente.nome}
-                      </span>
-                      <span className="shrink-0 font-mono text-[15px] text-muted">
-                        {mascararCpf(cliente.cpf)}
-                      </span>
-                      <button
-                        onClick={() => setConfirmaRemoverCliente(true)}
-                        aria-label="Remover cliente"
-                        title="Remover cliente identificado"
-                        className="grid h-6 w-6 shrink-0 cursor-pointer place-items-center self-center rounded-full border border-danger/50 text-danger transition-colors hover:bg-danger-soft"
-                      >
-                        <UserX size={12} />
-                      </button>
+              {/* Rodapé da venda — barra de info + botões (estilo balcão) */}
+              <div className="border-t border-line">
+                {/* Info: cliente · itens · total */}
+                <div className="flex flex-wrap items-stretch">
+                  {/* Cliente */}
+                  <div className="flex min-w-[15rem] flex-1 items-center gap-3 px-4 py-3">
+                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-brand-soft text-brand">
+                      <User size={20} />
                     </span>
-                  ) : (
-                    <button
-                      onClick={() => setClienteOpen(true)}
-                      className="flex cursor-pointer items-center gap-1.5 text-[14px] font-medium text-muted transition-colors hover:text-brand"
+                    <div className="flex min-w-0 flex-col">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-[15px] font-semibold text-ink">
+                          {cliente ? cliente.nome : "Consumidor Final"}
+                        </span>
+                        <kbd className="shrink-0 rounded border border-line px-1.5 py-0.5 text-[10px] font-medium text-faint">
+                          F3
+                        </kbd>
+                      </div>
+                      {cliente?.cpf && (
+                        <span className="font-mono text-[12px] text-muted">
+                          {mascararCpf(cliente.cpf)}
+                        </span>
+                      )}
+                      <div className="mt-0.5 flex items-center gap-2">
+                        <button
+                          onClick={() => setClienteOpen(true)}
+                          className="cursor-pointer text-[13px] font-medium text-brand transition-colors hover:text-brand-strong"
+                        >
+                          {cliente ? "Trocar cliente" : "Identificar cliente"}
+                        </button>
+                        {cliente && (
+                          <>
+                            <span className="text-[13px] text-ink">/</span>
+                            <button
+                              onClick={() => setConfirmaRemoverCliente(true)}
+                              className="cursor-pointer text-[13px] font-medium text-danger transition-colors hover:opacity-80"
+                            >
+                              Remover cliente
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Itens */}
+                  <div className="flex items-center gap-2 border-line px-5 py-3 text-[15px] font-medium text-ink-2 sm:border-l">
+                    <ShoppingBag size={18} className="shrink-0 text-muted" />
+                    <span className="whitespace-nowrap">
+                      {cart.length} {cart.length === 1 ? "produto" : "produtos"} ·{" "}
+                      {numItens} {numItens === 1 ? "item" : "itens"}
+                    </span>
+                  </div>
+
+                  {/* Total */}
+                  <div className="flex flex-col items-end justify-center border-line px-8 py-3 sm:border-l lg:px-10">
+                    {descontoAplicado > 0 && (
+                      <div className="flex items-center gap-2 text-[12px]">
+                        <span className="font-mono tabular-nums text-muted line-through">
+                          {brl(subtotal)}
+                        </span>
+                        <span className="font-mono tabular-nums text-danger">
+                          − {brl(descontoAplicado)}
+                        </span>
+                      </div>
+                    )}
+                    <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-muted">
+                      Total
+                    </span>
+                    <span
+                      className={cn(
+                        "font-display text-[2.6rem] font-bold leading-none tabular-nums transition-colors duration-300",
+                        vendaFlash ? "text-ok" : "text-ink",
+                      )}
                     >
-                      <UserPlus size={16} /> Identificar cliente
-                      <kbd className="rounded border border-line px-1 text-[11px] text-faint">
-                        F3
-                      </kbd>
-                    </button>
-                  )}
-                  <span className="ml-auto shrink-0 text-xs tabular-nums text-muted">
-                    {numItens} {numItens === 1 ? "item" : "itens"}
-                  </span>
-                  {cart.length > 0 && (
-                    <button
-                      onClick={() => setConfirmaCancelar(true)}
-                      title="Cancelar esta venda e limpar o carrinho"
-                      className="flex shrink-0 cursor-pointer items-center gap-1 rounded-full bg-danger px-3 py-1.5 text-xs font-semibold text-on-brand transition-opacity hover:opacity-90"
-                    >
-                      <X size={12} /> Cancelar venda
-                    </button>
-                  )}
+                      {brl(total)}
+                    </span>
+                  </div>
                 </div>
 
-                {/* Total — maior destaque da tela */}
-                <div className="flex items-end justify-between pb-2.5 pt-1">
-                  <span className="pb-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-muted">
-                    Total
-                  </span>
-                  <span className="font-display text-[2.9rem] font-bold leading-none tabular-nums text-ink">
-                    {brl(total)}
-                  </span>
-                </div>
+                {/* Desconto — só no balcão, faixa fina */}
+                {cart.length > 0 && !vendaTotem && (
+                  <div
+                    className={cn(
+                      "flex items-center border-t border-line px-4 py-2",
+                      descontoOpen || descontoAplicado > 0
+                        ? "justify-between"
+                        : "justify-end",
+                    )}
+                  >
+                    {descontoOpen || descontoAplicado > 0 ? (
+                      <>
+                        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+                          <Percent size={13} /> Desconto
+                        </span>
+                        <span className="flex items-center gap-2">
+                          <span className="relative">
+                            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-muted">
+                              R$
+                            </span>
+                            <input
+                              inputMode="numeric"
+                              aria-label="Valor do desconto"
+                              value={
+                                desconto
+                                  ? desconto.toLocaleString("pt-BR", {
+                                      minimumFractionDigits: 2,
+                                      maximumFractionDigits: 2,
+                                    })
+                                  : ""
+                              }
+                              onChange={(e) =>
+                                setDesconto(Math.min(subtotal, parseCentavos(e.target.value)))
+                              }
+                              placeholder="Desconto"
+                              autoFocus={descontoOpen && descontoAplicado === 0}
+                              className="w-32 rounded-[var(--radius-sm)] border border-line bg-surface py-1.5 pl-8 pr-2 text-right font-mono text-sm tabular-nums text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                            />
+                          </span>
+                          <button
+                            onClick={() => {
+                              setDesconto(0);
+                              setDescontoOpen(false);
+                              buscaRef.current?.focus();
+                            }}
+                            className="cursor-pointer text-xs font-medium text-muted hover:text-danger"
+                          >
+                            remover
+                          </button>
+                        </span>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => setDescontoOpen(true)}
+                        className="flex cursor-pointer items-center gap-1.5 text-sm font-semibold text-muted transition-colors hover:text-brand"
+                      >
+                        <Percent size={14} /> Aplicar desconto
+                      </button>
+                    )}
+                  </div>
+                )}
 
-                <button
-                  onClick={() => setPagamentoOpen(true)}
-                  disabled={!podePagar}
-                  className="flex min-h-[3.5rem] w-full cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] bg-brand px-5 text-lg font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Receber pagamento
-                  <kbd className="ml-1 rounded border border-on-brand/40 px-1.5 py-0.5 text-xs font-medium">
-                    F2
-                  </kbd>
-                </button>
+                {/* Botões — receber (destaque) + cancelar (secundário) */}
+                <div className="flex gap-3 border-t border-line p-3">
+                  <button
+                    onClick={() => setPagamentoOpen(true)}
+                    disabled={!podePagar}
+                    className="flex min-h-[3.5rem] flex-1 cursor-pointer items-center justify-center gap-2.5 rounded-[var(--radius)] bg-brand px-5 text-lg font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <CreditCard size={20} />
+                    Receber pagamento
+                    <kbd className="rounded border border-on-brand/40 px-1.5 py-0.5 text-xs font-medium">
+                      F2
+                    </kbd>
+                  </button>
+                  <button
+                    onClick={() => setConfirmaCancelar(true)}
+                    disabled={cart.length === 0}
+                    title="Cancelar esta venda e limpar o carrinho"
+                    className="flex min-h-[3.5rem] cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] border border-line bg-surface px-5 text-base font-semibold text-ink transition-colors hover:border-danger hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <X size={18} className="text-danger" />
+                    Cancelar venda
+                    <kbd className="rounded border border-line px-1.5 py-0.5 text-[11px] font-medium text-faint">
+                      Del
+                    </kbd>
+                  </button>
+                </div>
               </div>
             </div>
           </section>
 
-          {/* ── Lateral direita: caixa + fila do autoatendimento ── */}
-          <div className="flex min-h-0 flex-col gap-2.5 lg:h-full">
-            <div className="flex items-center justify-end gap-2">
-              {sites.length > 1 && (
-                <select
-                  value={siteId}
-                  onChange={(e) => setSiteId(e.target.value)}
-                  className={selectCls}
-                  aria-label="Loja"
-                >
-                  {sites.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.nome}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <button
-                onClick={() => setHistoricoOpen(true)}
-                title="Últimas vendas — reimprimir cupom ou estornar"
-                aria-label="Últimas vendas"
-                className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-sm font-semibold text-ink transition-colors hover:border-brand hover:text-brand"
-              >
-                <History size={16} />
-                <span className="hidden sm:inline">Vendas</span>
-              </button>
-              <button
-                onClick={() => setSheetOpen(true)}
-                className={cn(
-                  "flex flex-1 cursor-pointer items-center justify-between gap-3 rounded-full border py-1.5 pl-4 pr-4 transition-colors",
-                  caixaOk
-                    ? "border-ok/40 bg-ok-soft text-ok hover:bg-ok-soft/70"
-                    : "animate-pulse border-danger bg-danger text-on-brand hover:opacity-90",
-                )}
-              >
-                <span className="flex shrink-0 items-center gap-2">
-                  {caixaOk ? <Unlock size={16} /> : <Lock size={16} />}
-                  <span className="text-base font-semibold">
-                    {caixaOk ? "Caixa aberto" : "Caixa fechado"}
-                  </span>
-                </span>
-                <span className="min-w-0 text-right">
-                  <span className="block truncate text-[13px] font-medium leading-tight">
-                    {operador}
-                  </span>
-                  <span
-                    className={cn(
-                      "block truncate text-[13px] font-medium leading-tight",
-                      caixaOk ? "text-ok/80" : "text-on-brand/85",
-                    )}
-                  >
-                    {siteNome}
-                  </span>
-                </span>
-              </button>
-            </div>
+          {/* ── Lateral direita: fila do autoatendimento (colapsável) ──
+              Fica montada mesmo colapsada (segue o polling): a coluna do grid
+              anima até 0 e o carrinho toma o espaço; reabre ao surgir atividade. */}
+          <div
+            className={cn(
+              "flex min-h-0 flex-col overflow-hidden transition-opacity duration-200 lg:h-full",
+              filaAberta ? "opacity-100" : "opacity-0 max-lg:hidden",
+            )}
+          >
             <FilaAutoatendimentoPanel
               siteId={siteId}
               saleIdEmAtendimento={vendaTotem?.id ?? null}
               bump={bump}
               onReceber={receberDaFila}
+              onAtividade={setFilaAtiva}
+              onColapsar={() => setFilaAberta(false)}
             />
           </div>
+        </div>
+
+        {/* Barra de atalhos — sempre à vista, orienta o operador de balcão */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-line px-1 pt-2 text-[12px] text-muted">
+          {[
+            { k: "F1", label: "Buscar produto" },
+            { k: "F2", label: "Pagamento" },
+            { k: "F3", label: "Identificar cliente" },
+            { k: "F4", label: "Caixa" },
+            { k: "Ctrl+Z", label: "Desfazer item" },
+          ].map((a) => (
+            <span key={a.k} className="flex items-center gap-1.5">
+              <kbd className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-[10px] font-semibold text-ink shadow-[var(--shadow-1)]">
+                {a.k}
+              </kbd>
+              {a.label}
+            </span>
+          ))}
         </div>
       </div>
 
@@ -1053,6 +1639,61 @@ export function PdvClient({
         </div>
       )}
 
+      {/* Confirmação de venda acima do estoque (modo CONFIRMAR) */}
+      {pendenteEstoque && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Vender acima do estoque"
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+        >
+          <div
+            className="absolute inset-0 bg-ink/50 backdrop-blur-[3px]"
+            onClick={() => setPendenteEstoque(null)}
+            aria-hidden
+          />
+          <div className="relative z-10 w-full max-w-sm rounded-[var(--radius-lg)] border border-line bg-surface p-5 shadow-[var(--shadow-2)]">
+            <p className="text-sm font-semibold text-ink">
+              Vender acima do estoque?
+            </p>
+            <p className="mt-1 text-[13px] text-muted">
+              “{pendenteEstoque.p.nome}” tem{" "}
+              <span className="font-mono font-semibold tabular-nums">
+                {pendenteEstoque.disponivel}
+              </span>{" "}
+              em estoque. O saldo pode ficar negativo.
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                onClick={() => setPendenteEstoque(null)}
+                autoFocus
+                className="min-h-[2.75rem] cursor-pointer rounded-[var(--radius)] border border-line text-sm font-semibold text-ink hover:bg-surface-2"
+              >
+                Voltar
+              </button>
+              <button
+                onClick={() => {
+                  const d = pendenteEstoque;
+                  setPendenteEstoque(null);
+                  addItem(
+                    d.p,
+                    d.variantId,
+                    d.qty,
+                    d.selecoes,
+                    d.precoUnit,
+                    d.detalhe,
+                    true,
+                  );
+                }}
+                className="flex min-h-[2.75rem] cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] bg-warn text-sm font-semibold text-on-brand transition-opacity hover:opacity-90"
+              >
+                <AlertTriangle size={14} /> Vender assim mesmo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Conflito: venda em andamento × venda da fila */}
       {conflito && (
         <div
@@ -1134,6 +1775,9 @@ export function PdvClient({
           metodosAtivos={metodosAtivos}
           integracao={integracao}
           mistoIntegradoDisponivel={!vendaTotem}
+          tefDisponivel={tefOn && !vendaTotem}
+          onCartaoTef={pagarCartaoTef}
+          online={online}
           pedeCpfNota={emiteNfce}
           pending={pending}
           onClose={() => setPagamentoOpen(false)}
@@ -1158,6 +1802,10 @@ export function PdvClient({
         metodos={metodosAtivos}
         caixa={caixa}
         onChanged={() => router.refresh()}
+        onFechado={() => {
+          limpar();
+          setSheetOpen(false);
+        }}
         fundoTrocoPadrao={fundoTrocoPadrao}
         limiteGaveta={limiteGaveta}
       />
@@ -1190,3 +1838,4 @@ export function PdvClient({
     </>
   );
 }
+

@@ -1196,6 +1196,12 @@ export type InventarioView = {
   items: InventarioItemView[];
 };
 
+/** Um inventário específico (para a tela dedicada de contagem). */
+export async function loadInventario(id: string): Promise<InventarioView | null> {
+  const todos = await loadInventarios(null);
+  return todos.find((i) => i.id === id) ?? null;
+}
+
 export async function loadInventarios(siteId: string | null): Promise<InventarioView[]> {
   const invs = await db.inventory.findMany({
     where: siteId ? { siteId } : {},

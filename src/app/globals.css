@@ -1,5 +1,19 @@
 @import "tailwindcss";
 
+/* `dark:` acompanha o MESMO estado dos tokens: data-theme=dark (toggle manual)
+   OU sistema escuro sem override "light". Sem isto, `dark:` só veria o sistema
+   e divergiria do tema aplicado pelo toggle. */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+}
+
 /* ============================================================
    NoHub Market — Design tokens (fonte única, ver CLAUDE.md)
    Direção: neutro operacional — preto/branco/cinza com laranja

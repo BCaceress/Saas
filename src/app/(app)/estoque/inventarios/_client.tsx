@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   Loader2,
   ClipboardList,
@@ -29,8 +29,6 @@ import { useRouter } from "next/navigation";
 import {
   criarInventarioAction,
   iniciarInventarioAction,
-  salvarContagemInventarioAction,
-  fecharInventarioAction,
   cancelarInventarioAction,
   fetchInventarioProdutosAction,
 } from "../actions";
@@ -42,7 +40,7 @@ import { PageHeader } from "@/components/app/page-header";
 type Site = { id: string; nome: string; tipo: string };
 type Category = { id: string; nome: string };
 type Product = { id: string; nome: string; sku: string };
-type InvItem = {
+export type InvItem = {
   productId: string;
   nome: string;
   sku: string;
@@ -52,7 +50,7 @@ type InvItem = {
   qtdSistema: number;
   qtdContada: number | null;
 };
-type Inventario = {
+export type Inventario = {
   id: string;
   status: string;
   siteId: string;
@@ -188,9 +186,9 @@ function fmtDataCurta(v: string | Date): string {
     .replace(".", "");
 }
 
-const pl = (n: number, singular: string, plural: string) => (n === 1 ? singular : plural);
+export const pl = (n: number, singular: string, plural: string) => (n === 1 ? singular : plural);
 
-const fmtQtd = (n: number) => n.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
+export const fmtQtd = (n: number) => n.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 
 type Grupo = "atrasado" | "hoje" | "futuro";
 
@@ -210,13 +208,13 @@ function classificar(dataProgramada: string | Date): { grupo: Grupo; diffDias: n
   return { grupo: "futuro", diffDias };
 }
 
-function tituloEscopo(inv: Inventario): string {
+export function tituloEscopo(inv: Inventario): string {
   if (inv.escopoTipo === "CATEGORIA") return inv.categoriaNome ?? "Categoria";
   if (inv.escopoTipo === "PRODUTOS") return "Produtos selecionados";
   return "Estoque completo";
 }
 
-function subtituloInventario(inv: Inventario, multiSite: boolean): string {
+export function subtituloInventario(inv: Inventario, multiSite: boolean): string {
   const partes: string[] = [];
   if (multiSite) partes.push(inv.siteNome);
   partes.push(`${inv.qtdProdutos} ${pl(inv.qtdProdutos, "produto", "produtos")}`);
@@ -577,20 +575,11 @@ export function InventarioClient({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  // inventoryId -> { productId -> qtdContada }
-  const [contagem, setContagem] = useState<Record<string, Record<string, number>>>({});
   const [novoAberto, setNovoAberto] = useState(false);
   const [detalhe, setDetalhe] = useState<Inventario | null>(null);
   const [iniciandoId, setIniciandoId] = useState<string | null>(null);
   const [todosFuturos, setTodosFuturos] = useState(false);
   const [todosConcluidos, setTodosConcluidos] = useState(false);
-  // Divergência só aparece quando o operador SAI do campo (blur/Enter) —
-  // mostrar enquanto digita gera falsos alertas ("1" de "12" parece -11).
-  const [confirmados, setConfirmados] = useState<Set<string>>(new Set());
-  const [buscaContagem, setBuscaContagem] = useState("");
-  const [rascunhoSalvoEm, setRascunhoSalvoEm] = useState<Date | null>(null);
-  const [revisaoAberta, setRevisaoAberta] = useState(false);
-  const primeiroInputRef = useRef<HTMLInputElement>(null);
   const multiSite = sites.length > 1;
 
   // ── Programar inventário ──
@@ -635,97 +624,6 @@ export function InventarioClient({
   const concluidos = inventarios
     .filter((i) => i.status === "FECHADO" || i.status === "CANCELADO")
     .sort((a, b) => new Date(b.fechadoEm ?? b.createdAt).getTime() - new Date(a.fechadoEm ?? a.createdAt).getTime());
-
-  const totalAberto = aberto?.items.length ?? 0;
-  const contadosAberto = aberto
-    ? aberto.items.filter((it) => contagem[aberto.id]?.[it.productId] != null).length
-    : 0;
-
-  // Trocou o inventário em contagem → zera as confirmações e hidrata a
-  // contagem com o rascunho salvo no servidor (reset durante o render,
-  // mesmo padrão do DateInputBR). O rascunho conta como confirmado.
-  const abertoId = aberto?.id;
-  const [abertoAnterior, setAbertoAnterior] = useState(abertoId);
-  if (abertoId !== abertoAnterior) {
-    setAbertoAnterior(abertoId);
-    setBuscaContagem("");
-    if (aberto) {
-      const rascunho: Record<string, number> = {};
-      const conf = new Set<string>();
-      for (const it of aberto.items) {
-        if (it.qtdContada != null) {
-          rascunho[it.productId] = it.qtdContada;
-          conf.add(it.productId);
-        }
-      }
-      setContagem((p) => ({ ...p, [aberto.id]: { ...rascunho, ...(p[aberto.id] ?? {}) } }));
-      setConfirmados(conf);
-    } else {
-      setConfirmados(new Set());
-    }
-  }
-
-  // Ao abrir a contagem, foca o campo "Contado" do primeiro produto.
-  useEffect(() => {
-    if (abertoId) primeiroInputRef.current?.focus();
-  }, [abertoId]);
-
-  /** Confirma o campo (blur/Enter) e persiste o rascunho no servidor. */
-  function confirmarCampo(invId: string, productId: string) {
-    setConfirmados((prev) => (prev.has(productId) ? prev : new Set(prev).add(productId)));
-    const valor = contagem[invId]?.[productId];
-    if (valor == null) return;
-    // Fire-and-forget: falha de rede no rascunho não interrompe a contagem —
-    // o valor continua no estado local e o fechamento reenvia tudo.
-    salvarContagemInventarioAction({ inventoryId: invId, items: [{ productId, qtdContada: Math.max(0, valor) }] })
-      .then(() => setRascunhoSalvoEm(new Date()))
-      .catch(() => {});
-  }
-
-  function editarCampo(productId: string) {
-    setConfirmados((prev) => {
-      if (!prev.has(productId)) return prev;
-      const next = new Set(prev);
-      next.delete(productId);
-      return next;
-    });
-  }
-
-  /** Enter confirma o campo e pula para o próximo produto da contagem. */
-  function focarProximo(idx: number) {
-    const proximo = document.querySelector<HTMLInputElement>(`[data-conta-idx="${idx + 1}"]`);
-    if (proximo) proximo.focus();
-    else (document.activeElement as HTMLElement | null)?.blur();
-  }
-  const pctAberto = totalAberto > 0 ? Math.round((contadosAberto / totalAberto) * 100) : 0;
-
-  // Itens da contagem: ordenados por localização (corredor/prateleira, sem
-  // localização por último) e filtráveis por nome/SKU/EAN — bipar o código de
-  // barras no campo de busca encontra o produto direto. Sem useMemo: o React
-  // Compiler do projeto memoiza sozinho e rejeita memoização manual aqui.
-  const termoContagem = buscaContagem.trim().toLowerCase();
-  const itensOrdenados = aberto
-    ? [...aberto.items].sort((a, b) => {
-        const la = a.locationNome ?? "￿";
-        const lb = b.locationNome ?? "￿";
-        return la.localeCompare(lb, "pt-BR") || a.nome.localeCompare(b.nome, "pt-BR");
-      })
-    : [];
-  const itensContagem = termoContagem
-    ? itensOrdenados.filter(
-        (it) =>
-          it.nome.toLowerCase().includes(termoContagem) ||
-          it.sku.toLowerCase().includes(termoContagem) ||
-          (it.ean ?? "").includes(termoContagem),
-      )
-    : itensOrdenados;
-
-  // Resumo da revisão antes de finalizar.
-  const mapaAberto = aberto ? contagem[aberto.id] ?? {} : {};
-  const divergentesRevisao = aberto
-    ? aberto.items.filter((it) => mapaAberto[it.productId] != null && mapaAberto[it.productId] !== it.qtdSistema)
-    : [];
-  const naoContadosRevisao = aberto ? aberto.items.filter((it) => mapaAberto[it.productId] == null) : [];
 
   const produtosFiltrados = useMemo(() => {
     const termo = produtoBusca.trim().toLowerCase();
@@ -792,41 +690,12 @@ export function InventarioClient({
     startTransition(async () => {
       try {
         await iniciarInventarioAction(id);
-        router.refresh();
+        // A contagem tem tela própria — leva o operador direto para ela.
+        router.push(`/estoque/inventarios/${id}`);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Erro ao iniciar contagem.");
       } finally {
         setIniciandoId(null);
-      }
-    });
-  }
-
-  function setConta(invId: string, productId: string, qtd: number) {
-    setContagem((p) => ({ ...p, [invId]: { ...(p[invId] ?? {}), [productId]: qtd } }));
-  }
-
-  function fechar(inv: Inventario) {
-    setError(null);
-    const mapa = contagem[inv.id] ?? {};
-    // Contagem cega: qtdSistema chega zerada do servidor com o inventário aberto,
-    // então só envia o que foi contado (a UI exige contar tudo antes de chegar aqui).
-    const items = inv.modoCego
-      ? inv.items
-          .filter((it) => mapa[it.productId] != null)
-          .map((it) => ({ productId: it.productId, qtdContada: mapa[it.productId] }))
-      : inv.items.map((it) => ({
-          productId: it.productId,
-          qtdContada: mapa[it.productId] ?? it.qtdSistema,
-        }));
-    startTransition(async () => {
-      try {
-        await fecharInventarioAction({ inventoryId: inv.id, items });
-        setRevisaoAberta(false);
-        setRascunhoSalvoEm(null);
-        setBuscaContagem("");
-        router.refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Erro ao fechar inventário.");
       }
     });
   }
@@ -1093,312 +962,34 @@ export function InventarioClient({
             <Badge tone="brand">1</Badge>
           </div>
 
-          <div className="relative flex flex-col gap-3 overflow-hidden rounded-[var(--radius-lg)] border border-brand/30 bg-surface p-5">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => router.push(`/estoque/inventarios/${aberto.id}`)}
+            onKeyDown={(e) => { if (e.key === "Enter") router.push(`/estoque/inventarios/${aberto.id}`); }}
+            className="group relative flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-3 overflow-hidden rounded-[var(--radius-lg)] border border-brand/30 bg-surface py-4 pl-5 pr-4 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          >
             <span className="absolute inset-y-0 left-0 w-1 bg-brand" aria-hidden />
-            <div className="flex flex-wrap items-start justify-between gap-3 pl-1">
-              <div className="min-w-0">
-                <p className="flex items-center gap-2 text-base font-semibold text-ink">
-                  <ClipboardList size={16} className="shrink-0 text-brand" />
-                  Inventário · {tituloEscopo(aberto)}
-                </p>
-                <p className="mt-0.5 text-sm text-muted">
-                  {subtituloInventario(aberto, multiSite)}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => cancelar(aberto.id)}
-                disabled={pending}
-                className="cursor-pointer text-xs font-medium text-muted underline hover:text-danger"
-              >
-                Cancelar
-              </button>
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-[var(--radius)] bg-brand-soft text-brand">
+              <ClipboardList size={20} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-base font-semibold text-ink">
+                Inventário · {tituloEscopo(aberto)}
+              </p>
+              <p className="mt-0.5 text-sm text-muted">
+                {subtituloInventario(aberto, multiSite)}
+              </p>
             </div>
-
-            <div className="pl-1">
-              <div className="flex items-center justify-between text-[11px] text-faint">
-                <span>
-                  {contadosAberto} de {totalAberto} {pl(totalAberto, "produto contado", "produtos contados")}
-                  {rascunhoSalvoEm && (
-                    <span className="text-faint"> · Contagem salva automaticamente</span>
-                  )}
-                </span>
-                <span className="font-semibold text-brand">{pctAberto}% concluído</span>
-              </div>
-              <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
-                <div
-                  className="h-full rounded-full bg-brand transition-all"
-                  style={{ width: `${pctAberto}%` }}
-                />
-              </div>
-            </div>
-
-            {/* Busca dentro da contagem — nome, SKU ou EAN (bipar o código filtra direto). */}
-            {aberto.items.length > 5 && (
-              <div className="relative pl-1">
-                <Search size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-faint" />
-                <input
-                  value={buscaContagem}
-                  onChange={(e) => setBuscaContagem(e.target.value)}
-                  placeholder="Buscar por nome, SKU ou código de barras..."
-                  className="w-full rounded-[var(--radius)] border border-line bg-surface py-2 pl-8 pr-3 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                />
-              </div>
-            )}
-
-            <div className="flex flex-col gap-1.5">
-              {itensContagem.length === 0 && (
-                <p className="px-3 py-4 text-center text-xs text-faint">Nenhum produto encontrado para “{buscaContagem}”.</p>
-              )}
-              {itensContagem.map((it, idx) => {
-                const touched = contagem[aberto.id]?.[it.productId] != null;
-                const contada = touched ? contagem[aberto.id][it.productId] : "";
-                // Divergência só é avaliada depois que o operador confirmou o
-                // campo (blur/Enter) — não pisca enquanto digita.
-                const confirmado = touched && confirmados.has(it.productId);
-                const diverge = !aberto.modoCego && confirmado && contagem[aberto.id][it.productId] !== it.qtdSistema;
-                const diffVal = diverge ? (contada as number) - it.qtdSistema : 0;
-                return (
-                  <div key={it.productId} className="flex items-center gap-3 rounded-[var(--radius)] bg-surface-2 px-3 py-1.5">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm text-ink">{it.nome}</p>
-                      <p className="font-mono text-[11px] text-faint">
-                        {it.sku}
-                        {it.ean && ` · ${it.ean}`}
-                        {it.locationNome && ` · ${it.locationNome}`}
-                        {!aberto.modoCego && (
-                          <> · No sistema tem: <span className="font-semibold text-ink">{fmtQtd(it.qtdSistema)}</span></>
-                        )}
-                      </p>
-                    </div>
-                    <div className="flex w-28 shrink-0 flex-col gap-1">
-                      <div className="flex items-center gap-1.5">
-                        <label className="text-[10px] font-semibold text-faint">Contado</label>
-                        {diverge && (
-                          <span
-                            className={cn(
-                              "inline-flex items-center gap-0.5 text-[10px] font-semibold tabular-nums",
-                              diffVal > 0 ? "text-ok" : "text-danger",
-                            )}
-                          >
-                            {diffVal > 0 ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
-                            {diffVal > 0 ? "+" : ""}
-                            {fmtQtd(diffVal)}
-                          </span>
-                        )}
-                        {!aberto.modoCego && confirmado && !diverge && (
-                          <Check size={11} className="text-ok" aria-label="Confere com o sistema" />
-                        )}
-                      </div>
-                      <input
-                        ref={idx === 0 ? primeiroInputRef : undefined}
-                        data-conta-idx={idx}
-                        type="number"
-                        min={0}
-                        step={0.001}
-                        value={contada}
-                        placeholder="0"
-                        onChange={(e) => setConta(aberto.id, it.productId, Number(e.target.value))}
-                        onFocus={() => editarCampo(it.productId)}
-                        onBlur={() => { if (touched) confirmarCampo(aberto.id, it.productId); }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            if (touched) confirmarCampo(aberto.id, it.productId);
-                            focarProximo(idx);
-                          }
-                        }}
-                        className={cn(
-                          "rounded-[var(--radius)] border bg-surface px-3 py-1.5 text-sm tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
-                          diverge ? "border-warn text-warn" : "border-line text-ink focus-visible:border-brand"
-                        )}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="flex flex-wrap items-center justify-end gap-3 border-t border-line pt-3">
-              {/* Contagem cega: não existe "mantém saldo do sistema" — tudo precisa ser contado. */}
-              {aberto.modoCego && contadosAberto < totalAberto && (
-                <p className="text-xs text-muted">
-                  Contagem cega exige contar todos os produtos —{" "}
-                  {totalAberto - contadosAberto === 1
-                    ? "falta 1 produto"
-                    : `faltam ${totalAberto - contadosAberto} produtos`}.
-                </p>
-              )}
-              <button
-                type="button"
-                onClick={() => setRevisaoAberta(true)}
-                disabled={pending || (aberto.modoCego && contadosAberto < totalAberto)}
-                title={
-                  aberto.modoCego && contadosAberto < totalAberto
-                    ? "Na contagem cega todos os produtos precisam ser contados antes de finalizar"
-                    : undefined
-                }
-                className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <CheckCircle2 size={14} />
-                {aberto.modoCego ? "Revisar e finalizar" : "Revisar divergências e finalizar"}
-              </button>
-            </div>
+            <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand">
+              <PlayCircle size={14} /> Continuar contagem
+            </span>
+            <ChevronRight size={16} className="shrink-0 text-faint transition-colors group-hover:text-muted" />
           </div>
         </section>
       )}
 
-      {/* ── Revisão antes de finalizar ── */}
-      <Sheet
-        open={revisaoAberta && !!aberto}
-        onClose={() => setRevisaoAberta(false)}
-        title="Revisar e finalizar"
-        description={
-          aberto?.modoCego
-            ? "Confira os valores contados antes de finalizar — a divergência é calculada no fechamento, sem mostrar o saldo do sistema."
-            : "Confira o resultado antes de aplicar os ajustes — divergências geram ajuste automático no saldo."
-        }
-        width="lg"
-      >
-        {aberto && aberto.modoCego && (
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-faint">
-                {aberto.items.length} {pl(aberto.items.length, "produto contado", "produtos contados")}
-              </p>
-              <div className="flex max-h-72 flex-col gap-2 overflow-y-auto pr-1">
-                {itensOrdenados.map((it) => (
-                  <div
-                    key={it.productId}
-                    className="flex items-center gap-3 rounded-[var(--radius)] border border-line bg-surface-2 px-3 py-2"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-ink">{it.nome}</p>
-                      <p className="font-mono text-[11px] text-faint">
-                        {it.sku}
-                        {it.locationNome && ` · ${it.locationNome}`}
-                      </p>
-                    </div>
-                    <div className="w-14 shrink-0 text-center">
-                      <p className="text-[10px] text-faint">Contado</p>
-                      <p className="text-sm font-semibold tabular-nums text-ink">
-                        {mapaAberto[it.productId] != null ? fmtQtd(mapaAberto[it.productId]) : "—"}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 border-t border-line pt-3">
-              <button
-                type="button"
-                onClick={() => setRevisaoAberta(false)}
-                disabled={pending}
-                className="cursor-pointer rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-              >
-                Voltar à contagem
-              </button>
-              <button
-                type="button"
-                onClick={() => fechar(aberto)}
-                disabled={pending}
-                className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-60"
-              >
-                {pending ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                Confirmar e finalizar
-              </button>
-            </div>
-          </div>
-        )}
-
-        {aberto && !aberto.modoCego && (
-          <div className="flex flex-col gap-4">
-            {/* Aviso de não contados */}
-            {naoContadosRevisao.length > 0 && (
-              <div className="flex items-start gap-2.5 rounded-[var(--radius)] border border-warn/30 bg-warn-soft px-4 py-3">
-                <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warn" />
-                <div>
-                  <p className="text-sm font-medium text-ink">
-                    {naoContadosRevisao.length} {pl(naoContadosRevisao.length, "produto não contado", "produtos não contados")}
-                  </p>
-                  <p className="text-xs text-muted">
-                    {pl(naoContadosRevisao.length, "Será mantido", "Serão mantidos")} com o saldo do sistema, sem ajuste.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* Divergências */}
-            {divergentesRevisao.length === 0 ? (
-              <div className="flex items-center gap-2.5 rounded-[var(--radius)] border border-ok/30 bg-ok-soft px-4 py-3">
-                <CheckCircle2 size={16} className="shrink-0 text-ok" />
-                <p className="text-sm text-ink">Nenhuma divergência — a contagem confere com o sistema.</p>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2">
-                <p className="text-xs font-semibold uppercase tracking-wide text-faint">
-                  {divergentesRevisao.length} {pl(divergentesRevisao.length, "divergência será ajustada", "divergências serão ajustadas")}
-                </p>
-                <div className="flex max-h-72 flex-col gap-2 overflow-y-auto pr-1">
-                  {divergentesRevisao.map((it) => {
-                    const contadaRev = mapaAberto[it.productId];
-                    const diffRev = contadaRev - it.qtdSistema;
-                    return (
-                      <div
-                        key={it.productId}
-                        className="flex items-center gap-3 rounded-[var(--radius)] border border-l-2 border-y-line border-r-line border-l-warn bg-surface-2 px-3 py-2"
-                      >
-                        {diffRev > 0 ? (
-                          <ArrowUpRight size={14} className="shrink-0 text-ok" aria-label="Contado a mais" />
-                        ) : (
-                          <ArrowDownRight size={14} className="shrink-0 text-danger" aria-label="Contado a menos" />
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium text-ink">{it.nome}</p>
-                          <p className="font-mono text-[11px] text-faint">{it.sku}</p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-4">
-                          <div className="w-14 text-center">
-                            <p className="text-[10px] text-faint">Sistema</p>
-                            <p className="text-sm tabular-nums text-ink">{fmtQtd(it.qtdSistema)}</p>
-                          </div>
-                          <div className="w-14 text-center">
-                            <p className="text-[10px] text-faint">Contado</p>
-                            <p className={cn("text-sm font-semibold tabular-nums", diffRev > 0 ? "text-ok" : "text-danger")}>
-                              {fmtQtd(contadaRev)}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            <div className="flex justify-end gap-2 border-t border-line pt-3">
-              <button
-                type="button"
-                onClick={() => setRevisaoAberta(false)}
-                disabled={pending}
-                className="cursor-pointer rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-              >
-                Voltar à contagem
-              </button>
-              <button
-                type="button"
-                onClick={() => fechar(aberto)}
-                disabled={pending}
-                className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-60"
-              >
-                {pending ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                Confirmar e finalizar
-              </button>
-            </div>
-          </div>
-        )}
-      </Sheet>
+      {/* Revisão e contagem agora vivem na tela dedicada /estoque/inventarios/[id]. */}
 
       {/* ── Atrasados ── */}
       {atrasados.length > 0 && (

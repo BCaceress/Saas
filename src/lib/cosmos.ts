@@ -59,15 +59,21 @@ export async function getCosmosByEan(eanInput: string): Promise<CosmosResult> {
   // Base da API Cosmos. O domínio .io foi descontinuado (passou a apontar p/
   // página de terceiros); a API ativa fica em .com.br. Configurável via env.
   const baseUrl = process.env.COSMOS_API_URL ?? "https://api.cosmos.bluesoft.com.br";
-  const res = await fetch(`${baseUrl}/gtins/${ean}.json`, {
-    headers: {
-      "X-Cosmos-Token": token,
-      "User-Agent": process.env.COSMOS_USER_AGENT ?? "NoHubMarket/1.0",
-      "Content-Type": "application/json",
-    },
-    // a base é estável; deixa o Next cachear a resposta upstream
-    next: { revalidate: 60 * 60 * 24 * 30 },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/gtins/${ean}.json`, {
+      headers: {
+        "X-Cosmos-Token": token,
+        "User-Agent": process.env.COSMOS_USER_AGENT ?? "NoHubMarket/1.0",
+        "Content-Type": "application/json",
+      },
+      // a base é estável; deixa o Next cachear a resposta upstream
+      next: { revalidate: 60 * 60 * 24 * 30 },
+    });
+  } catch {
+    // Falha de rede/DNS/TLS/timeout — vira erro tratável em vez de estourar 500.
+    throw new CosmosError("Não foi possível alcançar a Cosmos.", "UPSTREAM");
+  }
 
   if (res.status === 404) throw new CosmosError("EAN não encontrado na Cosmos.", "NOT_FOUND");
   if (res.status === 429) throw new CosmosError("Limite de cota da Cosmos atingido.", "RATE_LIMIT");

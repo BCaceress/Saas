@@ -37,6 +37,7 @@ import { toast } from "@/components/ui/toast";
 import {
   criarPedidoCompraAction,
   atualizarPedidoCompraAction,
+  atualizarPrevisaoEntregaPedidoAction,
   enviarPedidoCompraAction,
   marcarAguardandoPedidoAction,
   marcarEmTransitoPedidoAction,
@@ -422,7 +423,8 @@ export function PedidoDrawer({
               label="Entrada prevista no estoque"
               valor={`${fmtQtd(p.items.reduce((a, it) => a + it.qtdPedida * it.fatorConversao, 0))} UN`}
             />
-            <ResumoCampo label="Previsão de entrega" valor={p.previsaoEntrega ? previsaoLabel(p.previsaoEntrega) : "Sem previsão"} />
+            <PrevisaoEntregaCampo pedido={p} />
+
             {p.observacao && <ResumoCampo label="Observação" valor={p.observacao} full />}
           </div>
 
@@ -1262,6 +1264,94 @@ function AssistenteContextual({ pedido, steps }: { pedido: PedidoView; steps: Pe
     >
       <Icon size={15} className="mt-0.5 shrink-0" />
       <p>{texto}</p>
+    </div>
+  );
+}
+
+/** Previsão de entrega: editável enquanto o pedido não foi confirmado
+ *  (RASCUNHO/ENVIADO); depois vira só leitura. */
+function PrevisaoEntregaCampo({ pedido }: { pedido: PedidoView }) {
+  const router = useRouter();
+  const editavel = pedido.status === "RASCUNHO" || pedido.status === "ENVIADO";
+  const [editando, setEditando] = useState(false);
+  const [valor, setValor] = useState(
+    pedido.previsaoEntrega ? pedido.previsaoEntrega.slice(0, 10) : "",
+  );
+  const [salvando, setSalvando] = useState(false);
+
+  async function salvar() {
+    setSalvando(true);
+    try {
+      await atualizarPrevisaoEntregaPedidoAction(pedido.id, valor || null);
+      setEditando(false);
+      toast.success("Previsão atualizada.");
+      router.refresh();
+    } catch (e) {
+      toast.error(
+        "Não foi possível salvar",
+        e instanceof Error ? e.message : "Tente novamente.",
+      );
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  if (editavel && editando) {
+    return (
+      <div className="basis-full sm:basis-auto">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">
+          Previsão de entrega
+        </p>
+        <div className="mt-1 flex items-center gap-1.5">
+          <input
+            type="date"
+            value={valor}
+            onChange={(e) => setValor(e.target.value)}
+            className="rounded-[var(--radius-sm)] border border-line bg-surface px-2 py-1 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+          />
+          <button
+            type="button"
+            onClick={salvar}
+            disabled={salvando}
+            aria-label="Salvar previsão"
+            className="grid h-7 w-7 place-items-center rounded-full bg-brand text-on-brand hover:bg-brand-strong disabled:opacity-50"
+          >
+            {salvando ? <Loader2 size={13} className="animate-spin" /> : <Check size={14} />}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setValor(pedido.previsaoEntrega ? pedido.previsaoEntrega.slice(0, 10) : "");
+              setEditando(false);
+            }}
+            aria-label="Cancelar"
+            className="grid h-7 w-7 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-ink"
+          >
+            <CircleX size={14} />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">
+        Previsão de entrega
+      </p>
+      <p className="flex items-center gap-1.5 text-sm text-ink">
+        {pedido.previsaoEntrega ? previsaoLabel(pedido.previsaoEntrega) : "Sem previsão"}
+        {editavel && (
+          <button
+            type="button"
+            onClick={() => setEditando(true)}
+            aria-label={pedido.previsaoEntrega ? "Alterar previsão de entrega" : "Incluir previsão de entrega"}
+            className="cursor-pointer text-faint transition-colors hover:text-brand"
+          >
+            <Pencil size={12} />
+          </button>
+        )}
+      </p>
     </div>
   );
 }

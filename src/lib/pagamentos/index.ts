@@ -494,15 +494,22 @@ export async function estornarPagamentosDaVenda(
   }));
   if (payments.length === 0) return { estornados: 0, pendencias: [] };
 
-  // Sem gateway = recebimento manual (dinheiro, maquininha solta): não há o
-  // que estornar por API — o operador devolve no caixa ou na própria máquina.
-  const integrados = payments.filter((p) => p.gateway && p.externalId);
-  const manuais = payments.length - integrados.length;
-  if (integrados.length === 0) return { estornados: manuais, pendencias: [] };
+  // TEF (pinpad) é cancelado no CLIENTE (Electron) — o servidor não alcança o
+  // pinpad. O fluxo de estorno do PDV cancela no pinpad antes de chamar o
+  // cancelamento da venda; aqui só contamos como resolvido (não é pendência).
+  const tef = payments.filter((p) => p.gateway === "TEF").length;
+
+  // Sem gateway (ou TEF) = não há estorno por API de nuvem daqui: dinheiro,
+  // maquininha solta ou pinpad (já tratado no cliente).
+  const integrados = payments.filter(
+    (p) => p.gateway && p.gateway !== "TEF" && p.externalId,
+  );
+  const manuais = payments.length - integrados.length - tef;
+  if (integrados.length === 0) return { estornados: manuais + tef, pendencias: [] };
 
   const ctx = await getProviderCtx(tenantId);
   const pendencias: string[] = [];
-  let estornados = manuais;
+  let estornados = manuais + tef;
 
   for (const p of integrados) {
     const rotulo = `${p.metodo} de ${num(p.valor).toFixed(2)}`;

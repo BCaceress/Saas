@@ -5,7 +5,7 @@
 // destaque; quem já pagou fica ancorado no rodapé, só para acompanhamento.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Loader2, MonitorSmartphone, RotateCcw, Volume2, VolumeX, X } from "lucide-react";
+import { Check, Loader2, MonitorSmartphone, PanelRightClose, RotateCcw, Volume2, VolumeX, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   pollAutoatendimentoAction,
@@ -87,6 +87,8 @@ export function FilaAutoatendimentoPanel({
   saleIdEmAtendimento,
   bump,
   onReceber,
+  onAtividade,
+  onColapsar,
 }: {
   siteId: string;
   /** Venda já carregada no PDV — some da fila enquanto está em atendimento. */
@@ -94,6 +96,10 @@ export function FilaAutoatendimentoPanel({
   /** Incrementado pelo PDV para forçar atualização imediata da fila. */
   bump: number;
   onReceber: (venda: VendaTotemFila) => void;
+  /** Informa o PDV se há atividade (terminal ativo ou venda aguardando). */
+  onAtividade?: (ativo: boolean) => void;
+  /** Colapsa o painel. Só oferecido quando não há atividade. */
+  onColapsar?: () => void;
 }) {
   const [fila, setFila] = useState<FilaAutoatendimento | null>(null);
   const [agora, setAgora] = useState(() => Date.now());
@@ -201,13 +207,22 @@ export function FilaAutoatendimentoPanel({
   const aguardando = (fila?.aguardando ?? []).filter((v) => v.id !== saleIdEmAtendimento);
   const concluidas = fila?.concluidas ?? [];
   const terminais = fila?.terminaisAtivos ?? 0;
+  // Atividade = terminal conectado ou venda aguardando. Enquanto null (primeira
+  // carga) não decide nada — evita colapsar antes de saber o estado real.
+  const ativo = terminais > 0 || aguardando.length > 0;
+  const podeColapsar = fila !== null && !ativo && !!onColapsar;
+
+  useEffect(() => {
+    if (fila === null) return;
+    onAtividade?.(ativo);
+  }, [ativo, fila, onAtividade]);
 
   return (
     <aside className="flex min-h-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface lg:flex-1">
       {/* Cabeçalho compacto */}
       <div className="relative border-b border-line px-3.5 py-2.5">
         <div className="flex items-center justify-between gap-2">
-          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-muted">
+          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-muted dark:text-ink">
             Autoatendimento
           </span>
           <span className="flex items-center gap-1.5">
@@ -223,14 +238,24 @@ export function FilaAutoatendimentoPanel({
               title="Alerta sonoro"
               className={cn(
                 "grid h-7 w-7 cursor-pointer place-items-center rounded-full transition-colors hover:bg-surface-2 hover:text-ink",
-                somOpen ? "bg-surface-2 text-ink" : "text-faint",
+                somOpen ? "bg-surface-2 text-ink" : "text-faint dark:text-ink",
               )}
             >
               {som ? <Volume2 size={14} /> : <VolumeX size={14} />}
             </button>
+            {podeColapsar && (
+              <button
+                onClick={onColapsar}
+                aria-label="Fechar autoatendimento"
+                title="Fechar autoatendimento"
+                className="grid h-7 w-7 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-surface-2 hover:text-ink dark:text-ink"
+              >
+                <PanelRightClose size={14} />
+              </button>
+            )}
           </span>
         </div>
-        <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted">
+        <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted dark:text-ink">
           <span
             className={cn(
               "h-1.5 w-1.5 rounded-full",
@@ -298,9 +323,9 @@ export function FilaAutoatendimentoPanel({
         ) : aguardando.length === 0 ? (
           /* Estado vazio — enxuto, sem ilustração */
           <div className="flex h-full flex-col items-center justify-center gap-1.5 px-4 py-8 text-center">
-            <MonitorSmartphone size={20} className="mb-1 text-faint" />
+            <MonitorSmartphone size={20} className="mb-1 text-faint dark:text-ink" />
             <p className="text-sm font-medium text-ink">Nenhuma venda aguardando</p>
-            <p className="text-xs text-muted">
+            <p className="text-xs text-muted dark:text-ink-2">
               Os pedidos dos terminais aparecerão aqui.
             </p>
           </div>

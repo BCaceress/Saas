@@ -71,6 +71,13 @@ enum Atendimento {
   OPERADOR_PDV
 }
 
+// Controle de estoque no PDV: como a venda reage a saldo insuficiente.
+enum ControleEstoquePdv {
+  BLOQUEAR  // não deixa vender sem saldo (padrão)
+  CONFIRMAR // permite vender acima do saldo mediante confirmação do operador
+  IGNORAR   // vende sem validar saldo
+}
+
 enum Topologia {
   LOCAL
   CD_ABASTECE
@@ -141,6 +148,7 @@ model Tenant {
   // Estoque (Configurações → Estoque e alertas)
   estoqueMinimoPadrao Int @default(0) // pré-preenche o mínimo ao cadastrar produto
   produtoParadoDias   Int @default(45) // dias sem movimentação → alerta "parado"
+  controleEstoquePdv  ControleEstoquePdv @default(BLOQUEAR) // como o PDV trata saldo insuficiente
 
   // Caixa / PDV (Configurações → Caixa)
   caixaFundoTroco   Decimal? @db.Decimal(10, 2) // sugestão de abertura
@@ -1245,6 +1253,11 @@ model Sale {
   // Só dígitos. Cliente identificado (customerId) tem prioridade.
   cpfNota String?
 
+  // Venda criada OFFLINE no PDV e sincronizada depois. O id é gerado no cliente
+  // (uuid) e é a chave de IDEMPOTÊNCIA da sincronização: reenvio não duplica a
+  // venda. Null = venda nasceu online (o caso normal).
+  clientId String? @unique
+
   createdAt DateTime  @default(now())
   paidAt    DateTime?
 
@@ -1335,6 +1348,10 @@ model Payment {
   // Id da TRANSAÇÃO no PSP. Diferente de externalId (que é a intenção/pedido
   // enviada à maquininha) — o estorno e a conciliação precisam deste.
   pspPaymentId String?
+
+  // Comprovante do cartão (via cliente) devolvido pelo TEF/pinpad, texto pronto
+  // para reimpressão. Separado do cupom fiscal (DANFCE), que vem do provedor.
+  comprovante String? @db.Text
 
   createdAt DateTime @default(now())
 

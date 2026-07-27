@@ -384,23 +384,37 @@ async function syncSalesChannels(
   }
 }
 
-/** Substitui o fornecedor principal do produto (remove qualquer isPrincipal anterior). */
-async function syncPrincipalSupplier(
+/** Lista de fornecedores efetiva: usa fornecedoresIds; cai no principal legado se vazia. */
+function resolveFornecedores(d: {
+  fornecedoresIds: string[];
+  fornecedorPrincipalId?: string | null;
+}): string[] {
+  if (d.fornecedoresIds.length) return d.fornecedoresIds;
+  return d.fornecedorPrincipalId ? [d.fornecedorPrincipalId] : [];
+}
+
+/**
+ * Substitui o conjunto de fornecedores do produto. O primeiro da lista vira o
+ * principal. `custoFornecedor` (se informado) fica no principal.
+ */
+async function syncSuppliers(
   tid: string,
   productId: string,
-  fornecedorPrincipalId: string | null | undefined,
+  fornecedoresIds: string[],
   custoFornecedor: number | null | undefined,
 ) {
-  await db.productSupplier.deleteMany({ where: { productId, isPrincipal: true } });
-  if (fornecedorPrincipalId) {
-    await db.productSupplier.create({
-      data: {
+  // Dedup preservando a ordem (o primeiro é o principal).
+  const ids = fornecedoresIds.filter((id, i) => id && fornecedoresIds.indexOf(id) === i);
+  await db.productSupplier.deleteMany({ where: { productId } });
+  if (ids.length) {
+    await db.productSupplier.createMany({
+      data: ids.map((supplierId, i) => ({
         tenantId: tid,
         productId,
-        supplierId: fornecedorPrincipalId,
-        custoFornecedor: custoFornecedor ?? null,
-        isPrincipal: true,
-      },
+        supplierId,
+        custoFornecedor: i === 0 ? custoFornecedor ?? null : null,
+        isPrincipal: i === 0,
+      })),
     });
   }
 }
@@ -462,6 +476,9 @@ const productSchema = z.object({
 
   fornecedorPrincipalId: z.string().optional().nullable(),
   custoFornecedor: z.number().nonnegative().optional().nullable(),
+  // Lista completa de fornecedores — o primeiro vira o principal. Mantém
+  // fornecedorPrincipalId por compatibilidade (fallback quando a lista vem vazia).
+  fornecedoresIds: z.array(z.string()).optional().default([]),
 
   // Embalagens de compra (fardo, caixa…) — cada uma com seu próprio código de
   // barras e fator de conversão p/ a unidade base de venda.
@@ -560,24 +577,13 @@ export async function createProduct(input: ProductInput) {
             locationId: d.locationId ?? null,
           }],
         },
-        ...(d.fornecedorPrincipalId
-          ? {
-              suppliers: {
-                create: {
-                  tenantId: tid,
-                  supplierId: d.fornecedorPrincipalId,
-                  custoFornecedor: d.custoFornecedor ?? null,
-                  isPrincipal: true,
-                },
-              },
-            }
-          : {}),
       },
     });
 
     if (d.tags?.length) await attachTags(tid, product.id, d.tags);
     await syncSalesChannels(tid, product.id, d.salesChannels);
     await syncPackagings(tid, product.id, d.packagings);
+    await syncSuppliers(tid, product.id, resolveFornecedores(d), d.custoFornecedor);
 
     ok();
     return { id: product.id, sku };
@@ -624,14 +630,18 @@ export async function updateProduct(id: string, input: ProductInput) {
         descricaoOnline: d.descricaoOnline || null,
       },
     });
-    // Propaga mínimo/ideal para todos os stocks existentes deste produto
+    // Propaga mínimo/ideal + local de armazenagem para os stocks deste produto
     await db.stock.updateMany({
       where: { productId: id },
-      data: { estoqueMinimo: d.estoqueMinimo, estoqueIdeal: d.estoqueIdeal },
+      data: {
+        estoqueMinimo: d.estoqueMinimo,
+        estoqueIdeal: d.estoqueIdeal,
+        locationId: d.locationId ?? null,
+      },
     });
     await syncSalesChannels(tid, id, d.salesChannels);
     await syncPackagings(tid, id, d.packagings);
-    await syncPrincipalSupplier(tid, id, d.fornecedorPrincipalId, d.custoFornecedor);
+    await syncSuppliers(tid, id, resolveFornecedores(d), d.custoFornecedor);
     ok();
   });
 }
@@ -639,6 +649,15 @@ export async function updateProduct(id: string, input: ProductInput) {
 export async function archiveProduct(id: string, ativo: boolean) {
   return tx(async () => {
     await db.product.update({ where: { id }, data: { ativo } });
+    ok();
+  });
+}
+
+/** Ativa/inativa vários produtos de uma vez (ação em lote da listagem). */
+export async function bulkArchiveProducts(ids: string[], ativo: boolean) {
+  return tx(async () => {
+    if (ids.length === 0) return;
+    await db.product.updateMany({ where: { id: { in: ids } }, data: { ativo } });
     ok();
   });
 }
@@ -1107,6 +1126,26 @@ export type EanSuggestion = {
   erro?: string;
 };
 
+/**
+ * Checagem leve de EAN já cadastrado — usada no on-blur do formulário para
+ * avisar cedo, sem disparar o enriquecimento externo.
+ */
+export async function checkEanTaken(
+  eanRaw: string,
+): Promise<{ taken: boolean; nome?: string; sku?: string }> {
+  return tx(async () => {
+    const ean = onlyDigits(eanRaw);
+    if (ean.length < 8) return { taken: false };
+    const existente = await db.product.findFirst({
+      where: { ean },
+      select: { nome: true, sku: true },
+    });
+    return existente
+      ? { taken: true, nome: existente.nome, sku: existente.sku }
+      : { taken: false };
+  });
+}
+
 export async function enrichEan(eanRaw: string): Promise<EanSuggestion> {
   return tx(async () => {
     const ean = onlyDigits(eanRaw);
@@ -1155,7 +1194,13 @@ export async function enrichEan(eanRaw: string): Promise<EanSuggestion> {
                 : "Não foi possível consultar agora.";
         return { encontrado: false, fonte: "nenhuma", motivo, erro: msg };
       }
-      throw e;
+      // Qualquer outra falha (rede, parse, inesperada) — degrada em vez de 500.
+      return {
+        encontrado: false,
+        fonte: "nenhuma",
+        motivo: "erro",
+        erro: "Não foi possível consultar agora. Preencha à mão.",
+      };
     }
 
     const base: EanSuggestion = {

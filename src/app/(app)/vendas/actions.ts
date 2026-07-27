@@ -15,7 +15,7 @@ import {
   reverterRecebimentoTotem,
 } from "@/lib/vendas";
 import { sessaoAtual, caixaAbertoNoSite } from "@/lib/caixa";
-import { db } from "@/lib/prisma";
+import { db, basePrisma } from "@/lib/prisma";
 import {
   criarCobrancaPixVenda,
   criarIntencaoCartaoVenda,
@@ -114,9 +114,171 @@ export async function finalizarVendaPdvAction(input: z.input<typeof finalizarPdv
       cpfNota: d.cpfNota,
       pagamentos: d.pagamentos.map((p) => ({ ...p, status: "CONFIRMADO" as const })),
     });
+    // Só o modo BLOQUEAR barra saldo insuficiente; CONFIRMAR/IGNORAR já foram
+    // decididos na tela e aqui deixam o saldo ir a negativo (marcado no razão).
+    const t = await basePrisma.tenant.findUnique({
+      where: { id: tid },
+      select: { controleEstoquePdv: true },
+    });
+    const permitirSaldoNegativo = (t?.controleEstoquePdv ?? "BLOQUEAR") !== "BLOQUEAR";
+    await finalizarVenda(tid, saleId, userId, { permitirSaldoNegativo });
+    ok();
+    return saleId;
+  });
+}
+
+// ── PDV: venda paga por cartão via TEF (pinpad) ──
+// O pinpad JÁ aprovou no cliente (Electron) antes de a venda existir. Aqui só
+// gravamos a venda com o pagamento CONFIRMADO + o detalhe do TEF e finalizamos.
+// IDEMPOTENTE por tefId: um reenvio (rede oscilou entre aprovar e gravar) devolve
+// a mesma venda em vez de cobrar/gravar de novo.
+const tefCartaoSchema = z.object({
+  siteId: z.string().min(1, "Selecione o site."),
+  customerId: z.string().optional().nullable(),
+  items: z.array(itemSchema).min(1, "Adicione ao menos um item."),
+  descontoVenda: z.number().nonnegative().default(0),
+  maiorIdadeConfirmada: z.boolean().default(false),
+  cpfNota: cpfNotaField,
+  metodo: z.enum(["CARTAO_CREDITO", "CARTAO_DEBITO"]),
+  valor: z.number().positive(),
+  tefId: z.string().min(1),
+  bandeira: z.string().nullable().optional(),
+  parcelas: z.number().int().min(1).nullable().optional(),
+  nsu: z.string().nullable().optional(),
+  autorizacao: z.string().nullable().optional(),
+  adquirenteCnpj: z.string().nullable().optional(),
+  comprovante: z.string().nullable().optional(),
+});
+
+export async function finalizarVendaTefCartaoAction(
+  input: z.input<typeof tefCartaoSchema>,
+): Promise<string> {
+  const d = tefCartaoSchema.parse(input);
+  return txp("venda.registrar", d.siteId, async (tid, userId) => {
+    const sessao = await sessaoAtual(tid, d.siteId, userId);
+    if (!sessao) throw new Error("Caixa fechado — abra o caixa para vender.");
+
+    // Idempotência: se este tefId já virou pagamento, a venda já existe.
+    const existente = await db.payment.findFirst({
+      where: { gateway: "TEF", externalId: d.tefId },
+      select: { saleId: true },
+    });
+    if (existente) return existente.saleId;
+
+    const saleId = await criarVenda(tid, {
+      siteId: d.siteId,
+      origem: "PDV",
+      cashSessionId: sessao.id,
+      operatorUserId: userId,
+      customerId: d.customerId ?? null,
+      items: d.items,
+      descontoVenda: d.descontoVenda,
+      maiorIdadeConfirmada: d.maiorIdadeConfirmada,
+      cpfNota: d.cpfNota,
+      pagamentos: [
+        {
+          metodo: d.metodo,
+          valor: d.valor,
+          status: "CONFIRMADO",
+          detalheCartao: {
+            gateway: "TEF",
+            externalId: d.tefId,
+            bandeira: d.bandeira ?? null,
+            parcelas: d.parcelas ?? null,
+            nsu: d.nsu ?? null,
+            autorizacao: d.autorizacao ?? null,
+            adquirenteCnpj: d.adquirenteCnpj ?? null,
+            comprovante: d.comprovante ?? null,
+          },
+        },
+      ],
+    });
     await finalizarVenda(tid, saleId, userId);
     ok();
     return saleId;
+  });
+}
+
+// ── Sincronização de venda OFFLINE (dinheiro) — Fase 3 ──
+// O PDV fechou a venda sem rede (só dinheiro) e guardou numa fila local. Ao
+// voltar a rede, manda cada uma para cá. IDEMPOTENTE por clientId: reenvio (a
+// fila reprocessa) devolve a mesma venda, nunca duplica. A NFC-e sai pelo hook
+// fiscal normal — em CONTINGENCIA se a SEFAZ ainda não responder.
+const vendaOfflineSchema = z.object({
+  clientId: z.string().min(1),
+  siteId: z.string().min(1),
+  cashSessionId: z.string().min(1),
+  customerId: z.string().optional().nullable(),
+  items: z.array(itemSchema).min(1, "Venda sem itens."),
+  descontoVenda: z.number().nonnegative().default(0),
+  maiorIdadeConfirmada: z.boolean().default(false),
+  cpfNota: cpfNotaField,
+  // Offline só fecha em dinheiro (cartão/PIX exigem rede) — validado abaixo.
+  pagamentos: z.array(pagamentoSchema).min(1, "Venda sem pagamento."),
+  criadaEm: z.string(), // ISO — o momento real da venda, para paidAt/createdAt
+});
+
+export type ResultadoSyncOffline = { saleId: string; already: boolean };
+
+export async function sincronizarVendaOfflineAction(
+  input: z.input<typeof vendaOfflineSchema>,
+): Promise<ResultadoSyncOffline> {
+  const d = vendaOfflineSchema.parse(input);
+  if (!d.pagamentos.every((p) => p.metodo === "DINHEIRO")) {
+    throw new Error("Venda offline só aceita dinheiro.");
+  }
+  return txp("venda.registrar", d.siteId, async (tid, userId) => {
+    // Idempotência: se este clientId já virou venda, ela já existe.
+    const existente = await db.sale.findFirst({
+      where: { clientId: d.clientId },
+      select: { id: true },
+    });
+    if (existente) return { saleId: existente.id, already: true };
+
+    let saleId: string;
+    try {
+      saleId = await criarVenda(tid, {
+        siteId: d.siteId,
+        origem: "PDV",
+        cashSessionId: d.cashSessionId,
+        operatorUserId: userId,
+        customerId: d.customerId ?? null,
+        items: d.items,
+        descontoVenda: d.descontoVenda,
+        maiorIdadeConfirmada: d.maiorIdadeConfirmada,
+        cpfNota: d.cpfNota,
+        clientId: d.clientId,
+        pagamentos: d.pagamentos.map((p) => ({
+          metodo: p.metodo,
+          valor: p.valor,
+          troco: p.troco ?? null,
+          status: "CONFIRMADO" as const,
+        })),
+      });
+    } catch (e) {
+      // Corrida entre dois envios do mesmo clientId: o índice único barra o 2º.
+      const jaExiste = await db.sale.findFirst({
+        where: { clientId: d.clientId },
+        select: { id: true },
+      });
+      if (jaExiste) return { saleId: jaExiste.id, already: true };
+      throw e;
+    }
+
+    // Reconciliação: se o estoque mudou entre a venda offline e o sync (outra
+    // venda comeu o saldo), a baixa vai a negativo e marca no razão — a venda
+    // NÃO pode falhar (o dinheiro já entrou), senão trava a fila para sempre.
+    await finalizarVenda(tid, saleId, userId, { permitirSaldoNegativo: true });
+    // A venda aconteceu offline; o horário real é o da venda, não o do sync.
+    const quando = new Date(d.criadaEm);
+    if (!Number.isNaN(quando.getTime())) {
+      await db.sale.update({
+        where: { id: saleId },
+        data: { paidAt: quando, createdAt: quando },
+      });
+    }
+    ok();
+    return { saleId, already: false };
   });
 }
 
@@ -633,6 +795,8 @@ export type VendaPdvRecente = {
   pagaEm: string; // ISO
   status: "PAGA" | "CANCELADA";
   temCupom: boolean; // NFC-e autorizada → dá para reimprimir
+  /** Pagamentos TEF a cancelar no pinpad ao estornar (o servidor não alcança). */
+  tef: { tefId: string; valor: number }[];
 };
 
 export async function pollVendasPdvAction(siteId: string): Promise<VendaPdvRecente[]> {
@@ -656,8 +820,7 @@ export async function pollVendasPdvAction(siteId: string): Promise<VendaPdvRecen
         createdAt: true,
         payments: {
           where: { status: "CONFIRMADO" },
-          select: { metodo: true },
-          take: 1,
+          select: { metodo: true, gateway: true, externalId: true, valor: true },
         },
         fiscalDocs: {
           where: { status: "AUTORIZADO" },
@@ -675,6 +838,9 @@ export async function pollVendasPdvAction(siteId: string): Promise<VendaPdvRecen
       pagaEm: (s.paidAt ?? s.createdAt).toISOString(),
       status: s.status as "PAGA" | "CANCELADA",
       temCupom: s.fiscalDocs.length > 0,
+      tef: s.payments
+        .filter((p) => p.gateway === "TEF" && p.externalId)
+        .map((p) => ({ tefId: p.externalId as string, valor: num(p.valor) })),
     }));
   });
 }

@@ -13,7 +13,7 @@ export default async function CaixaConfigPage() {
       <PageHeader
         title="Caixa"
         icon={Wallet}
-        description="Regras do caixa do PDV: fundo de troco e limite de dinheiro na gaveta."
+        description="Regras do caixa do PDV: fundo de troco, limite de gaveta e controle de estoque na venda."
         backHref="/configuracoes"
         innerClassName="max-w-none"
       />
@@ -24,6 +24,7 @@ export default async function CaixaConfigPage() {
             tenant.caixaFundoTroco != null ? Number(tenant.caixaFundoTroco) : null,
           caixaLimiteGaveta:
             tenant.caixaLimiteGaveta != null ? Number(tenant.caixaLimiteGaveta) : null,
+          controleEstoquePdv: tenant.controleEstoquePdv,
         }}
       />
     </div>

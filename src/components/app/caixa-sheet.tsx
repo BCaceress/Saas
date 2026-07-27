@@ -58,6 +58,7 @@ export function CaixaSheet({
   metodos,
   caixa,
   onChanged,
+  onFechado,
   fundoTrocoPadrao,
   limiteGaveta,
 }: {
@@ -68,6 +69,8 @@ export function CaixaSheet({
   metodos: PaymentMethod[];
   caixa: CaixaInfo | null;
   onChanged?: () => void;
+  /** Chamado após fechar o caixa com sucesso (ex.: fechar o painel + limpar). */
+  onFechado?: () => void;
   /** Configurações → Caixa: sugestão de abertura e teto de dinheiro na gaveta. */
   fundoTrocoPadrao?: number | null;
   limiteGaveta?: number | null;
@@ -89,6 +92,7 @@ export function CaixaSheet({
         metodos={metodos}
         caixa={caixa}
         onDone={onChanged ?? (() => router.refresh())}
+        onFechado={onFechado}
         fundoTrocoPadrao={fundoTrocoPadrao}
         limiteGaveta={limiteGaveta}
       />
@@ -103,6 +107,7 @@ function CaixaPanel({
   metodos,
   caixa,
   onDone,
+  onFechado,
   fundoTrocoPadrao,
   limiteGaveta,
 }: {
@@ -112,6 +117,7 @@ function CaixaPanel({
   metodos: PaymentMethod[];
   caixa: CaixaInfo | null;
   onDone: () => void;
+  onFechado?: () => void;
   fundoTrocoPadrao?: number | null;
   limiteGaveta?: number | null;
 }) {
@@ -367,6 +373,7 @@ function CaixaPanel({
                   });
                   setFechando(false);
                   setContado("");
+                  onFechado?.();
                 })
               }
               disabled={pending}

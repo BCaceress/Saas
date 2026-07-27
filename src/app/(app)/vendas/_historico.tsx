@@ -10,6 +10,7 @@ import { toast } from "@/components/ui/toast";
 import { pollVendasPdvAction, cancelarVendaAction, type VendaPdvRecente } from "./actions";
 import { imprimirCupom } from "./_nota-fiscal";
 import { brl } from "./_shared";
+import { tefDisponivel, tefBridge } from "@/lib/tef/ipc";
 
 const METODO_LABEL: Record<string, string> = {
   DINHEIRO: "Dinheiro",
@@ -63,6 +64,17 @@ export function HistoricoVendasModal({
   async function estornar(id: string) {
     setPending(true);
     try {
+      // TEF é cancelado no pinpad (aqui, no cliente) — o servidor não alcança.
+      // Cancela primeiro; se falhar, avisa e não segue com o estorno da venda.
+      const venda = vendas?.find((v) => v.id === id);
+      if (venda?.tef.length && tefDisponivel()) {
+        for (const t of venda.tef) {
+          const r = await tefBridge().cancelar(t.tefId, t.valor);
+          if (r.status !== "APROVADO" && r.status !== "CANCELADO") {
+            throw new Error(r.mensagem || "Cancelamento recusado no pinpad.");
+          }
+        }
+      }
       const r = await cancelarVendaAction(id);
       setEstornando(null);
       const pend = r?.pendenciasEstorno ?? [];
@@ -88,10 +100,10 @@ export function HistoricoVendasModal({
       role="dialog"
       aria-modal="true"
       aria-label="Últimas vendas"
-      className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-6"
+      className="fixed inset-0 z-[60] flex justify-end"
     >
       <div className="absolute inset-0 bg-ink/50 backdrop-blur-[3px]" onClick={onClose} aria-hidden />
-      <div className="relative z-10 flex max-h-[90dvh] w-full flex-col overflow-hidden rounded-[var(--radius-xl)] border border-line bg-surface shadow-[var(--shadow-2)] sm:w-[36rem]">
+      <div className="relative z-10 flex h-full w-full flex-col overflow-hidden border-l border-line bg-surface shadow-[var(--shadow-2)] sm:w-[30rem]">
         <div className="flex items-center justify-between gap-4 border-b border-line px-5 py-3.5">
           <div>
             <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-muted">

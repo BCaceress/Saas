@@ -308,6 +308,30 @@ export async function marcarEmTransitoPedidoAction(pedidoId: string) {
   });
 }
 
+// Só edita a previsão de entrega enquanto o pedido não foi confirmado
+// (RASCUNHO ou ENVIADO). Depois disso o prazo já está acordado com o fornecedor.
+export async function atualizarPrevisaoEntregaPedidoAction(
+  pedidoId: string,
+  previsao: string | null,
+) {
+  return txpDepois("compras.pedir", async (_tid, _userId, exigirLoja) => {
+    const pedido = await db.purchaseOrder.findFirst({
+      where: { id: pedidoId },
+      select: { siteId: true, status: true },
+    });
+    if (!pedido) throw new Error("Pedido não encontrado.");
+    exigirLoja(pedido.siteId);
+    if (pedido.status !== "RASCUNHO" && pedido.status !== "ENVIADO") {
+      throw new Error("A previsão só pode ser alterada antes de o pedido ser confirmado.");
+    }
+    await db.purchaseOrder.update({
+      where: { id: pedidoId },
+      data: { previsaoEntrega: parsePrevisao(previsao) },
+    });
+    ok();
+  });
+}
+
 const bonificacaoItemSchema = z.object({
   productId: z.string().min(1),
   packagingId: z.string().optional().nullable(),

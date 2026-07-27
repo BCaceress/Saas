@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   ScanBarcode,
@@ -54,6 +54,7 @@ import {
   updateProduct,
   enrichEan,
   createSubcategory,
+  checkEanTaken,
 } from "../actions";
 import type { SalesChannel } from "@/generated/prisma";
 import type {
@@ -113,14 +114,19 @@ function SectionBlock({
 function AccordionBlock({
   icon,
   title,
+  defaultOpen,
   children,
 }: {
   icon?: React.ReactNode;
   title: string;
+  defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <details className="group rounded-[var(--radius)] border border-line bg-surface shadow-[var(--shadow-1)]">
+    <details
+      open={defaultOpen}
+      className="group rounded-[var(--radius)] border border-line bg-surface shadow-[var(--shadow-1)]"
+    >
       <summary className="flex cursor-pointer select-none list-none items-center gap-2 rounded-[var(--radius)] px-4 py-3 transition-colors hover:bg-surface-2 [&::-webkit-details-marker]:hidden">
         {icon && <span className="shrink-0 text-muted">{icon}</span>}
         <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.15em] text-ink-2">
@@ -304,12 +310,38 @@ export function ProductForm({
   const [custo, setCusto] = useState(moneyToMask(product?.custo));
   const [imagemUrl, setImagemUrl] = useState(product?.imagemUrl ?? "");
   const imgFileRef = useRef<HTMLInputElement>(null);
-  // Embalagem de compra única.
+  // URL da imagem só aparece quando o operador pede (evita ruído no caminho comum).
+  const [showImgUrl, setShowImgUrl] = useState(
+    !!product?.imagemUrl && !product.imagemUrl.startsWith("data:"),
+  );
+  // EAN já cadastrado — aviso inline no on-blur.
+  const [eanTaken, setEanTaken] = useState<{ nome: string; sku: string } | null>(
+    null,
+  );
+  // Impede o aviso de "sair sem salvar" logo após um save bem-sucedido.
+  const savedRef = useRef(false);
+  // Embalagem de compra principal.
   const [pkNome, setPkNome] = useState(product?.packagings?.[0]?.nome ?? "");
   const [pkEan, setPkEan] = useState(product?.packagings?.[0]?.ean ?? "");
   const [pkFator, setPkFator] = useState(
     product?.packagings?.[0]?.fatorConversao?.toString() ?? "",
   );
+  // Embalagens de compra extras (SIMPLES) — caixa + fardo, por ex.
+  const [extraPk, setExtraPk] = useState<PackagingRow[]>(
+    (product?.packagings ?? []).slice(1).map((p) => ({
+      nome: p.nome ?? "",
+      ean: p.ean ?? "",
+      fatorConversao: p.fatorConversao?.toString() ?? "",
+    })),
+  );
+  const addExtraPk = () =>
+    setExtraPk((prev) => [...prev, { nome: "", ean: "", fatorConversao: "" }]);
+  const updateExtraPk = (i: number, patch: Partial<PackagingRow>) =>
+    setExtraPk((prev) =>
+      prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)),
+    );
+  const removeExtraPk = (i: number) =>
+    setExtraPk((prev) => prev.filter((_, idx) => idx !== i));
 
   //  lista dinâmica de embalagens para o modo INSUMO
   const [packagings, setPackagings] = useState<PackagingRow[]>(
@@ -405,18 +437,25 @@ export function ProductForm({
   );
   const [novaSubNome, setNovaSubNome] = useState("");
 
-  function previewSku(subId: string): string {
+  // Prefixo estável só para o placeholder do SKU — o número final é gerado
+  // (sequencial, único) no servidor quando o campo fica vazio. Nada de random
+  // no cliente: um número aleatório aqui podia colidir e virar erro ao salvar.
+  function skuPreview(subId: string): string {
     const sub = subcategories.find((s) => s.id === subId);
-    if (!sub) return "";
-    const n = Math.floor(1000 + Math.random() * 9000);
-    return `${sub.categorySkuPrefix}-${sub.skuPrefix}-${n}`;
+    if (!sub) return "Ex.: BEB-CER-4521";
+    return `${sub.categorySkuPrefix}-${sub.skuPrefix}-••••`;
   }
 
   const isSimples = tipo === "SIMPLES";
   const margemPct = margem(parseMoney(precoVenda), parseMoney(custo));
   const precoNum = parseMoney(precoVenda) ?? 0;
   const custoNum = parseMoney(custo) ?? 0;
-  const lucro = precoNum > 0 && custoNum > 0 ? precoNum - custoNum : null;
+  // Marca digitada que ainda não existe — avisa que vai criar nova.
+  const brandIsNew =
+    marca.trim().length > 0 &&
+    !brands.some(
+      (b) => b.nome.trim().toLowerCase() === marca.trim().toLowerCase(),
+    );
 
   // Margem com 3 níveis semânticos: verde ≥15% · âmbar 0-15% · vermelho negativo.
   const margemColor: "ok" | "warn" | "danger" | null =
@@ -560,20 +599,58 @@ export function ProductForm({
       : `= ${inteiro} ${label} + ${resto} un`;
   }
 
-  function salvar() {
+  // Limpa os campos de identidade para o próximo cadastro, preservando o
+  // contexto de lote (subcategoria, fornecedores, local, mínimos).
+  function resetForNext() {
+    setEan("");
+    setNome("");
+    setSku("");
+    skuEdited.current = false;
+    setMarca("");
+    setPrecoVenda("");
+    setCusto("");
+    setImagemUrl("");
+    setShowImgUrl(false);
+    setPkNome("");
+    setPkEan("");
+    setPkFator("");
+    setExtraPk([]);
+    setInicial("");
+    setFracionavel(false);
+    setUnidadeBase("UN");
+    setConteudo("");
+    setEnriched(false);
+    setHint(undefined);
+    setEanTaken(null);
+    setError(undefined);
+  }
+
+  function salvar(andNew = false) {
     setError(undefined);
     if (nome.trim().length < 2) {
       setError("Informe o nome do produto.");
       nomeRef.current?.focus();
       return;
     }
-    if (!subcategoryId) return setError("Escolha a subcategoria.");
+    if (!subcategoryId) {
+      setError("Escolha a subcategoria.");
+      focusField("subcategoria");
+      return;
+    }
+    if (isSimples && !parseMoney(custo)) {
+      toast.error("Custo obrigatório", "Informe o custo unitário antes de salvar.");
+      setError("Informe o custo unitário.");
+      focusField("custo");
+      return;
+    }
     if (isSimples && !parseMoney(precoVenda)) {
       toast.error(
         "Preço obrigatório",
         "Informe o preço de venda antes de salvar.",
       );
-      return setError("Informe o preço de venda.");
+      setError("Informe o preço de venda.");
+      focusField("preço de venda");
+      return;
     }
 
     let salesChannels;
@@ -584,6 +661,25 @@ export function ProductForm({
         e instanceof Error ? e.message : "Canal online sem preço.",
       );
     }
+
+    const simplesPks = [
+      ...(pkNome.trim() && (n(pkFator) ?? 0) > 0
+        ? [
+            {
+              nome: pkNome.trim(),
+              ean: pkEan.trim() || undefined,
+              fatorConversao: n(pkFator)!,
+            },
+          ]
+        : []),
+      ...extraPk
+        .filter((p) => p.nome.trim() && (n(p.fatorConversao) ?? 0) > 0)
+        .map((p) => ({
+          nome: p.nome.trim(),
+          ean: p.ean.trim() || undefined,
+          fatorConversao: n(p.fatorConversao)!,
+        })),
+    ];
 
     const input = {
       tipo,
@@ -614,16 +710,9 @@ export function ProductForm({
       estoqueInicial: n(estoqueInicial) ?? 0,
       locationId: locationId || undefined,
       fornecedorPrincipalId: fornecedoresList[0] || undefined,
+      fornecedoresIds: fornecedoresList,
       packagings: isSimples
-        ? pkNome.trim() && (n(pkFator) ?? 0) > 0
-          ? [
-              {
-                nome: pkNome.trim(),
-                ean: pkEan.trim() || undefined,
-                fatorConversao: n(pkFator)!,
-              },
-            ]
-          : []
+        ? simplesPks
         : packagings
             .filter((p) => p.nome.trim() && (n(p.fatorConversao) ?? 0) > 0)
             .map((p) => ({
@@ -641,9 +730,20 @@ export function ProductForm({
       try {
         if (product) await updateProduct(product.id, input);
         else await createProduct(input);
+        savedRef.current = true;
+        if (andNew && !product) {
+          resetForNext();
+          router.refresh();
+          toast.success("Produto salvo", "Cadastre o próximo.");
+          requestAnimationFrame(() =>
+            document.getElementById("ean")?.focus(),
+          );
+          return;
+        }
         router.push("/produtos");
         router.refresh();
       } catch (e) {
+        savedRef.current = false;
         setError(e instanceof Error ? e.message : "Falha ao salvar.");
       }
     });
@@ -714,6 +814,53 @@ export function ProductForm({
     }
   }
 
+  // Rola e foca o campo-chave faltante (usado pelo painel de progresso).
+  function focusField(which: string) {
+    const map: Record<string, string> = {
+      nome: "nome",
+      subcategoria: "sub",
+      custo: "custo",
+      "preço de venda": "preco",
+    };
+    const el = document.getElementById(map[which] ?? "");
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    (el as HTMLElement).focus({ preventScroll: true });
+  }
+
+  // Checa EAN duplicado ao sair do campo — avisa cedo, sem enriquecer.
+  async function onEanBlur() {
+    if (onlyDigits(ean).length < 8) {
+      setEanTaken(null);
+      return;
+    }
+    try {
+      const r = await checkEanTaken(ean);
+      setEanTaken(r.taken ? { nome: r.nome!, sku: r.sku! } : null);
+    } catch {
+      /* silencioso — não bloqueia o cadastro */
+    }
+  }
+
+  // Aviso de sair sem salvar — só no cadastro novo com algo preenchido.
+  const isDirty =
+    mode === "new" &&
+    (nome.trim() !== "" ||
+      ean !== "" ||
+      precoVenda !== "" ||
+      custo !== "" ||
+      imagemUrl !== "");
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      if (savedRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
+
   return (
     <div className="flex flex-col gap-4" onKeyDown={onKeyDownForm}>
       {/* ── Cabeçalho ── */}
@@ -758,7 +905,11 @@ export function ProductForm({
                       id="ean"
                       autoFocus
                       value={ean}
-                      onChange={(e) => setEan(e.target.value)}
+                      onChange={(e) => {
+                        setEan(e.target.value);
+                        if (eanTaken) setEanTaken(null);
+                      }}
+                      onBlur={onEanBlur}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && ean.length >= 8) {
                           e.preventDefault();
@@ -791,6 +942,15 @@ export function ProductForm({
                     {enriching ? "Buscando…" : "Buscar dados"}
                   </Button>
                 </div>
+
+                {eanTaken && (
+                  <p className="flex items-start gap-2 rounded-[var(--radius-sm)] border border-warn/30 bg-warn-soft px-3 py-2 text-xs text-warn">
+                    <AlertCircle size={13} className="mt-0.5 shrink-0" />
+                    Já existe um produto com esse código:{" "}
+                    <span className="font-medium">{eanTaken.nome}</span> (
+                    {eanTaken.sku}).
+                  </p>
+                )}
 
                 {enriched && nome ? (
                   <div className="flex items-center gap-3 rounded-[var(--radius)] border border-line bg-surface p-3">
@@ -861,6 +1021,7 @@ export function ProductForm({
                   <Field
                     label="Nome do produto"
                     htmlFor="nome"
+                    required
                     className="min-w-0 flex-1"
                   >
                     <Input
@@ -874,27 +1035,41 @@ export function ProductForm({
                   </Field>
                 </div>
 
-                {/* URL da imagem — somente quando não há upload local */}
-                <Field label="URL da imagem" htmlFor="img-url">
-                  <Input
-                    id="img-url"
-                    value={imagemUrl.startsWith("data:") ? "" : imagemUrl}
-                    onChange={(e) => setImagemUrl(e.target.value)}
-                    placeholder={
-                      imagemUrl.startsWith("data:")
-                        ? "Imagem enviada do computador"
-                        : "https://… (opcional)"
-                    }
-                    inputMode="url"
-                    className="font-mono text-xs placeholder:font-sans placeholder:text-sm"
-                  />
-                </Field>
+                {/* URL da imagem — recolhida atrás de um link (uso raro) */}
+                {showImgUrl ? (
+                  <Field label="URL da imagem" htmlFor="img-url">
+                    <Input
+                      id="img-url"
+                      value={imagemUrl.startsWith("data:") ? "" : imagemUrl}
+                      onChange={(e) => setImagemUrl(e.target.value)}
+                      placeholder={
+                        imagemUrl.startsWith("data:")
+                          ? "Imagem enviada do computador"
+                          : "https://…"
+                      }
+                      inputMode="url"
+                      className="font-mono text-xs placeholder:font-sans placeholder:text-sm"
+                    />
+                  </Field>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowImgUrl(true)}
+                    className="flex items-center gap-1 self-start text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
+                  >
+                    <ImagePlus size={12} /> Colar URL de imagem
+                  </button>
+                )}
 
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   <Field
                     label="Marca"
                     htmlFor="marca"
-                    hint="Cria automaticamente se nova."
+                    hint={
+                      brandIsNew
+                        ? `Vai criar a marca “${marca.trim()}”.`
+                        : "Cria automaticamente se nova."
+                    }
                   >
                     <Input
                       id="marca"
@@ -911,7 +1086,9 @@ export function ProductForm({
                   </Field>
                   <div className="flex flex-col gap-1.5">
                     <div className="flex items-center justify-between gap-2">
-                      <Label htmlFor="sub">Subcategoria</Label>
+                      <Label htmlFor="sub" required>
+                        Subcategoria
+                      </Label>
                       <button
                         type="button"
                         onClick={() => {
@@ -926,13 +1103,7 @@ export function ProductForm({
                     <Select
                       id="sub"
                       value={subcategoryId}
-                      onChange={(e) => {
-                        const id = e.target.value;
-                        setSubcategoryId(id);
-                        if (mode === "new" && !skuEdited.current) {
-                          setSku(previewSku(id));
-                        }
-                      }}
+                      onChange={(e) => setSubcategoryId(e.target.value)}
                     >
                       <option value="">Selecione…</option>
                       {subsByCat.map(({ categoria, subs }) => (
@@ -949,7 +1120,7 @@ export function ProductForm({
                   <Field
                     label="SKU"
                     htmlFor="sku"
-                    hint="Gerado automaticamente. Editável."
+                    hint="Vazio = gerado automaticamente ao salvar. Editável."
                   >
                     <Input
                       id="sku"
@@ -958,11 +1129,22 @@ export function ProductForm({
                         skuEdited.current = true;
                         setSku(e.target.value.toUpperCase());
                       }}
-                      placeholder="Ex.: BEB-CER-4521"
+                      placeholder={skuPreview(subcategoryId)}
                       className="font-mono placeholder:font-sans placeholder:font-normal placeholder:tracking-normal"
                     />
                   </Field>
                 </div>
+
+                {/* +18 — regra de venda central para bebidas, fica à vista */}
+                <label className="flex cursor-pointer items-center gap-2 border-t border-line pt-3 text-sm text-ink-2">
+                  <input
+                    type="checkbox"
+                    checked={restricaoIdade}
+                    onChange={(e) => setIdade(e.target.checked)}
+                    className="cursor-pointer accent-[var(--brand)]"
+                  />
+                  Venda restrita a maiores de 18 anos
+                </label>
               </SectionBlock>
 
               {/* Como compro */}
@@ -1024,6 +1206,62 @@ export function ProductForm({
                   </div>
                 )}
 
+                {/* Embalagens de compra extras — caixa + fardo, p. ex. */}
+                {extraPk.map((p, i) => (
+                  <div
+                    key={i}
+                    className="grid grid-cols-[2fr_1fr_2fr_auto] items-end gap-3"
+                  >
+                    <Field label={`Embalagem ${i + 2}`} htmlFor={`epk-nome-${i}`}>
+                      <Input
+                        id={`epk-nome-${i}`}
+                        value={p.nome}
+                        onChange={(e) => updateExtraPk(i, { nome: e.target.value })}
+                        placeholder="Ex.: Fardo"
+                      />
+                    </Field>
+                    <Field label="Unidades" htmlFor={`epk-fator-${i}`}>
+                      <Input
+                        id={`epk-fator-${i}`}
+                        value={p.fatorConversao}
+                        onChange={(e) =>
+                          updateExtraPk(i, { fatorConversao: e.target.value })
+                        }
+                        placeholder="12"
+                        inputMode="numeric"
+                        className="font-mono"
+                      />
+                    </Field>
+                    <Field label="Código de barras (EAN)" htmlFor={`epk-ean-${i}`}>
+                      <Input
+                        id={`epk-ean-${i}`}
+                        value={p.ean}
+                        onChange={(e) => updateExtraPk(i, { ean: e.target.value })}
+                        placeholder="789…"
+                        inputMode="numeric"
+                        className="font-mono placeholder:font-sans"
+                      />
+                    </Field>
+                    <button
+                      type="button"
+                      onClick={() => removeExtraPk(i)}
+                      className="mb-1.5 grid h-9 w-9 place-items-center rounded-[var(--radius-sm)] border border-line text-faint transition-colors hover:border-danger/40 hover:bg-danger-soft hover:text-danger"
+                      aria-label="Remover embalagem"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+                {pkNome.trim() && (n(pkFator) ?? 0) > 0 && (
+                  <button
+                    type="button"
+                    onClick={addExtraPk}
+                    className="flex items-center gap-1 self-start text-xs font-medium text-brand-strong transition-colors hover:text-brand"
+                  >
+                    <Plus size={13} /> Outra embalagem
+                  </button>
+                )}
+
                 {/* Fornecedores */}
                 <div className="flex flex-col gap-2 border-t border-line pt-3">
                   <Label>Fornecedores</Label>
@@ -1080,10 +1318,77 @@ export function ProductForm({
                 </div>
               </SectionBlock>
 
-              {/* Como vendo e fraciono */}
-              <SectionBlock
+              {/* Estoque */}
+              <SectionBlock icon={<Warehouse size={13} />} title="Estoque">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <Field
+                    label="Estoque mínimo"
+                    htmlFor="min"
+                    hint={pkHintText(estoqueMinimo)}
+                  >
+                    <Input
+                      id="min"
+                      value={estoqueMinimo}
+                      onChange={(e) => setMin(e.target.value)}
+                      placeholder="0"
+                      inputMode="numeric"
+                      className="font-mono"
+                    />
+                  </Field>
+                  <Field
+                    label="Estoque ideal"
+                    htmlFor="ideal"
+                    hint={pkHintText(estoqueIdeal)}
+                  >
+                    <Input
+                      id="ideal"
+                      value={estoqueIdeal}
+                      onChange={(e) => setIdeal(e.target.value)}
+                      placeholder="0"
+                      inputMode="numeric"
+                      className="font-mono"
+                    />
+                  </Field>
+                  {storage.length > 0 && (
+                    <Field label="Local de armazenagem" htmlFor="loc">
+                      <Select
+                        id="loc"
+                        value={locationId}
+                        onChange={(e) => setLocation(e.target.value)}
+                      >
+                        <option value="">Sem local</option>
+                        {storage.map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.nome}{l.siteNome ? ` — ${l.siteNome}` : ""}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  )}
+                  {mode !== "edit" && (
+                    <Field
+                      label="Estoque inicial"
+                      htmlFor="ini"
+                      hint={pkHintText(estoqueInicial)}
+                    >
+                      <Input
+                        id="ini"
+                        value={estoqueInicial}
+                        onChange={(e) => setInicial(e.target.value)}
+                        placeholder="0"
+                        inputMode="numeric"
+                        className="font-mono"
+                      />
+                    </Field>
+                  )}
+                </div>
+              </SectionBlock>
+
+              {/* Como vendo e fraciono — opcional, quase só drinks/receitas */}
+              <AccordionBlock
                 icon={<Wine size={13} />}
-                title="Produto fracionável (drinks e receitas)"
+                title="Fracionável (drinks e receitas)"
+                defaultOpen={fracionavel}
               >
                 {/* Fracionamento — dose para receita/drink */}
                 <div className="flex flex-col gap-3 rounded-[var(--radius-sm)] border border-line bg-surface-2 p-3">
@@ -1154,73 +1459,7 @@ export function ProductForm({
                     </div>
                   )}
                 </div>
-              </SectionBlock>
-
-              {/* Estoque */}
-              <SectionBlock icon={<Warehouse size={13} />} title="Estoque">
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  <Field
-                    label="Estoque mínimo"
-                    htmlFor="min"
-                    hint={pkHintText(estoqueMinimo)}
-                  >
-                    <Input
-                      id="min"
-                      value={estoqueMinimo}
-                      onChange={(e) => setMin(e.target.value)}
-                      placeholder="0"
-                      inputMode="numeric"
-                      className="font-mono"
-                    />
-                  </Field>
-                  <Field
-                    label="Estoque ideal"
-                    htmlFor="ideal"
-                    hint={pkHintText(estoqueIdeal)}
-                  >
-                    <Input
-                      id="ideal"
-                      value={estoqueIdeal}
-                      onChange={(e) => setIdeal(e.target.value)}
-                      placeholder="0"
-                      inputMode="numeric"
-                      className="font-mono"
-                    />
-                  </Field>
-                  {storage.length > 0 && (
-                    <Field label="Local de armazenagem" htmlFor="loc">
-                      <Select
-                        id="loc"
-                        value={locationId}
-                        onChange={(e) => setLocation(e.target.value)}
-                      >
-                        <option value="">Sem local</option>
-                        {storage.map((l) => (
-                          <option key={l.id} value={l.id}>
-                            {l.nome}{l.siteNome ? ` — ${l.siteNome}` : ""}
-                          </option>
-                        ))}
-                      </Select>
-                    </Field>
-                  )}
-                  {mode !== "edit" && (
-                    <Field
-                      label="Estoque inicial"
-                      htmlFor="ini"
-                      hint={pkHintText(estoqueInicial)}
-                    >
-                      <Input
-                        id="ini"
-                        value={estoqueInicial}
-                        onChange={(e) => setInicial(e.target.value)}
-                        placeholder="0"
-                        inputMode="numeric"
-                        className="font-mono"
-                      />
-                    </Field>
-                  )}
-                </div>
-              </SectionBlock>
+              </AccordionBlock>
 
               {/* Fiscal — recolhível, opcional */}
               <AccordionBlock icon={<FileText size={13} />} title="Fiscal">
@@ -1247,15 +1486,6 @@ export function ProductForm({
                     <AlertCircle size={11} /> Perfil fiscal precisa de revisão
                   </Badge>
                 )}
-                <label className="flex cursor-pointer items-center gap-2 border-t border-line pt-3 text-sm text-ink-2">
-                  <input
-                    type="checkbox"
-                    checked={restricaoIdade}
-                    onChange={(e) => setIdade(e.target.checked)}
-                    className="cursor-pointer accent-[var(--brand)]"
-                  />
-                  Venda restrita a maiores de 18 anos
-                </label>
 
                 {/*
                   Fiscal por item. NCM, CST e CFOP vêm do perfil fiscal acima —
@@ -1404,7 +1634,7 @@ export function ProductForm({
                 </div>
 
                 <div className="flex flex-col gap-3">
-                  <Field label="Custo unitário" htmlFor="custo">
+                  <Field label="Custo unitário" htmlFor="custo" required>
                     <div className="relative">
                       <span className="pointer-events-none absolute inset-y-0 left-3 flex select-none items-center text-sm text-muted">
                         R$
@@ -1419,7 +1649,24 @@ export function ProductForm({
                       />
                     </div>
                   </Field>
-                  <Field label="Preço de venda" htmlFor="preco">
+                  {custoNum > 0 && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] text-muted">Markup:</span>
+                      {[30, 50, 80, 100].map((pct) => (
+                        <button
+                          key={pct}
+                          type="button"
+                          onClick={() =>
+                            setPrecoVenda(moneyToMask(custoNum * (1 + pct / 100)))
+                          }
+                          className="rounded-full border border-line bg-surface px-2.5 py-0.5 font-mono text-[11px] text-ink-2 transition-colors hover:border-accent/40 hover:bg-accent-soft hover:text-accent"
+                        >
+                          +{pct}%
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <Field label="Preço de venda" htmlFor="preco" required>
                     <div className="relative">
                       <span className="pointer-events-none absolute inset-y-0 left-3 flex select-none items-center text-sm text-muted">
                         R$
@@ -1437,47 +1684,6 @@ export function ProductForm({
                     </div>
                   </Field>
                 </div>
-
-                {lucro !== null && (
-                  <div className="mt-3 flex flex-col gap-2 rounded-[var(--radius-sm)] bg-surface/60 px-3 py-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-muted">Margem bruta</span>
-                      <span
-                        className={cn(
-                          "font-mono text-sm font-semibold tabular-nums",
-                          margemColor === "ok" && "text-ok",
-                          margemColor === "warn" && "text-warn",
-                          margemColor === "danger" && "text-danger",
-                        )}
-                      >
-                        {brl(lucro)} / unidade
-                      </span>
-                    </div>
-                    <div className="h-2 w-full overflow-hidden rounded-full bg-line-strong">
-                      <div
-                        className={cn(
-                          "h-full rounded-full transition-[width] duration-300",
-                          margemColor === "ok" && "bg-ok",
-                          margemColor === "warn" && "bg-warn",
-                          margemColor === "danger" && "bg-danger",
-                        )}
-                        style={{
-                          width: `${Math.min(100, Math.max(0, margemPct ?? 0))}%`,
-                        }}
-                      />
-                    </div>
-                    {margemColor === "warn" && (
-                      <p className="text-[11px] text-warn">
-                        Margem abaixo de 15% — revise o preço.
-                      </p>
-                    )}
-                    {margemColor === "danger" && (
-                      <p className="text-[11px] text-danger">
-                        Preço abaixo do custo — prejuízo por unidade.
-                      </p>
-                    )}
-                  </div>
-                )}
               </div>
 
               {/* Resumo do fluxo */}
@@ -1533,7 +1739,18 @@ export function ProductForm({
                     ) : (
                       <>
                         {doneCnt} de {progressSteps.length} campos-chave
-                        {firstMissing && <> · falta o {firstMissing.label}</>}
+                        {firstMissing && (
+                          <>
+                            {" · "}
+                            <button
+                              type="button"
+                              onClick={() => focusField(firstMissing.label)}
+                              className="font-medium text-brand-strong underline-offset-2 hover:underline"
+                            >
+                              falta o {firstMissing.label}
+                            </button>
+                          </>
+                        )}
                       </>
                     )}
                   </span>
@@ -1641,13 +1858,7 @@ export function ProductForm({
                   <Select
                     id="sub"
                     value={subcategoryId}
-                    onChange={(e) => {
-                      const id = e.target.value;
-                      setSubcategoryId(id);
-                      if (mode === "new" && !skuEdited.current) {
-                        setSku(previewSku(id));
-                      }
-                    }}
+                    onChange={(e) => setSubcategoryId(e.target.value)}
                   >
                     <option value="">Selecione…</option>
                     {subsByCat.map(({ categoria, subs }) => (
@@ -1664,7 +1875,7 @@ export function ProductForm({
                 <Field
                   label="SKU"
                   htmlFor="sku"
-                  hint="Gerado automaticamente. Editável."
+                  hint="Vazio = gerado automaticamente ao salvar. Editável."
                   className="sm:col-span-2"
                 >
                   <Input
@@ -1674,7 +1885,7 @@ export function ProductForm({
                       skuEdited.current = true;
                       setSku(e.target.value.toUpperCase());
                     }}
-                    placeholder="Ex.: BEB-INS-4521"
+                    placeholder={skuPreview(subcategoryId)}
                     className="font-mono placeholder:font-sans placeholder:font-normal placeholder:tracking-normal"
                   />
                 </Field>
@@ -1927,7 +2138,16 @@ export function ProductForm({
         >
           Cancelar
         </Button>
-        <Button onClick={salvar} disabled={pending}>
+        {mode === "new" && (
+          <Button
+            variant="secondary"
+            onClick={() => salvar(true)}
+            disabled={pending}
+          >
+            {pending ? "Salvando…" : "Salvar e cadastrar outro"}
+          </Button>
+        )}
+        <Button onClick={() => salvar()} disabled={pending}>
           {pending ? "Salvando…" : "Salvar produto"}
         </Button>
       </div>

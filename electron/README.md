@@ -10,8 +10,20 @@ React do PDV — aqui só ficam o processo principal e a ponte nativa.
 |---|---|
 | `main.js` | Processo principal: cria a janela, registra os handlers IPC do TEF. |
 | `preload.js` | Expõe `window.tef` ao renderer (contextIsolation ligado). |
-| `tef-simulado.js` | Adapter TEF simulado (Fase 1). Fase 2 troca pelo real (PayGo/SiTef). |
+| `tef-simulado.js` | Adapter TEF simulado (dev/sem hardware). |
+| `tef-sitef.js` | Adapter **SiTef** (CliSiTef via FFI) — scaffold; exige DLL + contrato. |
 | `tef-channels.js` | Nomes dos canais IPC — espelho de `src/lib/tef/ipc.ts`. |
+| `local-server/` | Servidor local Node+SQLite (offline 100%) — blueprint + schema. |
+
+## Escolher o adapter TEF
+
+`TEF_PROVIDER=sitef` usa o CliSiTef (produção); qualquer outro valor = simulado.
+Config do SiTef por env: `SITEF_DLL_PATH`, `SITEF_IP` (servidor SiTef),
+`SITEF_LOJA`, `SITEF_TERMINAL`, `SITEF_OPERADOR`. Ver `tef-sitef.js` — é scaffold:
+o laço interativo do CliSiTef e os códigos de campo (NSU/autorização/bandeira)
+têm TODOs a preencher pelo manual da Software Express, com a DLL em mãos.
+
+Instalar o FFI: `npm i koffi`.
 
 O contrato TEF e a ponte tipada do lado do renderer estão em `src/lib/tef/`.
 

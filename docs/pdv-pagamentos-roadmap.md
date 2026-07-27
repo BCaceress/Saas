@@ -105,7 +105,31 @@ Baixo risco, entrega valor antes do Electron ficar pronto.
 - Instalador Windows (electron-builder) + auto-update. Assinatura de código.
 - **Entregável:** o PDV roda como app, idêntico ao web, com TEF simulado.
 
-### Fase 2 — TEF real (cartão via pinpad) — ~1-2 semanas após escolher o gerenciador
+### Fase 2 — TEF real (cartão via pinpad)
+
+**Parte provider-agnóstica FEITA** (roda com o simulado, sem hardware):
+- `Payment.comprovante` (migração aplicada) + `gateway="TEF"` reusa
+  bandeira/parcelas/nsu/autorizacao/adquirenteCnpj.
+- `NovoPagamento.detalheCartao` → `criarVenda` grava o detalhe do TEF junto.
+- `finalizarVendaTefCartaoAction` — grava a venda paga por TEF, **idempotente
+  por tefId** (reenvio não duplica), finaliza (baixa + NFC-e com grupo `card`,
+  `tp_integra=1`).
+- Fluxo cliente `pagarCartaoTef` (_client.tsx): **dois-fases** —
+  `window.tef.pagar` → grava a venda → `confirmar`; se a gravação falha,
+  `desfazer`. `TefCartaoPanel` no modal (parcelas + "Enviar ao pinpad"); quando
+  `tefDisponivel()`, o cartão vai ao TEF em vez do PSP de nuvem.
+- Estorno TEF: `_historico` cancela no pinpad (`window.tef.cancelar`) antes do
+  estorno da venda; o servidor pula pagamentos `gateway="TEF"` (não alcança o
+  pinpad).
+
+**Falta (bloqueado pela escolha do gerenciador):**
+- Adapter real no Electron main (PayGo HTTP localhost **ou** SiTef/CliSiTef DLL)
+  implementando `TefProvider` — hoje `electron/tef-simulado.js`.
+- Impressão do comprovante armazenado (`Payment.comprovante`) na térmica
+  (hoje guardado; o pinpad costuma imprimir a própria via).
+- `resolverPendencias` na abertura do caixa (Fase 4).
+
+Plano original abaixo (referência):
 - Implementar o adapter escolhido no main:
   - **PayGo Integrado:** cliente HTTP em `http://localhost` (o Cliente PayGo roda
     como serviço) → mais direto.
@@ -120,7 +144,31 @@ Baixo risco, entrega valor antes do Electron ficar pronto.
 - NFC-e: o grupo `card` já é montado de `bandeira/autorizacao/adquirenteCnpj` —
   TEF preenche os mesmos campos, com `tp_integra = 1`.
 
-### Fase 3 — Venda offline (dinheiro) — ~1-2 semanas
+### Fase 3 — Venda offline (dinheiro)
+
+**FEITA (v1, local-first no navegador — funciona em web e Electron):**
+- `Sale.clientId @unique` (migração aplicada) — chave de idempotência.
+- Fila local: `src/lib/offline/fila-vendas.ts` (IndexedDB puro, sem dep).
+- Ao fechar sem rede, `finalizar` (_client.tsx) enfileira em vez de chamar o
+  servidor; **só dinheiro** (o modal restringe a DINHEIRO offline).
+- Worker de sync: ao (re)conectar (`useOnline`), drena a fila →
+  `sincronizarVendaOfflineAction` (idempotente por clientId, `paidAt` = hora
+  real da venda). Um erro numa venda não trava as outras (continua).
+- NFC-e: sai pelo hook fiscal normal na sincronização (CONTINGENCIA se a SEFAZ
+  não responder — mecanismo já existente).
+- UI: banner offline com contador "N na fila" + chip "Sincronizando…" ao voltar.
+
+**Premissa do v1:** a página do PDV já está carregada (o caixa abriu online). Se
+o operador **recarregar** offline, o app não carrega (o SW serve `offline.html`)
+— mas a fila em IndexedDB sobrevive e drena quando ele reconecta e reabre. Rodar
+100% offline (inclusive carregar a tela) exige o servidor local embutido no
+Electron (Fase 1 pendente) + cache de catálogo.
+
+**Falta:** cache de catálogo em IndexedDB (hoje o catálogo vem via props RSC, só
+disponível se a tela carregou online); reconciliação de estoque/relatório
+(Fase 4). Plano original abaixo:
+
+### Fase 3 (original) — Venda offline (dinheiro) — ~1-2 semanas
 - **Cache/fila local** no main (SQLite ou Postgres local): catálogo espelhado +
   `PendingSale` (itens, pagamentos em dinheiro, cpfNota, `clientId` único).
 - **Preço isomórfico:** extrair `resolvePreco` (`src/lib/vendas.ts`) para um
@@ -134,14 +182,29 @@ Baixo risco, entrega valor antes do Electron ficar pronto.
 - **Cartão offline:** bloqueado por decisão — a UI mostra "cartão indisponível
   sem conexão"; só dinheiro fecha offline.
 
-### Fase 4 — Conflitos e caixa — ~1 semana
-- **Estoque:** servidor é a verdade. Venda offline sem saldo na sincronização
-  vira alerta para o operador (não bloqueia as outras). `aplicarMovimento` já
-  falha alto sem saldo — capturar e sinalizar.
-- **Caixa:** a `CashSession` aberta fica no cache; vendas offline anexam a ela;
-  sangria/suprimento offline entram na fila.
-- **Fechamento TEF:** `TefProvider.resolverPendencias` na abertura do caixa,
-  para resolver transações interrompidas (queda de energia no meio).
+### Fase 4 — Conflitos e caixa
+
+**Reconciliação de estoque FEITA** (era um bug da Fase 3, não só melhoria):
+- `finalizarVenda` / `aplicarBaixaItem` ganharam `permitirSaldoNegativo`;
+  `sincronizarVendaOfflineAction` passa `true`. Venda offline cujo saldo mudou
+  no meio-tempo agora **grava** (estoque vai a negativo = a verdade) e marca o
+  razão ("Venda offline: saldo insuficiente — reconciliar"), em vez de lançar e
+  **travar a fila para sempre** (o dinheiro já entrou). O negativo aparece nas
+  telas de estoque; o operador reconcilia.
+
+**Falta (maior / depende do servidor local):**
+- **Cache de catálogo em IndexedDB:** só rende junto do servidor local embutido
+  no Electron (sem ele, um reload offline não renderiza a tela RSC de qualquer
+  forma). Adiar até a Fase de servidor local.
+- **Caixa offline:** abrir/fechar caixa e sangria/suprimento sem rede — hoje
+  exigem servidor. Nicho; adiar.
+- **Fechamento TEF:** `TefProvider.resolverPendencias` na abertura do caixa —
+  vai junto do adapter TEF real (resto da Fase 2).
+- **NFC-e de venda offline sincronizada tarde:** hoje emite no horário do sync.
+  Outage longo → a nota fica "atrasada"; o certo é CONTINGENCIA (tp_emis 9) com
+  a data real. Precisa de decisão fiscal/contador — fora do escopo cash offline.
+- **Servidor local no Electron** (Next standalone embutido) — o que fecha o
+  "100% offline, inclusive carregar a tela". Fase própria, pesada.
 
 ---
 

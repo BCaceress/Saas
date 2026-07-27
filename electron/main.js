@@ -10,13 +10,15 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const { tefSimulado } = require("./tef-simulado");
+const { tefSitef } = require("./tef-sitef");
 const { TEF_IPC } = require("./tef-channels");
 
 // URL do app. Em dev, o Next dev server; em prod (por ora) um start local.
 const APP_URL = process.env.PDV_URL || "http://localhost:3000/vendas";
 
-// Adapter TEF ativo. Trocar por PayGo/SiTef na Fase 2 (mesmo contrato).
-const tef = tefSimulado();
+// Adapter TEF ativo. SITEF (CliSiTef) em produção; SIMULADO em dev/sem hardware.
+// TEF_PROVIDER=sitef exige a DLL + contrato Software Express (ver tef-sitef.js).
+const tef = process.env.TEF_PROVIDER === "sitef" ? tefSitef() : tefSimulado();
 
 function registrarTef() {
   ipcMain.handle(TEF_IPC.pagar, (_e, input) => tef.pagar(input));

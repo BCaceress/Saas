@@ -3,13 +3,22 @@ import { cn } from "@/lib/utils";
 
 export function Label({
   className,
+  required,
+  children,
   ...props
-}: React.LabelHTMLAttributes<HTMLLabelElement>) {
+}: React.LabelHTMLAttributes<HTMLLabelElement> & { required?: boolean }) {
   return (
     <label
       className={cn("text-[13px] font-medium text-ink-2", className)}
       {...props}
-    />
+    >
+      {children}
+      {required && (
+        <span className="ml-0.5 text-danger" aria-hidden>
+          *
+        </span>
+      )}
+    </label>
   );
 }
 
@@ -18,6 +27,7 @@ export function Field({
   hint,
   error,
   htmlFor,
+  required,
   children,
   className,
 }: {
@@ -25,12 +35,17 @@ export function Field({
   hint?: string;
   error?: string;
   htmlFor?: string;
+  required?: boolean;
   children: React.ReactNode;
   className?: string;
 }) {
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
-      {label && <Label htmlFor={htmlFor}>{label}</Label>}
+      {label && (
+        <Label htmlFor={htmlFor} required={required}>
+          {label}
+        </Label>
+      )}
       {children}
       {error ? (
         <p className="text-xs text-danger">{error}</p>
