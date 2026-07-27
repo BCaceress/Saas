@@ -3,8 +3,15 @@ import bcrypt from "bcryptjs";
 import { basePrisma } from "./prisma";
 import { seedTenant } from "./seed-tenant";
 import { criarMembershipDoConvite } from "./convites";
+import { enviarEmail } from "./email";
+import { emailBoasVindas } from "./email/templates";
+import { logErro } from "./log";
+import { tenantUrl } from "./urls";
 
 const RESERVED = new Set(["www", "app", "api", "admin", "mail", "static", "assets"]);
+
+/** Dias de teste do plano. Espelhado nos e-mails e nos Termos de uso. */
+export const TRIAL_DIAS = 14;
 
 function slugifyBase(s: string): string {
   const base = s
@@ -67,16 +74,18 @@ export async function signupWithTenant(input: SignupInput): Promise<SignupResult
   }
 
   const passwordHash = await bcrypt.hash(input.password, 12);
-  const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  const trialEndsAt = new Date(Date.now() + TRIAL_DIAS * 24 * 60 * 60 * 1000);
 
-  return basePrisma.$transaction(async (tx) => {
+  const resultado = await basePrisma.$transaction(async (tx) => {
     const user = await tx.user.create({
       data: { name, email, passwordHash },
     });
 
     // Convite pendente? Entra na equipe que convidou — não cria tenant novo.
     const invited = await acceptInvites(tx, user.id, email);
-    if (invited) return { userId: user.id, ...invited };
+    // Quem entrou por convite já recebeu o e-mail do convite — mandar
+    // "sua loja está pronta" para a loja de outra pessoa só confunde.
+    if (invited) return { userId: user.id, ...invited, novaLoja: false, nome: "" };
 
     const subdomain = await uniqueSubdomain(tx, name || email.split("@")[0]);
 
@@ -93,8 +102,28 @@ export async function signupWithTenant(input: SignupInput): Promise<SignupResult
 
     await seedTenant(tx, tenant.id);
 
-    return { userId: user.id, tenantId: tenant.id, subdomain };
+    return { userId: user.id, tenantId: tenant.id, subdomain, novaLoja: true, nome: tenant.nome };
   });
+
+  // Fora da transação de propósito: e-mail é efeito colateral. Se o Resend
+  // falhar, a conta já existe — e cadastro não se desfaz por causa disso.
+  if (resultado.novaLoja) {
+    const envio = await enviarEmail(
+      emailBoasVindas({
+        para: email,
+        loja: resultado.nome,
+        url: tenantUrl(resultado.subdomain, "/inicio"),
+        trialDias: TRIAL_DIAS,
+      }),
+    );
+    if (!envio.ok) logErro("signup.email", envio.erro, { tenantId: resultado.tenantId });
+  }
+
+  return {
+    userId: resultado.userId,
+    tenantId: resultado.tenantId,
+    subdomain: resultado.subdomain,
+  };
 }
 
 export class SignupError extends Error {
@@ -167,7 +196,7 @@ export async function provisionTenantForUser(input: {
   if (already) return;
 
   const base = (input.name || input.email?.split("@")[0] || "mercado").trim();
-  const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  const trialEndsAt = new Date(Date.now() + TRIAL_DIAS * 24 * 60 * 60 * 1000);
 
   await basePrisma.$transaction(async (tx) => {
     // Convite pendente (OAuth)? Entra na equipe — não cria tenant novo.

@@ -32,6 +32,20 @@ export default function MarketingLayout({
             Controle de bebidas que cabe no balcão. Feito para quem opera, não para quem só relata.
           </p>
           <p className="text-xs text-faint">Plano teste: 14 dias</p>
+          <nav className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs">
+            <Link href="/termos" className="text-muted transition-colors hover:text-brand">
+              Termos de uso
+            </Link>
+            <Link href="/privacidade" className="text-muted transition-colors hover:text-brand">
+              Privacidade
+            </Link>
+            <a
+              href="mailto:contato@nohub.market"
+              className="text-muted transition-colors hover:text-brand"
+            >
+              Falar com a gente
+            </a>
+          </nav>
           <p className="text-xs text-faint">
             © {new Date().getFullYear()} NoHub Market · pt-BR
           </p>

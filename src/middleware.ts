@@ -22,6 +22,13 @@ export default auth((req) => {
   // Domínio raiz: landing + auth. Sem gate.
   if (!sub) return NextResponse.next();
 
+  // Back-office da equipe vive só no domínio raiz. No subdomínio, /admin é uma
+  // rota do tenant que não existe — mandar para a raiz evita que a tela da
+  // NoHub apareça pendurada no endereço de um cliente.
+  if (pathname === "/admin" || pathname.startsWith("/admin/")) {
+    return NextResponse.redirect(new URL(`${req.nextUrl.protocol}//${ROOT}${pathname}`));
+  }
+
   // Subdomínio = app do tenant. Páginas de auth não existem aqui → manda à raiz.
   if (pathname === "/login" || pathname === "/cadastro") {
     return NextResponse.redirect(new URL(`${req.nextUrl.protocol}//${ROOT}${pathname}`));

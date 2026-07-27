@@ -1,5 +1,6 @@
 import "server-only";
 import { basePrisma } from "@/lib/prisma";
+import { decifrar } from "@/lib/crypto";
 import { featureAtiva } from "@/lib/planos";
 import { fiscalSimuladoProvider } from "./simulado";
 import { fiscalNuvemProvider } from "./nuvem-fiscal";
@@ -88,7 +89,10 @@ export async function carregarConfigFiscal(tenantId: string): Promise<ConfigFisc
       },
     }),
   ]);
-  return rows[1];
+  const cfg = rows[1];
+  if (!cfg) return null;
+  // Credencial do provedor fiscal fica cifrada no banco (lib/crypto).
+  return { ...cfg, apiToken: decifrar(cfg.apiToken) };
 }
 
 /**

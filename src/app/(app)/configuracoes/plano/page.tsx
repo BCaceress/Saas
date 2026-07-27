@@ -1,6 +1,8 @@
 import { Check, Lock, Sparkles } from "lucide-react";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
+import { assinaturaDoTenant, precoMensal } from "@/lib/assinatura";
 import { basePrisma, db } from "@/lib/prisma";
+import { BotaoAddon, BotaoPlano, PainelAssinatura } from "./_assinatura";
 import { PageHeader } from "@/components/app/page-header";
 import { Badge } from "@/components/ui/misc";
 import { brl, cn } from "@/lib/utils";
@@ -60,11 +62,22 @@ export default async function PlanoPage() {
   const atual = tenant.plano;
   const limites = limitesDe(tenant);
 
-  const [sites, produtos, usuarios] = await Promise.all([
+  const [sites, produtos, usuarios, totens, assinatura] = await Promise.all([
     withTenant(ctx, () => db.site.count()),
     withTenant(ctx, () => db.product.count({ where: { ativo: true } })),
     basePrisma.membership.count({ where: { tenantId: tenant.id, ativo: true } }),
+    withTenant(ctx, () => db.totemDevice.count()),
+    assinaturaDoTenant(tenant.id),
   ]);
+
+  // O preço mostrado é o MESMO que vai ao gateway (lib/assinatura), com
+  // add-ons e lojas extras já somados — o lojista não pode ser surpreendido.
+  const preco = precoMensal({
+    plano: tenant.plano,
+    addons: tenant.addons,
+    lojasExtras: tenant.lojasExtras,
+    totens,
+  });
 
   return (
     <div className="flex flex-col gap-5">
@@ -74,6 +87,23 @@ export default async function PlanoPage() {
         description="O que sua assinatura cobre hoje e o que muda ao subir de plano."
         backHref="/configuracoes"
         innerClassName="max-w-none"
+      />
+
+      <PainelAssinatura
+        assinatura={
+          assinatura
+            ? {
+                status: assinatura.status,
+                valorMensal: assinatura.valorMensal ? Number(assinatura.valorMensal) : null,
+                proximaCobranca: assinatura.proximaCobranca?.toISOString() ?? null,
+                ultimaCobranca: assinatura.ultimaCobranca?.toISOString() ?? null,
+                checkoutUrl: assinatura.checkoutUrl,
+              }
+            : null
+        }
+        preco={preco}
+        statusTenant={tenant.status}
+        trialAte={tenant.trialEndsAt?.toISOString() ?? null}
       />
 
       {/* Uso contra os limites — num grid único com divisores, não em cards soltos. */}
@@ -123,11 +153,11 @@ export default async function PlanoPage() {
               </ul>
 
               {!ehAtual && (
-                <p className="mt-auto text-sm text-accent">
-                  {planoAtendeOuSuperior(atual, p)
-                    ? "Abaixo do seu plano atual."
-                    : `Fale com a gente para subir para ${def.nome}.`}
-                </p>
+                <BotaoPlano
+                  plano={p}
+                  variant={planoAtendeOuSuperior(atual, p) ? "secondary" : "primary"}
+                  rotulo={planoAtendeOuSuperior(atual, p) ? "Mudar para este" : `Subir para ${def.nome}`}
+                />
               )}
             </div>
           );
@@ -162,9 +192,21 @@ export default async function PlanoPage() {
                   </span>
                 </p>
                 {!contratado && !podeContratar && (
-                  <p className="flex items-center gap-1.5 text-sm text-accent">
+                  <p className="mt-auto flex items-center gap-1.5 text-sm text-accent">
                     <Lock size={13} />
                     Requer o plano {PLANOS[a.requerPlano].nome}.
+                  </p>
+                )}
+                <BotaoAddon
+                  slug={slug}
+                  contratado={contratado}
+                  quantidade={slug === "loja-extra" ? tenant.lojasExtras : undefined}
+                  bloqueado={!contratado && !podeContratar}
+                />
+                {slug === "autoatendimento" && contratado && totens > 0 && (
+                  <p className="text-xs text-muted">
+                    {totens} {totens === 1 ? "totem ativo" : "totens ativos"} — cobrança por
+                    dispositivo.
                   </p>
                 )}
               </div>
@@ -174,8 +216,8 @@ export default async function PlanoPage() {
       </div>
 
       <p className="text-xs text-muted">
-        Mudança de plano e contratação de add-on ainda passam pelo nosso time — fale com o
-        suporte e a liberação sai no mesmo dia.
+        A cobrança é mensal, no cartão ou Pix cadastrado no Mercado Pago. Mudanças de plano e
+        add-on entram no próximo ciclo — cancele quando quiser, sem multa.
       </p>
     </div>
   );

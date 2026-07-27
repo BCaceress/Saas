@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { guardAction } from "@/lib/guard";
+import { cifrar, decifrar } from "@/lib/crypto";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { rootUrl } from "@/lib/urls";
@@ -77,6 +78,8 @@ export async function salvarProvedorPagamentoAction(input: z.input<typeof proved
       select: { id: true, accessToken: true, webhookSecret: true, partnerRef: true },
     });
 
+    // Token novo vem em claro do formulário; o guardado já está cifrado e é
+    // repassado como está (cifrar() não empilha camadas).
     const accessToken = limparToken(d.accessToken) || existing?.accessToken || "";
     if (d.provider !== "SIMULADO" && !accessToken) {
       throw new Error(
@@ -100,8 +103,8 @@ export async function salvarProvedorPagamentoAction(input: z.input<typeof proved
 
     const data = {
       provider: d.provider,
-      accessToken,
-      webhookSecret: d.webhookSecret.trim() || existing?.webhookSecret || null,
+      accessToken: cifrar(accessToken) ?? "",
+      webhookSecret: cifrar(d.webhookSecret.trim() || existing?.webhookSecret || null),
       partnerRef,
       ambiente: d.ambiente,
       ativo: d.ativo,
@@ -142,7 +145,7 @@ export async function testarTokenPagamentoAction(
     });
     const token =
       limparToken(d.accessToken) ||
-      (existing?.provider === d.provider ? existing.accessToken : "");
+      (existing?.provider === d.provider ? decifrar(existing.accessToken) ?? "" : "");
     if (!token) {
       return { ok: false, suportado: true, mensagem: "Cole o token antes de testar." };
     }
@@ -169,7 +172,7 @@ export async function gerarSegredoWebhookAction(): Promise<void> {
     const segredo = randomBytes(24).toString("hex");
     await db.paymentProviderConfig.update({
       where: { id: existing.id },
-      data: { webhookSecret: segredo },
+      data: { webhookSecret: cifrar(segredo) },
     });
     revalidatePath("/configuracoes/metodos-pagamento");
   });
@@ -187,7 +190,7 @@ export async function obterUrlWebhookAction(): Promise<string> {
     const path = cfg && WEBHOOK_PATH[cfg.provider];
     if (!cfg || !path) throw new Error("Configure o provedor antes de gerar a URL de notificação.");
     if (!cfg.webhookSecret) throw new Error("Gere o segredo do webhook antes de copiar a URL.");
-    return `${rootUrl(path)}?token=${cfg.webhookSecret}`;
+    return `${rootUrl(path)}?token=${decifrar(cfg.webhookSecret)}`;
   });
 }
 

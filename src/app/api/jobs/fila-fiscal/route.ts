@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { autorizarCron } from "@/lib/cron";
 import { processarFilaFiscalTodos } from "@/lib/fiscal/emissao";
 
 /**
@@ -14,13 +15,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 async function executar(req: Request) {
-  const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const auth = req.headers.get("authorization");
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
-    }
-  }
+  const negado = autorizarCron(req);
+  if (negado) return negado;
 
   try {
     const r = await processarFilaFiscalTodos();

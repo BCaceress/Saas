@@ -1,5 +1,6 @@
 import "server-only";
 import { basePrisma, txComTenant } from "@/lib/prisma";
+import { decifrar } from "@/lib/crypto";
 import { whereFeature } from "@/lib/planos";
 import {
   buildProvider,
@@ -419,7 +420,8 @@ async function montarDocumento(
       telefone: emitente.telefone,
       certificadoId: emitente.certificadoId,
       cscId: emitente.cscId,
-      csc: emitente.csc,
+      // CSC da SEFAZ fica cifrado no banco (lib/crypto).
+      csc: decifrar(emitente.csc),
     },
     // NFC-e aceita consumidor não identificado — o caso normal no balcão.
     destinatario: doc.destDocumento

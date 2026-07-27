@@ -8,7 +8,15 @@ import { requireActiveTenant, type ActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { onlyDigits } from "@/lib/normalize";
 import { acessosSchema, isAdmin, type Acesso } from "@/lib/permissoes";
-import { novoToken, conviteExpiraEm, conviteUrl } from "@/lib/convites";
+import {
+  novoToken,
+  conviteExpiraEm,
+  conviteUrl,
+  CONVITE_VALIDADE_DIAS,
+} from "@/lib/convites";
+import { enviarEmail } from "@/lib/email";
+import { emailConvite } from "@/lib/email/templates";
+import { logErro } from "@/lib/log";
 import { assertCabeUsuario } from "@/lib/limites";
 import {
   temFeature,
@@ -276,8 +284,24 @@ export async function inviteMember(input: z.input<typeof inviteSchema>) {
       criadoPorId: ctx.user.id,
     },
   });
+  const link = conviteUrl(inv.token);
+  // O e-mail é conveniência, não o convite. Falha de envio não invalida nada —
+  // a tela continua mostrando o link para copiar, e devolvemos o aviso.
+  const envio = await enviarEmail(
+    emailConvite({
+      para: d.email,
+      loja: ctx.tenant.nome,
+      convidadoPor: ctx.user.name ?? ctx.user.email ?? "Um administrador",
+      url: link,
+      validadeDias: CONVITE_VALIDADE_DIAS,
+    }),
+  );
+  if (!envio.ok) {
+    logErro("convite.email", envio.erro, { tenantId: ctx.tenant.id });
+  }
+
   okEquipe();
-  return { status: "invited" as const, link: conviteUrl(inv.token) };
+  return { status: "invited" as const, link, emailEnviado: envio.ok };
 }
 
 export async function revokeInvite(inviteId: string) {
@@ -300,8 +324,21 @@ export async function renovarConvite(inviteId: string): Promise<string> {
     where: { id: inv.id },
     data: { token: novoToken(), expiresAt: conviteExpiraEm(), criadoPorId: ctx.user.id },
   });
+  const link = conviteUrl(atualizado.token);
+
+  const envio = await enviarEmail(
+    emailConvite({
+      para: atualizado.email,
+      loja: ctx.tenant.nome,
+      convidadoPor: ctx.user.name ?? ctx.user.email ?? "Um administrador",
+      url: link,
+      validadeDias: CONVITE_VALIDADE_DIAS,
+    }),
+  );
+  if (!envio.ok) logErro("convite.email", envio.erro, { tenantId: ctx.tenant.id });
+
   okEquipe();
-  return conviteUrl(atualizado.token);
+  return link;
 }
 
 /** Substitui a lista inteira de acessos de um membro (perfis × lojas). */

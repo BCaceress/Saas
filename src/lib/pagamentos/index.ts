@@ -1,5 +1,6 @@
 import "server-only";
 import { basePrisma, comTenant } from "@/lib/prisma";
+import { decifrar } from "@/lib/crypto";
 import { onlyDigits } from "@/lib/normalize";
 import { finalizarVenda, cancelarVenda } from "@/lib/vendas";
 import { mercadoPagoProvider } from "./mercadopago";
@@ -109,7 +110,9 @@ async function getProviderCtx(tenantId: string) {
     where: { tenantId, ativo: true },
   }));
   if (!cfg) return null;
-  return { cfg, provider: buildProvider(cfg) };
+  // A credencial fica cifrada no banco (lib/crypto) — só volta em claro aqui,
+  // dentro do servidor, no momento de falar com o PSP.
+  return { cfg, provider: buildProvider({ ...cfg, accessToken: decifrar(cfg.accessToken) ?? "" }) };
 }
 
 /** O que o PDV precisa saber ao montar a tela (por site). */
@@ -562,8 +565,9 @@ export async function processarWebhookPagamento(input: {
       select: { webhookSecret: true },
     }),
   );
-  if (cfg?.webhookSecret && input.verificarAssinatura) {
-    if (!input.verificarAssinatura(cfg.webhookSecret)) {
+  const segredoWebhook = decifrar(cfg?.webhookSecret ?? null);
+  if (segredoWebhook && input.verificarAssinatura) {
+    if (!input.verificarAssinatura(segredoWebhook)) {
       return { found: true, unauthorized: true };
     }
   }

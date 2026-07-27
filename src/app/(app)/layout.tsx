@@ -1,7 +1,9 @@
 import { redirect } from "next/navigation";
 import { requireActiveTenant, touchUltimoAcesso } from "@/lib/current-tenant";
 import { AppShell } from "@/components/app/app-shell";
+import { FaixaAssinatura } from "@/components/app/faixa-assinatura";
 import { Toaster } from "@/components/ui/toast";
+import { estadoAcesso } from "@/lib/assinatura";
 import { caixaAbertoDoOperador, relatorioCaixa } from "@/lib/caixa";
 import { listSitePaymentMethods } from "@/lib/vendas";
 import { signOutAction } from "./actions";
@@ -53,6 +55,10 @@ export default async function ShellLayout({
 
   const vocabularioPonto = tenant.tipoOperacao === "AUTONOMO" ? "Ponto" : "Loja";
 
+  // Cobrança: lê só o que já está no Tenant — nada de consultar gateway no
+  // caminho de cada página.
+  const acesso = estadoAcesso(tenant);
+
   // Plano + toggle. Ler o toggle cru abriria módulo de graça depois de downgrade.
   const toggles = togglesEfetivos(tenant);
 
@@ -96,6 +102,13 @@ export default async function ShellLayout({
       }
       onSignOut={signOutAction}
     >
+      {acesso.aviso && (
+        <FaixaAssinatura
+          tom={acesso.aviso.tom}
+          texto={acesso.aviso.texto}
+          podeAssinar={isAdmin(acessos)}
+        />
+      )}
       {children}
       <Toaster />
     </AppShell>

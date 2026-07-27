@@ -236,6 +236,32 @@ export function AuthForm({
         )}
 
         <Submit label={isSignup ? "Criar conta grátis" : "Entrar"} />
+
+        {/* Aceite no ato do cadastro: sem isto não há contrato para exibir
+            depois, quando alguém contestar a cobrança. */}
+        {isSignup && (
+          <p className="text-center text-xs leading-relaxed text-[var(--auth-muted)]">
+            Ao criar a conta você concorda com os{" "}
+            <a
+              href="/termos"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[var(--auth-brand)] underline underline-offset-2"
+            >
+              Termos de uso
+            </a>{" "}
+            e a{" "}
+            <a
+              href="/privacidade"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[var(--auth-brand)] underline underline-offset-2"
+            >
+              Política de privacidade
+            </a>
+            .
+          </p>
+        )}
       </form>
 
       <p className="text-center text-sm text-[var(--auth-muted)]">

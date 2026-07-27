@@ -1,6 +1,7 @@
 import "server-only";
 import { redirect } from "next/navigation";
 import { requireActiveTenant, type ActiveTenant } from "./current-tenant";
+import { assertPodeEscrever } from "./assinatura";
 import { podeEmAlguma, can, SemPermissaoError, type Permissao } from "./permissoes";
 import {
   featureAtiva,
@@ -35,10 +36,20 @@ import { rotaInicial } from "@/components/app/nav-config";
 export async function guardAction(
   permissao: Permissao,
   siteId?: string | null,
+  opcoes?: { mesmoSuspenso?: boolean },
 ): Promise<ActiveTenant> {
   const ctx = await requireActiveTenant();
   const ok = siteId ? can(ctx.acessos, permissao, siteId) : podeEmAlguma(ctx.acessos, permissao);
   if (!ok) throw new SemPermissaoError();
+
+  // Cobrança em aberto trava a ESCRITA, não a leitura: o lojista continua
+  // consultando estoque e histórico, mas não registra nova operação. Cortar o
+  // acesso inteiro faria o cliente perder o próprio dado por causa de um
+  // boleto — e é a diferença entre suspender e sequestrar.
+  // `mesmoSuspenso` existe para o que precisa funcionar justamente aí: mexer
+  // no plano, no cadastro da empresa e fechar o caixa que ficou aberto.
+  if (!opcoes?.mesmoSuspenso) assertPodeEscrever(ctx.tenant);
+
   return ctx;
 }
 

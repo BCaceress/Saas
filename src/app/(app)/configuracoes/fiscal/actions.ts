@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { guardAction } from "@/lib/guard";
+import { cifrar, decifrar } from "@/lib/crypto";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { onlyDigits } from "@/lib/normalize";
@@ -56,8 +57,9 @@ export async function salvarProvedorFiscalAction(input: z.input<typeof provedorS
     const dados = {
       provider: d.provider,
       ambiente: d.ambiente,
-      apiToken,
-      webhookSecret,
+      // Credenciais de terceiro nunca ficam em claro no banco (lib/crypto).
+      apiToken: cifrar(apiToken),
+      webhookSecret: cifrar(webhookSecret),
       ativo: d.ativo,
       emissaoAutomaticaNfce: d.emissaoAutomaticaNfce,
       prazoCancelamentoMin: d.prazoCancelamentoMin,
@@ -138,8 +140,9 @@ export async function salvarEmitenteAction(input: z.input<typeof emitenteSchema>
       uf: d.uf,
       telefone: d.telefone || null,
       cscId: d.cscId || null,
-      // CSC é segredo: campo em branco mantém o que já está salvo.
-      csc: d.csc || atual?.csc || null,
+      // CSC é segredo: campo em branco mantém o que já está salvo, e o valor
+      // vai cifrado para o banco (lib/crypto).
+      csc: cifrar(d.csc || atual?.csc || null),
       naturezaOperacaoPadrao: d.naturezaOperacaoPadrao,
     };
 

@@ -251,17 +251,76 @@ model Invite {
   @@index([email])
 }
 
-model Subscription {
-  id         String   @id @default(cuid())
-  tenantId   String   @unique
-  plano      Plan
-  status     String
-  gateway    String?
-  externalId String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+/// Ciclo de vida da assinatura no gateway.
+///   PENDENTE     — checkout criado, primeiro pagamento ainda não confirmado
+///   ATIVA        — em dia
+///   INADIMPLENTE — cobrança recusada; ainda dentro do prazo de tolerância
+///   CANCELADA    — encerrada (pelo lojista ou por inadimplência prolongada)
+enum SubscriptionStatus {
+  PENDENTE
+  ATIVA
+  INADIMPLENTE
+  CANCELADA
+}
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+/// Assinatura do SaaS — o que o LOJISTA paga para nós. Não confundir com
+/// `Payment`, que é o que o CONSUMIDOR paga ao lojista no PDV.
+///
+/// O gateway (Mercado Pago) é a verdade sobre dinheiro; esta tabela é a
+/// projeção local que o app consulta a cada requisição. Nada de consultar a
+/// API do MP no caminho crítico — se o gateway cai, a loja não pode parar.
+model Subscription {
+  id       String @id @default(cuid())
+  tenantId String @unique
+  plano    Plan
+
+  status SubscriptionStatus @default(PENDENTE)
+
+  /// "mercadopago" | "manual" (contrato fechado fora do app, cobrado por boleto)
+  gateway String?
+  /// id do preapproval no gateway
+  externalId String?
+  /// URL de checkout enquanto PENDENTE — o lojista volta nela para pagar.
+  checkoutUrl String?
+
+  /// Valor mensal fechado NA VENDA. Reajuste de tabela não pode mudar o que já
+  /// foi contratado sem alguém decidir isso.
+  valorMensal Decimal? @db.Decimal(10, 2)
+
+  /// Add-ons cobrados junto (slugs de `Addon`, src/lib/planos.ts).
+  addons String[] @default([])
+
+  ultimaCobranca  DateTime?
+  proximaCobranca DateTime?
+  /// Primeira falha do ciclo atual — base da contagem de tolerância.
+  inadimplenteDesde DateTime?
+  canceladaEm       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  events SubscriptionEvent[]
+
+  @@index([status])
+  @@index([proximaCobranca])
+}
+
+/// Trilha do que o gateway mandou. Serve para dois propósitos práticos:
+/// idempotência do webhook (`externalId` único) e suporte — quando o lojista
+/// diz "eu paguei", alguém precisa conseguir ver o que chegou e quando.
+model SubscriptionEvent {
+  id             String   @id @default(cuid())
+  subscriptionId String
+  tipo           String // payment.approved, payment.rejected, preapproval.cancelled…
+  externalId     String? @unique // id do evento/pagamento no gateway
+  valor          Decimal? @db.Decimal(10, 2)
+  detalhe        String?
+  createdAt      DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, createdAt])
 }
 
 // Auth.js (NextAuth v5). User é GLOBAL; vínculo com tenant = Membership.
@@ -277,6 +336,37 @@ model User {
   accounts    Account[]
   sessions    Session[]
   memberships Membership[]
+  resetTokens PasswordResetToken[]
+}
+
+/// Recuperação de senha. Guardamos o HASH do token, nunca o token: um dump de
+/// banco não pode virar troca de senha na conta de ninguém. Uso único
+/// (`usedAt`) e vida curta — quem esquece a senha redefine em minutos, não em
+/// dias. Tabela de controle: global, sem tenantId (login é no domínio raiz).
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// Contador de tentativas por chave (ex.: `login:email`, `reset:ip`). Vive no
+/// banco de propósito: memória de processo não serve em serverless, onde cada
+/// requisição pode cair em outra instância — o atacante só precisaria insistir.
+model RateLimit {
+  chave     String   @id
+  contador  Int      @default(0)
+  janelaFim DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([janelaFim])
 }
 
 model Account {
