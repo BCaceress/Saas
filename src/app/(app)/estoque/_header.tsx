@@ -14,6 +14,7 @@ import {
   ArrowRightLeft,
   History,
   ShoppingBag,
+  CalendarClock,
 } from "lucide-react";
 import { useState, useTransition, useEffect } from "react";
 import {
@@ -183,7 +184,7 @@ export function EstoqueHeader({
 
   // Inventários e Movimentações têm cabeçalho próprio (PageHeader com voltar)
   // — o header geral de Estoque não aparece nessas rotas.
-  if (pathname.startsWith("/estoque/inventarios") || pathname.startsWith("/estoque/movimentacoes")) return null;
+  if (pathname.startsWith("/estoque/inventarios") || pathname.startsWith("/estoque/movimentacoes") || pathname.startsWith("/estoque/validade")) return null;
 
   const activeSite = sites.find((s) => s.id === activeSiteId) ?? sites[0];
   const entradaMotivo = panel?.startsWith("entrada:") ? (panel.split(":")[1] as Motivo) : null;
@@ -236,6 +237,20 @@ export function EstoqueHeader({
           >
             <History size={15} className="opacity-80" />
             <span>Movimentações</span>
+          </Link>
+
+          {/* Validade — lotes vencendo/vencidos */}
+          <Link
+            href="/estoque/validade"
+            className={cn(
+              "flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors",
+              pathname === "/estoque/validade"
+                ? "border-brand bg-brand-soft text-brand"
+                : "border-line bg-surface text-ink hover:bg-surface-2",
+            )}
+          >
+            <CalendarClock size={15} className="opacity-80" />
+            <span>Validade</span>
           </Link>
 
           {/* Inventários — processo separado de contagem */}

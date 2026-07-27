@@ -384,21 +384,27 @@ export function ProdutosClient(props: {
               <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-faint" />
               <Input value={q} onChange={(e) => { setQ(e.target.value); resetPaging(); }} placeholder="Buscar nome, SKU ou código de barras" className="h-9 rounded-full border-line bg-surface pl-9" />
             </div>
-            <Select value={fTipo} onChange={(e) => { setFTipo(e.target.value); resetPaging(); }} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
-              <option value="">Todos os tipos</option>
-              <option value="SIMPLES">Simples</option>
-              <option value="COMBO">Combo</option>
-              <option value="PERSONALIZADO">Receita</option>
-              <option value="INSUMO">Insumo</option>
-            </Select>
-            <Select value={fSub} onChange={(e) => { setFSub(e.target.value); resetPaging(); }} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
-              <option value="">Toda subcategoria</option>
-              {subOpts.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
-            </Select>
-            <Select value={fMarca} onChange={(e) => { setFMarca(e.target.value); resetPaging(); }} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
-              <option value="">Toda marca</option>
-              {brandOpts.map((b) => <option key={b.id} value={b.id}>{b.nome}</option>)}
-            </Select>
+            {cols.tipo && (
+              <Select value={fTipo} onChange={(e) => { setFTipo(e.target.value); resetPaging(); }} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
+                <option value="">Todos os tipos</option>
+                <option value="SIMPLES">Simples</option>
+                <option value="COMBO">Combo</option>
+                <option value="PERSONALIZADO">Receita</option>
+                <option value="INSUMO">Insumo</option>
+              </Select>
+            )}
+            {cols.categoria && (
+              <Select value={fSub} onChange={(e) => { setFSub(e.target.value); resetPaging(); }} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
+                <option value="">Toda subcategoria</option>
+                {subOpts.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
+              </Select>
+            )}
+            {cols.marca && (
+              <Select value={fMarca} onChange={(e) => { setFMarca(e.target.value); resetPaging(); }} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
+                <option value="">Toda marca</option>
+                {brandOpts.map((b) => <option key={b.id} value={b.id}>{b.nome}</option>)}
+              </Select>
+            )}
             <Select value={fStatus} onChange={(e) => { setFStatus(e.target.value); resetPaging(); }} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
               <option value="ativos">Ativos</option>
               <option value="inativos">Inativos</option>
@@ -458,7 +464,15 @@ export function ProdutosClient(props: {
                   key={k}
                   checked={cols[k]}
                   label={COL_LABEL[k]}
-                  onChange={() => setCols((c) => ({ ...c, [k]: !c[k] }))}
+                  onChange={() => {
+                    setCols((c) => ({ ...c, [k]: !c[k] }));
+                    // Desliga o filtro junto — não faz sentido filtrar por uma coluna escondida.
+                    if (cols[k]) {
+                      if (k === "tipo") { setFTipo(""); resetPaging(); }
+                      if (k === "categoria") { setFSub(""); resetPaging(); }
+                      if (k === "marca") { setFMarca(""); resetPaging(); }
+                    }
+                  }}
                 />
               ))}
               <div className="my-1 h-px bg-line" role="separator" />

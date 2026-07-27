@@ -141,6 +141,7 @@ export async function updateTotemPin(input: z.input<typeof totemPinSchema>) {
 const estoqueConfigSchema = z.object({
   estoqueMinimoPadrao: z.number().int().min(0).max(9999),
   produtoParadoDias: z.number().int().min(7).max(365),
+  validadeAlertaDias: z.number().int().min(1).max(365),
   recebimentoExigeContagem: z.boolean(),
 });
 

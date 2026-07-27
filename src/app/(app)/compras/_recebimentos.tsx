@@ -67,8 +67,12 @@ export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () =
   const [recebido, setRecebido] = useState<Record<string, number>>(() =>
     Object.fromEntries(pedido.items.map((it) => [it.id, Math.max(0, it.qtdPedida - it.qtdRecebida)])),
   );
+  const [validades, setValidades] = useState<Record<string, string>>({});
+  const [lotes, setLotes] = useState<Record<string, string>>({});
 
   const setQtd = (itemId: string, v: number) => setRecebido((p) => ({ ...p, [itemId]: Math.max(0, v) }));
+  const setValidade = (itemId: string, v: string) => setValidades((p) => ({ ...p, [itemId]: v }));
+  const setLote = (itemId: string, v: string) => setLotes((p) => ({ ...p, [itemId]: v }));
 
   const produtos = useMemo(() => pedido.items.filter((it) => it.tipo === "COMPRA"), [pedido.items]);
   const bonificados = useMemo(() => pedido.items.filter((it) => it.tipo !== "COMPRA"), [pedido.items]);
@@ -98,7 +102,12 @@ export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () =
 
   function receber() {
     setError(null);
-    const items = pedido.items.map((it) => ({ itemId: it.id, qtdRecebida: recebido[it.id] ?? 0 }));
+    const items = pedido.items.map((it) => ({
+      itemId: it.id,
+      qtdRecebida: recebido[it.id] ?? 0,
+      validade: validades[it.id] || null,
+      lote: lotes[it.id] || null,
+    }));
     startTransition(async () => {
       try {
         await receberPedidoCompraAction({ pedidoId: pedido.id, numeroNota: numeroNota || null, gerarFinanceiro, items });
@@ -133,7 +142,7 @@ export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () =
           <p className="px-1 text-[11px] font-semibold uppercase tracking-wide text-faint">Produtos</p>
           <ul className="divide-y divide-line rounded-xl border border-line">
             {produtos.map((it) => (
-              <ConferenciaRow key={it.id} item={it} agora={recebido[it.id] ?? 0} onChange={(v) => setQtd(it.id, v)} parcial={parcial} />
+              <ConferenciaRow key={it.id} item={it} agora={recebido[it.id] ?? 0} onChange={(v) => setQtd(it.id, v)} parcial={parcial} validade={validades[it.id] ?? ""} lote={lotes[it.id] ?? ""} onValidade={(v) => setValidade(it.id, v)} onLote={(v) => setLote(it.id, v)} />
             ))}
           </ul>
         </div>
@@ -144,7 +153,7 @@ export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () =
           <p className="px-1 text-[11px] font-semibold uppercase tracking-wide text-faint">Bonificações</p>
           <ul className="divide-y divide-line rounded-xl border border-violet/30 bg-violet-soft/20">
             {bonificados.map((it) => (
-              <ConferenciaRow key={it.id} item={it} agora={recebido[it.id] ?? 0} onChange={(v) => setQtd(it.id, v)} parcial={parcial} />
+              <ConferenciaRow key={it.id} item={it} agora={recebido[it.id] ?? 0} onChange={(v) => setQtd(it.id, v)} parcial={parcial} validade={validades[it.id] ?? ""} lote={lotes[it.id] ?? ""} onValidade={(v) => setValidade(it.id, v)} onLote={(v) => setLote(it.id, v)} />
             ))}
           </ul>
         </div>
@@ -206,11 +215,19 @@ function ConferenciaRow({
   agora,
   onChange,
   parcial,
+  validade,
+  lote,
+  onValidade,
+  onLote,
 }: {
   item: PedidoItem;
   agora: number;
   onChange: (v: number) => void;
   parcial: boolean;
+  validade: string;
+  lote: string;
+  onValidade: (v: string) => void;
+  onLote: (v: string) => void;
 }) {
   const restante = Math.max(0, it.qtdPedida - it.qtdRecebida);
   const dif = agora - restante;
@@ -227,6 +244,23 @@ function ConferenciaRow({
             {it.sku}
             {it.packagingNome ? <span className="font-sans"> · {it.packagingNome}</span> : null}
           </p>
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <input
+              type="date"
+              value={validade}
+              onChange={(e) => onValidade(e.target.value)}
+              title="Validade (opcional)"
+              className="rounded-md border border-line bg-surface px-2 py-1 text-[11px] text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+            />
+            <input
+              type="text"
+              value={lote}
+              onChange={(e) => onLote(e.target.value)}
+              placeholder="Lote"
+              title="Lote (opcional)"
+              className="w-20 rounded-md border border-line bg-surface px-2 py-1 text-[11px] text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+            />
+          </div>
         </div>
       </div>
 

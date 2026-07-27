@@ -72,6 +72,7 @@ export type InsightsInput = {
   resumoPrev: ResumoVendas;
   rupturaRows: RupturaRow[];
   previsaoRuptura: PrevisaoRuptura[];
+  vencimentos: { vencidos: number; vencendo: number; unidadesVencidas: number };
   pedidos: PedidoAndamento[];
   crescimento: ProdutoCrescimento[];
   mix: MixPagamento[];
@@ -143,6 +144,32 @@ export function buildInsights(input: InsightsInput): Insight[] {
       cta: { label: "Ver reposição", href: "/compras/reposicao-inteligente" },
       escopo: "cards",
       prioridade: 4,
+    });
+  }
+
+  // 1c. Validade — lotes vencidos (crítico) e vencendo na janela.
+  const venc = input.vencimentos;
+  if (venc.vencidos > 0) {
+    insights.push({
+      id: "validade-vencido",
+      tom: "alerta",
+      icone: "calendario",
+      titulo: `${venc.vencidos} lote${venc.vencidos > 1 ? "s" : ""} vencido${venc.vencidos > 1 ? "s" : ""} no estoque`,
+      corpo: `${venc.unidadesVencidas.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} unidade${venc.unidadesVencidas === 1 ? "" : "s"} passaram da validade. Retire da prateleira e dê baixa.`,
+      cta: { label: "Ver validade", href: "/estoque/validade" },
+      escopo: "assistente",
+      prioridade: 1,
+    });
+  } else if (venc.vencendo > 0) {
+    insights.push({
+      id: "validade-vencendo",
+      tom: "info",
+      icone: "calendario",
+      titulo: `${venc.vencendo} lote${venc.vencendo > 1 ? "s" : ""} perto de vencer`,
+      corpo: "Priorize a saída desses lotes antes do vencimento.",
+      cta: { label: "Ver validade", href: "/estoque/validade" },
+      escopo: "cards",
+      prioridade: 6,
     });
   }
 

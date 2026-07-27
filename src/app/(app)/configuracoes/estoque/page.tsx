@@ -20,6 +20,7 @@ export default async function EstoqueConfigPage() {
         initial={{
           estoqueMinimoPadrao: tenant.estoqueMinimoPadrao,
           produtoParadoDias: tenant.produtoParadoDias,
+          validadeAlertaDias: tenant.validadeAlertaDias,
           recebimentoExigeContagem: tenant.recebimentoExigeContagem,
         }}
         multiPonto={(tenant.numPontos ?? 1) > 1}

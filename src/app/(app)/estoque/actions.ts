@@ -7,7 +7,7 @@ import { assertCabeSite } from "@/lib/limites";
 import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
-import { loadComprasFormOptions, loadInventarioFormOptions } from "./_data";
+import { loadComprasFormOptions, loadInventarioFormOptions, loadInventariosConcluidos } from "./_data";
 import {
   registrarEntrada,
   registrarAjuste,
@@ -153,6 +153,8 @@ const entradaItemSchema = z.object({
   quantidade: z.number().positive(),
   custoTotal: z.number().nonnegative(),
   packagingId: z.string().optional().nullable(),
+  validade: z.string().optional().nullable(),
+  lote: z.string().trim().max(60).optional().nullable(),
 });
 
 const entradaSchema = z.object({
@@ -380,7 +382,12 @@ const recebimentoCompraSchema = z.object({
   pedidoId: z.string().min(1),
   numeroNota: z.string().optional().nullable(),
   gerarFinanceiro: z.boolean().default(false),
-  items: z.array(z.object({ itemId: z.string().min(1), qtdRecebida: z.number().nonnegative() })).min(1),
+  items: z.array(z.object({
+    itemId: z.string().min(1),
+    qtdRecebida: z.number().nonnegative(),
+    validade: z.string().optional().nullable(),
+    lote: z.string().trim().max(60).optional().nullable(),
+  })).min(1),
 });
 
 export async function receberPedidoCompraAction(input: z.input<typeof recebimentoCompraSchema>) {
@@ -679,6 +686,20 @@ export async function fetchInventarioProdutosAction() {
   return tx(async () => (await loadInventarioFormOptions()).products);
 }
 
+/** Histórico completo (concluídos/cancelados) do sidepanel — filtrável por janela de dias. */
+export async function fetchInventariosConcluidosAction(input: { siteId: string | null; dias: number | null }) {
+  return tx(async () => {
+    const invs = await loadInventariosConcluidos(input.siteId, input.dias);
+    return invs.map((inv) => ({
+      ...inv,
+      dataProgramada: inv.dataProgramada.toISOString(),
+      createdAt: inv.createdAt.toISOString(),
+      iniciadoEm: inv.iniciadoEm?.toISOString() ?? null,
+      fechadoEm: inv.fechadoEm?.toISOString() ?? null,
+    }));
+  });
+}
+
 // ── Produção ─────────────────────────────────────────────────
 
 const producaoSchema = z.object({
@@ -720,12 +741,18 @@ export async function fetchHistoricoProductAction(productId: string, siteId: str
 
     const [sales, purchases, productions] = await Promise.all([
       saleIds.length > 0
-        ? db.sale.findMany({ where: { id: { in: saleIds } }, select: { id: true, origem: true } })
+        ? db.sale.findMany({
+            where: { id: { in: saleIds } },
+            select: { id: true, origem: true, totemDevice: { select: { nome: true } } },
+          })
         : Promise.resolve([]),
       purchaseIds.length > 0
         ? db.purchase.findMany({
             where: { id: { in: purchaseIds } },
-            include: { supplier: { select: { razaoSocial: true, nomeFantasia: true } } },
+            include: {
+              supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+              purchaseOrder: { select: { numero: true } },
+            },
           })
         : Promise.resolve([]),
       productionIds.length > 0
@@ -736,11 +763,16 @@ export async function fetchHistoricoProductAction(productId: string, siteId: str
         : Promise.resolve([]),
     ]);
 
-    const saleMap = new Map(sales.map((s) => [s.id, s.origem as string]));
+    const saleMap = new Map(sales.map((s) => [s.id, {
+      origem: s.origem as string,
+      terminal: s.totemDevice?.nome ?? null,
+    }]));
     const purchaseMap = new Map(purchases.map((p) => [p.id, {
       tipo: p.tipo as string,
       motivo: p.motivo as string | null,
       supplierNome: p.supplier ? (p.supplier.nomeFantasia ?? p.supplier.razaoSocial) : null,
+      pedidoNumero: p.purchaseOrder?.numero ?? null,
+      numeroNota: p.numeroNota,
     }]));
 
     // Resolve product names for productions
@@ -759,10 +791,13 @@ export async function fetchHistoricoProductAction(productId: string, siteId: str
       custoUnitario: m.custoUnitario ? Number(m.custoUnitario) : null,
       observacao: m.observacao,
       createdAt: m.createdAt.toISOString(),
-      saleOrigem:         m.saleId       ? (saleMap.get(m.saleId)             ?? null) : null,
+      saleOrigem:         m.saleId       ? (saleMap.get(m.saleId)?.origem              ?? null) : null,
+      saleTerminal:       m.saleId       ? (saleMap.get(m.saleId)?.terminal            ?? null) : null,
       purchaseTipo:       m.purchaseId   ? (purchaseMap.get(m.purchaseId)?.tipo        ?? null) : null,
       purchaseMotivo:     m.purchaseId   ? (purchaseMap.get(m.purchaseId)?.motivo      ?? null) : null,
       purchaseSupplier:   m.purchaseId   ? (purchaseMap.get(m.purchaseId)?.supplierNome ?? null) : null,
+      purchasePedido:     m.purchaseId   ? (purchaseMap.get(m.purchaseId)?.pedidoNumero ?? null) : null,
+      purchaseNota:       m.purchaseId   ? (purchaseMap.get(m.purchaseId)?.numeroNota  ?? null) : null,
       producaoDrinkNome:  m.productionId ? (productionMap.get(m.productionId)           ?? null) : null,
     }));
   });

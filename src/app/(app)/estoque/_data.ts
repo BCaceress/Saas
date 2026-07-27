@@ -1,5 +1,6 @@
 import { db } from "@/lib/prisma";
 import { basePrisma } from "@/lib/prisma";
+import type { Prisma } from "@/generated/prisma";
 import { Decimal } from "@/generated/prisma/runtime/library";
 import type { TipoItemPedido, MotivoBonificacao } from "@/lib/estoque";
 
@@ -20,6 +21,7 @@ export type SaldoRow = {
   estoqueAberto: number;
   estoqueMinimo: number;
   estoqueIdeal: number;
+  controlaEstoque: boolean;
   custoMedio: number | null;
   abaixoMinimo: boolean;
   percentAberta: number | null;
@@ -45,6 +47,8 @@ export type SaldoRow = {
   categoria: string | null;
   marca: string | null;
   fornecedorNome: string | null;
+  /** Todos os fornecedores vinculados ao produto (principal primeiro) — hint da coluna Fornecedor. */
+  fornecedores: { nome: string; principal: boolean }[];
   precoVenda: number | null;
   custo: number | null;
   imagemUrl: string | null;
@@ -86,21 +90,22 @@ export type ReposicaoRow = {
 // ── Saldos ──────────────────────────────────────────────────
 
 export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
-  const where = { ...(siteId ? { siteId } : {}), product: { controlaEstoque: true } };
+  // Produtos com controlaEstoque=false (ex.: insumo sem meta) também entram —
+  // aparecem na lista como informativo (qtd comprada), sem status/meta (§ EstoqueCell).
+  const where = { ...(siteId ? { siteId } : {}) };
   const stocks = await db.stock.findMany({
     where,
     include: {
       product: {
         select: {
           id: true, sku: true, ean: true, nome: true, tipo: true, unidadeBase: true,
-          fracionavel: true, conteudoPorUnidade: true, custoMedio: true,
+          fracionavel: true, conteudoPorUnidade: true, custoMedio: true, controlaEstoque: true,
           precoVenda: true, custo: true, imagemUrl: true,
           brand: { select: { nome: true } },
           subcategory: { select: { nome: true } },
           suppliers: {
-            select: { supplier: { select: { razaoSocial: true, nomeFantasia: true } } },
+            select: { isPrincipal: true, supplier: { select: { razaoSocial: true, nomeFantasia: true } } },
             orderBy: { isPrincipal: "desc" },
-            take: 1,
           },
         },
       },
@@ -265,6 +270,7 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
       estoqueAberto: ea,
       estoqueMinimo: n(s.estoqueMinimo),
       estoqueIdeal: n(s.estoqueIdeal),
+      controlaEstoque: s.product.controlaEstoque,
       custoMedio: s.product.custoMedio ? n(s.product.custoMedio) : null,
       abaixoMinimo: ef < n(s.estoqueMinimo),
       percentAberta: pct,
@@ -290,11 +296,98 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
       fornecedorNome: s.product.suppliers[0]
         ? (s.product.suppliers[0].supplier.nomeFantasia ?? s.product.suppliers[0].supplier.razaoSocial)
         : null,
+      fornecedores: s.product.suppliers.map((sp) => ({
+        nome: sp.supplier.nomeFantasia ?? sp.supplier.razaoSocial,
+        principal: sp.isPrincipal,
+      })),
       precoVenda: s.product.precoVenda ? n(s.product.precoVenda) : null,
       custo: s.product.custo ? n(s.product.custo) : null,
       imagemUrl: s.product.imagemUrl,
     };
   });
+}
+
+// ── Validade / lotes ─────────────────────────────────────────
+
+export type LoteRow = {
+  id: string;
+  productId: string;
+  sku: string;
+  nome: string;
+  imagemUrl: string | null;
+  lote: string | null;
+  validade: string | null; // ISO
+  quantidade: number;
+  diasParaVencer: number | null; // null = sem validade; negativo = vencido
+  status: "vencido" | "vencendo" | "ok" | "sem-validade";
+};
+
+const DIA_MS = 86_400_000;
+
+/** Lotes com saldo > 0. `alertaDias` define a janela "vencendo" (default 30).
+ *  Ordena por validade ascendente (mais urgente primeiro); nulos por último. */
+export async function loadLotes(
+  siteId: string | null,
+  opts: { alertaDias?: number; somenteAlerta?: boolean } = {},
+): Promise<LoteRow[]> {
+  const alertaDias = opts.alertaDias ?? 30;
+  const lots = await db.stockLot.findMany({
+    where: {
+      ...(siteId ? { siteId } : {}),
+      quantidade: { gt: 0 },
+      ...(opts.somenteAlerta ? { validade: { not: null } } : {}),
+    },
+    orderBy: [{ validade: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }],
+    include: {
+      product: { select: { id: true, sku: true, nome: true, imagemUrl: true } },
+    },
+  });
+
+  const hoje = Date.now();
+  const rows = lots.map((l): LoteRow => {
+    const validade = l.validade ? l.validade.toISOString() : null;
+    let diasParaVencer: number | null = null;
+    let status: LoteRow["status"] = "sem-validade";
+    if (l.validade) {
+      diasParaVencer = Math.floor((l.validade.getTime() - hoje) / DIA_MS);
+      status = diasParaVencer < 0 ? "vencido" : diasParaVencer <= alertaDias ? "vencendo" : "ok";
+    }
+    return {
+      id: l.id,
+      productId: l.productId,
+      sku: l.product.sku,
+      nome: l.product.nome,
+      imagemUrl: l.product.imagemUrl,
+      lote: l.lote,
+      validade,
+      quantidade: n(l.quantidade),
+      diasParaVencer,
+      status,
+    };
+  });
+
+  if (opts.somenteAlerta) return rows.filter((r) => r.status === "vencido" || r.status === "vencendo");
+  return rows;
+}
+
+/** Contagem-resumo p/ badge do dashboard: lotes vencidos e vencendo na janela. */
+export async function contarVencimentos(
+  siteId: string | null,
+  alertaDias = 30,
+): Promise<{ vencidos: number; vencendo: number; unidadesVencidas: number }> {
+  const hoje = new Date();
+  const limite = new Date(hoje.getTime() + alertaDias * DIA_MS);
+  const lots = await db.stockLot.findMany({
+    where: { ...(siteId ? { siteId } : {}), quantidade: { gt: 0 }, validade: { not: null, lte: limite } },
+    select: { validade: true, quantidade: true },
+  });
+  let vencidos = 0, vencendo = 0, unidadesVencidas = 0;
+  for (const l of lots) {
+    if (!l.validade) continue;
+    if (l.validade.getTime() < hoje.getTime()) { vencidos += 1; unidadesVencidas += n(l.quantidade); }
+    else vencendo += 1;
+  }
+  return { vencidos, vencendo, unidadesVencidas };
 }
 
 // ── Movimentações ────────────────────────────────────────────
@@ -1196,24 +1289,55 @@ export type InventarioView = {
   items: InventarioItemView[];
 };
 
-/** Um inventário específico (para a tela dedicada de contagem). */
+const inventarioInclude = {
+  site: { select: { nome: true } },
+  category: { select: { nome: true } },
+  items: { select: { productId: true, qtdSistema: true, qtdContada: true } },
+} as const;
+
+type InventarioRaw = Prisma.InventoryGetPayload<{ include: typeof inventarioInclude }>;
+
+/** Um inventário específico (para a tela dedicada de contagem) — busca só ele, sem carregar a lista inteira. */
 export async function loadInventario(id: string): Promise<InventarioView | null> {
-  const todos = await loadInventarios(null);
-  return todos.find((i) => i.id === id) ?? null;
+  const inv = await db.inventory.findFirst({
+    where: { id },
+    include: inventarioInclude,
+  });
+  if (!inv) return null;
+  const [hidratado] = await hidratarInventarios([inv]);
+  return hidratado;
 }
 
 export async function loadInventarios(siteId: string | null): Promise<InventarioView[]> {
   const invs = await db.inventory.findMany({
     where: siteId ? { siteId } : {},
-    include: {
-      site: { select: { nome: true } },
-      category: { select: { nome: true } },
-      items: { select: { productId: true, qtdSistema: true, qtdContada: true } },
-    },
+    include: inventarioInclude,
     orderBy: { createdAt: "desc" },
     take: 30,
   });
+  return hidratarInventarios(invs);
+}
 
+/**
+ * Histórico de concluídos/cancelados p/ o sidepanel "Ver histórico completo" —
+ * `dias` null = sem limite de data (todos). Padrão do painel é 30 dias.
+ */
+export async function loadInventariosConcluidos(siteId: string | null, dias: number | null): Promise<InventarioView[]> {
+  const desde = dias != null ? new Date(Date.now() - dias * 86_400_000) : null;
+  const invs = await db.inventory.findMany({
+    where: {
+      ...(siteId ? { siteId } : {}),
+      status: { in: ["FECHADO", "CANCELADO"] },
+      ...(desde ? { fechadoEm: { gte: desde } } : {}),
+    },
+    include: inventarioInclude,
+    orderBy: { fechadoEm: "desc" },
+    take: 200,
+  });
+  return hidratarInventarios(invs);
+}
+
+async function hidratarInventarios(invs: InventarioRaw[]): Promise<InventarioView[]> {
   const productIds = [...new Set(invs.flatMap((i) => i.items.map((it) => it.productId)))];
   const siteIds = [...new Set(invs.map((i) => i.siteId))];
   const fechadoPorIds = [...new Set(invs.map((i) => i.fechadoPor).filter((v): v is string => !!v))];

@@ -148,6 +148,7 @@ model Tenant {
   // Estoque (Configurações → Estoque e alertas)
   estoqueMinimoPadrao Int @default(0) // pré-preenche o mínimo ao cadastrar produto
   produtoParadoDias   Int @default(45) // dias sem movimentação → alerta "parado"
+  validadeAlertaDias  Int @default(30) // dias de antecedência do alerta "vencendo"
   controleEstoquePdv  ControleEstoquePdv @default(BLOQUEAR) // como o PDV trata saldo insuficiente
 
   // Caixa / PDV (Configurações → Caixa)
@@ -725,6 +726,7 @@ model Product {
   fiscalProfile FiscalProfile? @relation(fields: [fiscalProfileId], references: [id])
 
   stocks          Stock[]
+  lots            StockLot[]
   packagings      ProductPackaging[]
   components      ProductComponent[]      @relation("ParentProduct")
   usedInRecipes   ProductComponent[]      @relation("ComponentProduct")
@@ -957,10 +959,13 @@ model StockMovement {
   transferId   String?
   productionId String?
   saleId       String?
+  lotId        String? // lote consumido (FEFO) ou criado (entrada) — rastreabilidade
   observacao   String?
 
   createdAt DateTime @default(now())
   createdBy String?
+
+  lot StockLot? @relation(fields: [lotId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
   @@index([siteId])
@@ -969,7 +974,39 @@ model StockMovement {
   @@index([transferId])
   @@index([productionId])
   @@index([saleId])
+  @@index([lotId])
   @@index([createdAt])
+}
+
+// Lote de estoque fechado (unidades lacradas) com validade. FEFO: consumo
+// puxa o lote de validade mais próxima primeiro (nulos por último).
+// Invariante: soma de StockLot.quantidade por (produto × site) == Stock.estoqueFechado.
+// Saldo aberto/fracionado (ml de drink) NÃO é rastreado por lote.
+model StockLot {
+  id        String  @id @default(cuid())
+  tenantId  String
+  siteId    String
+  productId String
+
+  lote       String? // código do lote / nº da nota
+  validade   DateTime? // vencimento (opcional)
+  quantidade Decimal   @default(0) @db.Decimal(12, 3) // saldo fechado restante neste lote
+
+  custoUnitario Decimal? @db.Decimal(10, 2)
+  purchaseId    String?
+  esgotadoEm    DateTime? // quando zerou
+
+  createdAt DateTime @default(now())
+  createdBy String?
+
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  movements StockMovement[]
+
+  @@index([tenantId])
+  @@index([siteId])
+  @@index([productId])
+  @@index([tenantId, siteId, productId])
+  @@index([validade])
 }
 
 model Purchase {
@@ -1105,6 +1142,9 @@ model TransferItem {
   quantidade  Decimal  @db.Decimal(12, 3) // qtd solicitada/planejada na transferência
   qtdExpedida Decimal? @db.Decimal(12, 3) // baixado do CD na expedição
   qtdRecebida Decimal? @db.Decimal(12, 3) // contado na loja no recebimento
+  // Lotes consumidos no CD (validade/lote/custo/qtd) — replay no recebimento
+  // para a loja recriar os lotes com a mesma validade (transferência em trânsito).
+  lotesInfo   Json?
 
   transfer Transfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
 

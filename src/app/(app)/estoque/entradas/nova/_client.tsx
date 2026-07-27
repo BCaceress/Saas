@@ -32,6 +32,8 @@ export type Item = {
   custoTotal: number;
   custoDisplay: string;
   packagingId: string | null;
+  validade: string | null;
+  lote: string | null;
 };
 
 const itemVazio = (): Item => ({
@@ -40,6 +42,8 @@ const itemVazio = (): Item => ({
   custoTotal: 0,
   custoDisplay: "",
   packagingId: null,
+  validade: null,
+  lote: null,
 });
 
 /** Converte texto digitado em centavos → { display pt-BR, total }. */
@@ -352,6 +356,33 @@ export function NovaEntradaForm({
                 </div>
               </div>
               )}
+
+              {draftProd && (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr]">
+                  {/* Validade — opcional, controla o alerta de vencimento */}
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-semibold text-faint">Validade (opcional)</label>
+                    <input
+                      type="date"
+                      value={draft.validade ?? ""}
+                      onChange={(e) => setDraft({ ...draft, validade: e.target.value || null })}
+                      className="w-full rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                    />
+                  </div>
+                  {/* Lote / nº da nota — opcional */}
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-semibold text-faint">Lote (opcional)</label>
+                    <input
+                      type="text"
+                      value={draft.lote ?? ""}
+                      onChange={(e) => setDraft({ ...draft, lote: e.target.value || null })}
+                      onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addDraft())}
+                      placeholder="Código do lote"
+                      className="w-full rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           );
         })()}
@@ -399,8 +430,18 @@ export function NovaEntradaForm({
                   <p className="truncate font-mono text-[11px] text-faint">
                     {prod?.sku}
                     {pk ? ` · ${pk.nome}` : " · Unidade"}
+                    {item.lote ? ` · lote ${item.lote}` : ""}
                   </p>
                 </div>
+
+                {/* Validade — opcional */}
+                <input
+                  type="date"
+                  value={item.validade ?? ""}
+                  onChange={(e) => updateItem(idx, { validade: e.target.value || null })}
+                  title="Validade"
+                  className="w-[8.5rem] shrink-0 rounded-[var(--radius)] border border-line bg-surface px-2 py-1.5 text-sm text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                />
 
                 {/* Qtd */}
                 <input

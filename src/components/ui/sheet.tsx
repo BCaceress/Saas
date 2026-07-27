@@ -21,7 +21,7 @@ export function Sheet({
   open: boolean;
   onClose: () => void;
   title: string;
-  description?: string;
+  description?: React.ReactNode;
   /** Ações extras no cabeçalho (ex.: menu "…"), entre o título e o botão de fechar. */
   headerActions?: React.ReactNode;
   children: React.ReactNode;
@@ -58,9 +58,9 @@ export function Sheet({
         )}
       >
         <header className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
-          <div>
+          <div className="min-w-0">
             <h2 className="font-display text-lg font-semibold text-ink">{title}</h2>
-            {description && <p className="mt-0.5 text-sm text-muted">{description}</p>}
+            {description && <div className="mt-0.5 text-sm text-muted">{description}</div>}
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {headerActions}

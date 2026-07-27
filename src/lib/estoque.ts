@@ -15,7 +15,26 @@ type StockDelta = {
   deltaAberto?: number;
 };
 
-/** Aplica deltas ao Stock e insere linha no razão — numa transação. */
+/** Segmento de lote — usado para carregar validade entre sites na transferência. */
+export type LoteSegmento = {
+  validade: Date | null;
+  lote: string | null;
+  custoUnitario: number | null;
+  quantidade: number;
+};
+
+export type ResultadoMovimento = {
+  /** Lote de validade mais próxima tocado (criado na entrada, consumido na saída). */
+  lotId: string | null;
+  /** Lotes consumidos na saída (FEFO), na ordem de consumo. Vazio na entrada. */
+  consumidos: LoteSegmento[];
+};
+
+/** Aplica deltas ao Stock e insere linha no razão — numa transação.
+ * Fechado (+): cria StockLot (só ENTRADA carrega validade/lote; demais entram
+ * como lote sem data). Fechado (−): consome FEFO — lote de validade mais próxima
+ * primeiro (nulos por último). Invariante: Σ StockLot.quantidade == estoqueFechado.
+ * Saldo aberto (fracionado) não é rastreado por lote. */
 export async function aplicarMovimento(
   tenantId: string,
   siteId: string,
@@ -30,14 +49,102 @@ export async function aplicarMovimento(
     saleId?: string;
     observacao?: string;
     createdBy?: string;
+    // Rastreio de validade (só usado quando dF > 0):
+    validade?: Date | null;
+    lote?: string | null;
+    // Entrada com múltiplos lotes datados (ex.: transferência que carrega a
+    // validade dos lotes consumidos na origem). Soma deve bater com dF.
+    lotesEntrada?: LoteSegmento[];
+    // Reversão dirigida a um lote específico (cancelamento restaura no lote original):
+    lotId?: string | null;
   } = {}
-) {
+): Promise<ResultadoMovimento> {
   const dF = delta.deltaFechado ?? 0;
   const dA = delta.deltaAberto ?? 0;
 
-  await basePrisma.$transaction([
-    basePrisma.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`,
-    basePrisma.stockMovement.create({
+  const consumidos: LoteSegmento[] = [];
+
+  const lotId = await basePrisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`;
+
+    let lotId: string | null = opts.lotId ?? null;
+
+    if (dF > 0) {
+      // Entrada de fechado → cria (ou reabastece) lote(s).
+      if (opts.lotId) {
+        await tx.stockLot.update({
+          where: { id: opts.lotId },
+          data: { quantidade: { increment: dF }, esgotadoEm: null },
+        });
+      } else if (opts.lotesEntrada && opts.lotesEntrada.length > 0) {
+        // Um lote por segmento, preservando a validade de origem.
+        for (const seg of opts.lotesEntrada) {
+          if (seg.quantidade <= 0) continue;
+          const novo = await tx.stockLot.create({
+            data: {
+              tenantId,
+              siteId,
+              productId,
+              lote: seg.lote,
+              validade: seg.validade,
+              quantidade: seg.quantidade,
+              custoUnitario: seg.custoUnitario ?? opts.custoUnitario ?? null,
+              purchaseId: opts.purchaseId ?? null,
+              createdBy: opts.createdBy ?? null,
+            },
+          });
+          if (lotId === null) lotId = novo.id;
+        }
+      } else {
+        const novo = await tx.stockLot.create({
+          data: {
+            tenantId,
+            siteId,
+            productId,
+            lote: opts.lote ?? null,
+            validade: opts.validade ?? null,
+            quantidade: dF,
+            custoUnitario: opts.custoUnitario ?? null,
+            purchaseId: opts.purchaseId ?? null,
+            createdBy: opts.createdBy ?? null,
+          },
+        });
+        lotId = novo.id;
+      }
+    } else if (dF < 0) {
+      // Saída de fechado → consome FEFO. Pode varrer múltiplos lotes;
+      // grava no razão o lote de validade mais próxima consumido.
+      let restante = -dF;
+      const lotes = await tx.stockLot.findMany({
+        where: { tenantId, siteId, productId, quantidade: { gt: 0 } },
+        orderBy: [{ validade: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }],
+      });
+      for (const l of lotes) {
+        if (restante <= 0) break;
+        const disp = Number(l.quantidade);
+        const usar = Math.min(disp, restante);
+        await tx.stockLot.update({
+          where: { id: l.id },
+          data: {
+            quantidade: { decrement: usar },
+            esgotadoEm: usar >= disp ? new Date() : null,
+          },
+        });
+        consumidos.push({
+          validade: l.validade,
+          lote: l.lote,
+          custoUnitario: l.custoUnitario == null ? null : Number(l.custoUnitario),
+          quantidade: usar,
+        });
+        if (lotId === null) lotId = l.id; // primeiro (mais próximo do vencimento)
+        restante -= usar;
+      }
+      // restante > 0 ⇒ venda offline com saldo insuficiente: estoque vai a
+      // negativo (increment abaixo) sem lote correspondente — reconcilia na
+      // próxima entrada. Não bloqueia aqui.
+    }
+
+    await tx.stockMovement.create({
       data: {
         tenantId,
         siteId,
@@ -50,11 +157,13 @@ export async function aplicarMovimento(
         transferId: opts.transferId ?? null,
         productionId: opts.productionId ?? null,
         saleId: opts.saleId ?? null,
+        lotId,
         observacao: opts.observacao ?? null,
         createdBy: opts.createdBy ?? null,
       },
-    }),
-    basePrisma.stock.upsert({
+    });
+
+    await tx.stock.upsert({
       where: { productId_siteId: { productId, siteId } },
       create: {
         tenantId,
@@ -67,8 +176,12 @@ export async function aplicarMovimento(
         estoqueFechado: { increment: dF },
         estoqueAberto: { increment: dA },
       },
-    }),
-  ]);
+    });
+
+    return lotId;
+  });
+
+  return { lotId, consumidos };
 }
 
 // ── Entrada ─────────────────────────────────────────────────
@@ -78,6 +191,8 @@ export type EntradaItem = {
   quantidade: number;
   custoTotal: number;
   packagingId?: string | null;
+  validade?: string | null; // ISO date (yyyy-mm-dd) do lote
+  lote?: string | null; // código do lote / nº da nota
 };
 
 export async function registrarEntrada(
@@ -148,6 +263,8 @@ export async function registrarEntrada(
     }, {
       custoUnitario: ri.custoUnitario,
       purchaseId: purchase.id,
+      validade: ri.validade ? new Date(ri.validade) : null,
+      lote: ri.lote ?? null,
       observacao: opts.observacao ?? undefined,
       createdBy: opts.createdBy,
     });
@@ -435,7 +552,7 @@ export async function excluirPedidoCompra(tenantId: string, pedidoId: string): P
 // Chave é o id do PurchaseOrderItem (não o productId) — um pedido pode ter
 // mais de uma linha do mesmo produto (ex.: 10 caixas compradas + 2 de
 // bonificação), e productId sozinho não distingue as duas na conferência.
-export type RecebimentoCompraInput = { itemId: string; qtdRecebida: number };
+export type RecebimentoCompraInput = { itemId: string; qtdRecebida: number; validade?: string | null; lote?: string | null };
 
 export async function receberPedidoCompra(
   tenantId: string,
@@ -457,7 +574,7 @@ export async function receberPedidoCompra(
     .map((it) => {
       const conta = contagem.find((c) => c.itemId === it.id);
       const qtd = conta ? Math.max(0, conta.qtdRecebida) : 0;
-      return { it, qtd };
+      return { it, qtd, validade: conta?.validade ?? null, lote: conta?.lote ?? null };
     })
     .filter((r) => r.qtd > 0);
 
@@ -480,6 +597,8 @@ export async function receberPedidoCompra(
         quantidade: r.qtd,
         custoTotal: r.qtd * Number(r.it.custoUnitario),
         packagingId: r.it.packagingId,
+        validade: r.validade,
+        lote: r.lote,
       })),
       {
         tipo: "FORNECEDOR",
@@ -705,13 +824,14 @@ export async function registrarTransferencia(
     }));
     const custo = Number(prod?.custoMedio ?? 0);
 
-    await aplicarMovimento(tenantId, origemSiteId, item.productId, "TRANSFERENCIA", {
+    const saida = await aplicarMovimento(tenantId, origemSiteId, item.productId, "TRANSFERENCIA", {
       deltaFechado: -item.quantidade,
     }, { transferId: transfer.id, custoUnitario: custo, createdBy: opts.createdBy });
 
+    // Entra no destino carregando a validade dos lotes consumidos na origem.
     await aplicarMovimento(tenantId, destinoSiteId, item.productId, "TRANSFERENCIA", {
       deltaFechado: item.quantidade,
-    }, { transferId: transfer.id, custoUnitario: custo, createdBy: opts.createdBy });
+    }, { transferId: transfer.id, custoUnitario: custo, createdBy: opts.createdBy, lotesEntrada: saida.consumidos });
   }
 
   return transfer.id;
@@ -845,23 +965,63 @@ export async function expedirRequisicao(
     return t;
   });
 
+  // Mapa productId → transferItem (para gravar lotesInfo na expedição em trânsito).
+  const transferItens = await comTenant(tenantId, basePrisma.transferItem.findMany({
+    where: { transferId: transfer.id, tenantId },
+    select: { id: true, productId: true },
+  }));
+
   // Pernas no razão: saída do CD sempre; entrada na loja só se auto-confirma.
   for (const item of expedidos) {
     const prod = await comTenant(tenantId, basePrisma.product.findFirst({ where: { id: item.productId }, select: { custoMedio: true } }));
     const custo = Number(prod?.custoMedio ?? 0);
 
-    await aplicarMovimento(tenantId, origemSiteId, item.productId, "TRANSFERENCIA", {
+    const saida = await aplicarMovimento(tenantId, origemSiteId, item.productId, "TRANSFERENCIA", {
       deltaFechado: -item.qtdExpedida,
     }, { transferId: transfer.id, custoUnitario: custo, createdBy: opts.createdBy });
 
     if (!exigeContagem) {
+      // Auto-confirma: entra na loja já carregando a validade dos lotes do CD.
       await aplicarMovimento(tenantId, destinoSiteId, item.productId, "TRANSFERENCIA", {
         deltaFechado: item.qtdExpedida,
-      }, { transferId: transfer.id, custoUnitario: custo, createdBy: opts.createdBy });
+      }, { transferId: transfer.id, custoUnitario: custo, createdBy: opts.createdBy, lotesEntrada: saida.consumidos });
+    } else {
+      // Em trânsito: guarda os segmentos consumidos para replay no recebimento.
+      const ti = transferItens.find((t) => t.productId === item.productId);
+      if (ti) {
+        await comTenant(tenantId, basePrisma.transferItem.update({
+          where: { id: ti.id },
+          data: { lotesInfo: serializarSegmentos(saida.consumidos) },
+        }));
+      }
     }
   }
 
   return transfer.id;
+}
+
+// Serializa/desserializa segmentos de lote para o campo Json do TransferItem.
+// Datas viram ISO string; na volta reconstroem Date.
+function serializarSegmentos(segs: LoteSegmento[]) {
+  return segs.map((s) => ({
+    validade: s.validade ? s.validade.toISOString() : null,
+    lote: s.lote,
+    custoUnitario: s.custoUnitario,
+    quantidade: s.quantidade,
+  }));
+}
+
+function desserializarSegmentos(raw: unknown): LoteSegmento[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((r) => {
+    const o = r as { validade?: string | null; lote?: string | null; custoUnitario?: number | null; quantidade?: number };
+    return {
+      validade: o.validade ? new Date(o.validade) : null,
+      lote: o.lote ?? null,
+      custoUnitario: o.custoUnitario ?? null,
+      quantidade: Number(o.quantidade ?? 0),
+    };
+  });
 }
 
 export type RecebimentoItemInput = { productId: string; qtdRecebida: number };
@@ -894,11 +1054,13 @@ export async function receberTransferencia(
     const prod = await comTenant(tenantId, basePrisma.product.findFirst({ where: { id: ti.productId }, select: { custoMedio: true } }));
     const custo = Number(prod?.custoMedio ?? 0);
 
-    // Entra na loja o expedido cheio; a divergência é baixada como PERDA logo
-    // abaixo, deixando o razão consistente (recebido = expedido − perda).
+    // Entra na loja o expedido cheio, recriando os lotes com a validade que
+    // saíram do CD (lotesInfo). A divergência é baixada como PERDA logo abaixo
+    // (FEFO consome o de validade mais próxima), deixando o razão consistente.
+    const segmentos = desserializarSegmentos(ti.lotesInfo);
     await aplicarMovimento(tenantId, destinoSiteId, ti.productId, "TRANSFERENCIA", {
       deltaFechado: expedida,
-    }, { transferId, custoUnitario: custo, createdBy: opts.createdBy });
+    }, { transferId, custoUnitario: custo, createdBy: opts.createdBy, lotesEntrada: segmentos.length > 0 ? segmentos : undefined });
 
     const faltou = expedida - recebida;
     if (faltou > 0.0001) {

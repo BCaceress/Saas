@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Check,
   ArrowLeft,
+  Package,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
@@ -31,6 +32,21 @@ import {
   tituloEscopo,
   subtituloInventario,
 } from "./_client";
+
+function Thumb({ url }: { url: string | null }) {
+  return url ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt=""
+      className="h-10 w-10 shrink-0 rounded-[var(--radius)] border border-line object-cover"
+    />
+  ) : (
+    <div className="grid h-10 w-10 shrink-0 place-items-center rounded-[var(--radius)] border border-line bg-surface text-faint">
+      <Package size={18} />
+    </div>
+  );
+}
 
 export function ContagemView({
   inventario,
@@ -220,6 +236,7 @@ export function ContagemView({
             const diffVal = diverge ? (contada as number) - it.qtdSistema : 0;
             return (
               <div key={it.productId} className="flex items-center gap-3 rounded-[var(--radius)] bg-surface-2 px-3 py-1.5">
+                <Thumb url={it.imagemUrl} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm text-ink">{it.nome}</p>
                   <p className="font-mono text-[11px] text-faint">

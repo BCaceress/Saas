@@ -63,6 +63,7 @@ export default async function DashboardPage({
     pdv: featureAtiva(ctx.tenant, "pdv"),
     multiSite,
     paradoDias: ctx.tenant.produtoParadoDias || 45,
+    validadeAlertaDias: ctx.tenant.validadeAlertaDias || 30,
   };
 
   const resolvedOrder = resolveOrder(widgetPref.ordem);

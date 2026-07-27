@@ -31,6 +31,7 @@ import {
   iniciarInventarioAction,
   cancelarInventarioAction,
   fetchInventarioProdutosAction,
+  fetchInventariosConcluidosAction,
 } from "../actions";
 import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
@@ -79,6 +80,14 @@ const ESCOPO_OPTIONS: { value: Escopo; label: string; icon: React.ElementType }[
   { value: "PRODUTOS", label: "Produtos específicos", icon: ListChecks },
 ];
 
+const HISTORICO_FILTROS: { label: string; dias: number | null }[] = [
+  { label: "7 dias", dias: 7 },
+  { label: "30 dias", dias: 30 },
+  { label: "90 dias", dias: 90 },
+  { label: "1 ano", dias: 365 },
+  { label: "Tudo", dias: null },
+];
+
 const DIAS_SEMANA = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
 const DIA_CURTO = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
@@ -105,6 +114,20 @@ const fmtData = (v: string | Date) =>
 
 const fmtDataHora = (v: string | Date) =>
   new Date(v).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+
+const fmtHora = (v: string | Date) =>
+  new Date(v).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+/** Duração entre início e fim — "12min" ou "1h 05min". */
+function fmtDuracao(inicio: string | Date, fim: string | Date): string {
+  const ms = new Date(fim).getTime() - new Date(inicio).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const totalMin = Math.round(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h === 0) return `${m}min`;
+  return `${h}h${m > 0 ? ` ${String(m).padStart(2, "0")}min` : ""}`;
+}
 
 /** "2026-07-20" → "20/07/2026". */
 function isoToBr(iso: string): string {
@@ -402,7 +425,7 @@ function LinhaConcluida({ inv, multiSite, onVerDetalhes }: { inv: Inventario; mu
     <LinhaResumo
       icon={
         cancelado
-          ? <X size={16} className="text-faint" />
+          ? <X size={16} className="text-danger" />
           : <CheckCircle2 size={16} className="text-ok" />
       }
       titulo={`Inventário · ${tituloEscopo(inv)}`}
@@ -425,6 +448,8 @@ function LinhaConcluida({ inv, multiSite, onVerDetalhes }: { inv: Inventario; mu
               </span>
             )}
             {` · ${fmtDataCurta(inv.fechadoEm ?? inv.createdAt)}`}
+            {inv.fechadoEm && ` às ${fmtHora(inv.fechadoEm)}`}
+            {inv.iniciadoEm && inv.fechadoEm && ` · Duração: ${fmtDuracao(inv.iniciadoEm, inv.fechadoEm)}`}
           </>
         )
       }
@@ -578,8 +603,12 @@ export function InventarioClient({
   const [novoAberto, setNovoAberto] = useState(false);
   const [detalhe, setDetalhe] = useState<Inventario | null>(null);
   const [iniciandoId, setIniciandoId] = useState<string | null>(null);
+  const [continuando, setContinuando] = useState(false);
   const [todosFuturos, setTodosFuturos] = useState(false);
-  const [todosConcluidos, setTodosConcluidos] = useState(false);
+  const [historicoAberto, setHistoricoAberto] = useState(false);
+  const [historicoDias, setHistoricoDias] = useState<number | null>(30);
+  const [historicoItems, setHistoricoItems] = useState<Inventario[] | null>(null);
+  const [historicoCarregando, setHistoricoCarregando] = useState(false);
   const multiSite = sites.length > 1;
 
   // ── Programar inventário ──
@@ -698,6 +727,20 @@ export function InventarioClient({
         setIniciandoId(null);
       }
     });
+  }
+
+  function carregarHistorico(dias: number | null) {
+    setHistoricoDias(dias);
+    setHistoricoCarregando(true);
+    fetchInventariosConcluidosAction({ siteId: activeSiteId, dias })
+      .then((lista) => setHistoricoItems(lista))
+      .catch(() => setHistoricoItems([]))
+      .finally(() => setHistoricoCarregando(false));
+  }
+
+  function abrirHistorico() {
+    setHistoricoAberto(true);
+    carregarHistorico(historicoDias);
   }
 
   function cancelar(id: string) {
@@ -965,9 +1008,13 @@ export function InventarioClient({
           <div
             role="button"
             tabIndex={0}
-            onClick={() => router.push(`/estoque/inventarios/${aberto.id}`)}
-            onKeyDown={(e) => { if (e.key === "Enter") router.push(`/estoque/inventarios/${aberto.id}`); }}
-            className="group relative flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-3 overflow-hidden rounded-[var(--radius-lg)] border border-brand/30 bg-surface py-4 pl-5 pr-4 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            aria-disabled={continuando}
+            onClick={() => { if (continuando) return; setContinuando(true); router.push(`/estoque/inventarios/${aberto.id}`); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && !continuando) { setContinuando(true); router.push(`/estoque/inventarios/${aberto.id}`); } }}
+            className={cn(
+              "group relative flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-3 overflow-hidden rounded-[var(--radius-lg)] border border-brand/30 bg-surface py-4 pl-5 pr-4 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
+              continuando && "cursor-wait opacity-70",
+            )}
           >
             <span className="absolute inset-y-0 left-0 w-1 bg-brand" aria-hidden />
             <span className="grid h-11 w-11 shrink-0 place-items-center rounded-[var(--radius)] bg-brand-soft text-brand">
@@ -982,7 +1029,8 @@ export function InventarioClient({
               </p>
             </div>
             <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand">
-              <PlayCircle size={14} /> Continuar contagem
+              {continuando ? <Loader2 size={14} className="animate-spin" /> : <PlayCircle size={14} />}
+              {continuando ? "Abrindo…" : "Continuar contagem"}
             </span>
             <ChevronRight size={16} className="shrink-0 text-faint transition-colors group-hover:text-muted" />
           </div>
@@ -1039,7 +1087,7 @@ export function InventarioClient({
               />
             ))}
           </div>
-        ) : (
+        ) : atrasados.length === 0 ? (
           <div className="flex items-center gap-3.5 rounded-[var(--radius-lg)] border border-ok/30 bg-ok-soft px-5 py-4">
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface text-ok">
               <CheckCircle2 size={22} />
@@ -1049,7 +1097,7 @@ export function InventarioClient({
               <p className="text-sm text-muted">Nenhum inventário pendente para hoje.</p>
             </div>
           </div>
-        )}
+        ) : null}
       </section>
 
       {/* ── Próximos + Concluídos (visão resumida, lado a lado) ── */}
@@ -1092,20 +1140,66 @@ export function InventarioClient({
           ) : (
             <>
               <ListaAgrupada>
-                {(todosConcluidos ? concluidos : concluidos.slice(0, 6)).map((inv) => (
+                {concluidos.slice(0, 6).map((inv) => (
                   <LinhaConcluida key={inv.id} inv={inv} multiSite={multiSite} onVerDetalhes={() => setDetalhe(inv)} />
                 ))}
               </ListaAgrupada>
               {concluidos.length > 6 && (
-                <VerTodosLink
-                  label={todosConcluidos ? "Ver menos" : "Ver histórico completo"}
-                  onClick={() => setTodosConcluidos((v) => !v)}
-                />
+                <VerTodosLink label="Ver histórico completo" onClick={abrirHistorico} />
               )}
             </>
           )}
         </section>
       </div>
+
+      {/* ── Histórico completo (concluídos/cancelados) ── */}
+      <Sheet
+        open={historicoAberto}
+        onClose={() => setHistoricoAberto(false)}
+        title="Histórico de inventários"
+        description="Concluídos e cancelados — filtre pelo período."
+        width="lg"
+      >
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {HISTORICO_FILTROS.map((f) => (
+              <button
+                key={f.label}
+                type="button"
+                onClick={() => carregarHistorico(f.dias)}
+                disabled={historicoCarregando}
+                className={cn(
+                  "rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed",
+                  historicoDias === f.dias
+                    ? "border-brand bg-brand-soft text-brand"
+                    : "border-line text-muted hover:bg-surface-2",
+                )}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {historicoCarregando ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted">
+              <Loader2 size={16} className="animate-spin" /> Carregando histórico…
+            </div>
+          ) : !historicoItems || historicoItems.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted">Nenhum inventário concluído nesse período.</p>
+          ) : (
+            <ListaAgrupada>
+              {historicoItems.map((inv) => (
+                <LinhaConcluida
+                  key={inv.id}
+                  inv={inv}
+                  multiSite={multiSite}
+                  onVerDetalhes={() => { setHistoricoAberto(false); setDetalhe(inv); }}
+                />
+              ))}
+            </ListaAgrupada>
+          )}
+        </div>
+      </Sheet>
 
       {/* ── Detalhes de uma ocorrência ── */}
       <Sheet
@@ -1144,6 +1238,9 @@ export function InventarioClient({
                 )}
                 {detalhe.status === "FECHADO" && detalhe.fechadoEm && (
                   <DetailRow icon={CheckCircle2} label="Concluído em" value={fmtDataHora(detalhe.fechadoEm)} />
+                )}
+                {detalhe.status === "FECHADO" && detalhe.iniciadoEm && detalhe.fechadoEm && (
+                  <DetailRow icon={ClipboardList} label="Tempo de contagem" value={fmtDuracao(detalhe.iniciadoEm, detalhe.fechadoEm)} />
                 )}
               </dl>
             </div>

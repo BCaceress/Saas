@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { PackagePlus, PauseCircle, ClipboardCheck } from "lucide-react";
+import { PackagePlus, PauseCircle, ClipboardCheck, CalendarClock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
@@ -13,6 +13,7 @@ import { updateEstoqueConfig } from "../actions";
 type EstoqueConfig = {
   estoqueMinimoPadrao: number;
   produtoParadoDias: number;
+  validadeAlertaDias: number;
   recebimentoExigeContagem: boolean;
 };
 
@@ -27,25 +28,30 @@ export function EstoqueConfigClient({
   const [pending, start] = useTransition();
   const [minimo, setMinimo] = useState(String(initial.estoqueMinimoPadrao));
   const [parado, setParado] = useState(String(initial.produtoParadoDias));
+  const [validade, setValidade] = useState(String(initial.validadeAlertaDias));
   const [contagem, setContagem] = useState(initial.recebimentoExigeContagem);
 
   const dirty =
     Number(minimo) !== initial.estoqueMinimoPadrao ||
     Number(parado) !== initial.produtoParadoDias ||
+    Number(validade) !== initial.validadeAlertaDias ||
     contagem !== initial.recebimentoExigeContagem;
 
   function salvar() {
     const min = Math.max(0, Math.min(9999, Number(minimo) || 0));
     const dias = Math.max(7, Math.min(365, Number(parado) || initial.produtoParadoDias));
+    const vDias = Math.max(1, Math.min(365, Number(validade) || initial.validadeAlertaDias));
     start(async () => {
       try {
         await updateEstoqueConfig({
           estoqueMinimoPadrao: min,
           produtoParadoDias: dias,
+          validadeAlertaDias: vDias,
           recebimentoExigeContagem: contagem,
         });
         setMinimo(String(min));
         setParado(String(dias));
+        setValidade(String(vDias));
         toast.success("Configuração de estoque salva.");
         router.refresh();
       } catch (e) {
@@ -88,6 +94,25 @@ export function EstoqueConfigClient({
             max={365}
             value={parado}
             onChange={(e) => setParado(e.target.value)}
+            inputMode="numeric"
+          />
+        </Field>
+      </SettingCard>
+
+      <SettingCard
+        icon={<CalendarClock size={18} />}
+        iconTone="warn"
+        title="Alerta de validade"
+        description="Com quantos dias de antecedência um lote perto de vencer vira alerta em Estoque → Validade e no painel inicial. Lotes já vencidos alertam sempre."
+      >
+        <Field className="mt-3 max-w-[10rem]" label="Dias de antecedência" htmlFor="validade">
+          <Input
+            id="validade"
+            type="number"
+            min={1}
+            max={365}
+            value={validade}
+            onChange={(e) => setValidade(e.target.value)}
             inputMode="numeric"
           />
         </Field>

@@ -621,26 +621,27 @@ export async function cancelarVenda(
     const { estornarPagamentosDaVenda } = await import("./pagamentos");
     pendenciasEstorno = (await estornarPagamentosDaVenda(tenantId, saleId)).pendencias;
 
-    // Agrega os deltas aplicados pela venda por produto e aplica o inverso.
-    // Reverter ABERTURA (fechado-1, aberto+conteudo) pelo inverso devolve a
-    // garrafa ao fechado — compensação exata sem reconstruir o passo a passo.
+    // Reverte movimento a movimento (não agregado) para devolver cada baixa ao
+    // lote original — assim a validade não se perde no estorno. Reverter ABERTURA
+    // (fechado-1, aberto+conteudo) pelo inverso devolve a garrafa ao fechado.
     const movs = await comTenant(tenantId, basePrisma.stockMovement.findMany({
       where: { saleId, tenantId },
-      select: { productId: true, deltaFechado: true, deltaAberto: true },
+      select: { productId: true, deltaFechado: true, deltaAberto: true, lotId: true },
     }));
-    const agg = new Map<string, { f: number; a: number }>();
     for (const m of movs) {
-      const cur = agg.get(m.productId) ?? { f: 0, a: 0 };
-      cur.f += num(m.deltaFechado);
-      cur.a += num(m.deltaAberto);
-      agg.set(m.productId, cur);
-    }
-    for (const [productId, d] of agg) {
-      if (Math.abs(d.f) < 1e-9 && Math.abs(d.a) < 1e-9) continue;
-      await aplicarMovimento(tenantId, sale.siteId, productId, "AJUSTE", {
-        deltaFechado: -d.f,
-        deltaAberto: -d.a,
-      }, { saleId, observacao: "Estorno de venda", createdBy });
+      const f = num(m.deltaFechado);
+      const a = num(m.deltaAberto);
+      if (Math.abs(f) < 1e-9 && Math.abs(a) < 1e-9) continue;
+      await aplicarMovimento(tenantId, sale.siteId, m.productId, "AJUSTE", {
+        deltaFechado: -f,
+        deltaAberto: -a,
+      }, {
+        saleId,
+        // devolução de fechado (−f > 0) volta ao lote de onde saiu
+        lotId: -f > 0 ? m.lotId ?? undefined : undefined,
+        observacao: "Estorno de venda",
+        createdBy,
+      });
     }
   }
 

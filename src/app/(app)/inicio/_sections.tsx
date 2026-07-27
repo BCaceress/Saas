@@ -32,6 +32,7 @@ import {
   categoriasComparativo,
   situacaoFiscal,
 } from "./_data";
+import { contarVencimentos } from "../estoque/_data";
 import { buildInsights, resumoAssistente, type Insight } from "./_insights";
 import { AssistantPanel } from "./_assistant-panel";
 import { KpiRow } from "./_kpi-row";
@@ -72,6 +73,7 @@ export type DashCtx = {
   pdv: boolean;
   multiSite: boolean;
   paradoDias: number;
+  validadeAlertaDias: number;
 };
 
 // ── Carregadores memoizados ─────────────────────────────────
@@ -80,6 +82,7 @@ const carregarResumo = cache((d: DashCtx) => resumoVendas(d.range, d.siteId));
 const carregarResumoPrev = cache((d: DashCtx) => resumoVendas(d.prevRange, d.siteId));
 const carregarSerie = cache((d: DashCtx) => serieFinanceiraDiaria(d.range, d.siteId));
 const carregarRuptura = cache((d: DashCtx) => ruptura(d.siteId));
+const carregarVencimentos = cache((d: DashCtx) => contarVencimentos(d.siteId, d.validadeAlertaDias));
 const carregarPedidos = cache((d: DashCtx) => pedidosEmAndamento(d.siteId));
 const carregarCrescimento = cache((d: DashCtx) => crescimentoProdutos(d.range, d.prevRange, d.siteId));
 const carregarReposicao = cache((d: DashCtx) => analiseReposicao(d.siteId));
@@ -108,11 +111,12 @@ const rotular = (mix: { metodo: string; valor: number; numVendas: number }[]) =>
  * insights e as leituras de hover dos KPIs.
  */
 const carregarInsights = cache(async (d: DashCtx): Promise<Insight[]> => {
-  const [resumo, resumoPrev, rupturaRows, pedidos, crescimento, mix, mixPrev, serie, historico, categorias, categoriasPrev, reposicao, feedback] =
+  const [resumo, resumoPrev, rupturaRows, vencimentos, pedidos, crescimento, mix, mixPrev, serie, historico, categorias, categoriasPrev, reposicao, feedback] =
     await Promise.all([
       carregarResumo(d),
       carregarResumoPrev(d),
       carregarRuptura(d),
+      carregarVencimentos(d),
       carregarPedidos(d),
       carregarCrescimento(d),
       carregarMix(d),
@@ -129,6 +133,7 @@ const carregarInsights = cache(async (d: DashCtx): Promise<Insight[]> => {
     resumo,
     resumoPrev,
     rupturaRows,
+    vencimentos,
     previsaoRuptura: reposicao.previsaoRuptura,
     pedidos,
     crescimento,
