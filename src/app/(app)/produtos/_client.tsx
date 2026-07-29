@@ -12,6 +12,7 @@ import {
   Download, Rows2, LayoutGrid, FilterX, Percent, BottleWine, Printer,
 } from "lucide-react";
 import { cn, brl, margem } from "@/lib/utils";
+import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { Input, Select } from "@/components/ui/input";
@@ -136,8 +137,10 @@ export function ProdutosClient(props: {
   brandOpts: BrandOpt[];
   initialFornecedorId?: string;
   initialFornecedorNome?: string;
+  /** Estratégia de estoque — define as colunas do importador de CSV. */
+  policy?: EstoquePolicy;
 }) {
-  const { rows, subOpts, brandOpts, initialFornecedorId, initialFornecedorNome } = props;
+  const { rows, subOpts, brandOpts, initialFornecedorId, initialFornecedorNome, policy = POLICY_PADRAO } = props;
   const router = useRouter();
   const searchParams = useSearchParams();
   const [, start] = useTransition();
@@ -788,7 +791,7 @@ export function ProdutosClient(props: {
             ? <SupplierSheet open onClose={() => setSheet(null)} suppliers={extras.supplierRows} />
             : <LoadingSheet title="Fornecedores" onClose={() => setSheet(null)} />
         )}
-        {sheet === "csv" && <CsvSheet open onClose={() => setSheet(null)} />}
+        {sheet === "csv" && <CsvSheet open onClose={() => setSheet(null)} policy={policy} />}
       </div>
 
       {/* ── Barra de ações em lote ── */}

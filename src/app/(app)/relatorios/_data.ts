@@ -1,6 +1,7 @@
 import "server-only";
 import { cache } from "react";
 import { db } from "@/lib/prisma";
+import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 
 /**
  * Camada de dados dos relatórios (PRD Fase 7 §4/§5). Tudo é LEITURA agregada
@@ -357,7 +358,15 @@ export type RupturaRow = {
   deficit: number;
 };
 
-export async function ruptura(siteId: SiteFilter): Promise<RupturaRow[]> {
+/**
+ * Ruptura conforme a estratégia da empresa:
+ *  · MINIMO/MINIMO_IDEAL → saldo abaixo do mínimo (déficit até o alvo);
+ *  · ROTATIVIDADE        → sem meta fixa, então ruptura é saldo zerado.
+ */
+export async function ruptura(
+  siteId: SiteFilter,
+  policy: EstoquePolicy = POLICY_PADRAO,
+): Promise<RupturaRow[]> {
   const stocks = await db.stock.findMany({
     where: siteId ? { siteId } : {},
     select: {
@@ -370,17 +379,27 @@ export async function ruptura(siteId: SiteFilter): Promise<RupturaRow[]> {
     },
   });
   return stocks
-    .filter((s) => n(s.estoqueFechado) < n(s.estoqueMinimo))
-    .map((s) => ({
-      productId: s.productId,
-      nome: s.product.nome,
-      sku: s.product.sku,
-      siteNome: s.site?.nome ?? "—",
-      estoqueFechado: n(s.estoqueFechado),
-      estoqueMinimo: n(s.estoqueMinimo),
-      estoqueIdeal: n(s.estoqueIdeal),
-      deficit: n(s.estoqueIdeal) - n(s.estoqueFechado),
-    }))
+    .filter((s) =>
+      policy.usaGiro ? n(s.estoqueFechado) <= 0 : n(s.estoqueFechado) < n(s.estoqueMinimo),
+    )
+    .map((s) => {
+      const fechado = n(s.estoqueFechado);
+      const alvo = policy.usaGiro
+        ? 0
+        : policy.usaIdeal
+          ? n(s.estoqueIdeal)
+          : n(s.estoqueMinimo);
+      return {
+        productId: s.productId,
+        nome: s.product.nome,
+        sku: s.product.sku,
+        siteNome: s.site?.nome ?? "—",
+        estoqueFechado: fechado,
+        estoqueMinimo: n(s.estoqueMinimo),
+        estoqueIdeal: n(s.estoqueIdeal),
+        deficit: Math.max(0, alvo - fechado),
+      };
+    })
     .sort((a, b) => b.deficit - a.deficit);
 }
 
@@ -436,7 +455,10 @@ export type PosicaoEstoqueRow = {
   abaixoMinimo: boolean;
 };
 
-export async function posicaoEstoque(siteId: SiteFilter): Promise<PosicaoEstoqueRow[]> {
+export async function posicaoEstoque(
+  siteId: SiteFilter,
+  policy: EstoquePolicy = POLICY_PADRAO,
+): Promise<PosicaoEstoqueRow[]> {
   const stocks = await db.stock.findMany({
     where: siteId ? { siteId } : {},
     select: {
@@ -462,7 +484,9 @@ export async function posicaoEstoque(siteId: SiteFilter): Promise<PosicaoEstoque
       estoqueAberto: n(s.estoqueAberto),
       custoMedio: cm,
       valorEstoque: cm != null ? Math.round((n(s.estoqueFechado) + abertas) * cm * 100) / 100 : 0,
-      abaixoMinimo: n(s.estoqueFechado) < n(s.estoqueMinimo),
+      // Quem controla por giro não tem mínimo — o marcador some em vez de
+      // apontar uma meta que a empresa deixou de usar.
+      abaixoMinimo: policy.usaMinimo && n(s.estoqueFechado) < n(s.estoqueMinimo),
     };
   });
 }

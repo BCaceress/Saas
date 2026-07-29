@@ -63,10 +63,12 @@ export default async function PlanoPage() {
   const limites = limitesDe(tenant);
 
   const [sites, produtos, usuarios, totens, assinatura] = await Promise.all([
-    withTenant(ctx, () => db.site.count()),
-    withTenant(ctx, () => db.product.count({ where: { ativo: true } })),
+    // `await` DENTRO do withTenant de propósito: PrismaPromise é lazy — sem o
+    // await aqui a query só executaria depois que o contexto async já fechou.
+    withTenant(ctx, async () => await db.site.count()),
+    withTenant(ctx, async () => await db.product.count({ where: { ativo: true } })),
     basePrisma.membership.count({ where: { tenantId: tenant.id, ativo: true } }),
-    withTenant(ctx, () => db.totemDevice.count()),
+    withTenant(ctx, async () => await db.totemDevice.count()),
     assinaturaDoTenant(tenant.id),
   ]);
 

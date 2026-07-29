@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
+import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { ProductForm } from "../../_form/product-form";
 import { ComboForm } from "../../_form/combo-form";
 import { ReceitaForm } from "../../_form/receita-form";
@@ -22,25 +23,30 @@ export default async function EditarProdutoPage({
   const ctx = await requireActiveTenant();
 
   const data = await runWithTenant(ctx.tenant.id, async () => {
-    const p = await db.product.findFirst({
-      where: { id },
-      include: {
-        brand: true,
-        subcategory: { include: { category: true } },
-        stocks: true,
-        components: { where: { groupId: null } },
-        componentGroups: {
-          orderBy: { ordem: "asc" },
-          include: { components: true },
+    // Independentes — o produto em si e as opções do formulário (marcas,
+    // categorias, fornecedores…) não dependem uma da outra. Rodar junto
+    // corta o round-trip da segunda pela metade do tempo, não soma.
+    const [p, opts] = await Promise.all([
+      db.product.findFirst({
+        where: { id },
+        include: {
+          brand: true,
+          subcategory: { include: { category: true } },
+          stocks: true,
+          components: { where: { groupId: null } },
+          componentGroups: {
+            orderBy: { ordem: "asc" },
+            include: { components: true },
+          },
+          variants: { orderBy: { fatorEscala: "asc" } },
+          salesChannels: true,
+          suppliers: { include: { supplier: true } },
+          packagings: { orderBy: { isCompraDefault: "desc" } },
         },
-        variants: { orderBy: { fatorEscala: "asc" } },
-        salesChannels: true,
-        suppliers: { include: { supplier: true } },
-        packagings: { orderBy: { isCompraDefault: "desc" } },
-      },
-    });
+      }),
+      loadProductFormOptions(),
+    ]);
     if (!p) return null;
-    const opts = await loadProductFormOptions();
 
     const salesChannels = p.salesChannels.map((sc) => ({
       canal: sc.canal,
@@ -151,9 +157,16 @@ export default async function EditarProdutoPage({
       ativo: p.ativo,
       restricaoIdade: p.restricaoIdade,
       unidadeBase: p.unidadeBase,
+      vendaUnidade: p.vendaUnidade,
       fracionavel: p.fracionavel,
       conteudoPorUnidade: dec(p.conteudoPorUnidade),
+      dosePadrao: dec(p.dosePadrao),
       vendeOnline: p.vendeOnline,
+      pesoGramas: p.pesoGramas,
+      alturaCm: dec(p.alturaCm),
+      larguraCm: dec(p.larguraCm),
+      comprimentoCm: dec(p.comprimentoCm),
+      descricaoOnline: p.descricaoOnline,
       fiscalProfileId: p.fiscalProfileId,
       gtinTributavel: p.gtinTributavel,
       unidadeTributavel: p.unidadeTributavel,
@@ -221,6 +234,7 @@ export default async function EditarProdutoPage({
       storage={data.opts.storageOpts}
       suppliers={data.opts.supplierRows}
       fiscalProfiles={data.opts.fiscalOpts}
+      policy={policyDoTenant(ctx.tenant)}
     />
   );
 }

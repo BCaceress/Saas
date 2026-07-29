@@ -6,6 +6,7 @@ import { guardAction } from "@/lib/guard";
 import { getActiveSiteId } from "@/lib/sites";
 import { resolvePeriodo, fmtDataCompleta } from "@/lib/periodo";
 import { completeJson, llmConfigured } from "@/lib/llm";
+import { policyDoTenant } from "@/lib/estoque-estrategia";
 import type { Range } from "../_data";
 import { consultaSchema, FONTES, type Consulta, type ResultadoIA } from "./_schema";
 import { resolverConsulta } from "./_resolver";
@@ -92,7 +93,9 @@ export async function perguntarIA(pergunta: string): Promise<ResultadoIA | { err
   const range: Range = { inicio: periodo.inicio, fim: periodo.fim };
 
   // 3. Executa dentro do tenant.
-  const resolvido = await withTenant(ctx, async () => resolverConsulta(consulta, range, await getActiveSiteId()));
+  const resolvido = await withTenant(ctx, async () =>
+    resolverConsulta(consulta, range, await getActiveSiteId(), policyDoTenant(ctx.tenant)),
+  );
 
   // 4. IA resume os números reais (cap de linhas p/ não estourar tokens).
   let insight = "";

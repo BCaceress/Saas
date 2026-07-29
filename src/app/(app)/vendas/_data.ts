@@ -55,7 +55,15 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
     : ({ select: { estoqueFechado: true, estoqueAberto: true } } as const);
 
   const products = await db.product.findMany({
-    where: { ativo: true, tipo: { in: ["SIMPLES", "COMBO", "PERSONALIZADO"] } },
+    // SIMPLES só entra no caixa quando vende a unidade fechada — quem existe
+    // apenas para render dose em drink/receita fica de fora.
+    where: {
+      ativo: true,
+      OR: [
+        { tipo: { in: ["COMBO", "PERSONALIZADO"] } },
+        { tipo: "SIMPLES", vendaUnidade: true },
+      ],
+    },
     select: {
       id: true,
       nome: true,

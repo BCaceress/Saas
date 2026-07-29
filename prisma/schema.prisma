@@ -78,6 +78,15 @@ enum ControleEstoquePdv {
   IGNORAR   // vende sem validar saldo
 }
 
+/// Como a empresa decide o que precisa ser comprado. Escolhida no onboarding e
+/// trocável em Configurações → Estoque. Nunca apaga dado: alternar a estratégia
+/// só muda o que aparece na interface e como a sugestão de compra é calculada.
+enum TipoControleEstoque {
+  MINIMO       // só estoque mínimo — repõe ao atingir o piso
+  MINIMO_IDEAL // mínimo + ideal (padrão histórico do NoHub)
+  ROTATIVIDADE // sem metas fixas: média diária de venda × dias de cobertura
+}
+
 enum Topologia {
   LOCAL
   CD_ABASTECE
@@ -146,6 +155,14 @@ model Tenant {
   tierDiamanteMin Int @default(5000)
 
   // Estoque (Configurações → Estoque e alertas)
+  /// Estratégia de controle. Default MINIMO_IDEAL = comportamento de sempre,
+  /// então tenant antigo não muda de funcionamento ao migrar.
+  tipoControleEstoque TipoControleEstoque @default(MINIMO_IDEAL)
+  /// Janela de histórico usada para a média diária de venda (15/30/60/90).
+  periodoMediaDias    Int @default(30)
+  /// Dias de venda que a compra deve cobrir no modo ROTATIVIDADE (7/14/21/30).
+  diasCobertura       Int @default(7)
+
   estoqueMinimoPadrao Int @default(0) // pré-preenche o mínimo ao cadastrar produto
   produtoParadoDias   Int @default(45) // dias sem movimentação → alerta "parado"
   validadeAlertaDias  Int @default(30) // dias de antecedência do alerta "vencendo"
@@ -777,9 +794,16 @@ model Product {
   subcategoryId String?
   imagemUrl     String?
 
+  // Utilização do produto — as duas formas convivem (não são excludentes):
+  //   vendaUnidade = vende a unidade fechada no PDV;
+  //   fracionavel  = pode ser consumido parcialmente em drinks/receitas.
+  // Ex.: Vodka 1L vende no caixa E rende doses de 50 ml.
   unidadeBase        BaseUnit @default(UN)
+  vendaUnidade       Boolean  @default(true)
   fracionavel        Boolean  @default(false)
   conteudoPorUnidade Decimal? @db.Decimal(10, 2)
+  // Dose sugerida ao adicionar o produto numa receita (na unidadeBase).
+  dosePadrao         Decimal? @db.Decimal(10, 2)
 
   precoVenda Decimal? @db.Decimal(10, 2)
   custo      Decimal? @db.Decimal(10, 2)

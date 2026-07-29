@@ -8,6 +8,7 @@ import type {
   SubcategoryOpt,
   StorageOpt,
   SupplierRow,
+  SupplierPickerOpt,
   FiscalOpt,
   ComponentCandidate,
   ProductRow,
@@ -75,9 +76,16 @@ export function toProductRow(p: ProductWithRelations): ProductRow {
     ativo: p.ativo,
     restricaoIdade: p.restricaoIdade,
     unidadeBase: p.unidadeBase,
+    vendaUnidade: p.vendaUnidade,
     fracionavel: p.fracionavel,
     conteudoPorUnidade: dec(p.conteudoPorUnidade),
+    dosePadrao: dec(p.dosePadrao),
     vendeOnline: p.vendeOnline,
+    pesoGramas: p.pesoGramas,
+    alturaCm: dec(p.alturaCm),
+    larguraCm: dec(p.larguraCm),
+    comprimentoCm: dec(p.comprimentoCm),
+    descricaoOnline: p.descricaoOnline,
     fiscalProfileId: p.fiscalProfileId,
     gtinTributavel: p.gtinTributavel,
     unidadeTributavel: p.unidadeTributavel,
@@ -201,7 +209,7 @@ export type ProductFormOptions = {
   categoryOpts: CategoryOpt[];
   subOpts: SubcategoryOpt[];
   storageOpts: StorageOpt[];
-  supplierRows: SupplierRow[];
+  supplierRows: SupplierPickerOpt[];
   fiscalOpts: FiscalOpt[];
 };
 
@@ -221,7 +229,11 @@ export async function loadProductFormOptions(): Promise<ProductFormOptions> {
       orderBy: { nome: "asc" },
       include: { site: { select: { nome: true } } },
     }),
-    db.supplier.findMany({ where: { ativo: true }, orderBy: { razaoSocial: "asc" } }),
+    db.supplier.findMany({
+      where: { ativo: true },
+      orderBy: { razaoSocial: "asc" },
+      select: { id: true, razaoSocial: true, nomeFantasia: true },
+    }),
     db.fiscalProfile.findMany({ orderBy: { nome: "asc" } }),
   ]);
 
@@ -251,24 +263,8 @@ export async function loadProductFormOptions(): Promise<ProductFormOptions> {
     })),
     supplierRows: suppliers.map((s) => ({
       id: s.id,
-      cnpj: s.cnpj,
       razaoSocial: s.razaoSocial,
       nomeFantasia: s.nomeFantasia,
-      email: s.email,
-      telefone: s.telefone,
-      nomeContatoPrincipal: s.nomeContatoPrincipal,
-      website: s.website,
-      cep: s.cep,
-      logradouro: s.logradouro,
-      numero: s.numero,
-      complemento: s.complemento,
-      bairro: s.bairro,
-      municipio: s.municipio,
-      codigoMunicipio: s.codigoMunicipio,
-      uf: s.uf,
-      ie: s.ie,
-      indicadorIE: s.indicadorIE,
-      ativo: s.ativo,
     })),
     fiscalOpts: fiscalProfiles.map((f) => ({
       id: f.id,
@@ -303,6 +299,7 @@ export async function loadComponentCandidates(): Promise<ComponentCandidate[]> {
     unidadeBase: p.unidadeBase,
     fracionavel: p.fracionavel,
     conteudoPorUnidade: dec(p.conteudoPorUnidade),
+    dosePadrao: dec(p.dosePadrao),
     restricaoIdade: p.restricaoIdade,
     estoqueFechado: p.stocks.reduce((s, st) => s + Number(st.estoqueFechado), 0),
     estoqueAberto: p.stocks.reduce((s, st) => s + Number(st.estoqueAberto), 0),

@@ -1,6 +1,7 @@
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
+import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { PRODUCT_INCLUDE, toProductRow } from "./_data";
 import { ProdutosClient } from "./_client";
 import type { ProductRow, BrandOpt, SubcategoryFilterOpt } from "./_types";
@@ -53,6 +54,7 @@ export default async function ProdutosPage({
       {...data}
       initialFornecedorId={sp.fornecedorId}
       initialFornecedorNome={sp.fornecedorNome}
+      policy={policyDoTenant(ctx.tenant)}
     />
   );
 }

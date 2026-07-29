@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CircleAlert, PackageCheck, PartyPopper, TriangleAlert } from "lucide-react";
+import { CircleAlert, Hourglass, PackageCheck, PartyPopper, TriangleAlert } from "lucide-react";
 import { toast } from "@/components/ui/toast";
+import { MSG_APRENDIZADO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import type { GrupoReposicao } from "../_data";
 import { criarPedidosReposicaoAction } from "../actions";
 import { SolicitarSheet, type GrupoEnvio } from "../_solicitar";
@@ -13,6 +14,7 @@ import {
   agruparPorFornecedor,
   fornecedorEfetivo,
   ordenarLinhas,
+  PolicyContext,
   type Linha,
   type Sel,
 } from "./_shared";
@@ -32,10 +34,15 @@ const hojeMais = (dias: number) => new Date(Date.now() + dias * 864e5).toISOStri
 
 export function ReposicaoInteligenteClient({
   grupos,
+  policy,
+  aprendendo,
   siteId,
   empresa,
 }: {
   grupos: GrupoReposicao[];
+  policy: EstoquePolicy;
+  /** Rotatividade sem histórico suficiente — avisa, não bloqueia. */
+  aprendendo: boolean;
   siteId: string | null;
   empresa: string;
 }) {
@@ -217,12 +224,19 @@ export function ReposicaoInteligenteClient({
 
   if (linhas.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-line bg-surface py-16 text-center">
-        <PartyPopper size={32} className="text-ok" />
-        <p className="text-sm font-semibold text-ink">Estoque em dia — nada para repor.</p>
-        <p className="max-w-sm text-xs text-muted">
-          Quando um produto ficar abaixo do mínimo, do ideal, ou o ritmo de venda indicar que o estoque vai acabar, a sugestão aparece aqui.
-        </p>
+      <div className="flex flex-col gap-4">
+        {aprendendo && <AvisoAprendizado />}
+        <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-line bg-surface py-16 text-center">
+          <PartyPopper size={32} className="text-ok" />
+          <p className="text-sm font-semibold text-ink">Estoque em dia — nada para repor.</p>
+          <p className="max-w-sm text-xs text-muted">
+            {policy.usaGiro
+              ? `Quando o ritmo de venda indicar que o estoque não cobre os próximos ${policy.diasCobertura} dias, a sugestão aparece aqui.`
+              : policy.usaIdeal
+                ? "Quando um produto ficar abaixo do mínimo, do ideal, ou o ritmo de venda indicar que o estoque vai acabar, a sugestão aparece aqui."
+                : "Quando um produto atingir o estoque mínimo, ou o ritmo de venda indicar que o estoque vai acabar, a sugestão aparece aqui."}
+          </p>
+        </div>
       </div>
     );
   }
@@ -232,7 +246,9 @@ export function ReposicaoInteligenteClient({
   const nadaFiltrado = agora.length === 0 && breve.length === 0 && (busca !== "" || fornecedorFiltro !== null);
 
   return (
+   <PolicyContext.Provider value={policy}>
     <div className="flex flex-col gap-5">
+      {aprendendo && <AvisoAprendizado />}
       <ReplenishmentSummary
         sugeridos={ativas.length}
         urgentes={ativas.filter((l) => l.status === "ruptura" || l.status === "critico").length}
@@ -287,7 +303,13 @@ export function ReposicaoInteligenteClient({
           {breve.length > 0 && (
             <PriorityGroup
               titulo="Comprar em breve"
-              descricao="Abaixo do ideal, ainda sem risco imediato."
+              descricao={
+                policy.usaGiro
+                  ? `Cobertura abaixo dos ${policy.diasCobertura} dias desejados, ainda sem risco imediato.`
+                  : policy.usaIdeal
+                    ? "Abaixo do ideal, ainda sem risco imediato."
+                    : "Chegando no mínimo, ainda sem risco imediato."
+              }
               tom="warn"
               icon={CircleAlert}
               count={breve.length}
@@ -378,6 +400,23 @@ export function ReposicaoInteligenteClient({
 
       {/* Drawer: histórico de compras do produto */}
       <HistoricoDrawer item={historico} onClose={() => setHistorico(null)} />
+    </div>
+   </PolicyContext.Provider>
+  );
+}
+
+/** Rotatividade recém-ligada: a conta existe, só ainda não tem lastro. */
+function AvisoAprendizado() {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-line bg-surface-2/60 px-4 py-3">
+      <Hourglass size={16} className="mt-0.5 shrink-0 text-brand" />
+      <div>
+        <p className="text-sm font-medium text-ink">Ainda aprendendo o seu giro</p>
+        <p className="mt-0.5 text-xs text-muted">
+          {MSG_APRENDIZADO} Até lá, as sugestões abaixo usam o pouco histórico já
+          registrado — confira as quantidades antes de aprovar.
+        </p>
+      </div>
     </div>
   );
 }

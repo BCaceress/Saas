@@ -3,6 +3,7 @@ import { basePrisma } from "@/lib/prisma";
 import type { Prisma } from "@/generated/prisma";
 import { Decimal } from "@/generated/prisma/runtime/library";
 import type { TipoItemPedido, MotivoBonificacao } from "@/lib/estoque";
+import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 
 const n = (v: Decimal | null | undefined) => (v == null ? 0 : Number(v));
 
@@ -30,6 +31,10 @@ export type SaldoRow = {
   consumoHoje: number;
   consumo7: number;
   consumo30: number;
+  /** Vendido na janela configurada pela empresa (modo rotatividade). */
+  consumoJanela: number;
+  /** Tamanho da janela usada em `consumoJanela`. */
+  janelaDias: number;
   ultimaMovTipo: string | null; // tipo da última movimentação
   ultimaMovEm: string | null;   // ISO
   ultimaCompraEm: string | null;
@@ -89,7 +94,10 @@ export type ReposicaoRow = {
 
 // ── Saldos ──────────────────────────────────────────────────
 
-export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
+export async function loadSaldos(
+  siteId: string | null,
+  policy: EstoquePolicy = POLICY_PADRAO,
+): Promise<SaldoRow[]> {
   // Produtos com controlaEstoque=false (ex.: insumo sem meta) também entram —
   // aparecem na lista como informativo (qtd comprada), sem status/meta (§ EstoqueCell).
   const where = { ...(siteId ? { siteId } : {}) };
@@ -117,6 +125,11 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
   const abertoIds = stocks.filter((s) => n(s.estoqueAberto) > 0).map((s) => s.productId);
   const productIds = stocks.map((s) => s.productId);
   const now = Date.now();
+  // Rotatividade lê a janela configurada pela empresa; as outras estratégias
+  // mantêm os 30 dias de sempre. Buscamos o maior intervalo dos dois.
+  const janelaDias = policy.usaGiro ? policy.periodoMediaDias : 30;
+  const dJanelaBusca = new Date(now - Math.max(30, janelaDias) * 864e5);
+  const dJanela = new Date(now - janelaDias * 864e5);
   const d30 = new Date(now - 30 * 864e5);
   const d7 = new Date(now - 7 * 864e5);
   const startToday = new Date();
@@ -141,7 +154,7 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
     // Consumo: saídas (vendas) por janela — un fechadas.
     productIds.length > 0
       ? db.stockMovement.findMany({
-          where: { productId: { in: productIds }, tipo: "SAIDA", createdAt: { gte: d30 }, ...(siteId ? { siteId } : {}) },
+          where: { productId: { in: productIds }, tipo: "SAIDA", createdAt: { gte: dJanelaBusca }, ...(siteId ? { siteId } : {}) },
           select: { productId: true, deltaFechado: true, deltaAberto: true, createdAt: true },
         })
       : Promise.resolve([]),
@@ -187,12 +200,13 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
     if (a._max.createdAt) aberturaMap.set(a.productId, a._max.createdAt);
   }
 
-  const consumoMap = new Map<string, { hoje: number; d7: number; d30: number }>();
+  const consumoMap = new Map<string, { hoje: number; d7: number; d30: number; janela: number }>();
   for (const v of vendas) {
     const q = Math.abs(n(v.deltaFechado)) || Math.abs(n(v.deltaAberto));
     if (q <= 0) continue;
-    const c = consumoMap.get(v.productId) ?? { hoje: 0, d7: 0, d30: 0 };
-    c.d30 += q;
+    const c = consumoMap.get(v.productId) ?? { hoje: 0, d7: 0, d30: 0, janela: 0 };
+    if (v.createdAt >= d30) c.d30 += q;
+    if (v.createdAt >= dJanela) c.janela += q;
     if (v.createdAt >= d7) c.d7 += q;
     if (v.createdAt >= startToday) c.hoje += q;
     consumoMap.set(v.productId, c);
@@ -272,12 +286,14 @@ export async function loadSaldos(siteId: string | null): Promise<SaldoRow[]> {
       estoqueIdeal: n(s.estoqueIdeal),
       controlaEstoque: s.product.controlaEstoque,
       custoMedio: s.product.custoMedio ? n(s.product.custoMedio) : null,
-      abaixoMinimo: ef < n(s.estoqueMinimo),
+      abaixoMinimo: policy.usaMinimo && ef < n(s.estoqueMinimo),
       percentAberta: pct,
       abertaEm: aberturaMap.get(s.productId)?.toISOString() ?? null,
       consumoHoje: consumoMap.get(s.productId)?.hoje ?? 0,
       consumo7: consumoMap.get(s.productId)?.d7 ?? 0,
       consumo30: consumoMap.get(s.productId)?.d30 ?? 0,
+      consumoJanela: consumoMap.get(s.productId)?.janela ?? 0,
+      janelaDias,
       ultimaMovTipo: lastMap.get(s.productId)?.tipo ?? null,
       ultimaMovEm: lastMap.get(s.productId)?.at.toISOString() ?? null,
       ultimaCompraEm: lastCompra.get(s.productId)?.toISOString() ?? null,

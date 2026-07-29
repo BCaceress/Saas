@@ -3,6 +3,7 @@ import { DollarSign, TrendingUp, ShoppingCart, AlertTriangle } from "lucide-reac
 import { KpiCard } from "@/components/charts/kpi-card";
 import { variacao } from "@/lib/periodo";
 import { brl } from "@/lib/utils";
+import type { EstoquePolicy } from "@/lib/estoque-estrategia";
 import type { ResumoVendas, PontoFinanceiro } from "../relatorios/_data";
 import type { RitmoPedidos } from "./_data";
 
@@ -26,6 +27,7 @@ export function KpiRow({
   totalItens,
   pedidosAndamentoCount,
   ritmo,
+  policy,
   hintFaturamento,
   hintPedido,
 }: {
@@ -36,6 +38,8 @@ export function KpiRow({
   totalItens: number;
   pedidosAndamentoCount: number;
   ritmo: RitmoPedidos;
+  /** Estratégia de estoque — muda o rótulo do KPI de ruptura. */
+  policy: EstoquePolicy;
   // ReactNode e não string: as leituras da IA dependem dos insights (a análise
   // mais cara da tela) e chegam por streaming, depois dos números.
   hintFaturamento?: ReactNode;
@@ -90,12 +94,22 @@ export function KpiRow({
       </div>
       <div className={item}>
         <KpiCard
-          label="Produtos em ruptura"
+          label={policy.usaGiro ? "Produtos sem estoque" : "Produtos em ruptura"}
           value={String(rupturaCount)}
-          hint={totalItens > 0 ? `${pctRuptura}% do estoque monitorado` : "abaixo do mínimo"}
+          hint={
+            totalItens > 0
+              ? `${pctRuptura}% do estoque monitorado`
+              : policy.usaGiro
+                ? "sem saldo"
+                : "abaixo do mínimo"
+          }
           goodWhen="down"
-          href="/estoque?filtro=baixoMinimo"
-          tooltip="Produtos com saldo abaixo do estoque mínimo, agora."
+          href={policy.usaGiro ? "/estoque?filtro=sem" : "/estoque?filtro=baixoMinimo"}
+          tooltip={
+            policy.usaGiro
+              ? "Produtos com saldo zerado, agora."
+              : "Produtos com saldo abaixo do estoque mínimo, agora."
+          }
           icon={AlertTriangle}
           tone={rupturaCount > 0 ? "danger" : "ok"}
           // Ruptura não é série no tempo — é uma parte do estoque monitorado.

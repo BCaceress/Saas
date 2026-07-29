@@ -16,20 +16,19 @@ export default async function LoginPage({
       {/* Quem acabou de redefinir a senha chega aqui: confirma o que aconteceu
           antes de pedir que digite de novo. */}
       {senha === "alterada" && (
-        <p className="mb-6 flex items-start gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+        <p className="mb-6 flex items-start gap-2 rounded-2xl bg-[var(--auth-ok-soft)] px-4 py-3 text-sm text-[var(--auth-ok)]">
           <CheckCircle2 size={16} className="mt-0.5 shrink-0" aria-hidden />
           Senha alterada. Entre com a nova senha.
         </p>
       )}
-      <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--auth-brand)]">
+
+      <h1 className="text-center font-display text-[29px] font-semibold leading-tight tracking-tight text-[var(--auth-ink)]">
         Bem-vindo de volta
-      </p>
-      <h1 className="font-display text-[26px] font-bold leading-tight text-[var(--auth-ink)]">
-        Entrar na sua conta
       </h1>
-      <p className="mt-1.5 mb-7 text-sm text-[var(--auth-muted)]">
-        Acesse o painel do seu mercado pra continuar de onde parou.
+      <p className="mb-8 mt-2.5 text-center text-sm text-[var(--auth-muted)]">
+        Entre na sua conta para continuar sua operação.
       </p>
+
       <AuthForm mode="login" action={loginAction} googleAction={googleLoginAction} />
     </div>
   );

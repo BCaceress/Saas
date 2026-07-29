@@ -1,6 +1,7 @@
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { resolvePeriodo } from "@/lib/periodo";
+import { policyDoTenant, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import {
   rankingProdutos,
   posicaoEstoque,
@@ -35,7 +36,12 @@ function csv(cabecalho: string[], linhas: Linha[]): string {
   return "﻿" + corpo; // BOM
 }
 
-async function montar(tipo: string, range: Range, siteId: string | null): Promise<{ cabecalho: string[]; linhas: Linha[] } | null> {
+async function montar(
+  tipo: string,
+  range: Range,
+  siteId: string | null,
+  policy: EstoquePolicy,
+): Promise<{ cabecalho: string[]; linhas: Linha[] } | null> {
   switch (tipo) {
     case "vendas": {
       const r = await rankingProdutos(range, siteId);
@@ -46,8 +52,16 @@ async function montar(tipo: string, range: Range, siteId: string | null): Promis
       return { cabecalho: ["Produto", "SKU", "Receita", "CMV", "Margem", "Margem %"], linhas: r.map((p) => [p.nome, p.sku, p.receita, p.custo, p.margem, Math.round(p.margemPct)]) };
     }
     case "estoque": {
-      const r = await posicaoEstoque(siteId);
-      return { cabecalho: ["Produto", "SKU", "Site", "Fechado", "Aberto", "Custo medio", "Valor", "Abaixo minimo"], linhas: r.map((p) => [p.nome, p.sku, p.siteNome, p.estoqueFechado, p.estoqueAberto, p.custoMedio ?? 0, p.valorEstoque, p.abaixoMinimo ? "sim" : "nao"]) };
+      // Quem controla por giro não tem mínimo: a coluna de meta some do CSV.
+      const r = await posicaoEstoque(siteId, policy);
+      const base = ["Produto", "SKU", "Site", "Fechado", "Aberto", "Custo medio", "Valor"];
+      return {
+        cabecalho: policy.usaMinimo ? [...base, "Abaixo minimo"] : base,
+        linhas: r.map((p) => [
+          p.nome, p.sku, p.siteNome, p.estoqueFechado, p.estoqueAberto, p.custoMedio ?? 0, p.valorEstoque,
+          ...(policy.usaMinimo ? [p.abaixoMinimo ? "sim" : "nao"] : []),
+        ]),
+      };
     }
     case "perdas": {
       const r = await perdas(range, siteId);
@@ -85,7 +99,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ tipo: st
   });
   const range: Range = { inicio: periodo.inicio, fim: periodo.fim };
 
-  const resultado = await withTenant(ctx, async () => montar(tipo, range, await getActiveSiteId()));
+  const policy = policyDoTenant(ctx.tenant);
+  const resultado = await withTenant(ctx, async () => montar(tipo, range, await getActiveSiteId(), policy));
   if (!resultado) return new Response("Relatório não exportável.", { status: 404 });
 
   const conteudo = csv(resultado.cabecalho, resultado.linhas);

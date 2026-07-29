@@ -1,4 +1,16 @@
+"use client";
+
+import { createContext, useContext } from "react";
+import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import type { GrupoReposicao, SugestaoRow } from "../_data";
+
+/**
+ * Estratégia de controle da empresa. Vive em contexto porque quase todo
+ * componente da árvore (card, grupo, explicação) muda de rótulo com ela —
+ * empurrar por prop atravessaria cinco níveis sem ganho nenhum.
+ */
+export const PolicyContext = createContext<EstoquePolicy>(POLICY_PADRAO);
+export const usePolicy = () => useContext(PolicyContext);
 
 // ── Tipos e helpers compartilhados da Reposição inteligente ───
 // A tela trabalha com uma lista plana de linhas (produto + fornecedor

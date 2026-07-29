@@ -18,13 +18,15 @@ export default async function CadastroPage({
 
   return (
     <div>
-      <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--auth-brand)]">
-        {doConvite ? "Convite de equipe" : "Comece agora"}
-      </p>
-      <h1 className="font-display text-[26px] font-bold leading-tight text-[var(--auth-ink)]">
-        {doConvite ? "Criar sua conta" : "Criar conta"}
+      {doConvite && (
+        <p className="mb-3 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--auth-brand-text)]">
+          Convite de equipe
+        </p>
+      )}
+      <h1 className="text-center font-display text-[27px] font-semibold leading-tight tracking-tight text-[var(--auth-ink)]">
+        Criar sua conta
       </h1>
-      <p className="mt-1.5 mb-7 text-sm text-[var(--auth-muted)]">
+      <p className="mb-7 mt-2 text-center text-sm text-[var(--auth-muted)]">
         {doConvite
           ? `Ao concluir, você entra na equipe de ${doConvite.tenantNome}.`
           : "14 dias grátis, sem cartão. Só o essencial agora — o resto vem no setup."}

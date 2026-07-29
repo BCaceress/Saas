@@ -5,6 +5,12 @@ import { withTenant, type ActiveTenant } from "@/lib/current-tenant";
 import { db } from "@/lib/prisma";
 import { listSites } from "@/lib/sites";
 import { featureAtiva } from "@/lib/planos";
+import {
+  MSG_APRENDIZADO,
+  NIVEL_COBERTURA_LABEL,
+  fmtCobertura,
+  type EstoquePolicy,
+} from "@/lib/estoque-estrategia";
 import { brl } from "@/lib/utils";
 import { BarList } from "@/components/charts/bar-list";
 import { ChartCard } from "@/components/charts/chart-card";
@@ -74,6 +80,8 @@ export type DashCtx = {
   multiSite: boolean;
   paradoDias: number;
   validadeAlertaDias: number;
+  /** Estratégia de controle de estoque — troca indicadores de meta por giro. */
+  policy: EstoquePolicy;
 };
 
 // ── Carregadores memoizados ─────────────────────────────────
@@ -81,11 +89,11 @@ export type DashCtx = {
 const carregarResumo = cache((d: DashCtx) => resumoVendas(d.range, d.siteId));
 const carregarResumoPrev = cache((d: DashCtx) => resumoVendas(d.prevRange, d.siteId));
 const carregarSerie = cache((d: DashCtx) => serieFinanceiraDiaria(d.range, d.siteId));
-const carregarRuptura = cache((d: DashCtx) => ruptura(d.siteId));
+const carregarRuptura = cache((d: DashCtx) => ruptura(d.siteId, d.policy));
 const carregarVencimentos = cache((d: DashCtx) => contarVencimentos(d.siteId, d.validadeAlertaDias));
 const carregarPedidos = cache((d: DashCtx) => pedidosEmAndamento(d.siteId));
 const carregarCrescimento = cache((d: DashCtx) => crescimentoProdutos(d.range, d.prevRange, d.siteId));
-const carregarReposicao = cache((d: DashCtx) => analiseReposicao(d.siteId));
+const carregarReposicao = cache((d: DashCtx) => analiseReposicao(d.siteId, d.policy));
 const carregarRitmo = cache((d: DashCtx) => ritmoPedidos(d.range, d.prevRange, d.siteId));
 const carregarTotalItens = cache((d: DashCtx) => totalItensEstoque(d.siteId));
 const carregarHistorico = cache((d: DashCtx) => historicoDiario(d.prevRange, d.siteId));
@@ -216,6 +224,7 @@ export async function KpiSection({ d }: { d: DashCtx }) {
       totalItens={totalItens}
       pedidosAndamentoCount={pedidos.length}
       ritmo={ritmo}
+      policy={d.policy}
       // As leituras da IA dependem da análise completa; entram depois, sozinhas,
       // sem segurar os números. Só aparecem no hover/foco de qualquer forma.
       hintFaturamento={<IaHintSlot d={d} id="faturamento" />}
@@ -250,11 +259,46 @@ async function Tendencia({ d }: { d: DashCtx }) {
 /** Sem PDV não existe mix de pagamento — o espaço vira a lista de ruptura. */
 async function MixOuRuptura({ d }: { d: DashCtx }) {
   if (!d.pdv) {
+    // Rotatividade não tem "abaixo do mínimo": o que importa é quantos dias de
+    // venda o saldo ainda cobre.
+    if (d.policy.usaGiro) {
+      const reposicao = await dentro(d, () => carregarReposicao(d));
+      return (
+        <ChartCard
+          title="Cobertura baixa"
+          subtitle={`Abaixo dos ${d.policy.diasCobertura} dias desejados`}
+          action={
+            <Link href="/estoque?filtro=baixaCobertura" className="text-xs font-medium text-brand hover:underline">
+              Ver tudo
+            </Link>
+          }
+        >
+          {reposicao.aprendendo && reposicao.baixaCobertura.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted">{MSG_APRENDIZADO}</p>
+          ) : reposicao.baixaCobertura.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted">Todo mundo com cobertura em dia.</p>
+          ) : (
+            <BarList
+              tone="danger"
+              items={reposicao.baixaCobertura.slice(0, 6).map((r) => ({
+                label: r.nome,
+                // Barra proporcional à falta de cobertura: quanto menor o saldo
+                // de dias, maior a urgência.
+                value: Math.max(0, r.metaCoberturaDias - (r.coberturaDias ?? 0)),
+                sub: `${r.sku} · ${NIVEL_COBERTURA_LABEL[r.nivel].toLowerCase()}`,
+                display: fmtCobertura(r.coberturaDias),
+              }))}
+            />
+          )}
+        </ChartCard>
+      );
+    }
+
     const rupturaRows = await dentro(d, () => carregarRuptura(d));
     return (
       <ChartCard
         title="Ruptura"
-        subtitle="Abaixo do mínimo, agora"
+        subtitle={d.policy.usaIdeal ? "Abaixo do mínimo, agora" : "No mínimo ou abaixo, agora"}
         action={
           <Link href="/estoque?filtro=baixoMinimo" className="text-xs font-medium text-brand hover:underline">
             Ver tudo

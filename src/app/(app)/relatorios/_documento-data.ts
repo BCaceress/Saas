@@ -1,6 +1,7 @@
 import "server-only";
 import { brl } from "@/lib/utils";
 import { pct } from "@/lib/periodo";
+import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import {
   resumoVendas,
   mixPagamento,
@@ -44,6 +45,7 @@ export async function montarDocumento(
   modelo: ModeloId,
   range: Range,
   siteId: string | null,
+  policy: EstoquePolicy = POLICY_PADRAO,
 ): Promise<DocumentoData> {
   switch (modelo) {
     case "vendas-resumo": {
@@ -166,13 +168,18 @@ export async function montarDocumento(
     }
 
     case "estoque-posicao": {
-      const [linhas, valor] = await Promise.all([posicaoEstoque(siteId), valorEstoqueAtual(siteId)]);
-      const abaixo = linhas.filter((l) => l.abaixoMinimo).length;
+      const [linhas, valor] = await Promise.all([
+        posicaoEstoque(siteId, policy),
+        valorEstoqueAtual(siteId),
+      ]);
+      const abaixo = policy.usaGiro
+        ? linhas.filter((l) => l.estoqueFechado <= 0).length
+        : linhas.filter((l) => l.abaixoMinimo).length;
       return {
         kpis: [
           { label: "Valor em estoque", valor: brl(valor) },
           { label: "SKUs", valor: String(linhas.length) },
-          { label: "Abaixo do mínimo", valor: String(abaixo) },
+          { label: policy.usaGiro ? "Sem estoque" : "Abaixo do mínimo", valor: String(abaixo) },
         ],
         secoes: [
           {
@@ -187,16 +194,38 @@ export async function montarDocumento(
     }
 
     case "estoque-ruptura": {
-      const linhas = await ruptura(siteId);
+      const linhas = await ruptura(siteId, policy);
+      // As colunas de meta só existem se a empresa usa meta.
+      const colunas = [
+        { header: "Produto" },
+        { header: "SKU" },
+        { header: "Site" },
+        { header: "Saldo", align: "right" as const },
+        ...(policy.usaMinimo ? [{ header: "Mínimo", align: "right" as const }] : []),
+        ...(policy.usaIdeal ? [{ header: "Ideal", align: "right" as const }] : []),
+        ...(policy.usaGiro ? [] : [{ header: "Comprar", align: "right" as const }]),
+      ];
       return {
-        kpis: [{ label: "Produtos em ruptura", valor: String(linhas.length) }],
+        kpis: [
+          { label: policy.usaGiro ? "Produtos sem estoque" : "Produtos em ruptura", valor: String(linhas.length) },
+        ],
         secoes: [
           {
-            titulo: "Ruptura e reposição sugerida",
+            titulo: policy.usaGiro ? "Produtos sem estoque" : "Ruptura e reposição sugerida",
             subtitulo: "Saldo ao vivo no momento da emissão",
-            colunas: [{ header: "Produto" }, { header: "SKU" }, { header: "Site" }, { header: "Saldo", align: "right" }, { header: "Mínimo", align: "right" }, { header: "Ideal", align: "right" }, { header: "Comprar", align: "right" }],
-            linhas: linhas.map((l) => [l.nome, l.sku, l.siteNome, D(l.estoqueFechado), D(l.estoqueMinimo), D(l.estoqueIdeal), D(l.deficit)]),
-            vazio: "Nenhum produto abaixo do mínimo. Estoque saudável.",
+            colunas,
+            linhas: linhas.map((l) => [
+              l.nome,
+              l.sku,
+              l.siteNome,
+              D(l.estoqueFechado),
+              ...(policy.usaMinimo ? [D(l.estoqueMinimo)] : []),
+              ...(policy.usaIdeal ? [D(l.estoqueIdeal)] : []),
+              ...(policy.usaGiro ? [] : [D(l.deficit)]),
+            ]),
+            vazio: policy.usaGiro
+              ? "Nenhum produto zerado. Estoque saudável."
+              : "Nenhum produto abaixo do mínimo. Estoque saudável.",
           },
         ],
       };

@@ -5,7 +5,8 @@ import { Building2, Check, ChevronDown, RotateCcw, Sparkles } from "lucide-react
 import { cn } from "@/lib/utils";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { fmtMoney, fmtQtd, relDia, StatusDot, Stepper as QuantityStepper, Thumb } from "../_ui";
-import { fornecedorEfetivo, type Efetivo, type Linha, type Sel } from "./_shared";
+import { fmtCobertura, type EstoquePolicy } from "@/lib/estoque-estrategia";
+import { fornecedorEfetivo, usePolicy, type Efetivo, type Linha, type Sel } from "./_shared";
 
 // ── Card de produto — hierarquia: produto → quantidade → justificativa ──
 // Informações em blocos (nunca uma linha longa). A quantidade sugerida é
@@ -34,7 +35,7 @@ export function ProductSuggestionCard({
   const subtotal = qtd * (eff.custo ?? 0);
   const alterado = qtd !== l.qtdSugerida;
   const unidade = l.packagingNome ?? "unidades";
-  const idealShow = l.estoqueIdeal > 0 ? l.estoqueIdeal : l.alvoReposicao;
+  const policy = usePolicy();
   const desligado = !s.on || semFornecedor;
 
   return (
@@ -65,7 +66,7 @@ export function ProductSuggestionCard({
                   >
                     {l.nome}
                   </button>
-                  <StatusDot status={l.status} comLabel />
+                  <StatusDot status={l.status} comLabel giro={policy.usaGiro} />
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
                   <span className="rounded border border-line bg-surface-2 px-1.5 py-px font-mono text-[11px] text-ink-2">{l.sku}</span>
@@ -151,12 +152,31 @@ export function ProductSuggestionCard({
               valor={fmtQtd(l.estoque)}
               tom={l.status === "ruptura" || l.status === "critico" ? "danger" : undefined}
             />
-            <Bloco rotulo="Mínimo" valor={l.estoqueMinimo > 0 ? fmtQtd(l.estoqueMinimo) : "—"} />
-            <Bloco rotulo="Ideal" valor={fmtQtd(idealShow)} />
-            <Bloco
-              rotulo="Cobertura"
-              valor={l.coberturaDias == null ? "sem giro" : l.coberturaDias <= 0 ? "acabou" : `~${fmtQtd(l.coberturaDias)} d`}
-            />
+            {/* Blocos seguem a estratégia da empresa: metas fixas × giro. */}
+            {policy.usaGiro ? (
+              <>
+                <Bloco rotulo="Média diária" valor={`${fmt1(l.mediaDia)}/dia`} />
+                <Bloco
+                  rotulo="Cobertura"
+                  valor={l.coberturaDias == null ? "sem giro" : l.coberturaDias <= 0 ? "acabou" : `${fmtQtd(l.coberturaDias)} d`}
+                  tom={
+                    l.coberturaDias != null && l.coberturaDias < l.metaCoberturaDias * 0.3 ? "danger" : undefined
+                  }
+                />
+                <Bloco rotulo="Meta" valor={`${l.metaCoberturaDias} d`} />
+              </>
+            ) : (
+              <>
+                <Bloco rotulo="Mínimo" valor={l.estoqueMinimo > 0 ? fmtQtd(l.estoqueMinimo) : "—"} />
+                {policy.usaIdeal && (
+                  <Bloco rotulo="Ideal" valor={fmtQtd(l.estoqueIdeal > 0 ? l.estoqueIdeal : l.alvoReposicao)} />
+                )}
+                <Bloco
+                  rotulo="Cobertura"
+                  valor={l.coberturaDias == null ? "sem giro" : l.coberturaDias <= 0 ? "acabou" : `~${fmtQtd(l.coberturaDias)} d`}
+                />
+              </>
+            )}
             {l.pendente > 0 && <Bloco rotulo="A caminho" valor={fmtQtd(l.pendente)} tom="brand" />}
           </dl>
 
@@ -188,10 +208,14 @@ function prevRuptura(l: Linha): string {
   return `em ~${fmtQtd(l.coberturaDias)} ${l.coberturaDias === 1 ? "dia" : "dias"} (${data.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })})`;
 }
 
-function motivo(l: Linha, eff: Efetivo): string {
+function motivo(l: Linha, eff: Efetivo, policy: EstoquePolicy): string {
   const frases: string[] = [];
   if (l.mediaDia > 0) {
-    frases.push(`O consumo médio deste produto é de ${fmt1(l.mediaDia)} ${l.mediaDia > 1 ? "unidades" : "unidade"} por dia.`);
+    frases.push(
+      policy.usaGiro
+        ? `Nos últimos ${l.janelaDias} dias saíram ${fmtQtd(l.consumoJanela)} unidades — média de ${fmt1(l.mediaDia)} por dia.`
+        : `O consumo médio deste produto é de ${fmt1(l.mediaDia)} ${l.mediaDia > 1 ? "unidades" : "unidade"} por dia.`,
+    );
   }
   if (l.estoque <= 0) {
     frases.push("O estoque acabou.");
@@ -210,25 +234,47 @@ function motivo(l: Linha, eff: Efetivo): string {
   if (l.pendente > 0) {
     frases.push(`${fmtQtd(l.pendente)} ${l.pendente === 1 ? "unidade já está" : "unidades já estão"} a caminho e foram descontadas do cálculo.`);
   }
-  const objetivo = l.status === "ruptura" || l.status === "critico" ? "Para evitar ruptura" : "Para voltar ao nível ideal";
+  const objetivo =
+    l.status === "ruptura" || l.status === "critico"
+      ? "Para evitar ruptura"
+      : policy.usaGiro
+        ? `Para cobrir ${policy.diasCobertura} dias de venda`
+        : policy.usaIdeal
+          ? "Para voltar ao nível ideal"
+          : "Para repor o estoque mínimo e cobrir o próximo período";
   frases.push(`${objetivo}, recomendamos comprar ${fmtQtd(l.qtdSugerida)} ${l.packagingNome?.toLowerCase() ?? "unidades"}.`);
   return frases.join(" ");
 }
 
 export function SuggestionExplanation({ l, eff }: { l: Linha; eff: Efetivo }) {
   const [open, setOpen] = useState(false);
-  const idealShow = l.estoqueIdeal > 0 ? l.estoqueIdeal : l.alvoReposicao;
+  const policy = usePolicy();
 
   const dados: [string, string][] = [
-    ["Consumo médio diário", l.mediaDia > 0 ? `${fmt1(l.mediaDia)} un/dia` : "sem vendas em 30 dias"],
-    ["Última venda", l.ultimaVendaEm ? relDia(l.ultimaVendaEm) : "sem registro em 30 dias"],
+    [
+      "Consumo médio diário",
+      l.mediaDia > 0 ? `${fmt1(l.mediaDia)} un/dia` : `sem vendas em ${l.janelaDias} dias`,
+    ],
+    ["Última venda", l.ultimaVendaEm ? relDia(l.ultimaVendaEm) : "sem registro recente"],
     ["Última compra", relDia(l.ultimaCompraEm)],
     ["Estoque atual", `${fmtQtd(l.estoque)} un`],
-    ["Estoque mínimo", l.estoqueMinimo > 0 ? `${fmtQtd(l.estoqueMinimo)} un` : "—"],
-    ["Estoque ideal", `${fmtQtd(idealShow)} un`],
+  ];
+  if (policy.usaGiro) {
+    dados.push(
+      [`Vendido em ${l.janelaDias} dias`, `${fmtQtd(l.consumoJanela)} un`],
+      ["Cobertura atual", fmtCobertura(l.coberturaDias)],
+      ["Cobertura desejada", `${l.metaCoberturaDias} dias`],
+    );
+  } else {
+    dados.push(["Estoque mínimo", l.estoqueMinimo > 0 ? `${fmtQtd(l.estoqueMinimo)} un` : "—"]);
+    if (policy.usaIdeal) {
+      dados.push(["Estoque ideal", `${fmtQtd(l.estoqueIdeal > 0 ? l.estoqueIdeal : l.alvoReposicao)} un`]);
+    }
+  }
+  dados.push(
     ["Prazo do fornecedor", eff.leadTime != null ? `~${eff.leadTime} ${eff.leadTime === 1 ? "dia" : "dias"}` : "—"],
     ["Previsão de ruptura", prevRuptura(l)],
-  ];
+  );
   if (l.pendente > 0) dados.push(["Já a caminho", `${fmtQtd(l.pendente)} un`]);
 
   return (
@@ -259,7 +305,7 @@ export function SuggestionExplanation({ l, eff }: { l: Linha; eff: Efetivo }) {
                 </div>
               ))}
             </dl>
-            <p className="border-l-2 border-brand pl-3 text-sm leading-relaxed text-ink-2">{motivo(l, eff)}</p>
+            <p className="border-l-2 border-brand pl-3 text-sm leading-relaxed text-ink-2">{motivo(l, eff, policy)}</p>
           </div>
         </div>
       </div>

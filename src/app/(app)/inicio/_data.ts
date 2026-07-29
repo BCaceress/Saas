@@ -9,6 +9,12 @@ import {
   type ProdutoVendaAgg,
   type PontoFinanceiro,
 } from "../relatorios/_data";
+import {
+  POLICY_PADRAO,
+  nivelCobertura,
+  type EstoquePolicy,
+  type NivelCobertura,
+} from "@/lib/estoque-estrategia";
 import { loadSugestoesReposicao } from "../compras/_data";
 
 const DIA = 86_400_000;
@@ -102,21 +108,56 @@ export type PrevisaoRuptura = {
   estoque: number;
 };
 
+/** Cobertura por produto — indicador do painel no modo ROTATIVIDADE. */
+export type CoberturaProduto = {
+  productId: string;
+  nome: string;
+  sku: string;
+  estoque: number;
+  mediaDia: number;
+  coberturaDias: number | null;
+  metaCoberturaDias: number;
+  nivel: NivelCobertura;
+};
+
 export type AnaliseReposicao = {
   oportunidades: OportunidadeFornecedor[];
   previsaoRuptura: PrevisaoRuptura[];
+  /** Produtos com cobertura abaixo da meta (só ROTATIVIDADE). */
+  baixaCobertura: CoberturaProduto[];
+  policy: EstoquePolicy;
+  aprendendo: boolean;
 };
 
 const COBERTURA_CRITICA_DIAS = 3;
 
-export async function analiseReposicao(siteId: SiteFilter): Promise<AnaliseReposicao> {
-  const grupos = await loadSugestoesReposicao(siteId);
+export async function analiseReposicao(
+  siteId: SiteFilter,
+  policy: EstoquePolicy = POLICY_PADRAO,
+): Promise<AnaliseReposicao> {
+  const { grupos, aprendendo } = await loadSugestoesReposicao(siteId, policy);
 
   // Previsão: item ainda acima do mínimo (não é "ruptura" hoje) mas o ritmo de
   // venda esgota o estoque em poucos dias — alerta antecipado, não reativo.
   const previsaoRuptura: PrevisaoRuptura[] = [];
+  const baixaCobertura: CoberturaProduto[] = [];
   for (const g of grupos) {
     for (const item of g.itens) {
+      if (policy.usaGiro && item.estoque > 0) {
+        const nivel = nivelCobertura(item.coberturaDias, item.metaCoberturaDias);
+        if (nivel === "muito-baixo" || nivel === "atencao") {
+          baixaCobertura.push({
+            productId: item.productId,
+            nome: item.nome,
+            sku: item.sku,
+            estoque: item.estoque,
+            mediaDia: item.mediaDia,
+            coberturaDias: item.coberturaDias,
+            metaCoberturaDias: item.metaCoberturaDias,
+            nivel,
+          });
+        }
+      }
       if (
         item.coberturaDias != null &&
         item.coberturaDias <= COBERTURA_CRITICA_DIAS &&
@@ -133,6 +174,8 @@ export async function analiseReposicao(siteId: SiteFilter): Promise<AnaliseRepos
     }
   }
   previsaoRuptura.sort((a, b) => a.coberturaDias - b.coberturaDias);
+  // Mais apertado primeiro; sem giro vai para o fim.
+  baixaCobertura.sort((a, b) => (a.coberturaDias ?? Infinity) - (b.coberturaDias ?? Infinity));
 
   // Oportunidade: grupos de reposição sugerida cujo total já cobre metade do
   // pedido mínimo do fornecedor.
@@ -162,7 +205,7 @@ export async function analiseReposicao(siteId: SiteFilter): Promise<AnaliseRepos
     oportunidades.sort((a, b) => a.falta - b.falta);
   }
 
-  return { oportunidades, previsaoRuptura };
+  return { oportunidades, previsaoRuptura, baixaCobertura, policy, aprendendo };
 }
 
 // ── Ritmo de criação de pedidos (sparkline + delta do KPI "Pedidos") ─

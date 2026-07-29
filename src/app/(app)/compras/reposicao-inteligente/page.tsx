@@ -1,6 +1,7 @@
 import { Sparkles } from "lucide-react";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
+import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { loadSugestoesReposicao } from "../_data";
 import { PageHeader } from "@/components/app/page-header";
 import { ReposicaoInteligenteClient } from "./_client";
@@ -11,9 +12,10 @@ import { ReposicaoInteligenteClient } from "./_client";
 
 export default async function ReposicaoInteligentePage() {
   const ctx = await requireActiveTenant();
+  const policy = policyDoTenant(ctx.tenant);
   const data = await withTenant(ctx, async () => {
     const activeSiteId = await getActiveSiteId();
-    const sugestoes = await loadSugestoesReposicao(activeSiteId);
+    const sugestoes = await loadSugestoesReposicao(activeSiteId, policy);
     return { sugestoes, activeSiteId };
   });
 
@@ -26,7 +28,13 @@ export default async function ReposicaoInteligentePage() {
         description="Revise as sugestões de compra e aprove a criação dos pedidos — um por fornecedor."
         innerClassName="max-w-none"
       />
-      <ReposicaoInteligenteClient grupos={data.sugestoes} siteId={data.activeSiteId} empresa={ctx.tenant.nome} />
+      <ReposicaoInteligenteClient
+        grupos={data.sugestoes.grupos}
+        policy={data.sugestoes.policy}
+        aprendendo={data.sugestoes.aprendendo}
+        siteId={data.activeSiteId}
+        empresa={ctx.tenant.nome}
+      />
     </div>
   );
 }

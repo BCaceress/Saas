@@ -41,8 +41,10 @@ export async function trocarPlanoAction(input: z.input<typeof planoSchema>) {
   const limites = limitesDe(alvo);
 
   const [sites, produtos, usuarios] = await Promise.all([
-    runWithTenant(ctx.tenant.id, () => db.site.count()),
-    runWithTenant(ctx.tenant.id, () => db.product.count({ where: { ativo: true } })),
+    // `await` dentro do runWithTenant: PrismaPromise é lazy e sem ele a query
+    // executaria fora do contexto async (ver lib/prisma.ts).
+    runWithTenant(ctx.tenant.id, async () => await db.site.count()),
+    runWithTenant(ctx.tenant.id, async () => await db.product.count({ where: { ativo: true } })),
     basePrisma.membership.count({ where: { tenantId: ctx.tenant.id, ativo: true } }),
   ]);
 
@@ -108,7 +110,7 @@ export async function alternarAddonAction(input: z.input<typeof addonSchema>) {
 
   // Tirar loja extra com loja usando aquele espaço quebraria o cadastro.
   if (d.slug === "loja-extra" && lojasExtras < ctx.tenant.lojasExtras) {
-    const sites = await runWithTenant(ctx.tenant.id, () => db.site.count());
+    const sites = await runWithTenant(ctx.tenant.id, async () => await db.site.count());
     const limite = limitesDe({ ...ctx.tenant, lojasExtras }).sites;
     if (limite !== null && sites > limite) {
       throw new Error(

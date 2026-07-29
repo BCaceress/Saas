@@ -451,9 +451,13 @@ const productSchema = z.object({
   marcaNome: z.string().optional(),
   imagemUrl: z.string().optional(),
 
+  // Utilização do produto — as duas convivem: vende a unidade fechada no PDV
+  // e/ou rende dose em drink/receita.
   unidadeBase: z.enum(["UN", "ML", "G"]).default("UN"),
+  vendaUnidade: z.boolean().default(true),
   fracionavel: z.boolean().default(false),
   conteudoPorUnidade: z.number().positive().optional().nullable(),
+  dosePadrao: z.number().positive().optional().nullable(),
 
   precoVenda: z.number().nonnegative().optional().nullable(),
   custo: z.number().nonnegative().optional().nullable(),
@@ -520,25 +524,26 @@ async function resolveBrandId(tid: string, brandId?: string | null, marcaNome?: 
 export async function createProduct(input: ProductInput) {
   return tx(async (tid) => {
     const d = productSchema.parse(input);
+    const skuVal = d.sku?.trim() ? d.sku.trim().toUpperCase() : undefined;
 
-    const sub = await db.subcategory.findFirst({
-      where: { id: d.subcategoryId },
-      include: { category: true },
-    });
+    // 4 leituras independentes — sem isso, cada uma é um round-trip sequencial
+    // ao Neon (latência soma). Rodando junto, o tempo de espera é o da mais lenta.
+    const [sub, skuConflict, brandId, site] = await Promise.all([
+      db.subcategory.findFirst({
+        where: { id: d.subcategoryId },
+        include: { category: true },
+      }),
+      skuVal
+        ? db.product.findFirst({ where: { sku: skuVal }, select: { id: true } })
+        : Promise.resolve(null),
+      resolveBrandId(tid, d.brandId, d.marcaNome),
+      getOrCreateDefaultSite(tid),
+      assertCabeProduto(tid),
+    ]);
     if (!sub) throw new Error("Subcategoria inválida.");
+    if (skuVal && skuConflict) throw new Error(`SKU "${skuVal}" já está em uso.`);
+    const sku = skuVal ?? (await generateSku(sub.category.skuPrefix, sub.skuPrefix));
 
-    let sku: string;
-    if (d.sku?.trim()) {
-      const skuVal = d.sku.trim().toUpperCase();
-      const existing = await db.product.findFirst({ where: { sku: skuVal }, select: { id: true } });
-      if (existing) throw new Error(`SKU "${skuVal}" já está em uso.`);
-      sku = skuVal;
-    } else {
-      sku = await generateSku(sub.category.skuPrefix, sub.skuPrefix);
-    }
-    const brandId = await resolveBrandId(tid, d.brandId, d.marcaNome);
-
-    await assertCabeProduto(tid);
     const product = await db.product.create({
       data: {
         tenantId: tid,
@@ -550,8 +555,10 @@ export async function createProduct(input: ProductInput) {
         brandId,
         imagemUrl: d.imagemUrl || null,
         unidadeBase: d.unidadeBase,
+        vendaUnidade: d.vendaUnidade,
         fracionavel: d.fracionavel,
         conteudoPorUnidade: d.conteudoPorUnidade ?? null,
+        dosePadrao: d.fracionavel ? d.dosePadrao ?? null : null,
         precoVenda: d.tipo === "INSUMO" ? null : d.precoVenda ?? null,
         custo: d.custo ?? null,
         fiscalProfileId: d.fiscalProfileId ?? sub.defaultFiscalProfileId ?? null,
@@ -570,7 +577,7 @@ export async function createProduct(input: ProductInput) {
         stocks: {
           create: [{
             tenantId: tid,
-            siteId: (await getOrCreateDefaultSite(tid)).id,
+            siteId: site.id,
             estoqueFechado: d.estoqueInicial,
             estoqueMinimo: d.estoqueMinimo,
             estoqueIdeal: d.estoqueIdeal,
@@ -580,10 +587,13 @@ export async function createProduct(input: ProductInput) {
       },
     });
 
-    if (d.tags?.length) await attachTags(tid, product.id, d.tags);
-    await syncSalesChannels(tid, product.id, d.salesChannels);
-    await syncPackagings(tid, product.id, d.packagings);
-    await syncSuppliers(tid, product.id, resolveFornecedores(d), d.custoFornecedor);
+    // Tabelas diferentes, sem dependência entre si — mesma lógica do ganho acima.
+    await Promise.all([
+      d.tags?.length ? attachTags(tid, product.id, d.tags) : Promise.resolve(),
+      syncSalesChannels(tid, product.id, d.salesChannels),
+      syncPackagings(tid, product.id, d.packagings),
+      syncSuppliers(tid, product.id, resolveFornecedores(d), d.custoFornecedor),
+    ]);
 
     ok();
     return { id: product.id, sku };
@@ -593,14 +603,17 @@ export async function createProduct(input: ProductInput) {
 export async function updateProduct(id: string, input: ProductInput) {
   return tx(async (tid) => {
     const d = productSchema.parse(input);
-    const brandId = await resolveBrandId(tid, d.brandId, d.marcaNome);
-    let skuData: { sku?: string } = {};
-    if (d.sku?.trim()) {
-      const skuVal = d.sku.trim().toUpperCase();
-      const existing = await db.product.findFirst({ where: { sku: skuVal, id: { not: id } }, select: { id: true } });
-      if (existing) throw new Error(`SKU "${skuVal}" já está em uso.`);
-      skuData = { sku: skuVal };
-    }
+    const skuVal = d.sku?.trim() ? d.sku.trim().toUpperCase() : undefined;
+
+    const [brandId, skuConflict] = await Promise.all([
+      resolveBrandId(tid, d.brandId, d.marcaNome),
+      skuVal
+        ? db.product.findFirst({ where: { sku: skuVal, id: { not: id } }, select: { id: true } })
+        : Promise.resolve(null),
+    ]);
+    if (skuVal && skuConflict) throw new Error(`SKU "${skuVal}" já está em uso.`);
+    const skuData = skuVal ? { sku: skuVal } : {};
+
     await db.product.update({
       where: { id },
       data: {
@@ -611,8 +624,10 @@ export async function updateProduct(id: string, input: ProductInput) {
         brandId,
         imagemUrl: d.imagemUrl || null,
         unidadeBase: d.unidadeBase,
+        vendaUnidade: d.vendaUnidade,
         fracionavel: d.fracionavel,
         conteudoPorUnidade: d.conteudoPorUnidade ?? null,
+        dosePadrao: d.fracionavel ? d.dosePadrao ?? null : null,
         precoVenda: d.tipo === "INSUMO" ? null : d.precoVenda ?? null,
         custo: d.custo ?? null,
         fiscalProfileId: d.fiscalProfileId ?? null,
@@ -630,18 +645,22 @@ export async function updateProduct(id: string, input: ProductInput) {
         descricaoOnline: d.descricaoOnline || null,
       },
     });
-    // Propaga mínimo/ideal + local de armazenagem para os stocks deste produto
-    await db.stock.updateMany({
-      where: { productId: id },
-      data: {
-        estoqueMinimo: d.estoqueMinimo,
-        estoqueIdeal: d.estoqueIdeal,
-        locationId: d.locationId ?? null,
-      },
-    });
-    await syncSalesChannels(tid, id, d.salesChannels);
-    await syncPackagings(tid, id, d.packagings);
-    await syncSuppliers(tid, id, resolveFornecedores(d), d.custoFornecedor);
+    // 4 tabelas diferentes, sem dependência entre si — concorrente em vez de
+    // sequencial (cada sync ainda é delete+create por dentro, mas em paralelo
+    // com os outros 3).
+    await Promise.all([
+      db.stock.updateMany({
+        where: { productId: id },
+        data: {
+          estoqueMinimo: d.estoqueMinimo,
+          estoqueIdeal: d.estoqueIdeal,
+          locationId: d.locationId ?? null,
+        },
+      }),
+      syncSalesChannels(tid, id, d.salesChannels),
+      syncPackagings(tid, id, d.packagings),
+      syncSuppliers(tid, id, resolveFornecedores(d), d.custoFornecedor),
+    ]);
     ok();
   });
 }
@@ -1132,17 +1151,148 @@ export type EanSuggestion = {
  */
 export async function checkEanTaken(
   eanRaw: string,
-): Promise<{ taken: boolean; nome?: string; sku?: string }> {
+): Promise<{ taken: boolean; id?: string; nome?: string; sku?: string }> {
   return tx(async () => {
     const ean = onlyDigits(eanRaw);
     if (ean.length < 8) return { taken: false };
     const existente = await db.product.findFirst({
       where: { ean },
-      select: { nome: true, sku: true },
+      select: { id: true, nome: true, sku: true },
     });
     return existente
-      ? { taken: true, nome: existente.nome, sku: existente.sku }
+      ? { taken: true, id: existente.id, nome: existente.nome, sku: existente.sku }
       : { taken: false };
+  });
+}
+
+/**
+ * Produtos com nome/marca parecidos (mesma subcategoria) — aviso de possível
+ * duplicata antes de criar um SKU redundante. Comparação por sobreposição de
+ * palavras (Dice sobre tokens normalizados), sem depender de extensão do
+ * Postgres (roda em qualquer ambiente).
+ */
+function normalizarTexto(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(new RegExp("[\u0300-\u036f]", "g"), " ")
+    .trim();
+}
+function tokens(s: string): Set<string> {
+  return new Set(normalizarTexto(s).split(/\s+/).filter(Boolean));
+}
+function diceSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return (2 * inter) / (a.size + b.size);
+}
+
+export async function checkNomeSimilar(input: {
+  nome: string;
+  marcaNome?: string;
+  subcategoryId?: string;
+  excludeId?: string;
+}): Promise<{ id: string; nome: string; sku: string; score: number } | null> {
+  return tx(async () => {
+    const nome = input.nome.trim();
+    if (nome.length < 3) return null;
+    const candidatos = await db.product.findMany({
+      where: {
+        ativo: true,
+        tipo: "SIMPLES",
+        ...(input.excludeId ? { id: { not: input.excludeId } } : {}),
+        ...(input.subcategoryId ? { subcategoryId: input.subcategoryId } : {}),
+      },
+      select: { id: true, nome: true, sku: true, brand: { select: { nome: true } } },
+      take: 300,
+    });
+    if (!candidatos.length) return null;
+
+    const alvo = tokens(`${nome} ${input.marcaNome ?? ""}`);
+    let melhor: { id: string; nome: string; sku: string; score: number } | null = null;
+    for (const c of candidatos) {
+      const score = diceSimilarity(alvo, tokens(`${c.nome} ${c.brand?.nome ?? ""}`));
+      if (score > (melhor?.score ?? 0)) melhor = { id: c.id, nome: c.nome, sku: c.sku, score };
+    }
+    // 0.6 = a maioria das palavras bate — abaixo disso vira falso positivo.
+    return melhor && melhor.score >= 0.6 ? melhor : null;
+  });
+}
+
+/**
+ * Descrição curta para canal online (iFood, Mercado Livre…), sugerida por IA
+ * a partir de nome/marca/categoria. Sem LLM configurado, cai num texto simples
+ * — nunca bloqueia o cadastro por falta de chave.
+ */
+export async function sugerirDescricaoOnline(input: {
+  nome: string;
+  marcaNome?: string;
+  categoriaNome?: string;
+}): Promise<string> {
+  return tx(async () => {
+    const nome = input.nome.trim();
+    if (nome.length < 2) throw new Error("Informe o nome do produto primeiro.");
+    if (!llmConfigured()) {
+      return [nome, input.marcaNome, input.categoriaNome].filter(Boolean).join(" — ");
+    }
+    const texto = await completeJson<{ descricao: string }>({
+      system:
+        "Você escreve descrições curtas de produto para canais de venda online " +
+        "(iFood, Mercado Livre) de um mercado/conveniência. Responda SOMENTE com " +
+        "JSON válido, sem texto extra.",
+      user: JSON.stringify({
+        instrucao:
+          "Escreva uma descrição de até 200 caracteres, direta, sem emojis, " +
+          "destacando o que o produto é — devolva em { descricao }.",
+        produto: {
+          nome,
+          marca: input.marcaNome || undefined,
+          categoria: input.categoriaNome || undefined,
+        },
+      }),
+    });
+    return texto.descricao.trim();
+  });
+}
+
+/**
+ * Preço sugerido para a subcategoria: mediana da margem praticada nos produtos
+ * ativos que já têm custo e preço. Serve de referência real do tenant — nada de
+ * markup mágico. Retorna null quando não há histórico suficiente.
+ */
+export async function sugerirMargemSubcategoria(
+  subcategoryId: string,
+): Promise<{ margemPct: number; base: number } | null> {
+  return tx(async () => {
+    if (!subcategoryId) return null;
+    const produtos = await db.product.findMany({
+      where: {
+        subcategoryId,
+        ativo: true,
+        tipo: "SIMPLES",
+        custo: { gt: 0 },
+        precoVenda: { gt: 0 },
+      },
+      select: { custo: true, precoVenda: true },
+      take: 200,
+    });
+    const margens = produtos
+      .map((p) => {
+        const custo = Number(p.custo);
+        const preco = Number(p.precoVenda);
+        return preco > 0 ? ((preco - custo) / preco) * 100 : null;
+      })
+      .filter((m): m is number => m !== null && Number.isFinite(m))
+      .sort((a, b) => a - b);
+    if (margens.length < 3) return null;
+    const meio = Math.floor(margens.length / 2);
+    const mediana =
+      margens.length % 2 === 0
+        ? (margens[meio - 1] + margens[meio]) / 2
+        : margens[meio];
+    return { margemPct: Math.round(mediana), base: margens.length };
   });
 }
 

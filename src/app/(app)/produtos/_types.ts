@@ -31,9 +31,19 @@ export type ProductRow = {
   ativo: boolean;
   restricaoIdade: boolean;
   unidadeBase: BaseUnit;
+  /** Vende a unidade fechada no PDV. Convive com `fracionavel`. */
+  vendaUnidade: boolean;
+  /** Pode ser consumido parcialmente em drinks/receitas. */
   fracionavel: boolean;
   conteudoPorUnidade: number | null;
+  /** Dose sugerida ao entrar numa receita (na unidadeBase). */
+  dosePadrao: number | null;
   vendeOnline: boolean;
+  pesoGramas: number | null;
+  alturaCm: number | null;
+  larguraCm: number | null;
+  comprimentoCm: number | null;
+  descricaoOnline: string | null;
   fiscalProfileId: string | null;
   /** Fiscal por item — só preenchido quando a unidade tributável difere da de venda. */
   gtinTributavel: string | null;
@@ -137,6 +147,12 @@ export type SupplierRow = {
   ultimosPedidos?: Array<{ id: string; numero: string; status: string; data: string; valorTotal: number }>;
   totalComprado30d?: number;
 };
+/** Opção enxuta pro picker de fornecedor no cadastro de produto (não carrega endereço/IE/contato). */
+export type SupplierPickerOpt = {
+  id: string;
+  razaoSocial: string;
+  nomeFantasia: string | null;
+};
 export type FiscalOpt = {
   id: string;
   nome: string;
@@ -157,6 +173,8 @@ export type ComponentCandidate = {
   unidadeBase: BaseUnit;
   fracionavel: boolean;
   conteudoPorUnidade: number | null;
+  /** Dose sugerida cadastrada no produto — vira a quantidade inicial na receita. */
+  dosePadrao: number | null;
   restricaoIdade: boolean;
   estoqueFechado: number;
   estoqueAberto: number;

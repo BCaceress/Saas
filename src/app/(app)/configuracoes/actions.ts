@@ -147,6 +147,11 @@ export async function updateTotemPin(input: z.input<typeof totemPinSchema>) {
 // ── Estoque e alertas ───────────────────────────────────────
 
 const estoqueConfigSchema = z.object({
+  // Estratégia de controle: muda o que as telas de estoque mostram e como a
+  // sugestão de compra é calculada. Trocar não apaga mínimo/ideal já gravados.
+  tipoControleEstoque: z.enum(["MINIMO", "MINIMO_IDEAL", "ROTATIVIDADE"]),
+  periodoMediaDias: z.number().int().min(7).max(365),
+  diasCobertura: z.number().int().min(1).max(90),
   estoqueMinimoPadrao: z.number().int().min(0).max(9999),
   produtoParadoDias: z.number().int().min(7).max(365),
   validadeAlertaDias: z.number().int().min(1).max(365),
@@ -158,6 +163,8 @@ export async function updateEstoqueConfig(input: z.input<typeof estoqueConfigSch
     const d = estoqueConfigSchema.parse(input);
     await db.tenant.update({ where: { id: tenant.id }, data: d });
     ok();
+    // Produtos, estoque, compras e painel leem a estratégia — todos mudam de cara.
+    revalidatePath("/", "layout");
   });
 }
 

@@ -6,8 +6,9 @@ import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
 import type { HistoricoCompraProduto } from "../_data";
 import { fetchHistoricoCompraProdutoAction } from "../actions";
+import { fmtCobertura } from "@/lib/estoque-estrategia";
 import { fmtMoney, fmtQtd, relDia, Thumb } from "../_ui";
-import type { Linha } from "./_shared";
+import { usePolicy, type Linha } from "./_shared";
 
 // ── Drawer: histórico de compras do produto ───────────────────
 // Abre ao clicar no nome do produto — preços praticados, comparação
@@ -17,6 +18,7 @@ export function HistoricoDrawer({ item, onClose }: { item: Linha | null; onClose
   // Guarda o resultado junto do productId: "carregando" é derivado (nenhum
   // setState síncrono no effect) e trocar de produto invalida o anterior.
   const [resultado, setResultado] = useState<{ productId: string; dados: HistoricoCompraProduto | null } | null>(null);
+  const policy = usePolicy();
 
   const productId = item?.productId ?? null;
   useEffect(() => {
@@ -49,7 +51,11 @@ export function HistoricoDrawer({ item, onClose }: { item: Linha | null; onClose
             <Thumb url={item.imagemUrl} nome={item.nome} size={56} />
             <div className="grid flex-1 grid-cols-3 gap-2 text-center">
               <MiniStat rotulo="Estoque" valor={fmtQtd(item.estoque)} />
-              <MiniStat rotulo="Mínimo" valor={item.estoqueMinimo > 0 ? fmtQtd(item.estoqueMinimo) : "—"} />
+              {policy.usaGiro ? (
+                <MiniStat rotulo="Cobertura" valor={fmtCobertura(item.coberturaDias)} />
+              ) : (
+                <MiniStat rotulo="Mínimo" valor={item.estoqueMinimo > 0 ? fmtQtd(item.estoqueMinimo) : "—"} />
+              )}
               <MiniStat rotulo="7 dias" valor={`${fmtQtd(item.consumo7)} vend.`} />
             </div>
           </div>

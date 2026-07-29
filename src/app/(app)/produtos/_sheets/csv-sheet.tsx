@@ -7,23 +7,38 @@ import { Upload, Download, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
+import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import { commitImport, type CsvRow, type ImportResult } from "../csv-actions";
 
-const FIELDS: { key: keyof CsvRow; label: string }[] = [
-  { key: "nome", label: "Nome *" },
-  { key: "subcategoria", label: "Subcategoria (prefixo/nome) *" },
-  { key: "marca", label: "Marca" },
-  { key: "ean", label: "Código de barras" },
-  { key: "precoVenda", label: "Preço de venda" },
-  { key: "custo", label: "Custo" },
-  { key: "estoqueInicial", label: "Estoque inicial" },
-  { key: "estoqueMinimo", label: "Estoque mínimo" },
-  { key: "estoqueIdeal", label: "Estoque ideal" },
-];
+// As colunas de meta seguem a estratégia da empresa: quem controla por giro
+// não importa mínimo/ideal (o sistema calcula a necessidade pelo histórico).
+function camposDaPolicy(policy: EstoquePolicy): { key: keyof CsvRow; label: string }[] {
+  return [
+    { key: "nome", label: "Nome *" },
+    { key: "subcategoria", label: "Subcategoria (prefixo/nome) *" },
+    { key: "marca", label: "Marca" },
+    { key: "ean", label: "Código de barras" },
+    { key: "precoVenda", label: "Preço de venda" },
+    { key: "custo", label: "Custo" },
+    { key: "estoqueInicial", label: "Estoque inicial" },
+    ...(policy.usaMinimo ? ([{ key: "estoqueMinimo", label: "Estoque mínimo" }] as const) : []),
+    ...(policy.usaIdeal ? ([{ key: "estoqueIdeal", label: "Estoque ideal" }] as const) : []),
+  ];
+}
 
-const TEMPLATE =
-  "nome,subcategoria,marca,ean,precoVenda,custo,estoqueInicial,estoqueMinimo,estoqueIdeal\n" +
-  "Heineken Long Neck 330ml,CER,Heineken,7896045506873,7.90,5.20,48,24,60\n";
+function templateDaPolicy(policy: EstoquePolicy): string {
+  const cabecalho = [
+    "nome", "subcategoria", "marca", "ean", "precoVenda", "custo", "estoqueInicial",
+    ...(policy.usaMinimo ? ["estoqueMinimo"] : []),
+    ...(policy.usaIdeal ? ["estoqueIdeal"] : []),
+  ];
+  const exemplo = [
+    "Heineken Long Neck 330ml", "CER", "Heineken", "7896045506873", "7.90", "5.20", "48",
+    ...(policy.usaMinimo ? ["24"] : []),
+    ...(policy.usaIdeal ? ["60"] : []),
+  ];
+  return `${cabecalho.join(",")}\n${exemplo.join(",")}\n`;
+}
 
 function guess(header: string, key: string): boolean {
   const h = header.toLowerCase();
@@ -41,8 +56,18 @@ function guess(header: string, key: string): boolean {
   return (map[key] ?? []).some((t) => h.includes(t));
 }
 
-export function CsvSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function CsvSheet({
+  open,
+  onClose,
+  policy = POLICY_PADRAO,
+}: {
+  open: boolean;
+  onClose: () => void;
+  policy?: EstoquePolicy;
+}) {
   const router = useRouter();
+  const FIELDS = camposDaPolicy(policy);
+  const TEMPLATE = templateDaPolicy(policy);
   const [pending, start] = useTransition();
   const [headers, setHeaders] = useState<string[]>([]);
   const [raw, setRaw] = useState<Record<string, string>[]>([]);

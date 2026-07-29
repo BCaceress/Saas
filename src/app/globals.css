@@ -225,8 +225,13 @@
   --font-mono: var(--font-plex-mono), ui-monospace, monospace;
 }
 
-* {
-  border-color: var(--line);
+/* Estas regras precisam ficar em @layer base: o Tailwind v4 emite os utilitários
+   dentro de `@layer utilities`, e qualquer regra SEM layer vence camadas —
+   solta, esta linha anulava todo `border-<cor>` do app. */
+@layer base {
+  * {
+    border-color: var(--line);
+  }
 }
 
 /* Cursor de ponteiro em qualquer controle clicável habilitado */
@@ -256,11 +261,15 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* Foco visível sempre (piso de qualidade, PRD §7.1) */
-:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--brand) 60%, transparent);
-  outline-offset: 2px;
-  border-radius: var(--radius);
+/* Foco visível sempre (piso de qualidade, PRD §7.1). Em @layer base pelo mesmo
+   motivo do `*` acima — solta, ela impedia qualquer componente de desenhar o
+   próprio anel de foco. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--brand) 60%, transparent);
+    outline-offset: 2px;
+    border-radius: var(--radius);
+  }
 }
 
 ::selection {
@@ -539,33 +548,190 @@ body {
 }
 
 /* ============================================================
-   Auth (login/cadastro) — superfície premium sempre escura,
-   independente do tema claro/escuro do resto do app. Escopo via
-   .auth-theme na raiz do layout de auth; não vaza pro resto do
-   design system (ver src/app/(auth)/layout.tsx).
+   Auth (login/cadastro) — superfície própria, clara e premium:
+   canvas quase branco + glow laranja de marca, card branco
+   flutuante. Escopo via .auth-theme na raiz do layout de auth;
+   não vaza pro resto do design system (ver src/app/(auth)/layout.tsx).
+   Acompanha o tema do app: claro por padrão, escuro no data-theme.
    ============================================================ */
 .auth-theme {
+  --auth-bg: #f7f8fa;
+  /* Branco quente que lava o canto superior esquerdo do canvas. */
+  --auth-canvas-warm: #fffdfa;
+  --auth-dot: rgba(15, 23, 42, 0.07);
+  --auth-card: #ffffff;
+  --auth-field: #ffffff;
+  --auth-field-2: #fafafb;
+  --auth-line: rgba(15, 23, 42, 0.07);
+  --auth-line-strong: rgba(15, 23, 42, 0.13);
+  --auth-brand: #f97316;
+  --auth-brand-hover: #ea580c;
+  --auth-brand-soft: rgba(249, 115, 22, 0.1);
+  --auth-brand-tint: rgba(249, 115, 22, 0.08);
+  /* Laranja legível sobre branco (AA 4.5:1) — o #f97316 puro dá 2,9:1 e só
+     serve para preenchimento, borda e ícone. */
+  --auth-brand-text: #c2410c;
+  --auth-brand-text-hover: #9a3412;
+  --auth-glow: rgba(249, 115, 22, 0.16);
+  --auth-ink: #0f172a;
+  --auth-ink-2: #334155;
+  --auth-muted: #64748b;
+  /* Tinta escura sobre o laranja cheio: branco sobre #f97316 dá 2,9:1 e reprova
+     em AA no botão principal; assim o preenchimento continua vivo e o rótulo
+     fica em ~8:1 (mesmo tratamento do tema escuro). */
+  --auth-on-brand: #2a1204;
+  --auth-danger: #dc2626;
+  --auth-danger-soft: rgba(220, 38, 38, 0.07);
+  --auth-ok: #15803d;
+  --auth-ok-soft: rgba(21, 128, 61, 0.08);
+
+  /* Sombra longa e quase invisível: o card flutua, mas nada nele pesa. */
+  --auth-card-shadow:
+    0 40px 90px -40px rgba(15, 23, 42, 0.16), 0 12px 32px -20px rgba(15, 23, 42, 0.08),
+    0 1px 2px rgba(15, 23, 42, 0.03);
+  --auth-panel-shadow: 0 20px 60px -24px rgba(15, 23, 42, 0.16);
+}
+
+:root[data-theme="dark"] .auth-theme {
   --auth-bg: #0b0d10;
-  --auth-surface: #15181d;
-  --auth-card: #1b2027;
+  --auth-canvas-warm: rgba(255, 255, 255, 0.025);
+  --auth-dot: rgba(255, 255, 255, 0.06);
+  --auth-card: #16191e;
   --auth-field: rgba(255, 255, 255, 0.03);
+  --auth-field-2: rgba(255, 255, 255, 0.02);
   --auth-line: rgba(255, 255, 255, 0.08);
   --auth-line-strong: rgba(255, 255, 255, 0.14);
-  --auth-brand: #ff8a34;
+  --auth-brand: #fb8b3c;
   --auth-brand-hover: #ff9b55;
-  --auth-brand-soft: rgba(255, 138, 52, 0.14);
-  --auth-glow: rgba(255, 138, 52, 0.35);
-  --auth-ink: #ffffff;
-  --auth-muted: #a4adba;
+  --auth-brand-soft: rgba(251, 139, 60, 0.14);
+  --auth-brand-tint: rgba(251, 139, 60, 0.1);
+  --auth-brand-text: #fb8b3c;
+  --auth-brand-text-hover: #ffb27a;
+  --auth-glow: rgba(251, 139, 60, 0.3);
+  --auth-ink: #f4f5f7;
+  --auth-ink-2: #c7cace;
+  --auth-muted: #98a1ad;
+  --auth-on-brand: #16181d;
   --auth-danger: #f87171;
   --auth-danger-soft: rgba(248, 113, 113, 0.12);
   --auth-ok: #4ade80;
+  --auth-ok-soft: rgba(74, 222, 128, 0.12);
+
+  --auth-card-shadow: 0 25px 80px rgba(0, 0, 0, 0.5);
+  --auth-panel-shadow: 0 20px 60px -24px rgba(0, 0, 0, 0.6);
+}
+
+/* Canvas: branco quente no alto à esquerda descendo para o cinza do fundo.
+   Gradiente longo e de baixo contraste — sente-se, não se vê. */
+.auth-canvas {
+  background:
+    radial-gradient(ellipse 90% 70% at 8% 0%, var(--auth-canvas-warm), transparent 70%),
+    linear-gradient(160deg, var(--auth-canvas-warm) 0%, transparent 55%);
+}
+
+/* Poeira de pontos no lugar da antiga malha de linhas: some nas bordas via
+   máscara para nunca disputar leitura com o texto por cima. */
+.auth-dots {
+  background-image: radial-gradient(var(--auth-dot) 1px, transparent 1px);
+  background-size: 30px 30px;
+  -webkit-mask-image: radial-gradient(ellipse 110% 95% at 10% 0%, #000 0%, transparent 65%);
+  mask-image: radial-gradient(ellipse 110% 95% at 10% 0%, #000 0%, transparent 65%);
+}
+
+/* Entrada encadeada da coluna institucional. Um só gesto — sobe, desembaça e
+   aparece — repetido com atraso crescente (animationDelay inline por bloco). */
+@keyframes auth-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+.auth-rise {
+  animation: auth-rise 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Carrossel de segmentos: a troca é um deslize curto para a esquerda com fade,
+   o ícone cresce um instante e o halo atrás dele reacende. Nada brusco. */
+@keyframes auth-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.auth-slide-in {
+  animation: auth-slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes auth-icon-pop {
+  0% {
+    transform: scale(0.9);
+  }
+  60% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.auth-icon-pop {
+  animation: auth-icon-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes auth-glow-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.auth-glow-in {
+  animation: auth-glow-in 0.3s ease-out both;
+}
+
+/* Traço sob a promessa: desenhado da esquerda para a direita depois que o
+   título assenta. */
+@keyframes auth-marca {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+.auth-marca {
+  position: relative;
+  white-space: nowrap;
+}
+.auth-marca::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* abaixo da descendente do "g", senão o traço corta a letra */
+  bottom: -0.16em;
+  height: 0.055em;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.35;
+  transform-origin: left;
+  animation: auth-marca 0.6s cubic-bezier(0.16, 1, 0.3, 1) 0.72s both;
 }
 
 @keyframes auth-fade-up {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
@@ -573,11 +739,16 @@ body {
   }
 }
 .auth-fade-up {
-  animation: auth-fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: auth-fade-up 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 @media (prefers-reduced-motion: reduce) {
-  .auth-fade-up {
-    animation: none;
+  .auth-fade-up,
+  .auth-rise,
+  .auth-slide-in,
+  .auth-icon-pop,
+  .auth-glow-in,
+  .auth-marca::after {
+    animation: none !important;
   }
 }
 
@@ -634,4 +805,117 @@ body {
   * {
     box-shadow: none !important;
   }
+}
+
+/* ============================================================
+   Cadastro de produto — micro-animações do assistente.
+   Tudo curto (<400ms) e desligado por `prefers-reduced-motion`
+   (a regra global lá em cima já zera duração de tudo).
+   ============================================================ */
+
+/* Bloco condicional que cresce em vez de aparecer seco.
+   Truque do grid 0fr→1fr: anima altura sem saber a altura.
+   Nome NÃO pode ser ".collapse" — colide com o utilitário nativo do Tailwind
+   (visibility: collapse), que ficava aplicado por cima e escondia tudo. */
+.grow-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  /* O `margin-top` negativo (inline, conforme o gap do pai) cancela o vão morto
+     que sobraria do flex-gap enquanto o bloco está fechado. */
+  transition:
+    grid-template-rows 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    margin-top 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.2s ease;
+  opacity: 0;
+}
+.grow-reveal > * {
+  overflow: hidden;
+  min-height: 0;
+}
+.grow-reveal[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+/* Check da etapa concluída */
+@keyframes pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  70% {
+    transform: scale(1.12);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.pop-in {
+  animation: pop-in 0.26s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Nó novo no fluxo lateral */
+@keyframes flow-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.flow-in {
+  animation: flow-in 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Código de barras inválido */
+@keyframes shake-x {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-5px);
+  }
+  40% {
+    transform: translateX(5px);
+  }
+  60% {
+    transform: translateX(-3px);
+  }
+  80% {
+    transform: translateX(3px);
+  }
+}
+.shake-x {
+  animation: shake-x 0.32s ease-in-out both;
+}
+
+/* Fio de tempo do card "produto encontrado" */
+@keyframes countdown-bar {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+.countdown-bar {
+  transform-origin: left;
+  animation: countdown-bar linear both;
+}
+
+/* Progresso completo */
+@keyframes ready-glow {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 45%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+.ready-glow {
+  animation: ready-glow 0.7s ease-out both;
 }

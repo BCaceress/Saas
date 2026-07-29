@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { resolvePeriodo, fmtDataCompleta } from "@/lib/periodo";
+import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { getModelo } from "@/app/(app)/relatorios/_modelos";
 import { montarDocumento } from "@/app/(app)/relatorios/_documento-data";
 import type { Range } from "@/app/(app)/relatorios/_data";
@@ -35,7 +36,7 @@ export default async function DocumentoPage({
   const { doc, siteNome } = await withTenant(ctx, async () => {
     const siteId = await getActiveSiteId();
     const [doc, sites] = await Promise.all([
-      montarDocumento(modeloDef.id, range, siteId),
+      montarDocumento(modeloDef.id, range, siteId, policyDoTenant(ctx.tenant)),
       listSites(),
     ]);
     const siteNome = siteId ? (sites.find((s) => s.id === siteId)?.nome ?? null) : null;

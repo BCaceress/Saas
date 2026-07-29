@@ -1,111 +1,101 @@
 import Link from "next/link";
-import { BadgeCheck, BarChart3, PackageSearch, Wine } from "lucide-react";
-import { BrandMark } from "./_components/brand-mark";
+import { cookies } from "next/headers";
+import { Cloud, Headphones } from "lucide-react";
+import { AuthTopbar } from "./_components/auth-topbar";
+import { BrandSymbol } from "./_components/brand-symbol";
+import { Showcase } from "./_components/showcase";
 
-const destaques = [
-  { icon: Wine, label: "Saldo fechado + aberto por garrafa, em tempo real" },
-  { icon: PackageSearch, label: "Cadastro por EAN — Cosmos preenche o resto" },
-  { icon: BarChart3, label: "Relatórios prontos pra levar ao contador" },
+const garantias = [
+  { icon: Cloud, titulo: "Backup automático", texto: "Seus dados salvos todos os dias." },
+  { icon: Headphones, titulo: "Suporte especializado", texto: "Gente que entende de operação." },
 ];
 
-export default function AuthLayout({ children }: { children: React.ReactNode }) {
+export default async function AuthLayout({ children }: { children: React.ReactNode }) {
+  // Mesma fonte do RootLayout: o botão de tema já nasce com o ícone certo.
+  const temaInicial = (await cookies()).get("theme")?.value === "dark" ? "dark" : "light";
+
   return (
-    <div className="auth-theme grid min-h-dvh bg-[var(--auth-bg)] md:grid-cols-[1fr_300px] lg:grid-cols-[45fr_55fr]">
-      {/* Coluna de autenticação */}
-      <div className="flex flex-col px-6 py-8 sm:px-10 lg:px-16 xl:px-20">
-        <Link href="/" aria-label="NoHub Market — início" className="w-fit">
-          <BrandMark className="text-[var(--auth-ink)]" />
-        </Link>
-
-        <div className="flex flex-1 items-center justify-center py-10">
-          <div className="auth-fade-up w-full max-w-md rounded-[24px] border border-[var(--auth-line)] bg-[var(--auth-card)] p-8 shadow-[0_24px_70px_-24px_rgba(0,0,0,0.55)] sm:p-10">
-            {children}
-          </div>
-        </div>
-
-        <p className="text-center text-xs text-[var(--auth-muted)] lg:text-left">
-          © {new Date().getFullYear()} NoHub Market
-        </p>
+    <div className="auth-theme relative min-h-dvh bg-[var(--auth-bg)] text-[var(--auth-ink)]">
+      {/* Fundo: gradiente quase branco, poeira de pontos, um traço curvo e dois
+          halos de marca. Atmosfera — nunca concorrência com o conteúdo. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="auth-canvas absolute inset-0" />
+        <div className="auth-dots absolute inset-0" />
+        <svg
+          className="absolute -left-24 top-0 h-full w-[75%] text-[var(--auth-brand)] opacity-[0.14]"
+          viewBox="0 0 800 900"
+          fill="none"
+          preserveAspectRatio="xMidYMid slice"
+        >
+          <path
+            d="M-40 640C160 620 250 470 300 320 350 170 470 60 760 40"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M-40 760C200 730 330 560 380 400 430 240 560 130 820 110"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            opacity="0.55"
+          />
+        </svg>
+        <div
+          className="absolute -left-40 -top-44 h-[40rem] w-[40rem] rounded-full blur-[130px]"
+          style={{ background: "radial-gradient(circle, rgba(249,115,22,0.13), transparent 70%)" }}
+        />
+        <div
+          className="absolute -bottom-60 right-[-12rem] h-[38rem] w-[38rem] rounded-full blur-[140px]"
+          style={{ background: "radial-gradient(circle, rgba(249,115,22,0.07), transparent 70%)" }}
+        />
       </div>
 
-      {/* Painel-vitrine: reforça a assinatura do produto */}
-      <aside className="relative hidden overflow-hidden bg-[var(--auth-surface)] md:block">
-        {/* Grid sutil + glow de fundo — profundidade sem exagero */}
-        <div
-          className="absolute inset-0 opacity-[0.35]"
-          style={{
-            backgroundImage:
-              "linear-gradient(var(--auth-line) 1px, transparent 1px), linear-gradient(90deg, var(--auth-line) 1px, transparent 1px)",
-            backgroundSize: "40px 40px",
-          }}
-          aria-hidden
-        />
-        <div
-          className="absolute -right-40 -top-40 h-[28rem] w-[28rem] rounded-full bg-[var(--auth-brand)]/[0.16] blur-[110px]"
-          aria-hidden
-        />
-        <div
-          className="absolute bottom-0 left-0 h-64 w-full bg-gradient-to-t from-[var(--auth-bg)] to-transparent"
-          aria-hidden
-        />
+      <AuthTopbar temaInicial={temaInicial} />
 
-        <div className="relative flex h-full flex-col justify-center gap-8 px-10 py-16 lg:gap-10 lg:px-14 xl:px-16">
-          <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--auth-brand)]">
-            NoHub Market
-          </p>
-          <h2 className="max-w-sm font-display text-[2rem] font-semibold leading-[1.15] text-[var(--auth-ink)] lg:text-4xl">
-            Cada garrafa importa. Controle seu estoque em tempo real.
-          </h2>
-          <p className="hidden max-w-xs text-sm leading-relaxed text-[var(--auth-muted)] lg:block">
-            Um único painel pra saldo, compras e relatório — pensado pro
-            operador de mercado autônomo, conveniência ou distribuidora.
-          </p>
+      <div className="relative grid min-h-dvh md:grid-cols-[42fr_58fr] lg:grid-cols-[54fr_46fr]">
+        <Showcase />
 
-          {/* Composição visual — demonstração do produto, não é dado real */}
-          <div className="w-full max-w-xs rounded-[20px] border border-[var(--auth-line-strong)] bg-white/[0.04] p-4 backdrop-blur-sm">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-medium text-[var(--auth-ink)]">Vodka Absolut 1L</div>
-              <span className="rounded-full bg-[var(--auth-brand-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--auth-brand)]">
-                Repor
+        {/* pt maior que pb: reserva o corredor do botão de tema para o card
+            nunca encostar nele em telas baixas. */}
+        <div className="flex items-center justify-center px-5 pb-14 pt-24 sm:px-8 md:pb-10 md:pt-20 lg:px-12">
+          <div className="w-full max-w-[29.5rem]">
+            {/* Sem coluna institucional no mobile, a marca precisa aparecer aqui. */}
+            <Link
+              href="/"
+              aria-label="NoHub Market — início"
+              className="mx-auto mb-8 flex w-fit items-center gap-2.5 md:hidden"
+            >
+              <BrandSymbol className="h-8" />
+              <span className="font-display text-[15px] tracking-tight text-[var(--auth-ink-2)]">
+                NoHub <span className="text-[var(--auth-muted)]">Market</span>
               </span>
-            </div>
+            </Link>
 
-            <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--auth-line-strong)] bg-white/[0.05] px-1.5 py-0.5">
-              <span aria-hidden className="barcode-strip h-3.5 w-4 rounded-[2px] opacity-90 invert" />
-              <span className="font-mono text-[12px] font-medium tracking-tight text-[var(--auth-ink)] tnum">
-                BEB-DES-3344
-              </span>
-            </div>
+            <div className="auth-fade-up rounded-[28px] bg-[var(--auth-card)] p-7 shadow-[var(--auth-card-shadow)] sm:px-11 sm:py-11">
+              {children}
 
-            <div className="mt-3.5 flex items-baseline gap-2 font-mono text-sm text-[var(--auth-ink)] tnum">
-              <span className="font-semibold">4</span>
-              <span className="text-xs text-[var(--auth-muted)]">fechadas</span>
-              <span className="text-xs text-[var(--auth-brand)]">+ 1 aberta · 20%</span>
-              <span className="ml-auto flex items-center gap-1 text-[10px] text-[var(--auth-ok)]">
-                <span className="h-1.5 w-1.5 rounded-full bg-[var(--auth-ok)]" aria-hidden />
-                ao vivo
-              </span>
+              <div className="mt-8 grid grid-cols-2 gap-4 border-t border-[var(--auth-line)] pt-5">
+                {garantias.map(({ icon: Icon, titulo, texto }) => (
+                  <div key={titulo} className="flex items-start gap-2.5">
+                    <Icon
+                      size={15}
+                      className="mt-0.5 shrink-0 text-[var(--auth-brand-text)]"
+                      aria-hidden
+                    />
+                    <div className="min-w-0">
+                      <p className="text-[12.5px] font-semibold leading-tight text-[var(--auth-ink-2)]">
+                        {titulo}
+                      </p>
+                      <p className="mt-0.5 text-[11.5px] leading-tight text-[var(--auth-muted)]">
+                        {texto}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-              <div className="h-full w-2/3 rounded-full bg-[var(--auth-brand)]" />
-            </div>
-          </div>
-
-          <ul className="hidden flex-col gap-3.5 lg:flex">
-            {destaques.map(({ icon: Icon, label }) => (
-              <li key={label} className="flex items-start gap-3 text-sm text-[var(--auth-muted)]">
-                <Icon size={17} className="mt-0.5 shrink-0 text-[var(--auth-brand)]" aria-hidden />
-                {label}
-              </li>
-            ))}
-          </ul>
-
-          <div className="hidden items-center gap-2 text-xs text-[var(--auth-muted)] lg:flex">
-            <BadgeCheck size={15} className="text-[var(--auth-brand)]" aria-hidden />
-            14 dias grátis, sem cartão de crédito
           </div>
         </div>
-      </aside>
+      </div>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { resolvePeriodo } from "@/lib/periodo";
+import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { brl } from "@/lib/utils";
 import { KpiCard } from "@/components/charts/kpi-card";
 import { ChartCard, ChartEmpty } from "@/components/charts/chart-card";
@@ -18,13 +19,14 @@ export default async function RelatorioEstoque({
   const periodo = resolvePeriodo(await searchParams);
   const range: Range = { inicio: periodo.inicio, fim: periodo.fim };
 
+  const policy = policyDoTenant(ctx.tenant);
   const d = await withTenant(ctx, async () => {
     const siteId = await getActiveSiteId();
     const [rupturaRows, valor, giro, posicao] = await Promise.all([
-      ruptura(siteId),
+      ruptura(siteId, policy),
       valorEstoqueAtual(siteId),
       giroEstoque(range, siteId),
-      posicaoEstoque(siteId),
+      posicaoEstoque(siteId, policy),
     ]);
     return { rupturaRows, valor, giro, posicao };
   });
@@ -34,9 +36,9 @@ export default async function RelatorioEstoque({
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="Valor de estoque" value={brl(d.valor)} hint="a custo médio" destaque />
         <KpiCard
-          label="Em ruptura"
+          label={policy.usaGiro ? "Sem estoque" : "Em ruptura"}
           value={String(d.rupturaRows.length)}
-          hint="abaixo do mínimo"
+          hint={policy.usaGiro ? "saldo zerado" : "abaixo do mínimo"}
           goodWhen="down"
         />
         <KpiCard
@@ -51,17 +53,28 @@ export default async function RelatorioEstoque({
         <KpiCard label="Itens em estoque" value={String(d.posicao.length)} />
       </div>
 
-      <ChartCard title="Ruptura" subtitle="Produtos abaixo do mínimo, com déficit até o ideal">
+      <ChartCard
+        title={policy.usaGiro ? "Sem estoque" : "Ruptura"}
+        subtitle={
+          policy.usaGiro
+            ? "Produtos com saldo zerado — veja a sugestão por giro em Compras"
+            : policy.usaIdeal
+              ? "Produtos abaixo do mínimo, com déficit até o ideal"
+              : "Produtos abaixo do mínimo, com déficit até o mínimo"
+        }
+      >
         {d.rupturaRows.length === 0 ? (
-          <ChartEmpty mensagem="Nenhum produto em ruptura." />
+          <ChartEmpty mensagem={policy.usaGiro ? "Nenhum produto zerado." : "Nenhum produto em ruptura."} />
         ) : (
           <BarList
             tone="danger"
             items={d.rupturaRows.slice(0, 10).map((r) => ({
               label: r.nome,
-              value: r.deficit,
+              value: policy.usaGiro ? 1 : r.deficit,
               sub: `${r.siteNome} · ${r.sku}`,
-              display: `falta ${r.deficit.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`,
+              display: policy.usaGiro
+                ? "zerado"
+                : `falta ${r.deficit.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`,
             }))}
           />
         )}

@@ -12,7 +12,7 @@ function Enviar() {
     <button
       type="submit"
       disabled={pending}
-      className="inline-flex h-[52px] w-full cursor-pointer items-center justify-center gap-2 rounded-2xl bg-[var(--auth-brand)] text-[15px] font-semibold text-[#1a0d02] transition-all duration-200 hover:bg-[var(--auth-brand-hover)] hover:shadow-[0_8px_28px_-8px_var(--auth-glow)] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+      className="inline-flex h-[52px] w-full cursor-pointer items-center justify-center gap-2 rounded-2xl bg-[var(--auth-brand)] text-[15px] font-semibold text-[var(--auth-on-brand)] transition-all duration-200 hover:bg-[var(--auth-brand-hover)] hover:shadow-[0_8px_28px_-8px_var(--auth-glow)] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
     >
       {pending && <Loader2 size={17} className="animate-spin" aria-hidden />}
       {pending ? "Enviando…" : "Enviar link de redefinição"}
@@ -28,10 +28,10 @@ export function PedirReset() {
   if (estado?.enviado) {
     return (
       <div>
-        <div className="mb-5 grid h-12 w-12 place-items-center rounded-2xl bg-[var(--auth-brand)]/15 text-[var(--auth-brand)]">
+        <div className="mx-auto mb-5 grid h-12 w-12 place-items-center rounded-2xl bg-[var(--auth-brand)]/15 text-[var(--auth-brand-text)]">
           <CheckCircle2 size={22} aria-hidden />
         </div>
-        <h1 className="font-display text-[26px] font-bold leading-tight text-[var(--auth-ink)]">
+        <h1 className="text-center font-display text-[27px] font-semibold leading-tight tracking-tight text-[var(--auth-ink)]">
           Verifique seu e-mail
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-[var(--auth-muted)]">
@@ -43,7 +43,7 @@ export function PedirReset() {
         </p>
         <Link
           href="/login"
-          className="mt-7 flex items-center justify-center gap-1.5 text-sm font-medium text-[var(--auth-muted)] transition-colors hover:text-[var(--auth-brand)]"
+          className="mt-7 flex items-center justify-center gap-1.5 text-sm font-medium text-[var(--auth-muted)] transition-colors hover:text-[var(--auth-brand-text-hover)]"
         >
           <ArrowLeft size={15} aria-hidden />
           Voltar para o login
@@ -54,10 +54,10 @@ export function PedirReset() {
 
   return (
     <div>
-      <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--auth-brand)]">
+      <p className="mb-3 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--auth-brand-text)]">
         Recuperação de senha
       </p>
-      <h1 className="font-display text-[26px] font-bold leading-tight text-[var(--auth-ink)]">
+      <h1 className="text-center font-display text-[27px] font-semibold leading-tight tracking-tight text-[var(--auth-ink)]">
         Vamos redefinir sua senha
       </h1>
       <p className="mt-1.5 mb-7 text-sm leading-relaxed text-[var(--auth-muted)]">
@@ -68,7 +68,7 @@ export function PedirReset() {
         {estado?.erro && (
           <p
             role="alert"
-            className="flex items-start gap-2 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200"
+            className="flex items-start gap-2 rounded-2xl bg-[var(--auth-danger-soft)] px-4 py-3 text-sm text-[var(--auth-danger)]"
           >
             <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden />
             {estado.erro}
@@ -89,7 +89,7 @@ export function PedirReset() {
             autoComplete="email"
             placeholder="voce@mercado.com.br"
             aria-label="E-mail da conta"
-            className="h-[52px] w-full rounded-2xl border border-[var(--auth-line-strong)] bg-[var(--auth-field)] pl-11 pr-4 text-[15px] text-[var(--auth-ink)] transition-colors duration-150 placeholder:text-[var(--auth-muted)]/70 hover:border-white/20 focus-visible:border-[var(--auth-brand)] focus-visible:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--auth-glow)]"
+            className="h-[52px] w-full rounded-2xl border border-[var(--auth-line-strong)] bg-[var(--auth-field)] pl-11 pr-4 text-[15px] text-[var(--auth-ink)] transition-colors duration-150 placeholder:text-[var(--auth-muted)]/70 focus-visible:border-[var(--auth-brand)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[color:var(--auth-glow)]"
           />
         </div>
 
@@ -98,7 +98,7 @@ export function PedirReset() {
 
       <Link
         href="/login"
-        className="mt-6 flex items-center justify-center gap-1.5 text-sm font-medium text-[var(--auth-muted)] transition-colors hover:text-[var(--auth-brand)]"
+        className="mt-6 flex items-center justify-center gap-1.5 text-sm font-medium text-[var(--auth-muted)] transition-colors hover:text-[var(--auth-brand-text-hover)]"
       >
         <ArrowLeft size={15} aria-hidden />
         Voltar para o login

@@ -1,6 +1,15 @@
 "use client";
 
-import { useMemo, useState, useEffect, useId, useRef, type ComponentProps } from "react";
+import {
+  createContext,
+  useContext,
+  useMemo,
+  useState,
+  useEffect,
+  useId,
+  useRef,
+  type ComponentProps,
+} from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -41,6 +50,15 @@ import {
   Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  MSG_APRENDIZADO,
+  POLICY_PADRAO,
+  fmtCobertura,
+  mediaDiaria,
+  necessidadeGiro,
+  nivelCobertura,
+  type EstoquePolicy,
+} from "@/lib/estoque-estrategia";
 import { toast } from "@/components/ui/toast";
 import { Sheet } from "@/components/ui/sheet";
 import { Menu } from "@/components/ui/menu";
@@ -152,34 +170,62 @@ function fmtMovData(iso: string): string {
   return `${rotulo} • ${hora}`;
 }
 
-export type Filtro = "todos" | "sem" | "baixoMinimo" | "repor" | "quaseIdeal" | "aberto";
+export type Filtro = "todos" | "sem" | "baixoMinimo" | "repor" | "quaseIdeal" | "baixaCobertura" | "aberto";
 type SortKey = "nome" | "fechado" | "valor";
 type SortDir = "asc" | "desc";
 type FormOptions = Pick<ComponentProps<typeof NovaEntradaForm>, "products" | "sites">;
 type HistoricoItem = Awaited<ReturnType<typeof fetchHistoricoProductAction>>[number];
 
 // ── Situação do estoque ───────────────────────────────────────
-// Estados objetivos: fechado × mínimo × ideal (+ aberto p/ distinguir zerado real).
-// Sem mín. e sem ideal configurados ⇒ não dá pra calcular corretamente ("Meta não definida").
+// O que é "estar bem" depende da estratégia da empresa
+// (lib/estoque-estrategia):
+//  · MINIMO       → fechado × mínimo;
+//  · MINIMO_IDEAL → fechado × mínimo × ideal (sem nenhum dos dois: "Meta não definida");
+//  · ROTATIVIDADE → cobertura em dias × cobertura desejada.
+// Em todos, o aberto entra só para distinguir zerado real.
 
-type Status = "semEstoque" | "semMeta" | "baixoMinimo" | "baixoIdeal" | "abastecido" | "semControle";
+type Status =
+  | "semEstoque"
+  | "semMeta"
+  | "baixoMinimo"
+  | "baixoIdeal"
+  | "abastecido"
+  | "semControle"
+  | "coberturaCritica"
+  | "coberturaAtencao"
+  | "semGiro";
+
+/** Contexto da estratégia — evita passar policy por dez níveis de componente. */
+const PolicyCtx = createContext<EstoquePolicy>(POLICY_PADRAO);
+const usePolicy = () => useContext(PolicyCtx);
 
 /** Produto marcado para não controlar estoque — some do funil de meta/urgência, só informa qtd comprada. */
 const semControle = (s: SaldoRow) => !s.controlaEstoque;
 
-function statusOf(s: SaldoRow): Status {
+function statusOf(s: SaldoRow, policy: EstoquePolicy): Status {
   if (semControle(s)) return "semControle";
   const f = s.estoqueFechado;
   if (f <= 0 && s.estoqueAberto <= 0) return "semEstoque";
+
+  if (policy.usaGiro) {
+    const cob = diasCobertura(s, policy);
+    if (cob == null) return "semGiro";
+    const nivel = nivelCobertura(cob, policy.diasCobertura);
+    if (nivel === "muito-baixo") return "coberturaCritica";
+    if (nivel === "atencao") return "coberturaAtencao";
+    return "abastecido";
+  }
+
   const { estoqueMinimo: min, estoqueIdeal: ideal } = s;
-  if (min <= 0 && ideal <= 0) return "semMeta";
+  const idealAtivo = policy.usaIdeal ? ideal : 0;
+  if (min <= 0 && idealAtivo <= 0) return "semMeta";
   if (min > 0 && f < min) return "baixoMinimo";
-  if (ideal > 0 && f < ideal) return "baixoIdeal";
+  if (idealAtivo > 0 && f < idealAtivo) return "baixoIdeal";
   return "abastecido";
 }
 
 // Rampa de severidade: danger (crítico) → warn (urgente) → brand (ação de repor,
-// mesma cor do CTA "Repor") → ok. semMeta/semControle são neutros — não são alerta.
+// mesma cor do CTA "Repor") → ok. semMeta/semGiro/semControle são neutros — não são alerta.
 const STATUS_META: Record<Status, { label: string; text: string; dot: string; bar: string; Icon: React.ElementType }> = {
   abastecido:  { label: "Abastecido",       text: "text-ok",     dot: "bg-ok",     bar: "bg-ok",     Icon: PackageCheck },
   baixoIdeal:  { label: "Abaixo do ideal",  text: "text-brand",  dot: "bg-brand",  bar: "bg-brand",  Icon: AlertTriangle },
@@ -187,24 +233,50 @@ const STATUS_META: Record<Status, { label: string; text: string; dot: string; ba
   semEstoque:  { label: "Sem estoque",      text: "text-danger", dot: "bg-danger", bar: "bg-danger", Icon: PackageX },
   semMeta:     { label: "Meta não definida",text: "text-faint",  dot: "bg-faint",  bar: "bg-faint",  Icon: PackageX },
   semControle: { label: "Sem controle",     text: "text-faint",  dot: "bg-faint",  bar: "bg-faint",  Icon: Package },
+  coberturaCritica: { label: "Cobertura crítica", text: "text-danger", dot: "bg-danger", bar: "bg-danger", Icon: AlertTriangle },
+  coberturaAtencao: { label: "Cobertura em atenção", text: "text-brand", dot: "bg-brand", bar: "bg-brand", Icon: AlertTriangle },
+  semGiro:     { label: "Sem giro",         text: "text-faint",  dot: "bg-faint",  bar: "bg-faint",  Icon: PackageX },
 };
 
-const semEstoque = (s: SaldoRow) => statusOf(s) === "semEstoque";
+const semEstoque = (s: SaldoRow, policy: EstoquePolicy) => statusOf(s, policy) === "semEstoque";
 const abaixoMin = (s: SaldoRow) => !semControle(s) && s.estoqueMinimo > 0 && s.estoqueFechado < s.estoqueMinimo;
 const precisaRepor = (s: SaldoRow) => !semControle(s) && s.estoqueIdeal > 0 && s.estoqueFechado < s.estoqueIdeal;
 const valorEstoque = (s: SaldoRow) => s.estoqueFechado * (s.custoMedio ?? 0);
 const disponivel = (s: SaldoRow) => s.estoqueFechado - s.estoqueAberto;
 const temEstoqueAberto = (s: SaldoRow) => s.estoqueAberto > 0;
 
-/** Média diária de vendas (prioriza 7d, cai p/ 30d). 0 = sem giro. */
-const mediaDia = (s: SaldoRow) =>
-  s.consumo7 > 0 ? s.consumo7 / 7 : s.consumo30 > 0 ? s.consumo30 / 30 : 0;
+/**
+ * Média diária de vendas. Na rotatividade é a janela que a empresa configurou;
+ * nas demais estratégias segue o atalho de sempre (7d, caindo p/ 30d).
+ */
+const mediaDia = (s: SaldoRow, policy: EstoquePolicy) =>
+  policy.usaGiro
+    ? mediaDiaria(s.consumoJanela, s.janelaDias)
+    : s.consumo7 > 0
+      ? s.consumo7 / 7
+      : s.consumo30 > 0
+        ? s.consumo30 / 30
+        : 0;
 
 /** Dias de cobertura = saldo fechado ÷ média diária. null = sem giro. */
-function diasCobertura(s: SaldoRow): number | null {
-  const m = mediaDia(s);
+function diasCobertura(s: SaldoRow, policy: EstoquePolicy): number | null {
+  const m = mediaDia(s, policy);
   if (m <= 0) return null;
   return Math.max(0, Math.round(s.estoqueFechado / m));
+}
+
+/** Linha em vermelho: abaixo do mínimo ou cobertura crítica, conforme a estratégia. */
+function critico(s: SaldoRow, policy: EstoquePolicy): boolean {
+  const st = statusOf(s, policy);
+  return st === "baixoMinimo" || st === "coberturaCritica";
+}
+
+/** Cobertura abaixo da desejada — o "precisa repor" do modo rotatividade. */
+function baixaCobertura(s: SaldoRow, policy: EstoquePolicy): boolean {
+  if (semControle(s) || !policy.usaGiro) return false;
+  const cob = diasCobertura(s, policy);
+  const nivel = nivelCobertura(cob, policy.diasCobertura);
+  return nivel === "muito-baixo" || nivel === "atencao";
 }
 
 /**
@@ -212,9 +284,10 @@ function diasCobertura(s: SaldoRow): number | null {
  * saldo abaixo do ideal em menos de 1 dia — antecipa a reposição em vez de
  * esperar o produto já entrar em "Abaixo do ideal".
  */
-function quaseIdeal(s: SaldoRow): boolean {
-  if (semControle(s) || s.estoqueIdeal <= 0 || s.estoqueFechado < s.estoqueIdeal) return false;
-  const m = mediaDia(s);
+function quaseIdeal(s: SaldoRow, policy: EstoquePolicy): boolean {
+  if (semControle(s) || !policy.usaIdeal) return false;
+  if (s.estoqueIdeal <= 0 || s.estoqueFechado < s.estoqueIdeal) return false;
+  const m = mediaDia(s, policy);
   return m > 0 && s.estoqueFechado - s.estoqueIdeal < m;
 }
 
@@ -228,35 +301,59 @@ function dataGaps(s: SaldoRow): ("custo" | "fornecedor" | "local")[] {
 }
 
 // semControle fica por último — é informativo, nunca uma pendência a resolver.
-const PRIORITY: Record<Status, number> = { semEstoque: 0, baixoMinimo: 1, baixoIdeal: 2, semMeta: 3, abastecido: 4, semControle: 5 };
+const PRIORITY: Record<Status, number> = {
+  semEstoque: 0,
+  baixoMinimo: 1,
+  coberturaCritica: 1,
+  baixoIdeal: 2,
+  coberturaAtencao: 2,
+  semMeta: 3,
+  semGiro: 3,
+  abastecido: 4,
+  semControle: 5,
+};
 
-/* CSV: separador ";" e decimal com vírgula (Excel pt-BR). */
-function toCsv(rows: SaldoRow[]): string {
+/* CSV: separador ";" e decimal com vírgula (Excel pt-BR). As colunas de meta
+   seguem a estratégia — quem controla por giro exporta média e cobertura. */
+function toCsv(rows: SaldoRow[], policy: EstoquePolicy): string {
   const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
   const num = (n: number) => n.toLocaleString("pt-BR", { maximumFractionDigits: 3, useGrouping: false });
-  const head = ["Produto", "Tipo", "SKU", "Codigo de barras", "Categoria", "Marca", "Fornecedor", "Fechado", "Aberto", "Disponivel", "Minimo", "Ideal", "Custo medio", "Valor em estoque", "Local"];
-  const body = rows.map((s) => [
-    esc(s.nome),
-    esc(TIPO_LABEL[s.tipo] ?? s.tipo),
-    esc(s.sku),
-    esc(s.ean ?? ""),
-    esc(s.categoria ?? ""),
-    esc(s.marca ?? ""),
-    esc(s.fornecedorNome ?? ""),
-    num(s.estoqueFechado),
-    num(s.estoqueAberto),
-    num(disponivel(s)),
-    num(s.estoqueMinimo),
-    num(s.estoqueIdeal),
-    num(s.custoMedio ?? 0),
-    num(valorEstoque(s)),
-    esc(s.locationNome ?? ""),
-  ].join(";"));
+  const head = [
+    "Produto", "Tipo", "SKU", "Codigo de barras", "Categoria", "Marca", "Fornecedor",
+    "Fechado", "Aberto", "Disponivel",
+    ...(policy.usaMinimo ? ["Minimo"] : []),
+    ...(policy.usaIdeal ? ["Ideal"] : []),
+    ...(policy.usaGiro ? ["Media diaria", "Cobertura (dias)", "Cobertura desejada"] : []),
+    "Custo medio", "Valor em estoque", "Local",
+  ];
+  const body = rows.map((s) => {
+    const cob = diasCobertura(s, policy);
+    return [
+      esc(s.nome),
+      esc(TIPO_LABEL[s.tipo] ?? s.tipo),
+      esc(s.sku),
+      esc(s.ean ?? ""),
+      esc(s.categoria ?? ""),
+      esc(s.marca ?? ""),
+      esc(s.fornecedorNome ?? ""),
+      num(s.estoqueFechado),
+      num(s.estoqueAberto),
+      num(disponivel(s)),
+      ...(policy.usaMinimo ? [num(s.estoqueMinimo)] : []),
+      ...(policy.usaIdeal ? [num(s.estoqueIdeal)] : []),
+      ...(policy.usaGiro
+        ? [num(mediaDia(s, policy)), cob != null ? num(cob) : "", num(policy.diasCobertura)]
+        : []),
+      num(s.custoMedio ?? 0),
+      num(valorEstoque(s)),
+      esc(s.locationNome ?? ""),
+    ].join(";");
+  });
   return [head.join(";"), ...body].join("\r\n");
 }
 
-function baixarCsv(rows: SaldoRow[]) {
-  const csv = "﻿" + toCsv(rows);
+function baixarCsv(rows: SaldoRow[], policy: EstoquePolicy) {
+  const csv = "﻿" + toCsv(rows, policy);
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -290,12 +387,15 @@ type Tab = "resumo" | "historico";
 
 export function SaldosView({
   saldos,
+  policy = POLICY_PADRAO,
   siteId,
   initialQ = "",
   initialFiltro = "todos",
   initialPage = 1,
 }: {
   saldos: SaldoRow[];
+  /** Estratégia de controle da empresa — define metas, filtros e colunas. */
+  policy?: EstoquePolicy;
   siteId: string | null;
   initialQ?: string;
   initialFiltro?: Filtro;
@@ -335,19 +435,20 @@ export function SaldosView({
   useEffect(() => { try { localStorage.setItem("estoque:cols", JSON.stringify(cols)); } catch {} }, [cols]);
 
   const counts = useMemo(() => {
-    let sem = 0, baixoMinimo = 0, repor = 0, quaseIdealN = 0, aberto = 0, semlocal = 0, pendencias = 0, comEstoque = 0, semMeta = 0;
+    let sem = 0, baixoMinimo = 0, repor = 0, quaseIdealN = 0, cobertura = 0, aberto = 0, semlocal = 0, pendencias = 0, comEstoque = 0, semMeta = 0;
     for (const s of saldos) {
-      if (!semEstoque(s)) comEstoque++; else sem++;
+      if (!semEstoque(s, policy)) comEstoque++; else sem++;
       if (abaixoMin(s)) baixoMinimo++;
       if (precisaRepor(s)) repor++;
-      if (quaseIdeal(s)) quaseIdealN++;
+      if (quaseIdeal(s, policy)) quaseIdealN++;
+      if (baixaCobertura(s, policy)) cobertura++;
       if (temEstoqueAberto(s)) aberto++;
       if (!s.locationNome) semlocal++;
       if (dataGaps(s).length > 0) pendencias++;
-      if (statusOf(s) === "semMeta") semMeta++;
+      if (statusOf(s, policy) === "semMeta") semMeta++;
     }
-    return { todos: saldos.length, sem, baixoMinimo, repor, quaseIdeal: quaseIdealN, aberto, semlocal, pendencias, comEstoque, semMeta };
-  }, [saldos]);
+    return { todos: saldos.length, sem, baixoMinimo, repor, quaseIdeal: quaseIdealN, baixaCobertura: cobertura, aberto, semlocal, pendencias, comEstoque, semMeta };
+  }, [saldos, policy]);
 
   // Filtros secundários (painel "Filtros") — categoria/fornecedor/local derivados dos dados.
   const [avComEstoque, setAvComEstoque] = useState(false);
@@ -387,15 +488,16 @@ export function SaldosView({
     const termo = q.trim().toLowerCase();
     const out = saldos.filter((s) => {
       switch (filtro) {
-        case "sem":         if (!semEstoque(s)) return false; break;
-        case "baixoMinimo": if (!abaixoMin(s)) return false; break;
-        case "repor":       if (!precisaRepor(s)) return false; break;
-        case "quaseIdeal":  if (!quaseIdeal(s)) return false; break;
-        case "aberto":      if (!temEstoqueAberto(s)) return false; break;
+        case "sem":            if (!semEstoque(s, policy)) return false; break;
+        case "baixoMinimo":    if (!abaixoMin(s)) return false; break;
+        case "repor":          if (!precisaRepor(s)) return false; break;
+        case "quaseIdeal":     if (!quaseIdeal(s, policy)) return false; break;
+        case "baixaCobertura": if (!baixaCobertura(s, policy)) return false; break;
+        case "aberto":         if (!temEstoqueAberto(s)) return false; break;
       }
-      if (avComEstoque && semEstoque(s)) return false;
+      if (avComEstoque && semEstoque(s, policy)) return false;
       if (avSemLocal && s.locationNome) return false;
-      if (avSemMeta && statusOf(s) !== "semMeta") return false;
+      if (avSemMeta && statusOf(s, policy) !== "semMeta") return false;
       if (avPendenciaCadastro && dataGaps(s).length === 0) return false;
       if (avCategoria && s.categoria !== avCategoria) return false;
       if (avFornecedor && s.fornecedorNome !== avFornecedor) return false;
@@ -420,13 +522,13 @@ export function SaldosView({
         if (cmp !== 0) return sort.dir === "asc" ? cmp : -cmp;
         return a.nome.localeCompare(b.nome);
       }
-      const pa = PRIORITY[statusOf(a)], pb = PRIORITY[statusOf(b)];
+      const pa = PRIORITY[statusOf(a, policy)], pb = PRIORITY[statusOf(b, policy)];
       if (pa !== pb) return pa - pb;
       return a.nome.localeCompare(b.nome);
     });
 
     return out;
-  }, [saldos, q, filtro, sort, avComEstoque, avSemLocal, avSemMeta, avPendenciaCadastro, avCategoria, avFornecedor, avLocal]);
+  }, [saldos, policy, q, filtro, sort, avComEstoque, avSemLocal, avSemMeta, avPendenciaCadastro, avCategoria, avFornecedor, avLocal]);
 
   // Paginação — volta à 1ª página quando o conjunto muda. Pula o mount para
   // não descartar a página restaurada da URL.
@@ -492,13 +594,24 @@ export function SaldosView({
   // Pills = mesmo estado de filtro dos KPIs acima (clicar um seleciona o
   // outro também) — só um segundo jeito de chegar no mesmo filtro, mais os
   // dois que não têm KPI: alerta preventivo e estoque aberto.
-  const pillsEstoque: Pill[] = [
-    { key: "todos",       label: "Todos",             count: counts.todos,      tone: "neutral" },
-    { key: "baixoMinimo", label: "Abaixo do mínimo",  count: counts.baixoMinimo, tone: "danger" },
-    { key: "repor",       label: "Abaixo do ideal",   count: counts.repor,      tone: "brand"   },
-    { key: "quaseIdeal",  label: "Quase do ideal",    count: counts.quaseIdeal, tone: "warn"    },
-    { key: "aberto",      label: "Estoque aberto",    count: counts.aberto,     tone: "neutral" },
-  ];
+  const pillsEstoque: Pill[] = policy.usaGiro
+    ? [
+        { key: "todos",          label: "Todos",           count: counts.todos,          tone: "neutral" },
+        { key: "sem",            label: "Sem estoque",     count: counts.sem,            tone: "danger"  },
+        { key: "baixaCobertura", label: "Cobertura baixa", count: counts.baixaCobertura, tone: "brand"   },
+        { key: "aberto",         label: "Estoque aberto",  count: counts.aberto,         tone: "neutral" },
+      ]
+    : [
+        { key: "todos",       label: "Todos",             count: counts.todos,      tone: "neutral" },
+        { key: "baixoMinimo", label: "Abaixo do mínimo",  count: counts.baixoMinimo, tone: "danger" },
+        ...(policy.usaIdeal
+          ? ([
+              { key: "repor",      label: "Abaixo do ideal", count: counts.repor,      tone: "brand" },
+              { key: "quaseIdeal", label: "Quase do ideal",  count: counts.quaseIdeal, tone: "warn"  },
+            ] as Pill[])
+          : []),
+        { key: "aberto",      label: "Estoque aberto",    count: counts.aberto,     tone: "neutral" },
+      ];
 
   const pageAllSelected = pageRows.length > 0 && pageRows.every((s) => selecionados.has(s.productId));
   function togglePageSelecionada() {
@@ -511,6 +624,7 @@ export function SaldosView({
   }
 
   return (
+   <PolicyCtx.Provider value={policy}>
     <div className="flex flex-col gap-4">
       {/* ── Filtros + tabela na mesma superfície (mesmo padrão visual de /produtos) ── */}
       <div className="w-full rounded-[var(--radius-lg)] bg-surface p-3 shadow-[var(--shadow-float)] sm:p-4">
@@ -587,7 +701,10 @@ export function SaldosView({
           <div className="px-1 py-0.5">
             <CheckRow checked={avComEstoque} label="Com estoque" onChange={() => setAvComEstoque((v) => !v)} />
             <CheckRow checked={avSemLocal} label="Sem localização" onChange={() => setAvSemLocal((v) => !v)} />
-            <CheckRow checked={avSemMeta} label="Sem meta definida" onChange={() => setAvSemMeta((v) => !v)} />
+            {/* "Sem meta" só existe onde há meta a definir. */}
+            {!policy.usaGiro && (
+              <CheckRow checked={avSemMeta} label="Sem meta definida" onChange={() => setAvSemMeta((v) => !v)} />
+            )}
             <CheckRow checked={avPendenciaCadastro} label="Com pendência cadastral" onChange={() => setAvPendenciaCadastro((v) => !v)} />
           </div>
         </Menu>
@@ -633,7 +750,7 @@ export function SaldosView({
 
         <button
           type="button"
-          onClick={() => baixarCsv(filtrados)}
+          onClick={() => baixarCsv(filtrados, policy)}
           disabled={filtrados.length === 0}
           title="Exportar CSV"
           aria-label="Exportar CSV"
@@ -688,7 +805,7 @@ export function SaldosView({
                     onClick={() => abrir(s)}
                     className={cn(
                       "group cursor-pointer transition-colors hover:bg-surface-2",
-                      statusOf(s) === "baixoMinimo" && "bg-danger-soft/40",
+                      critico(s, policy) && "bg-danger-soft/40",
                       selecionados.has(s.productId) && "bg-brand-soft/30",
                     )}
                   >
@@ -762,7 +879,7 @@ export function SaldosView({
                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(s); } }}
                 className={cn(
                   "flex cursor-pointer items-start gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)",
-                  statusOf(s) === "baixoMinimo" ? "border-danger/30 bg-danger-soft/30" : "border-line bg-surface",
+                  critico(s, policy) ? "border-danger/30 bg-danger-soft/30" : "border-line bg-surface",
                   selecionados.has(s.productId) && "border-brand/50 bg-brand-soft/20",
                 )}
               >
@@ -887,6 +1004,7 @@ export function SaldosView({
         )}
       </Sheet>
     </div>
+   </PolicyCtx.Provider>
   );
 }
 
@@ -1096,6 +1214,7 @@ function FornecedorCell({ s }: { s: SaldoRow }) {
 }
 
 function EstoqueCell({ s }: { s: SaldoRow }) {
+  const policy = usePolicy();
   // Sem controle: só a quantidade comprada — nem barra, nem mínimo/ideal, nem cobertura.
   if (!s.controlaEstoque) {
     return (
@@ -1108,14 +1227,21 @@ function EstoqueCell({ s }: { s: SaldoRow }) {
       </div>
     );
   }
-  const st = statusOf(s);
+  const st = statusOf(s, policy);
   const m = STATUS_META[st];
   const { estoqueFechado: f, estoqueIdeal: ideal, estoqueMinimo: min } = s;
-  const pct = ideal > 0 ? Math.round((f / ideal) * 100) : f > 0 ? 100 : 0;
-  const fill = Math.min(100, Math.max(0, pct));
-  const minPos = ideal > 0 && min > 0 ? Math.min(100, (min / ideal) * 100) : null;
+  const cob = diasCobertura(s, policy);
 
-  const cob = diasCobertura(s);
+  // A barra mede o progresso rumo à meta da estratégia: ideal, mínimo ou
+  // cobertura desejada em dias.
+  const alvoBarra = policy.usaGiro ? policy.diasCobertura : policy.usaIdeal ? ideal : min;
+  const atualBarra = policy.usaGiro ? (cob ?? 0) : f;
+  const pct = alvoBarra > 0 ? Math.round((atualBarra / alvoBarra) * 100) : f > 0 ? 100 : 0;
+  const fill = Math.min(100, Math.max(0, pct));
+  const minPos = !policy.usaGiro && policy.usaIdeal && ideal > 0 && min > 0
+    ? Math.min(100, (min / ideal) * 100)
+    : null;
+
   return (
     <div className="flex w-40 max-w-full flex-col gap-1">
       <div className="flex items-baseline gap-1.5">
@@ -1127,7 +1253,7 @@ function EstoqueCell({ s }: { s: SaldoRow }) {
           </span>
         )}
       </div>
-      {/* Barra: progresso rumo ao ideal, com marcador do mínimo */}
+      {/* Barra: progresso rumo à meta, com marcador do mínimo quando existe */}
       <div className="relative h-2 w-full overflow-hidden rounded-full bg-line ring-1 ring-inset ring-line">
         <div className={cn("h-full rounded-full transition-all", m.bar)} style={{ width: `${fill}%` }} />
         {minPos != null && (
@@ -1139,11 +1265,18 @@ function EstoqueCell({ s }: { s: SaldoRow }) {
           />
         )}
       </div>
-      {ideal > 0 ? (
+      {policy.usaGiro ? (
+        <div className="flex justify-between text-[10px] tabular-nums text-faint">
+          <span>{fmt1(mediaDia(s, policy))}/dia</span>
+          <span>meta {policy.diasCobertura} d</span>
+        </div>
+      ) : policy.usaIdeal && ideal > 0 ? (
         <div className="flex justify-between text-[10px] tabular-nums text-faint">
           <span>mín {fmt(min)}</span>
           <span>ideal {fmt(ideal)}</span>
         </div>
+      ) : min > 0 ? (
+        <span className="text-[10px] tabular-nums text-faint">mín {fmt(min)}</span>
       ) : (
         <span className="text-[10px] text-faint">sem meta definida</span>
       )}
@@ -1283,7 +1416,7 @@ function ProdutoCell({
   /** Quando presente, o nome vira botão focável — acesso por teclado nas linhas da tabela. */
   onOpen?: () => void;
 }) {
-  const st = statusOf(s);
+  const st = statusOf(s, usePolicy());
   const cadGaps = dataGaps(s).filter((g) => g !== "local"); // custo, fornecedor
   return (
     <div className="flex min-w-0 items-center gap-3">
@@ -1386,6 +1519,8 @@ function EmptyState({ filtro, busca }: { filtro: Filtro; busca: string }) {
                 ? "Nada abaixo do ideal."
                 : filtro === "quaseIdeal"
                   ? "Nenhum item perto de precisar reposição."
+                  : filtro === "baixaCobertura"
+                  ? "Nenhum item com cobertura abaixo da desejada."
                   : filtro === "aberto"
                     ? "Nenhum item com estoque aberto no momento."
                     : filtro !== "todos"
@@ -1409,6 +1544,9 @@ const PANEL_STATUS: Record<Status, { label: string; text: string; dot: string }>
   semEstoque:  { label: "Comprar hoje",      text: "text-danger", dot: "bg-danger" },
   semMeta:     { label: "Meta não definida", text: "text-faint",  dot: "bg-faint"  },
   semControle: { label: "Sem controle",      text: "text-faint",  dot: "bg-faint"  },
+  coberturaCritica: { label: "Comprar hoje",       text: "text-danger", dot: "bg-danger" },
+  coberturaAtencao: { label: "Comprar em breve",   text: "text-brand",  dot: "bg-brand"  },
+  semGiro:     { label: "Sem giro recente",  text: "text-faint",  dot: "bg-faint"  },
 };
 
 /** "67 unidades disponíveis" / "12 kg disponíveis" — plural correto por unidade. */
@@ -1419,14 +1557,20 @@ function disponivelLabel(s: SaldoRow): string {
 }
 
 /** Uma frase sobre a situação do produto, calculada do saldo × meta × giro. */
-function fraseSituacao(s: SaldoRow): string {
-  const st = statusOf(s);
+function fraseSituacao(s: SaldoRow, policy: EstoquePolicy): string {
+  const st = statusOf(s, policy);
   if (st === "semControle") return "Produto comprado sem controle de estoque.";
   if (st === "semEstoque")  return "Produto sem estoque — ruptura em curso.";
   if (st === "baixoMinimo") return "Produto em risco de ruptura.";
   if (st === "baixoIdeal")  return "Reposição recomendada nos próximos dias.";
-  if (st === "semMeta")     return "Defina mínimo e ideal para acompanhar a reposição.";
-  const cob = diasCobertura(s);
+  if (st === "semMeta")     return policy.usaIdeal
+    ? "Defina mínimo e ideal para acompanhar a reposição."
+    : "Defina o estoque mínimo para acompanhar a reposição.";
+  if (st === "semGiro")     return "Sem vendas na janela analisada — o giro ainda não dá para projetar.";
+  const cob = diasCobertura(s, policy);
+  if (st === "coberturaCritica" || st === "coberturaAtencao") {
+    return `Cobertura de ${fmtCobertura(cob)} — abaixo dos ${policy.diasCobertura} dias desejados.`;
+  }
   if (cob == null) return "Estoque no ideal. Sem vendas recentes para estimar a cobertura.";
   return `Estoque suficiente para aproximadamente ${cob} ${cob === 1 ? "dia" : "dias"}.`;
 }
@@ -1436,7 +1580,7 @@ function fraseSituacao(s: SaldoRow): string {
  * vence dizer quanto comprar, que vence a projeção, que vence a unidade aberta.
  * null = nada relevante a dizer (o card some).
  */
-function recomendacao(s: SaldoRow): string | null {
+function recomendacao(s: SaldoRow, policy: EstoquePolicy): string | null {
   if (semControle(s)) return null;
 
   if (s.reposEstado !== "nenhuma" && s.reposNumero) {
@@ -1444,13 +1588,32 @@ function recomendacao(s: SaldoRow): string | null {
     return `Já existe um pedido em andamento para este produto (${s.reposNumero}).${prazo}`;
   }
 
-  const st = statusOf(s);
-  if (st === "semEstoque" || st === "baixoMinimo") {
-    const falta = s.estoqueIdeal > 0 ? s.estoqueIdeal - s.estoqueFechado : 0;
-    if (falta > 0) return `Compre ao menos ${fmt(falta)} ${closedUnitLabel(s)} para voltar ao estoque ideal.`;
+  const st = statusOf(s, policy);
+  const m = mediaDia(s, policy);
+
+  // Rotatividade: a quantidade sai do giro × cobertura desejada.
+  if (policy.usaGiro) {
+    if (m <= 0) return null;
+    const falta = necessidadeGiro({
+      mediaDia: m,
+      estoque: s.estoqueFechado,
+      diasCobertura: policy.diasCobertura,
+    });
+    if (falta > 0) {
+      return `Vende ${fmt1(m)} ${closedUnitLabel(s)} por dia. Compre ${fmt(falta)} para cobrir os próximos ${policy.diasCobertura} dias.`;
+    }
+    return null;
   }
 
-  const m = mediaDia(s);
+  if (st === "semEstoque" || st === "baixoMinimo") {
+    const alvo = policy.usaIdeal && s.estoqueIdeal > 0 ? s.estoqueIdeal : s.estoqueMinimo;
+    const falta = alvo > 0 ? alvo - s.estoqueFechado : 0;
+    if (falta > 0) {
+      const destino = policy.usaIdeal && s.estoqueIdeal > 0 ? "estoque ideal" : "estoque mínimo";
+      return `Compre ao menos ${fmt(falta)} ${closedUnitLabel(s)} para voltar ao ${destino}.`;
+    }
+  }
+
   if (m > 0 && s.estoqueMinimo > 0 && s.estoqueFechado > s.estoqueMinimo) {
     const dias = Math.round((s.estoqueFechado - s.estoqueMinimo) / m);
     if (dias < 1) return "Com o consumo atual, este produto deve atingir o estoque mínimo ainda hoje.";
@@ -1607,8 +1770,14 @@ function AcoesRodape({
   onComprar: (s: SaldoRow) => void;
   onNovaMovimentacao: (s: SaldoRow) => void;
 }) {
-  const st = statusOf(s);
-  const comprarPrimeiro = canRepor && (st === "semEstoque" || st === "baixoMinimo" || st === "baixoIdeal");
+  const st = statusOf(s, usePolicy());
+  const comprarPrimeiro =
+    canRepor &&
+    (st === "semEstoque" ||
+      st === "baixoMinimo" ||
+      st === "baixoIdeal" ||
+      st === "coberturaCritica" ||
+      st === "coberturaAtencao");
 
   const comprar = canRepor
     ? { key: "comprar", label: "Comprar", Icon: ShoppingCart, onClick: () => onComprar(s) }
@@ -1673,15 +1842,16 @@ function ResumoTab({
   onEditar: (productId: string) => void;
   onAjustado: () => void;
 }) {
-  const status = PANEL_STATUS[statusOf(s)];
+  const policy = usePolicy();
+  const status = PANEL_STATUS[statusOf(s, policy)];
   const un = closedUnitLabel(s);
-  const cob = diasCobertura(s);
+  const cob = diasCobertura(s, policy);
   const base = s.custo ?? s.custoMedio;
   const margem = s.precoVenda != null && s.precoVenda > 0 && base != null
     ? ((s.precoVenda - base) / s.precoVenda) * 100
     : null;
   const semGiro = s.consumoHoje === 0 && s.consumo7 === 0 && s.consumo30 === 0;
-  const dica = recomendacao(s);
+  const dica = recomendacao(s, policy);
   const [comercialAberto, setComercialAberto] = useState(false);
 
   const gapMsg: Record<"custo" | "fornecedor" | "local", string> = {
@@ -1734,31 +1904,53 @@ function ResumoTab({
           </span>
         )}
 
-        <p className="mt-1.5 text-[13px] text-ink-2">{fraseSituacao(s)}</p>
+        <p className="mt-1.5 text-[13px] text-ink-2">{fraseSituacao(s, policy)}</p>
       </div>
 
       {/* Ajuste por contagem — acionado pelo botão da situação */}
       <AjusteInline s={s} siteId={siteId} onAjustado={onAjustado} aberta={ajuste} setAberta={setAjuste} />
 
       {/* ── Indicadores: um único medidor, sem cards soltos ── */}
-      <div className="grid grid-cols-4 divide-x divide-line rounded-xl border border-line bg-surface">
+      {/* As metas exibidas seguem a estratégia da empresa; a última coluna é
+          sempre a cobertura, que faz sentido em qualquer modelo. */}
+      <div className={cn("grid divide-x divide-line rounded-xl border border-line bg-surface", policy.usaIdeal ? "grid-cols-4" : "grid-cols-3")}>
         <Indicador label="Disponível" value={`${fmt(s.estoqueFechado)} ${un}`} />
-        <Indicador
-          label="Mínimo"
-          value={s.estoqueMinimo > 0 ? `${fmt(s.estoqueMinimo)} ${un}` : "—"}
-          tone={s.estoqueMinimo > 0 ? "ink" : "faint"}
-        />
-        <Indicador
-          label="Ideal"
-          value={s.estoqueIdeal > 0 ? `${fmt(s.estoqueIdeal)} ${un}` : "—"}
-          tone={s.estoqueIdeal > 0 ? "ink" : "faint"}
-        />
+        {policy.usaMinimo && (
+          <Indicador
+            label="Mínimo"
+            value={s.estoqueMinimo > 0 ? `${fmt(s.estoqueMinimo)} ${un}` : "—"}
+            tone={s.estoqueMinimo > 0 ? "ink" : "faint"}
+          />
+        )}
+        {policy.usaIdeal && (
+          <Indicador
+            label="Ideal"
+            value={s.estoqueIdeal > 0 ? `${fmt(s.estoqueIdeal)} ${un}` : "—"}
+            tone={s.estoqueIdeal > 0 ? "ink" : "faint"}
+          />
+        )}
+        {policy.usaGiro && (
+          <>
+            <Indicador
+              label="Média diária"
+              value={mediaDia(s, policy) > 0 ? `${fmt1(mediaDia(s, policy))} ${un}` : "—"}
+              tone={mediaDia(s, policy) > 0 ? "ink" : "faint"}
+            />
+            <Indicador label="Desejada" value={`${policy.diasCobertura} dias`} />
+          </>
+        )}
         <Indicador
           label="Cobertura"
           value={cob != null ? `${cob} ${cob === 1 ? "dia" : "dias"}` : "—"}
           tone={cob != null ? "ink" : "faint"}
         />
       </div>
+
+      {policy.usaGiro && mediaDia(s, policy) <= 0 && (
+        <p className="rounded-xl border border-dashed border-line px-3.5 py-2.5 text-[12px] text-muted">
+          {MSG_APRENDIZADO}
+        </p>
+      )}
 
       {/* ── Consumo: uma linha, sem card alto ── */}
       <div className="rounded-xl border border-line bg-surface px-3.5 py-2.5">

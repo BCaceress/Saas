@@ -163,6 +163,18 @@ export function PedidoDrawer({
   // junto) — mesma janela vale durante o recebimento parcial.
   const podeBonificar = p ? p.status === "AGUARDANDO" || p.status === "RECEBIDO_PARCIAL" : false;
 
+  // O drawer nunca desmonta (fica montado com `open=false`), então o estado
+  // local sobrevive ao fechamento: sem este reset, o `pending` de uma ação já
+  // concluída trava os botões do próximo pedido em loading permanente.
+  const pedidoId = p?.id ?? null;
+  useEffect(() => {
+    setPending(null);
+    setErro(null);
+    setReenviar(false);
+    setBonusOpen(false);
+    setStepAberto(null);
+  }, [pedidoId]);
+
   // Some visível até o refresh (RSC) aplicar o novo status — não só a
   // resposta da action — porque a lista lê os dados do server.
   useEffect(() => {

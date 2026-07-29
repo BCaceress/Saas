@@ -219,13 +219,31 @@ export const STATUS_REPO = {
 
 export type StatusRepo = keyof typeof STATUS_REPO;
 
-export function StatusDot({ status, comLabel = false }: { status: StatusRepo; comLabel?: boolean }) {
+/** Rótulos do mesmo semáforo quando a empresa controla por rotatividade. */
+const STATUS_REPO_GIRO: Record<StatusRepo, string> = {
+  ruptura: "Ruptura",
+  critico: "Cobertura crítica",
+  abaixo: "Cobertura baixa",
+  monitorar: "Cobertura em atenção",
+};
+
+export function StatusDot({
+  status,
+  comLabel = false,
+  giro = false,
+}: {
+  status: StatusRepo;
+  comLabel?: boolean;
+  /** Empresa no modo rotatividade — o rótulo fala em cobertura, não em meta. */
+  giro?: boolean;
+}) {
   const m = STATUS_REPO[status];
-  if (!comLabel) return <span className={cn("inline-block h-2 w-2 shrink-0 rounded-full", m.dot)} title={m.label} />;
+  const label = giro ? STATUS_REPO_GIRO[status] : m.label;
+  if (!comLabel) return <span className={cn("inline-block h-2 w-2 shrink-0 rounded-full", m.dot)} title={label} />;
   return (
     <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold", m.soft, m.text)}>
       <span className={cn("h-1.5 w-1.5 rounded-full", m.dot)} />
-      {m.label}
+      {label}
     </span>
   );
 }

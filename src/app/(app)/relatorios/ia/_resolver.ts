@@ -1,6 +1,7 @@
 import "server-only";
 import { brl } from "@/lib/utils";
 import { pct } from "@/lib/periodo";
+import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import {
   rankingProdutos,
   vendasPorCategoria,
@@ -58,7 +59,12 @@ function ordena<T extends Record<string, unknown>>(rows: T[], campo: string | un
   });
 }
 
-export async function resolverConsulta(c: Consulta, range: Range, siteId: string | null): Promise<Resolvido> {
+export async function resolverConsulta(
+  c: Consulta,
+  range: Range,
+  siteId: string | null,
+  policy: EstoquePolicy = POLICY_PADRAO,
+): Promise<Resolvido> {
   switch (c.fonte) {
     case "produtos": {
       const rows = ordena(aplicaFiltrosProduto(await rankingProdutos(range, siteId), c), c.ordenarPor ?? "receita", c.ordem).slice(0, c.limite);
@@ -112,7 +118,7 @@ export async function resolverConsulta(c: Consulta, range: Range, siteId: string
       };
     }
     case "estoque": {
-      const all = await posicaoEstoque(siteId);
+      const all = await posicaoEstoque(siteId, policy);
       const rows = ordena(all, c.ordenarPor === "quantidade" ? "estoqueFechado" : "valorEstoque", c.ordem).slice(0, c.limite);
       return {
         colunas: [{ header: "Produto" }, { header: "SKU" }, { header: "Site" }, { header: "Fechado", align: "right" }, { header: "Valor", align: "right" }],

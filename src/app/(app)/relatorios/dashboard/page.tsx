@@ -2,6 +2,7 @@ import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { resolvePeriodo, variacao, fmtData } from "@/lib/periodo";
 import { featureAtiva } from "@/lib/planos";
+import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { brl } from "@/lib/utils";
 import { KpiCard } from "@/components/charts/kpi-card";
 import { ChartCard, ChartEmpty } from "@/components/charts/chart-card";
@@ -33,6 +34,7 @@ export default async function DashboardAnalisesPage({
   const range: Range = { inicio: periodo.inicio, fim: periodo.fim };
   const prevRange: Range = { inicio: periodo.prevInicio, fim: periodo.prevFim };
   const pdv = featureAtiva(ctx.tenant, "pdv");
+  const policy = policyDoTenant(ctx.tenant);
 
   const d = await withTenant(ctx, async () => {
     const siteId = await getActiveSiteId();
@@ -44,7 +46,7 @@ export default async function DashboardAnalisesPage({
         vendasPorCategoria(range, siteId),
         rankingProdutos(range, siteId),
         pdv ? mixPagamento(range, siteId) : Promise.resolve([]),
-        ruptura(siteId),
+        ruptura(siteId, policy),
         perdas(range, siteId),
       ]);
     return { siteId, resumo, resumoPrev, tendencia, categorias, ranking, mix, rupturaRows, perdaAtual };
@@ -90,9 +92,9 @@ export default async function DashboardAnalisesPage({
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="CMV" value={brl(resumo.cmv)} hint="custo da mercadoria vendida" goodWhen="down" />
         <KpiCard
-          label="Em ruptura"
+          label={policy.usaGiro ? "Sem estoque" : "Em ruptura"}
           value={String(d.rupturaRows.length)}
-          hint="produtos abaixo do mínimo"
+          hint={policy.usaGiro ? "produtos com saldo zerado" : "produtos abaixo do mínimo"}
           goodWhen="down"
         />
         <KpiCard
@@ -190,8 +192,8 @@ export default async function DashboardAnalisesPage({
           </ChartCard>
         ) : (
           <ChartCard
-            title="Ruptura"
-            subtitle="Produtos abaixo do mínimo"
+            title={policy.usaGiro ? "Sem estoque" : "Ruptura"}
+            subtitle={policy.usaGiro ? "Produtos com saldo zerado" : "Produtos abaixo do mínimo"}
             action={
               <Link href="/relatorios/estoque" className="text-xs font-medium text-brand hover:underline">
                 Ver relatório →

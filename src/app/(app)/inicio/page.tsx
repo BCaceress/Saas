@@ -3,6 +3,7 @@ import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { resolvePeriodo } from "@/lib/periodo";
 import { featureAtiva } from "@/lib/planos";
+import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
@@ -64,6 +65,7 @@ export default async function DashboardPage({
     multiSite,
     paradoDias: ctx.tenant.produtoParadoDias || 45,
     validadeAlertaDias: ctx.tenant.validadeAlertaDias || 30,
+    policy: policyDoTenant(ctx.tenant),
   };
 
   const resolvedOrder = resolveOrder(widgetPref.ordem);

@@ -6,6 +6,14 @@ import { runWithTenant } from "@/lib/tenant-context";
 import type { AlertItem, AlertCategory } from "@/lib/alerts-types";
 import { sortAlerts } from "@/lib/alerts-types";
 import { podeEmAlguma, type Acesso, type Permissao } from "@/lib/permissoes";
+import {
+  coberturaDias,
+  fmtCobertura,
+  mediaDiaria,
+  nivelCobertura,
+  policyDoTenant,
+} from "@/lib/estoque-estrategia";
+import { consumoPorProduto } from "@/lib/estoque-giro";
 import { loadCouponCandidates } from "./clientes/_data";
 
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
@@ -50,6 +58,13 @@ export async function getAlerts(): Promise<AlertItem[]> {
   return withTenant(async (ctx) => {
     const agora = Date.now();
     const paradoMs = (ctx.tenant.produtoParadoDias || 45) * DIA;
+    const policy = policyDoTenant(ctx.tenant);
+
+    // No modo rotatividade o alerta de estoque nasce do giro — o consumo da
+    // janela configurada é a única leitura extra que a estratégia exige.
+    const consumoJanela = policy.usaGiro
+      ? await consumoPorProduto(policy.periodoMediaDias)
+      : new Map<string, number>();
 
     const [produtos, movs, inventarios, transferencias, pedidos] = await Promise.all([
       db.product.findMany({
@@ -145,6 +160,34 @@ export async function getAlerts(): Promise<AlertItem[]> {
             href,
             acaoLabel: abrir,
           });
+        } else if (policy.usaGiro) {
+          // Rotatividade: o alerta é a cobertura em dias, não a meta fixa.
+          const media = mediaDiaria(consumoJanela.get(p.id) ?? 0, policy.periodoMediaDias);
+          const cob = coberturaDias(total, media);
+          const nivel = nivelCobertura(cob, policy.diasCobertura);
+          if (nivel === "muito-baixo") {
+            alerts.push({
+              id: `cobertura-critica:${p.id}`,
+              priority: "alto",
+              category: "criticos",
+              icon: "minimo",
+              titulo: p.nome,
+              descricao: `Cobertura de ${fmtCobertura(cob)} — meta de ${policy.diasCobertura} dias.`,
+              href,
+              acaoLabel: abrir,
+            });
+          } else if (nivel === "atencao") {
+            alerts.push({
+              id: `cobertura-baixa:${p.id}`,
+              priority: "medio",
+              category: "operacao",
+              icon: "reposicao",
+              titulo: p.nome,
+              descricao: `Cobertura de ${fmtCobertura(cob)} — abaixo dos ${policy.diasCobertura} dias desejados.`,
+              href,
+              acaoLabel: abrir,
+            });
+          }
         } else if (minimo > 0 && total <= minimo) {
           alerts.push({
             id: `minimo:${p.id}`,
@@ -156,7 +199,7 @@ export async function getAlerts(): Promise<AlertItem[]> {
             href,
             acaoLabel: abrir,
           });
-        } else if (ideal > 0 && total < ideal) {
+        } else if (policy.usaIdeal && ideal > 0 && total < ideal) {
           alerts.push({
             id: `reposicao:${p.id}`,
             priority: "medio",

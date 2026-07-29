@@ -11,7 +11,14 @@ export type TenantContext = {
 
 export const tenantStorage = new AsyncLocalStorage<TenantContext>();
 
-/** Roda `fn` com o tenant fixado no contexto async. */
+/**
+ * Roda `fn` com o tenant fixado no contexto async.
+ *
+ * ATENÇÃO: o contexto só vale durante a execução de `fn`. PrismaPromise é
+ * LAZY — `() => db.x.count()` devolve a promise sem executar, e a query roda
+ * depois, já fora do contexto (erro "sem contexto de tenant"). Sempre
+ * `async () => await db.x.count()`.
+ */
 export function runWithTenant<T>(tenantId: string, fn: () => T): T {
   return tenantStorage.run({ tenantId }, fn);
 }

@@ -52,10 +52,10 @@ export default async function ConvitePage({
 
   return (
     <div>
-      <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--auth-brand)]">
+      <p className="mb-3 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--auth-brand-text)]">
         Convite de equipe
       </p>
-      <h1 className="font-display text-[26px] font-bold leading-tight text-[var(--auth-ink)]">
+      <h1 className="text-center font-display text-[27px] font-semibold leading-tight tracking-tight text-[var(--auth-ink)]">
         {convite.tenantNome}
       </h1>
       <p className="mt-1.5 text-sm text-[var(--auth-muted)]">
@@ -65,7 +65,7 @@ export default async function ConvitePage({
       </p>
 
       <div className="mt-6 flex items-start gap-3 rounded-2xl border border-[var(--auth-line)] bg-[var(--auth-field)] p-4">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[var(--auth-brand)]/12 text-[var(--auth-brand)]">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[var(--auth-brand)]/12 text-[var(--auth-brand-text)]">
           <ShieldCheck size={17} />
         </span>
         <div className="min-w-0 text-sm">
@@ -117,16 +117,16 @@ function Aviso({
 }) {
   return (
     <div>
-      <span className="mb-4 grid h-11 w-11 place-items-center rounded-2xl bg-[var(--auth-danger-soft)] text-[var(--auth-danger)]">
+      <span className="mx-auto mb-4 grid h-11 w-11 place-items-center rounded-2xl bg-[var(--auth-danger-soft)] text-[var(--auth-danger)]">
         {icon}
       </span>
-      <h1 className="font-display text-[26px] font-bold leading-tight text-[var(--auth-ink)]">
+      <h1 className="text-center font-display text-[27px] font-semibold leading-tight tracking-tight text-[var(--auth-ink)]">
         {titulo}
       </h1>
-      <p className="mt-2 text-sm text-[var(--auth-muted)]">{texto}</p>
+      <p className="mt-2 text-center text-sm text-[var(--auth-muted)]">{texto}</p>
       <Link
         href="/login"
-        className="mt-6 inline-flex h-[52px] w-full items-center justify-center rounded-2xl border border-[var(--auth-line-strong)] text-[15px] font-medium text-[var(--auth-ink)] transition-colors hover:bg-white/5"
+        className="mt-6 inline-flex h-[52px] w-full items-center justify-center rounded-2xl border border-[var(--auth-line-strong)] text-[15px] font-medium text-[var(--auth-ink)] transition-colors hover:bg-[var(--auth-field-2)]"
       >
         Ir para o login
       </Link>

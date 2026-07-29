@@ -1,12 +1,26 @@
 import { db } from "@/lib/prisma";
 import { Decimal } from "@/generated/prisma/runtime/library";
+import { diasDeHistoricoVendas } from "@/lib/estoque-giro";
+import {
+  POLICY_PADRAO,
+  alvoReposicao,
+  coberturaDias as coberturaDe,
+  estaAprendendo,
+  mediaDiaria,
+  type EstoquePolicy,
+} from "@/lib/estoque-estrategia";
 
 const n = (v: Decimal | null | undefined) => (v == null ? 0 : Number(v));
 
 // ── Sugestões de reposição ────────────────────────────────────
-// Inverte a lógica do pedido manual: o sistema olha estoque × mínimo ×
-// ideal × ritmo de venda e responde "o que precisa ser comprado", já
-// agrupado por fornecedor e com quantidade/custo sugeridos.
+// Inverte a lógica do pedido manual: o sistema olha estoque × metas ×
+// ritmo de venda e responde "o que precisa ser comprado", já agrupado por
+// fornecedor e com quantidade/custo sugeridos.
+//
+// O que entra na conta depende da estratégia da empresa (lib/estoque-estrategia):
+//  · MINIMO       → piso por produto, repõe até o piso;
+//  · MINIMO_IDEAL → piso + alvo, repõe até o ideal;
+//  · ROTATIVIDADE → média diária de venda × dias de cobertura desejados.
 
 export type SugestaoStatus = "ruptura" | "critico" | "abaixo" | "monitorar";
 
@@ -23,8 +37,11 @@ export type SugestaoRow = {
   estoqueIdeal: number;
   consumo7: number;
   consumo30: number;
-  mediaDia: number; // vendas/dia (janela 30d, fallback 7d)
+  consumoJanela: number; // vendido na janela configurada (rotatividade)
+  janelaDias: number; // tamanho da janela usada na média
+  mediaDia: number; // vendas/dia na janela (fallback 7d fora da rotatividade)
   coberturaDias: number | null; // estoque ÷ média — null sem vendas
+  metaCoberturaDias: number; // cobertura desejada pela empresa
   pendente: number; // já pedido e não recebido (un base)
   pedidosPendentes: { numero: string; previsaoEntrega: string | null }[]; // pedidos que geram o `pendente`
   status: SugestaoStatus;
@@ -63,10 +80,19 @@ export type GrupoReposicao = {
   itens: SugestaoRow[];
 };
 
-/** Dias de cobertura que a sugestão mira quando não há estoque ideal configurado. */
-const ALVO_DIAS = 14;
+export type SugestoesReposicao = {
+  grupos: GrupoReposicao[];
+  policy: EstoquePolicy;
+  /** Rotatividade sem histórico suficiente — a tela avisa em vez de bloquear. */
+  aprendendo: boolean;
+  /** Dias de histórico de venda acumulados. null = nenhuma venda ainda. */
+  diasHistorico: number | null;
+};
 
-export async function loadSugestoesReposicao(siteId: string | null): Promise<GrupoReposicao[]> {
+export async function loadSugestoesReposicao(
+  siteId: string | null,
+  policy: EstoquePolicy = POLICY_PADRAO,
+): Promise<SugestoesReposicao> {
   const whereSite = siteId ? { siteId } : {};
   const stocks = await db.stock.findMany({
     where: whereSite,
@@ -100,15 +126,23 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
     (s) => s.product.ativo && (s.product.tipo === "SIMPLES" || s.product.tipo === "INSUMO"),
   );
   const productIds = estocaveis.map((s) => s.productId);
-  if (productIds.length === 0) return [];
+  const vazio: SugestoesReposicao = { grupos: [], policy, aprendendo: false, diasHistorico: null };
+  if (productIds.length === 0) return vazio;
 
+  // Janela do histórico: a configurada pela empresa na rotatividade, 30 dias
+  // nas demais estratégias. Sempre buscamos pelo menos 30 para manter os
+  // comparativos de consumo 7d/30d da tela.
+  const janelaDias = policy.usaGiro ? policy.periodoMediaDias : 30;
+  const janelaBusca = Math.max(30, janelaDias);
+  const dJanela = new Date(Date.now() - janelaBusca * 864e5);
+  const dJanelaMedia = new Date(Date.now() - janelaDias * 864e5);
   const d30 = new Date(Date.now() - 30 * 864e5);
   const d7 = new Date(Date.now() - 7 * 864e5);
 
-  const [vendas, pendentes, entradas, pedidosLead] = await Promise.all([
-    // Ritmo de venda: saídas dos últimos 30 dias.
+  const [vendas, pendentes, entradas, pedidosLead, diasHistorico] = await Promise.all([
+    // Ritmo de venda: saídas da janela de análise.
     db.stockMovement.findMany({
-      where: { productId: { in: productIds }, tipo: "SAIDA", createdAt: { gte: d30 }, ...whereSite },
+      where: { productId: { in: productIds }, tipo: "SAIDA", createdAt: { gte: dJanela }, ...whereSite },
       select: { productId: true, deltaFechado: true, deltaAberto: true, createdAt: true },
     }),
     // Já pedido e ainda não recebido — não sugerir de novo.
@@ -139,16 +173,19 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
       orderBy: { createdAt: "desc" },
       take: 300,
     }),
+    // Tamanho do histórico — define se a rotatividade já tem base pra sugerir.
+    policy.usaGiro ? diasDeHistoricoVendas(siteId) : Promise.resolve(null),
   ]);
 
-  // Consumo por janela + última venda (dentro da janela de 30 dias)
-  const consumoMap = new Map<string, { d7: number; d30: number }>();
+  // Consumo por janela + última venda
+  const consumoMap = new Map<string, { d7: number; d30: number; janela: number }>();
   const ultimaVenda = new Map<string, Date>();
   for (const v of vendas) {
     const q = Math.abs(n(v.deltaFechado)) || Math.abs(n(v.deltaAberto));
     if (q <= 0) continue;
-    const c = consumoMap.get(v.productId) ?? { d7: 0, d30: 0 };
-    c.d30 += q;
+    const c = consumoMap.get(v.productId) ?? { d7: 0, d30: 0, janela: 0 };
+    if (v.createdAt >= d30) c.d30 += q;
+    if (v.createdAt >= dJanelaMedia) c.janela += q;
     if (v.createdAt >= d7) c.d7 += q;
     consumoMap.set(v.productId, c);
     const ult = ultimaVenda.get(v.productId);
@@ -210,27 +247,49 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
     const estoque = n(s.estoqueFechado);
     const minimo = n(s.estoqueMinimo);
     const ideal = n(s.estoqueIdeal);
-    const consumo = consumoMap.get(s.productId) ?? { d7: 0, d30: 0 };
-    const mediaDia = consumo.d30 > 0 ? consumo.d30 / 30 : consumo.d7 > 0 ? consumo.d7 / 7 : 0;
-    const cobertura = mediaDia > 0 ? estoque / mediaDia : null;
+    const consumo = consumoMap.get(s.productId) ?? { d7: 0, d30: 0, janela: 0 };
+    // Rotatividade usa exatamente a janela configurada; as outras estratégias
+    // mantêm o comportamento histórico (30d, caindo p/ 7d quando não há 30).
+    const mediaDia = policy.usaGiro
+      ? mediaDiaria(consumo.janela, janelaDias)
+      : consumo.d30 > 0
+        ? consumo.d30 / 30
+        : consumo.d7 > 0
+          ? consumo.d7 / 7
+          : 0;
+    const cobertura = coberturaDe(estoque, mediaDia);
+    const meta = policy.diasCobertura;
     const pendente = pendenteMap.get(s.productId) ?? 0;
 
-    // Classificação — só entra na lista quem precisa de ação.
-    const temParametro = minimo > 0 || ideal > 0 || mediaDia > 0;
-    if (!temParametro) continue;
-
+    // Classificação — só entra na lista quem precisa de ação, e o que conta
+    // como "precisa" muda com a estratégia escolhida pela empresa.
     let status: SugestaoStatus | null = null;
-    if (estoque <= 0) status = "ruptura";
-    else if ((minimo > 0 && estoque < minimo * 0.5) || (cobertura != null && cobertura <= 3)) status = "critico";
-    else if ((minimo > 0 && estoque < minimo) || (cobertura != null && cobertura <= 7)) status = "abaixo";
-    // Ainda acima do mínimo, mas abaixo do ideal ou com giro que projeta
-    // queda pra baixo do alvo dentro da janela de reposição — no radar,
-    // sem urgência de compra imediata.
-    else if ((ideal > 0 && estoque < ideal) || (cobertura != null && cobertura <= ALVO_DIAS)) status = "monitorar";
+    if (policy.usaGiro) {
+      // Sem giro na janela não há o que projetar: o produto sai da lista.
+      if (mediaDia <= 0) continue;
+      if (estoque <= 0) status = "ruptura";
+      else if (cobertura != null && cobertura <= meta * 0.3) status = "critico";
+      else if (cobertura != null && cobertura < meta) status = "abaixo";
+      else if (cobertura != null && cobertura < meta * 1.5) status = "monitorar";
+    } else if (policy.tipo === "MINIMO") {
+      if (minimo <= 0 && mediaDia <= 0) continue;
+      if (estoque <= 0) status = "ruptura";
+      else if (minimo > 0 && estoque < minimo * 0.5) status = "critico";
+      else if (minimo > 0 && estoque <= minimo) status = "abaixo";
+      else if (cobertura != null && cobertura <= meta) status = "monitorar";
+    } else {
+      if (minimo <= 0 && ideal <= 0 && mediaDia <= 0) continue;
+      if (estoque <= 0) status = "ruptura";
+      else if ((minimo > 0 && estoque < minimo * 0.5) || (cobertura != null && cobertura <= 3)) status = "critico";
+      else if ((minimo > 0 && estoque < minimo) || (cobertura != null && cobertura <= 7)) status = "abaixo";
+      // Ainda acima do mínimo, mas abaixo do ideal ou com giro que projeta
+      // queda pra baixo do alvo dentro da janela de reposição — no radar,
+      // sem urgência de compra imediata.
+      else if ((ideal > 0 && estoque < ideal) || (cobertura != null && cobertura <= meta * 2)) status = "monitorar";
+    }
     if (!status) continue;
 
-    // Alvo: ideal configurado, senão o suficiente p/ ALVO_DIAS de venda, senão 2× mínimo.
-    const alvo = Math.max(ideal, Math.ceil(mediaDia * ALVO_DIAS), minimo > 0 ? minimo * 2 : 0, minimo);
+    const alvo = alvoReposicao(policy, { minimo, ideal, mediaDia });
     const necessidadeBase = Math.max(0, alvo - estoque - pendente);
 
     const pkg = s.product.packagings.find((p) => p.isCompraDefault) ?? s.product.packagings[0] ?? null;
@@ -270,8 +329,11 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
       estoqueIdeal: ideal,
       consumo7: consumo.d7,
       consumo30: consumo.d30,
+      consumoJanela: consumo.janela,
+      janelaDias,
       mediaDia,
       coberturaDias: cobertura != null ? Math.floor(cobertura) : null,
+      metaCoberturaDias: meta,
       pendente,
       pedidosPendentes: pedidosPendentesMap.get(s.productId) ?? [],
       status,
@@ -321,7 +383,12 @@ export async function loadSugestoesReposicao(siteId: string | null): Promise<Gru
     const rupt = (g: GrupoReposicao) => g.itens.filter((i) => i.status === "ruptura").length;
     return rupt(b) - rupt(a) || b.itens.length - a.itens.length;
   });
-  return lista;
+  return {
+    grupos: lista,
+    policy,
+    aprendendo: estaAprendendo(policy, diasHistorico),
+    diasHistorico,
+  };
 }
 
 // ── Histórico de compras de um produto (drawer) ───────────────

@@ -381,8 +381,10 @@ export function ReceitaForm({
 
   function addItemToGroup(groupKey: string, candidate: ComponentCandidate) {
     const unidade: Unidade = candidate.fracionavel ? (candidate.unidadeBase as Unidade) : "UN";
+    // Dose sugerida no cadastro do produto manda; sem ela, cai no conteúdo da
+    // embalagem (comportamento antigo).
     const qtdBase = candidate.fracionavel
-      ? (candidate.conteudoPorUnidade ?? 50)
+      ? (candidate.dosePadrao ?? candidate.conteudoPorUnidade ?? 50)
       : 1;
     const copoNum = parseNum(copoMl);
     const qtdFinal =
@@ -1142,7 +1144,10 @@ export function ReceitaForm({
                                         <SkuTag sku={c.sku} />
                                         {c.fracionavel && (
                                           <span className="text-[11px] text-faint">
-                                            fracionável · {c.unidadeBase.toLowerCase()}
+                                            dose em {c.unidadeBase.toLowerCase()}
+                                            {c.dosePadrao
+                                              ? ` · padrão ${c.dosePadrao}`
+                                              : ""}
                                           </span>
                                         )}
                                       </div>

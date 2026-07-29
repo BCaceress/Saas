@@ -11,7 +11,7 @@ function Salvar() {
     <button
       type="submit"
       disabled={pending}
-      className="inline-flex h-[52px] w-full cursor-pointer items-center justify-center gap-2 rounded-2xl bg-[var(--auth-brand)] text-[15px] font-semibold text-[#1a0d02] transition-all duration-200 hover:bg-[var(--auth-brand-hover)] hover:shadow-[0_8px_28px_-8px_var(--auth-glow)] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+      className="inline-flex h-[52px] w-full cursor-pointer items-center justify-center gap-2 rounded-2xl bg-[var(--auth-brand)] text-[15px] font-semibold text-[var(--auth-on-brand)] transition-all duration-200 hover:bg-[var(--auth-brand-hover)] hover:shadow-[0_8px_28px_-8px_var(--auth-glow)] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
     >
       {pending && <Loader2 size={17} className="animate-spin" aria-hidden />}
       {pending ? "Salvando…" : "Salvar nova senha"}
@@ -45,7 +45,7 @@ function CampoSenha({
         autoComplete="new-password"
         placeholder={label}
         aria-label={label}
-        className="h-[52px] w-full rounded-2xl border border-[var(--auth-line-strong)] bg-[var(--auth-field)] pl-11 pr-12 text-[15px] text-[var(--auth-ink)] transition-colors duration-150 placeholder:text-[var(--auth-muted)]/70 hover:border-white/20 focus-visible:border-[var(--auth-brand)] focus-visible:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--auth-glow)]"
+        className="h-[52px] w-full rounded-2xl border border-[var(--auth-line-strong)] bg-[var(--auth-field)] pl-11 pr-12 text-[15px] text-[var(--auth-ink)] transition-colors duration-150 placeholder:text-[var(--auth-muted)]/70 focus-visible:border-[var(--auth-brand)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[color:var(--auth-glow)]"
       />
       <button
         type="button"
@@ -69,7 +69,7 @@ export function FormNovaSenha({ token }: { token: string }) {
       {estado?.erro && (
         <p
           role="alert"
-          className="flex items-start gap-2 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200"
+          className="flex items-start gap-2 rounded-2xl bg-[var(--auth-danger-soft)] px-4 py-3 text-sm text-[var(--auth-danger)]"
         >
           <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden />
           {estado.erro}

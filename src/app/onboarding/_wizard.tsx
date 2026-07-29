@@ -7,6 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
 import { PRESETS, TIPO_LABELS } from "@/lib/presets";
+import {
+  COBERTURA_PADRAO,
+  COBERTURAS,
+  CONTROLE_LABELS,
+  TIPOS_CONTROLE,
+  type TipoControleEstoque,
+} from "@/lib/estoque-estrategia";
 import { saveOnboarding, type OnboardingInput } from "./actions";
 
 type Tipo = OnboardingInput["tipoOperacao"];
@@ -31,6 +38,8 @@ export function OnboardingWizard({ nomeAtual }: { nomeAtual: string }) {
   const [pontos, setPontos] = useState<Pontos | null>(null);
   const [topologia, setTopologia] = useState<Topo | null>(null);
   const [perguntaSim, setPerguntaSim] = useState<boolean | null>(null);
+  const [controle, setControle] = useState<TipoControleEstoque | null>(null);
+  const [cobertura, setCobertura] = useState<number>(COBERTURA_PADRAO);
   const [nome, setNome] = useState(nomeAtual);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string>();
@@ -44,7 +53,7 @@ export function OnboardingWizard({ nomeAtual }: { nomeAtual: string }) {
     const s: string[] = ["tipo", "pontos"];
     if (precisaTopologia) s.push("topologia");
     if (pergunta) s.push("pergunta");
-    s.push("nome");
+    s.push("controle", "nome");
     return s;
   }, [precisaTopologia, pergunta]);
 
@@ -74,6 +83,8 @@ export function OnboardingWizard({ nomeAtual }: { nomeAtual: string }) {
           pontos,
           topologia: topo,
           perguntaSim: perguntaSim ?? false,
+          tipoControleEstoque: controle ?? "MINIMO_IDEAL",
+          diasCobertura: cobertura,
           nomeMercado: nome.trim() || undefined,
         });
       } catch (e) {
@@ -89,6 +100,7 @@ export function OnboardingWizard({ nomeAtual }: { nomeAtual: string }) {
     (current === "pontos" && !!pontos) ||
     (current === "topologia" && !!topologia) ||
     (current === "pergunta" && perguntaSim !== null) ||
+    (current === "controle" && !!controle) ||
     current === "nome";
 
   const isLast = current === "nome";
@@ -153,6 +165,41 @@ export function OnboardingWizard({ nomeAtual }: { nomeAtual: string }) {
             <Pill selected={perguntaSim === true} onClick={() => setPerguntaSim(true)}>{pergunta.sim}</Pill>
             <Pill selected={perguntaSim === false} onClick={() => setPerguntaSim(false)}>{pergunta.nao}</Pill>
           </div>
+        </Step>
+      )}
+
+      {current === "controle" && (
+        <Step
+          title="Como você controla seu estoque?"
+          sub="Define o que aparece no cadastro do produto e como o sistema sugere compra. Dá para trocar depois em Configurações."
+        >
+          <div className="grid gap-3">
+            {TIPOS_CONTROLE.map((t) => (
+              <Choice
+                key={t}
+                selected={controle === t}
+                onClick={() => setControle(t)}
+                title={CONTROLE_LABELS[t].nome}
+                desc={CONTROLE_LABELS[t].desc}
+              />
+            ))}
+          </div>
+
+          {controle === "ROTATIVIDADE" && (
+            <div className="mt-5 border-t border-line pt-5">
+              <p className="text-sm font-medium text-ink">De quantos em quantos dias você compra?</p>
+              <p className="mt-0.5 mb-3 text-sm text-muted">
+                A sugestão vai cobrir esse período de venda. Ajustável depois.
+              </p>
+              <div className="grid grid-cols-4 gap-3">
+                {COBERTURAS.map((d) => (
+                  <Pill key={d} selected={cobertura === d} onClick={() => setCobertura(d)}>
+                    {d} dias
+                  </Pill>
+                ))}
+              </div>
+            </div>
+          )}
         </Step>
       )}
 

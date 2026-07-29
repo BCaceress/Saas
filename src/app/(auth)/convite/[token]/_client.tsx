@@ -73,7 +73,7 @@ function Botao({
         "inline-flex h-[52px] w-full cursor-pointer items-center justify-center rounded-2xl text-[15px] font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-60 " +
         (variante === "primario"
           ? "bg-[var(--auth-brand)] text-[var(--auth-on-brand,#04121a)] hover:opacity-90"
-          : "border border-[var(--auth-line-strong)] font-medium text-[var(--auth-ink)] hover:bg-white/5")
+          : "border border-[var(--auth-line-strong)] font-medium text-[var(--auth-ink)] hover:bg-[var(--auth-field-2)]")
       }
     >
       {pending ? "Aguarde…" : rotulo}

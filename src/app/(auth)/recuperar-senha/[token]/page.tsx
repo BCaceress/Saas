@@ -20,7 +20,7 @@ export default async function NovaSenhaPage({
         <div className="mb-5 grid h-12 w-12 place-items-center rounded-2xl bg-amber-500/15 text-amber-400">
           <AlertTriangle size={22} aria-hidden />
         </div>
-        <h1 className="font-display text-[26px] font-bold leading-tight text-[var(--auth-ink)]">
+        <h1 className="text-center font-display text-[27px] font-semibold leading-tight tracking-tight text-[var(--auth-ink)]">
           Este link não vale mais
         </h1>
         <p className="mt-2 mb-7 text-sm leading-relaxed text-[var(--auth-muted)]">
@@ -29,13 +29,13 @@ export default async function NovaSenhaPage({
         </p>
         <Link
           href="/recuperar-senha"
-          className="inline-flex h-[52px] w-full items-center justify-center rounded-2xl bg-[var(--auth-brand)] text-[15px] font-semibold text-[#1a0d02] transition-all duration-200 hover:bg-[var(--auth-brand-hover)]"
+          className="inline-flex h-[52px] w-full items-center justify-center rounded-2xl bg-[var(--auth-brand)] text-[15px] font-semibold text-[var(--auth-on-brand)] transition-all duration-200 hover:bg-[var(--auth-brand-hover)]"
         >
           Pedir novo link
         </Link>
         <Link
           href="/login"
-          className="mt-6 flex items-center justify-center gap-1.5 text-sm font-medium text-[var(--auth-muted)] transition-colors hover:text-[var(--auth-brand)]"
+          className="mt-6 flex items-center justify-center gap-1.5 text-sm font-medium text-[var(--auth-muted)] transition-colors hover:text-[var(--auth-brand-text-hover)]"
         >
           <ArrowLeft size={15} aria-hidden />
           Voltar para o login
@@ -46,10 +46,10 @@ export default async function NovaSenhaPage({
 
   return (
     <div>
-      <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--auth-brand)]">
+      <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--auth-brand-text)]">
         Recuperação de senha
       </p>
-      <h1 className="font-display text-[26px] font-bold leading-tight text-[var(--auth-ink)]">
+      <h1 className="text-center font-display text-[27px] font-semibold leading-tight tracking-tight text-[var(--auth-ink)]">
         Criar nova senha
       </h1>
       <p className="mt-1.5 mb-7 text-sm leading-relaxed text-[var(--auth-muted)]">

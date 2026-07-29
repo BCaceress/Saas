@@ -1458,7 +1458,7 @@ async function consumirFracionado(
   saleId?: string
 ) {
   const conteudo = Number(component.conteudoPorUnidade ?? 0);
-  if (conteudo <= 0) throw new Error(`Produto "${component.nome}" fracionável sem conteúdo por unidade definido.`);
+  if (conteudo <= 0) throw new Error(`Produto "${component.nome}" usado em receitas sem o conteúdo da embalagem definido.`);
 
   let restante = doseTotal;
 

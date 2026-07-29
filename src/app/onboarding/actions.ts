@@ -7,6 +7,7 @@ import { requireActiveTenant } from "@/lib/current-tenant";
 import { PRESETS, tierFromPontos, featuresDosToggles } from "@/lib/presets";
 import { assinaturaParaFeatures } from "@/lib/planos";
 import { isAdmin } from "@/lib/permissoes";
+import { COBERTURA_PADRAO, PERIODO_MEDIA_PADRAO } from "@/lib/estoque-estrategia";
 
 const schema = z.object({
   tipoOperacao: z.enum(["AUTONOMO", "MERCADINHO", "CONVENIENCIA_BEBIDAS"]),
@@ -14,6 +15,9 @@ const schema = z.object({
   topologia: z.enum(["LOCAL", "CD_ABASTECE", "MISTO"]),
   // resposta da pergunta específica (liga o toggle "perguntado")
   perguntaSim: z.boolean().default(false),
+  // Como a empresa decide o que comprar. Define o que aparece nas telas de estoque.
+  tipoControleEstoque: z.enum(["MINIMO", "MINIMO_IDEAL", "ROTATIVIDADE"]).default("MINIMO_IDEAL"),
+  diasCobertura: z.number().int().min(1).max(90).default(COBERTURA_PADRAO),
   nomeMercado: z.string().trim().min(2).max(80).optional(),
 });
 
@@ -52,6 +56,9 @@ export async function saveOnboarding(input: OnboardingInput) {
       numPontos,
       plano,
       addons,
+      tipoControleEstoque: parsed.tipoControleEstoque,
+      periodoMediaDias: PERIODO_MEDIA_PADRAO,
+      diasCobertura: parsed.diasCobertura,
       ...toggles,
       onboardingDone: true,
       ...(parsed.nomeMercado ? { nome: parsed.nomeMercado } : {}),
