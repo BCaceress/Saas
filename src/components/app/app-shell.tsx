@@ -1,11 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Sidebar, type SidebarToggles } from "@/components/app/sidebar";
 import { Navbar } from "@/components/app/navbar";
+import { MobileNav } from "@/components/app/mobile-nav";
+import { BottomNav } from "@/components/app/bottom-nav";
+import { CommandPalette } from "@/components/app/command-palette";
+import { AlertsProvider } from "@/components/app/alerts-provider";
 import type { CaixaInfo } from "@/components/app/caixa-sheet";
 import type { PaymentMethod } from "@/generated/prisma";
 import type { Acesso } from "@/lib/permissoes";
+
+/** Cookie do menu recolhido — lido no servidor por `(app)/layout.tsx`. */
+export const NAV_COLLAPSED_COOKIE = "nav_collapsed";
 
 export function AppShell({
   toggles,
@@ -16,6 +23,7 @@ export function AppShell({
   userEmail,
   userCargo,
   podeConfigurar,
+  menuRecolhido,
   trialDias,
   vocabularioPonto,
   multiPonto,
@@ -34,6 +42,8 @@ export function AppShell({
   userCargo: string;
   /** Só administrador vê o atalho de Configurações na navbar. */
   podeConfigurar: boolean;
+  /** Estado do menu na carga anterior, vindo do cookie. */
+  menuRecolhido: boolean;
   trialDias: number | null;
   vocabularioPonto: string;
   multiPonto: boolean;
@@ -43,37 +53,99 @@ export function AppShell({
   onSignOut: () => void;
   children: React.ReactNode;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(menuRecolhido);
+  const [drawerAberto, setDrawerAberto] = useState(false);
+  const [buscaAberta, setBuscaAberta] = useState(false);
+
+  // Ctrl/⌘+K de qualquer lugar. O `preventDefault` é necessário: no Firefox o
+  // atalho é da barra de endereços.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "k" || !(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      setBuscaAberta((v) => !v);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Um ano é bastante: a preferência de menu não muda de semana em semana, e
+  // o servidor já renderiza na largura certa na próxima visita.
+  const toggleSidebar = useCallback(() => {
+    setCollapsed((c) => {
+      const proximo = !c;
+      document.cookie = `${NAV_COLLAPSED_COOKIE}=${proximo ? "1" : "0"}; path=/; max-age=31536000; samesite=lax`;
+      return proximo;
+    });
+  }, []);
 
   return (
-    <div className="flex h-dvh gap-0 overflow-hidden bg-canvas p-2 sm:gap-3 sm:p-3">
-      <Sidebar
-        toggles={toggles}
-        acessos={acessos}
-        collapsed={collapsed}
-        planoLabel={planoLabel}
-        trialDias={trialDias}
-      />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-        <Navbar
-          onToggleSidebar={() => setCollapsed((c) => !c)}
-          sidebarCollapsed={collapsed}
-          tenantNome={tenantNome}
-          userNome={userNome}
-          userEmail={userEmail}
-          userCargo={userCargo}
-          podeConfigurar={podeConfigurar}
-          vocabularioPonto={vocabularioPonto}
-          multiPonto={multiPonto}
-          caixaInfo={caixaInfo}
-          metodosCaixa={metodosCaixa}
-          limiteGaveta={limiteGaveta}
-          onSignOut={onSignOut}
+    <AlertsProvider>
+      <a
+        href="#conteudo"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-100 focus:rounded-full focus:bg-brand focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-on-brand"
+      >
+        Pular para o conteúdo
+      </a>
+
+      <div className="flex h-dvh gap-0 overflow-hidden bg-canvas p-2 sm:gap-3 sm:p-3">
+        <Sidebar
+          toggles={toggles}
+          acessos={acessos}
+          collapsed={collapsed}
+          planoLabel={planoLabel}
+          trialDias={trialDias}
         />
-        <main className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-1 pb-2 sm:px-2">
-          {children}
-        </main>
+
+        <MobileNav
+          open={drawerAberto}
+          onClose={() => setDrawerAberto(false)}
+          toggles={toggles}
+          acessos={acessos}
+          planoLabel={planoLabel}
+          trialDias={trialDias}
+        />
+
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+          <Navbar
+            onToggleSidebar={toggleSidebar}
+            onAbrirMenu={() => setDrawerAberto(true)}
+            onAbrirBusca={() => setBuscaAberta(true)}
+            sidebarCollapsed={collapsed}
+            tenantNome={tenantNome}
+            userNome={userNome}
+            userEmail={userEmail}
+            userCargo={userCargo}
+            podeConfigurar={podeConfigurar}
+            vocabularioPonto={vocabularioPonto}
+            multiPonto={multiPonto}
+            caixaInfo={caixaInfo}
+            metodosCaixa={metodosCaixa}
+            limiteGaveta={limiteGaveta}
+            onSignOut={onSignOut}
+          />
+          <main
+            id="conteudo"
+            className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-1 pb-20 sm:px-2 md:pb-2"
+          >
+            {children}
+          </main>
+        </div>
+
+        <BottomNav
+          toggles={toggles}
+          acessos={acessos}
+          onAbrirMenu={() => setDrawerAberto(true)}
+          menuAberto={drawerAberto}
+        />
+
+        <CommandPalette
+          open={buscaAberta}
+          onClose={() => setBuscaAberta(false)}
+          acessos={acessos}
+          toggles={toggles}
+        />
       </div>
-    </div>
+    </AlertsProvider>
   );
 }

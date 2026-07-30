@@ -182,7 +182,7 @@ export function buildInsights(input: InsightsInput): Insight[] {
       icone: "pedido",
       titulo: "Pedido previsto para entrega hoje",
       corpo: `${pedidoHoje.numero} · ${pedidoHoje.supplierNome} · ${brl(pedidoHoje.valorTotal)}.`,
-      cta: { label: "Ver pedido", href: "/compras" },
+      cta: { label: "Ver pedido", href: "/compras/pedidos" },
       escopo: "assistente",
       prioridade: 2,
     });
@@ -244,7 +244,7 @@ export function buildInsights(input: InsightsInput): Insight[] {
       icone: "compra",
       titulo: `Perto do pedido mínimo de ${oportunidade.supplierNome}`,
       corpo: `Faltam ${brl(oportunidade.falta)} para atingir o mínimo de ${brl(oportunidade.minimo)}.`,
-      cta: { label: "Criar pedido", href: "/compras" },
+      cta: { label: "Criar pedido", href: "/compras/pedidos" },
       escopo: "cards",
       prioridade: 7,
       impacto: oportunidade.atual,

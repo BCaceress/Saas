@@ -198,7 +198,7 @@ export function ReposicaoInteligenteClient({
         criados.length === 1 ? "Revisão salva como rascunho" : `Revisão salva — ${criados.length} rascunhos`,
         "Retome quando quiser na aba Pedidos. Nada foi enviado aos fornecedores.",
       );
-      router.push("/compras");
+      router.push("/compras/pedidos");
       router.refresh();
     } catch (e) {
       toast.error("Não foi possível salvar", e instanceof Error ? e.message : "Tente de novo.");
@@ -214,7 +214,7 @@ export function ReposicaoInteligenteClient({
     if (!concluido || !atual) return;
     setConcluido(false);
     if (atual.escopo === "todos") {
-      router.push("/compras");
+      router.push("/compras/pedidos");
       router.refresh();
     } else {
       setMuitos(atual.grupos.flatMap((g) => g.itens.map((i) => i.productId)), false);

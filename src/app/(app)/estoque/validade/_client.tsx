@@ -98,7 +98,6 @@ export function ValidadeView({
         title="Validade"
         icon={CalendarClock}
         description="Lotes com validade próxima ou vencida. O sistema consome sempre o lote de validade mais próxima primeiro (FEFO)."
-        backHref="/estoque"
         innerClassName="max-w-none"
         className="pb-3"
       />

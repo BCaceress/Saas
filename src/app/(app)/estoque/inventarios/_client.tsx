@@ -761,7 +761,6 @@ export function InventarioClient({
         title="Inventários"
         icon={ClipboardList}
         description="Programe contagens, acompanhe a contagem em andamento e revise divergências antes de finalizar."
-        backHref="/estoque"
         innerClassName="max-w-none"
         actions={
           <button

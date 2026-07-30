@@ -24,6 +24,7 @@ import {
   Download,
   Share2,
   Check,
+  Bookmark,
   type LucideIcon,
 } from "lucide-react";
 import { Modal, Sheet } from "@/components/ui/sheet";
@@ -282,7 +283,18 @@ function normalizar(s: string): string {
 /* Hub                                                                 */
 /* ------------------------------------------------------------------ */
 
-export function HubAnalises() {
+/** Relatório salvo, na forma que o hub precisa (já resolvido no servidor). */
+export type SalvoCard = {
+  id: string;
+  nome: string;
+  descricao: string | null;
+  /** Frase do que a consulta faz — o subtítulo quando não há descrição. */
+  resumo: string;
+  meu: boolean;
+  sistema: boolean;
+};
+
+export function HubAnalises({ salvos = [] }: { salvos?: SalvoCard[] }) {
   const [busca, setBusca] = useState("");
   const [gravando, setGravando] = useState(false);
   const [ia, setIa] = useState<{ open: boolean; pergunta?: string }>({ open: false });
@@ -398,6 +410,17 @@ export function HubAnalises() {
 
   const semResultado = termo.length > 0 && grupos.length === 0;
 
+  // A busca filtra os salvos junto com o catálogo — são a mesma prateleira.
+  const salvosVisiveis = useMemo(
+    () =>
+      !termo
+        ? salvos
+        : salvos.filter((s) =>
+            [s.nome, s.descricao ?? "", s.resumo].some((t) => normalizar(t).includes(termo)),
+          ),
+    [salvos, termo],
+  );
+
   return (
     <div className="space-y-10">
       {/* ------------------------------------------------------------ */}
@@ -478,6 +501,45 @@ export function HubAnalises() {
           )}
         </div>
       </section>
+
+      {/* ------------------------------------------------------------ */}
+      {/* Meus relatórios — as consultas que a casa guardou              */}
+      {/* ------------------------------------------------------------ */}
+      {salvosVisiveis.length > 0 && (
+        <section aria-label="Meus relatórios">
+          <div className="mb-4 flex items-center gap-3">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-sm bg-surface-2 text-muted">
+              <Bookmark size={15} aria-hidden />
+            </span>
+            <div>
+              <h2 className="font-display text-base font-semibold text-ink">Meus relatórios</h2>
+              <p className="text-sm text-muted">
+                Consultas guardadas — abrem sempre com os dados de hoje.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {salvosVisiveis.map((s) => (
+              <a
+                key={s.id}
+                href={`/relatorios/consulta?salvo=${s.id}`}
+                className="group flex flex-col gap-1 rounded-lg border border-line bg-surface p-4 transition-colors hover:border-brand/40"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-medium text-ink group-hover:text-brand">{s.nome}</p>
+                  {!s.meu && (
+                    <span className="shrink-0 rounded-full border border-line px-2 py-0.5 text-[10px] text-muted">
+                      {s.sistema ? "de fábrica" : "da equipe"}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-muted">{s.descricao ?? s.resumo}</p>
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* ------------------------------------------------------------ */}
       {/* Categorias e cards                                            */}

@@ -9,12 +9,9 @@ import {
   PackagePlus,
   Gift,
   PackageCheck,
-  ClipboardList,
   Loader2,
   ArrowRightLeft,
-  History,
   ShoppingBag,
-  CalendarClock,
 } from "lucide-react";
 import { useState, useTransition, useEffect } from "react";
 import {
@@ -225,47 +222,9 @@ export function EstoqueHeader({
           className="pb-3"
           actions={
             <>
-          {/* Movimentações — histórico auditável */}
-          <Link
-            href="/estoque/movimentacoes"
-            className={cn(
-              "flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors",
-              pathname === "/estoque/movimentacoes"
-                ? "border-brand bg-brand-soft text-brand"
-                : "border-line bg-surface text-ink hover:bg-surface-2",
-            )}
-          >
-            <History size={15} className="opacity-80" />
-            <span>Movimentações</span>
-          </Link>
-
-          {/* Validade — lotes vencendo/vencidos */}
-          <Link
-            href="/estoque/validade"
-            className={cn(
-              "flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors",
-              pathname === "/estoque/validade"
-                ? "border-brand bg-brand-soft text-brand"
-                : "border-line bg-surface text-ink hover:bg-surface-2",
-            )}
-          >
-            <CalendarClock size={15} className="opacity-80" />
-            <span>Validade</span>
-          </Link>
-
-          {/* Inventários — processo separado de contagem */}
-          <Link
-            href="/estoque/inventarios"
-            className={cn(
-              "flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors",
-              pathname === "/estoque/inventarios"
-                ? "border-brand bg-brand-soft text-brand"
-                : "border-line bg-surface text-ink hover:bg-surface-2",
-            )}
-          >
-            <ClipboardList size={15} className="opacity-80" />
-            <span>Inventários</span>
-          </Link>
+          {/* Movimentações, Validade e Inventários saíram daqui: viraram itens
+              da gaveta "Estoque" no menu lateral. O cabeçalho fica só com o
+              que é ação (criar movimentação) e contexto (loja ativa). */}
 
           {/* Nova movimentação — menu de ações disponíveis */}
           <Menu

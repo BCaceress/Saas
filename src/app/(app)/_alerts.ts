@@ -311,7 +311,7 @@ export async function getAlerts(): Promise<AlertItem[]> {
           titulo: `Entrada aguardando conferência`,
           descricao: `${pc.numero} · ${fornecedor}`,
           at: new Date(pc.createdAt).toISOString(),
-          href: "/compras",
+          href: "/compras/pedidos",
           acaoLabel: "Conferir",
         });
       } else {
@@ -323,7 +323,7 @@ export async function getAlerts(): Promise<AlertItem[]> {
           titulo: pc.status === "ENVIADO" ? "Compra pendente" : "Pedido em rascunho",
           descricao: `${pc.numero} · ${fornecedor}`,
           at: new Date(pc.createdAt).toISOString(),
-          href: "/compras",
+          href: "/compras/pedidos",
           acaoLabel: "Abrir",
         });
       }

@@ -2,6 +2,8 @@ import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { resolvePeriodo } from "@/lib/periodo";
 import { policyDoTenant, type EstoquePolicy } from "@/lib/estoque-estrategia";
+import { podeEmAlguma } from "@/lib/permissoes";
+import { gerarXlsx, XLSX_CONTENT_TYPE } from "@/lib/relatorios/xlsx";
 import {
   rankingProdutos,
   posicaoEstoque,
@@ -91,6 +93,13 @@ async function montar(
 export async function GET(req: Request, { params }: { params: Promise<{ tipo: string }> }) {
   const { tipo } = await params;
   const ctx = await requireActiveTenant();
+
+  // Mesma trava do export do motor: baixar o arquivo não pode ser o atalho de
+  // quem não tem `relatorio.exportar`.
+  if (!podeEmAlguma(ctx.acessos, "relatorio.exportar")) {
+    return new Response("Você não tem permissão para exportar relatórios.", { status: 403 });
+  }
+
   const url = new URL(req.url);
   const periodo = resolvePeriodo({
     periodo: url.searchParams.get("periodo") ?? undefined,
@@ -103,13 +112,26 @@ export async function GET(req: Request, { params }: { params: Promise<{ tipo: st
   const resultado = await withTenant(ctx, async () => montar(tipo, range, await getActiveSiteId(), policy));
   if (!resultado) return new Response("Relatório não exportável.", { status: 404 });
 
-  const conteudo = csv(resultado.cabecalho, resultado.linhas);
-  const nome = `relatorio-${tipo}-${periodo.preset}.csv`;
+  const nome = (extensao: string) => `relatorio-${tipo}-${periodo.preset}.${extensao}`;
 
-  return new Response(conteudo, {
+  if (url.searchParams.get("formato") === "xlsx") {
+    const arquivo = gerarXlsx({
+      aba: tipo,
+      cabecalho: resultado.cabecalho,
+      linhas: resultado.linhas,
+    });
+    return new Response(arquivo as BodyInit, {
+      headers: {
+        "Content-Type": XLSX_CONTENT_TYPE,
+        "Content-Disposition": `attachment; filename="${nome("xlsx")}"`,
+      },
+    });
+  }
+
+  return new Response(csv(resultado.cabecalho, resultado.linhas), {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${nome}"`,
+      "Content-Disposition": `attachment; filename="${nome("csv")}"`,
     },
   });
 }

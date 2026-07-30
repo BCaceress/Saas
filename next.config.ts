@@ -16,6 +16,16 @@ const nextConfig: NextConfig = {
     // miniaturas do Cosmos Bluesoft (enriquecimento por EAN)
     remotePatterns: [{ protocol: "https", hostname: "**.bluesoft.com.br" }],
   },
+
+  // Compras virou um módulo só: o que era /compras-fornecedores/* mudou de
+  // casa. Links salvos e favoritos antigos continuam abrindo a tela certa.
+  async redirects() {
+    return [
+      { source: "/compras-fornecedores/pedidos", destination: "/compras/carrinho", permanent: true },
+      { source: "/compras-fornecedores", destination: "/compras", permanent: true },
+      { source: "/compras-fornecedores/:path*", destination: "/compras/:path*", permanent: true },
+    ];
+  },
 };
 
 export default nextConfig;

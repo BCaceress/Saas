@@ -776,6 +776,34 @@ body {
   background-color: var(--faint);
 }
 
+/* Fio de cabelo — menu lateral e drawer. A barra existe para orientar, não
+   para ser usada: invisível no repouso e só aparece sob o ponteiro. Um traço
+   de 2px porque ninguém arrasta esta barra — quem navega o menu clica ou rola;
+   a barra é só a dica de "tem mais coisa abaixo". */
+.scrollbar-hairline {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 150ms ease-out;
+}
+.scrollbar-hairline:hover {
+  scrollbar-color: var(--line) transparent;
+}
+.scrollbar-hairline::-webkit-scrollbar {
+  width: 2px;
+  height: 2px;
+}
+.scrollbar-hairline::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-hairline::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 999px;
+  transition: background-color 150ms ease-out;
+}
+.scrollbar-hairline:hover::-webkit-scrollbar-thumb {
+  background-color: var(--line-strong);
+}
+
 /* Scrollbar invisível — quiosque/touch: a área rola, mas sem barra. */
 .scrollbar-none {
   scrollbar-width: none;

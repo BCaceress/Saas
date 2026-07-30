@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Bell, Check, X, PackageX, AlertTriangle, Tag, PackagePlus, ShoppingCart,
@@ -8,13 +8,11 @@ import {
   Wine, TrendingUp, TrendingDown, Flame, Loader2, CheckCheck, Cake, Gift,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getAlerts } from "@/app/(app)/_alerts";
+import { useAlerts } from "@/components/app/alerts-provider";
 import {
   type AlertItem, type AlertIcon, CATEGORY_ORDER, CATEGORY_LABEL,
-  PRIORITY_STYLE, sortAlerts, tempoRelativo,
+  PRIORITY_STYLE, tempoRelativo,
 } from "@/lib/alerts-types";
-
-const STORAGE_KEY = "nohub:alerts:dismissed";
 
 const ICON: Record<AlertIcon, React.ReactNode> = {
   "sem-estoque": <PackageX size={16} />,
@@ -38,52 +36,15 @@ const ICON: Record<AlertIcon, React.ReactNode> = {
   "cliente-risco": <Gift size={16} />,
 };
 
-function loadDismissed(): Set<string> {
-  if (typeof window === "undefined") return new Set();
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveDismissed(ids: Set<string>) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([...ids]));
-  } catch {
-    /* ignora quota/privacidade */
-  }
-}
-
 export function NotificationBell() {
   const [open, setOpen] = useState(false);
-  const [alerts, setAlerts] = useState<AlertItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setDismissed(loadDismissed());
-  }, []);
+  // A lista, o "ocultar" e a busca vivem no AlertsProvider — o menu lateral
+  // usa os mesmos números para os badges e ninguém consulta o banco duas vezes.
+  const { alerts: visiveis, loading, loaded, refresh, ocultar, ocultarTodos } = useAlerts();
 
-  const refresh = useCallback(() => {
-    setLoading(true);
-    getAlerts()
-      .then((rows) => setAlerts(sortAlerts(rows)))
-      .catch(() => setAlerts([]))
-      .finally(() => {
-        setLoading(false);
-        setLoaded(true);
-      });
-  }, []);
-
-  // Carrega uma vez ao montar (para o contador) e revalida ao abrir.
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
+  // Revalida ao abrir: o painel é o momento em que a informação precisa estar fresca.
   useEffect(() => {
     if (open) refresh();
   }, [open, refresh]);
@@ -103,11 +64,6 @@ export function NotificationBell() {
     };
   }, []);
 
-  const visiveis = useMemo(
-    () => alerts.filter((a) => !dismissed.has(a.id)),
-    [alerts, dismissed],
-  );
-
   const grupos = useMemo(() => {
     const map = new Map<string, AlertItem[]>();
     for (const a of visiveis) {
@@ -120,24 +76,6 @@ export function NotificationBell() {
       itens: map.get(c)!,
     }));
   }, [visiveis]);
-
-  function ocultar(id: string) {
-    setDismissed((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      saveDismissed(next);
-      return next;
-    });
-  }
-
-  function limparTudo() {
-    setDismissed((prev) => {
-      const next = new Set(prev);
-      for (const a of visiveis) next.add(a.id);
-      saveDismissed(next);
-      return next;
-    });
-  }
 
   const total = visiveis.length;
 
@@ -177,7 +115,7 @@ export function NotificationBell() {
             </div>
             {total > 0 && (
               <button
-                onClick={limparTudo}
+                onClick={ocultarTodos}
                 className="flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-ink cursor-pointer"
               >
                 <CheckCheck size={13} /> Marcar tudo

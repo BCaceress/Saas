@@ -12,6 +12,10 @@
     {
       "path": "/api/jobs/assinaturas",
       "schedule": "0 12 * * *"
+    },
+    {
+      "path": "/api/jobs/sincronizar-catalogos",
+      "schedule": "5 * * * *"
     }
   ]
 }

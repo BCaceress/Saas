@@ -242,7 +242,6 @@ export function MovimentacoesView({
         title="Movimentações"
         icon={History}
         description="Histórico auditável de tudo que entrou, saiu ou foi ajustado no estoque."
-        backHref="/estoque"
         innerClassName="max-w-none"
         className="pb-3"
       />

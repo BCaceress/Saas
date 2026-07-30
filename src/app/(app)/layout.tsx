@@ -1,6 +1,7 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { requireActiveTenant, touchUltimoAcesso } from "@/lib/current-tenant";
-import { AppShell } from "@/components/app/app-shell";
+import { AppShell, NAV_COLLAPSED_COOKIE } from "@/components/app/app-shell";
 import { FaixaAssinatura } from "@/components/app/faixa-assinatura";
 import { Toaster } from "@/components/ui/toast";
 import { estadoAcesso } from "@/lib/assinatura";
@@ -48,6 +49,10 @@ export default async function ShellLayout({
   const ctx = await requireActiveTenant();
   const { tenant, user, acessos } = ctx;
 
+  // Menu recolhido vem em cookie, não em localStorage: o servidor já entrega a
+  // sidebar na largura certa e ninguém vê os 60px pularem depois da hidratação.
+  const menuRecolhido = (await cookies()).get(NAV_COLLAPSED_COOKIE)?.value === "1";
+
   // Sem onboarding concluído, manda concluir antes de entrar no app.
   if (!tenant.onboardingDone) redirect("/onboarding");
 
@@ -92,6 +97,7 @@ export default async function ShellLayout({
       userEmail={user.email ?? ""}
       userCargo={cargoLabel(acessos)}
       podeConfigurar={isAdmin(acessos)}
+      menuRecolhido={menuRecolhido}
       trialDias={tenant.status === "TRIAL" ? trialDaysLeft(tenant.trialEndsAt) : null}
       vocabularioPonto={vocabularioPonto}
       multiPonto={(tenant.numPontos ?? 1) > 1}

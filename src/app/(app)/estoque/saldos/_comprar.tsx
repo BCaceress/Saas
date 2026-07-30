@@ -235,7 +235,7 @@ export function AdicionarCompraSheet({
               Fechar
             </button>
             <Link
-              href="/compras"
+              href="/compras/pedidos"
               className="flex items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
             >
               Ir para Reposições <ArrowRight size={14} />

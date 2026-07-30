@@ -15,11 +15,12 @@ export default async function RelatoriosLayout({ children }: { children: React.R
 
   return (
     <div className="space-y-6 pb-10">
-      {/* Header: título + propósito. Sem abas — o hub é um ambiente único. */}
+      {/* Header: título + propósito. Sem abas — a Central é a porta única, e as
+          telas de relatório trazem o próprio título no breadcrumb do shell. */}
       <PageHeader
-        title="Relatórios"
+        title="Central de Relatórios"
         icon={navIcon("/relatorios")}
-        description="Descubra informações sobre seu negócio, gere relatórios, consulte documentos ou faça perguntas para a IA."
+        description="Visualize, filtre, exporte e compartilhe relatórios do seu negócio."
         innerClassName="max-w-none"
         actions={
           multiSite ? (

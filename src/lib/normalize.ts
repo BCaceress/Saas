@@ -23,6 +23,18 @@ export function normalizeSkuPrefix(s: string): string {
     .slice(0, 4);
 }
 
+/**
+ * Minúsculas e sem acento, para casar busca digitada com texto da tela —
+ * quem procura "cotacoes" tem que achar "Cotações".
+ */
+export function semAcento(s: string): string {
+  return (s ?? "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
 /** Só dígitos (CNPJ, EAN). */
 export function onlyDigits(s: string): string {
   return (s ?? "").replace(/\D/g, "");

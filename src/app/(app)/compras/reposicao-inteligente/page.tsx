@@ -24,7 +24,7 @@ export default async function ReposicaoInteligentePage() {
       <PageHeader
         title="Reposição inteligente"
         icon={Sparkles}
-        backHref="/compras"
+        backHref="/compras/pedidos"
         description="Revise as sugestões de compra e aprove a criação dos pedidos — um por fornecedor."
         innerClassName="max-w-none"
       />

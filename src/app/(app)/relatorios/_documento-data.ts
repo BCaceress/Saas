@@ -24,20 +24,10 @@ import type { ModeloId } from "./_modelos";
  * só pinta. Roda sob contexto de tenant (via `db` nas funções de `_data`).
  */
 
-export type DocKpi = { label: string; valor: string; hint?: string };
-
-export type DocSecao = {
-  titulo: string;
-  subtitulo?: string;
-  colunas: { header: string; align?: "right" }[];
-  linhas: string[][];
-  vazio?: string;
-};
-
-export type DocumentoData = {
-  kpis: DocKpi[];
-  secoes: DocSecao[];
-};
+// A forma do documento é definida junto com a folha que o imprime — uma
+// definição só, usada pelos modelos fixos e pelo relatório sob demanda.
+export type { DocKpi, DocSecao, DocumentoData } from "@/app/documento/_folha";
+import type { DocumentoData } from "@/app/documento/_folha";
 
 const D = (n: number) => n.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 

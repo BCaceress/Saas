@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
 export default function EstoqueComprasPage() {
-  redirect("/compras");
+  redirect("/compras/pedidos");
 }

@@ -1,56 +1,24 @@
-import { z } from "zod";
+import type { ColunaResultado } from "@/lib/analises/motor";
 
 /**
- * DSL de consulta de relatório (Fase 7 §12). A IA NUNCA escreve SQL — ela só
- * preenche este objeto, que é validado por Zod e executado por um resolver que
- * usa `db` (tenant já injetado). Isso garante isolamento multi-tenant e impede
- * que prompt injection vire query arbitrária no banco.
+ * O que o assistente devolve para a tela.
+ *
+ * O DSL de consulta em si mora em `@/lib/analises/schema` — é o mesmo objeto
+ * que a tela de consulta monta no clique, e o mesmo motor executa os dois. Aqui
+ * só descrevemos a RESPOSTA: números que já saíram do motor, mais a leitura que
+ * a IA fez deles.
  */
 
-export const FONTES = [
-  "produtos", // ranking de produtos vendidos (receita, custo, margem, qtd)
-  "categorias", // vendas agregadas por categoria
-  "pagamentos", // mix por método de pagamento
-  "perdas", // perdas por produto
-  "compras", // entradas por produto
-  "estoque", // posição de estoque ao vivo
-  "caixa", // fechamentos de caixa
-  "abc", // curva ABC
-] as const;
-
-export const CAMPOS_ORDEM = ["receita", "margem", "margemPct", "quantidade", "custo", "valor"] as const;
-
-export const consultaSchema = z.object({
-  fonte: z.enum(FONTES),
-  periodo: z
-    .object({
-      preset: z.enum(["hoje", "7d", "30d", "mes", "custom"]).default("30d"),
-      de: z.string().optional(),
-      ate: z.string().optional(),
-    })
-    .default({ preset: "30d" }),
-  ordenarPor: z.enum(CAMPOS_ORDEM).optional(),
-  ordem: z.enum(["asc", "desc"]).default("desc"),
-  limite: z.number().int().min(1).max(100).default(20),
-  filtros: z
-    .object({
-      categoria: z.string().optional(),
-      margemPctMin: z.number().optional(),
-      margemPctMax: z.number().optional(),
-      receitaMin: z.number().optional(),
-      quantidadeMin: z.number().optional(),
-    })
-    .optional(),
-});
-
-export type Consulta = z.infer<typeof consultaSchema>;
-
 export type ResultadoIA = {
-  consulta: Consulta;
-  /** Frase legível do que foi interpretado, para o usuário validar. */
+  /** Consulta codificada — abre a resposta na tela de consulta para ajustar. */
+  q: string;
+  /** Frase do que foi entendido, para o operador validar (ou corrigir). */
   interpretacao: string;
-  colunas: { header: string; align?: "right" }[];
+  colunas: ColunaResultado[];
   linhas: string[][];
   totalLinhas: number;
+  /** Leitura em 2-3 frases sobre os números reais. Nunca inventa dado. */
   insight: string;
+  /** Métricas cortadas por falta de `relatorio.financeiro`. */
+  metricasRemovidas: string[];
 };

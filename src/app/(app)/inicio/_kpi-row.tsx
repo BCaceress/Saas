@@ -84,7 +84,7 @@ export function KpiRow({
           value={String(pedidosAndamentoCount)}
           delta={ritmo.anterior > 0 || ritmo.atual > 0 ? variacao(ritmo.atual, ritmo.anterior) : null}
           hint="enviados, aguardando ou em trânsito"
-          href="/compras"
+          href="/compras/pedidos"
           tooltip="Pedidos de compra ainda não recebidos por completo."
           icon={ShoppingCart}
           tone="info"

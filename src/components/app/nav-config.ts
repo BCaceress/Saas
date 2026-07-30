@@ -5,22 +5,57 @@ import {
   Users,
   ShoppingCart,
   ShoppingBag,
+  ShoppingBasket,
   ClipboardList,
+  ClipboardCheck,
   BarChart3,
-  Wallet,
   Recycle,
   Truck,
   Factory,
   MonitorSmartphone,
   ReceiptText,
+  Scale,
+  FileQuestion,
+  BookOpen,
+  FileUp,
+  History,
+  Settings,
+  Building2,
+  UserCog,
+  Blocks,
+  CreditCard,
+  Store,
+  Bell,
+  Gift,
+  Wallet,
+  Tags,
+  PackagePlus,
+  PackageCheck,
+  CalendarClock,
+  SlidersHorizontal,
+  ArrowRightLeft,
+  Layers,
+  Percent,
+  ChartColumnBig,
+  TriangleAlert,
+  LineChart,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 import { podeEmAlguma, type Acesso, type Permissao } from "@/lib/permissoes";
 
 /**
- * Mapa único de navegação do app — fonte de verdade para Sidebar e PageHeader.
- * Ícone, rótulo e rota vivem aqui; sidebar e cabeçalhos consomem o mesmo item,
- * então menu e página nunca divergem.
+ * Mapa único de navegação do app — fonte de verdade para sidebar, drawer do
+ * mobile, barra inferior, abas de módulo, badges e paleta de comandos.
+ *
+ * O mapa é COMPLETO: descreve também as telas que não cabem na sidebar
+ * (`ocultoNoMenu`). Cada consumidor filtra o que precisa — assim menu, abas e
+ * busca nunca divergem, que era o que acontecia quando cada tela reescrevia a
+ * própria lista de abas à mão.
+ *
+ * Fora do mapa de propósito: rotas que são só `redirect()` (ex.
+ * /estoque/producao, /compras/revisar, /relatorios/ia). Elas não são destino —
+ * listá-las criaria dois caminhos para a mesma tela.
  */
 
 export type NavToggles = {
@@ -41,9 +76,37 @@ export type NavItem = {
   show?: (t: NavToggles) => boolean;
   /** Permissão mínima para ver o item. O guard da rota exige a MESMA. */
   permissao?: Permissao;
+  /** Frase curta: subtítulo da aba do módulo, do flyout e da linha na paleta. */
+  descricao?: string;
+  /**
+   * Aparece na barra inferior do mobile. Três no app inteiro — mais que isso e
+   * os alvos ficam menores que o polegar.
+   */
+  mobile?: boolean;
+  /**
+   * Existe para as abas do módulo e para a paleta, mas não entra na sidebar.
+   * É como o mapa fica completo sem o menu virar uma lista de 40 linhas.
+   */
+  ocultoNoMenu?: boolean;
+  /**
+   * Tela com cabeçalho próprio: fica fora da barra de abas do módulo, e a
+   * barra some enquanto ela está aberta.
+   */
+  semAbas?: boolean;
+  /**
+   * Subitens. O pai vira uma gaveta: abre ao clicar e já nasce aberta quando
+   * a tela atual é uma das filhas. Um pai só aparece se sobrar ao menos uma
+   * filha visível — a permissão mora na filha, não no pai.
+   */
+  children?: NavItem[];
 };
 
-export type NavGroup = { title: string | null; items: NavItem[] };
+export type NavGroup = {
+  title: string | null;
+  items: NavItem[];
+  /** Grupo ancorado no rodapé da sidebar (Configurações). */
+  rodape?: boolean;
+};
 
 export const NAV_GROUPS: NavGroup[] = [
   {
@@ -51,65 +114,26 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         href: "/inicio",
-        label: "Dashboard",
+        label: "Início",
         icon: LayoutDashboard,
         enabled: true,
         permissao: "relatorio.ver",
+        descricao: "O dia da loja num relance.",
       },
     ],
   },
   {
-    title: "Gestão",
-    items: [
-      {
-        href: "/produtos",
-        label: "Produtos",
-        icon: Boxes,
-        enabled: true,
-        // Tela de gestão do catálogo. `produto.ver` é consulta (PDV, estoque) e
-        // não basta para abrir o cadastro.
-        permissao: "produto.editar",
-      },
-      {
-        href: "/clientes",
-        label: "Clientes",
-        icon: Users,
-        enabled: true,
-        permissao: "cliente.ver",
-      },
-      {
-        href: "/fornecedores",
-        label: "Fornecedores",
-        icon: Factory,
-        enabled: true,
-        permissao: "fornecedor.ver",
-      },
-      {
-        href: "/estoque",
-        label: "Estoque",
-        icon: Warehouse,
-        enabled: true,
-        permissao: "estoque.ver",
-      },
-      {
-        href: "/compras",
-        label: "Pedidos de Compra",
-        icon: ShoppingBag,
-        enabled: true,
-        permissao: "compras.ver",
-      },
-    ],
-  },
-  {
-    title: "Operação",
+    title: "Vender",
     items: [
       {
         href: "/vendas",
         label: "PDV",
         icon: ShoppingCart,
         enabled: true,
+        mobile: true,
         show: (t) => t.moduloPdv,
         permissao: "venda.registrar",
+        descricao: "Registrar vendas e fechar o caixa.",
       },
       {
         href: "/totem",
@@ -118,22 +142,359 @@ export const NAV_GROUPS: NavGroup[] = [
         enabled: true,
         show: (t) => t.moduloAutoatendimento,
         permissao: "venda.registrar",
-      },
-      { href: "/pedidos", label: "Pedidos", icon: ClipboardList, enabled: false },
-      {
-        href: "/rota",
-        label: "Reposição",
-        icon: Truck,
-        enabled: false,
-        show: (t) => t.moduloRota,
+        descricao: "Fila e configuração dos quiosques.",
       },
       {
-        href: "/comodato",
-        label: "Comodato",
-        icon: Recycle,
+        href: "/clientes",
+        label: "Clientes",
+        icon: Users,
         enabled: true,
-        show: (t) => t.moduloComodato,
-        permissao: "estoque.ver",
+        permissao: "cliente.ver",
+        descricao: "Cadastro, fidelização e clientes em risco.",
+      },
+    ],
+  },
+  {
+    title: "Estoque",
+    items: [
+      {
+        href: "/estoque",
+        label: "Estoque",
+        icon: Warehouse,
+        enabled: true,
+        mobile: true,
+        // O guard mora em estoque/layout.tsx (`estoque.ver`) — toda filha herda.
+        children: [
+          {
+            href: "/estoque",
+            label: "Saldos",
+            icon: Layers,
+            enabled: true,
+            permissao: "estoque.ver",
+            descricao: "O que tem em casa, o que falta e o que precisa repor.",
+          },
+          {
+            href: "/estoque/movimentacoes",
+            label: "Movimentações",
+            icon: History,
+            enabled: true,
+            permissao: "estoque.ver",
+            descricao: "Histórico auditável de tudo que entrou e saiu.",
+          },
+          {
+            href: "/estoque/entradas",
+            label: "Entradas",
+            icon: PackagePlus,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "estoque.ver",
+            descricao: "Lançamentos que aumentaram o saldo.",
+          },
+          {
+            href: "/estoque/recebimentos",
+            label: "Recebimentos",
+            icon: PackageCheck,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "compras.receber",
+            descricao: "Conferir o que o fornecedor entregou.",
+          },
+          {
+            href: "/estoque/validade",
+            label: "Validade",
+            icon: CalendarClock,
+            enabled: true,
+            permissao: "estoque.ver",
+            descricao: "Lotes vencendo e vencidos, por prioridade.",
+          },
+          {
+            href: "/estoque/inventarios",
+            label: "Inventários",
+            icon: ClipboardList,
+            enabled: true,
+            permissao: "estoque.inventario",
+            descricao: "Contagens e divergências apuradas.",
+          },
+          {
+            href: "/estoque/ajustes",
+            label: "Ajustes",
+            icon: SlidersHorizontal,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "estoque.ajustar",
+            descricao: "Corrigir saldo com motivo registrado.",
+          },
+          {
+            href: "/estoque/transferencias",
+            label: "Transferências",
+            icon: ArrowRightLeft,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "estoque.transferir",
+            descricao: "Movimentar produtos entre locais.",
+          },
+          {
+            href: "/estoque/requisicoes",
+            label: "Requisições",
+            icon: ClipboardCheck,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "estoque.transferir",
+            descricao: "Pedidos de um local para outro.",
+          },
+        ],
+      },
+      {
+        href: "/produtos",
+        label: "Produtos",
+        icon: Boxes,
+        enabled: true,
+        // Tela de gestão do catálogo. `produto.ver` é consulta (PDV, estoque) e
+        // não basta para abrir o cadastro.
+        permissao: "produto.editar",
+        descricao: "Catálogo, preço e ficha de cada item.",
+      },
+    ],
+  },
+  {
+    title: "Comprar",
+    items: [
+      {
+        href: "/compras",
+        label: "Compras",
+        icon: ShoppingBag,
+        enabled: true,
+        mobile: true,
+        children: [
+          {
+            href: "/compras",
+            label: "Painel",
+            icon: LayoutDashboard,
+            enabled: true,
+            permissao: "compras.ver",
+            descricao:
+              "O estado das compras num relance — fornecedores, tabelas e o que precisa de atenção.",
+          },
+          {
+            href: "/compras/pedidos",
+            label: "Pedidos",
+            icon: ClipboardList,
+            enabled: true,
+            permissao: "compras.ver",
+            descricao: "Acompanhe cada pedido de compra do envio ao recebimento.",
+          },
+          {
+            href: "/compras/cotacoes",
+            label: "Cotações",
+            icon: FileQuestion,
+            enabled: true,
+            permissao: "compras.ver",
+            descricao:
+              "Peça preço a vários fornecedores de uma vez e compare as respostas lado a lado.",
+          },
+          {
+            href: "/compras/comparador",
+            label: "Comparador",
+            icon: Scale,
+            enabled: true,
+            permissao: "compras.ver",
+            descricao:
+              "Monte a cesta e veja qual fornecedor sai mais barato item a item.",
+          },
+          {
+            href: "/compras/carrinho",
+            label: "Cesta",
+            icon: ShoppingBasket,
+            enabled: true,
+            permissao: "compras.ver",
+            descricao: "Revise o que foi escolhido e feche o pedido de cada fornecedor.",
+          },
+          {
+            href: "/compras/catalogos",
+            label: "Tabelas de preço",
+            icon: BookOpen,
+            enabled: true,
+            permissao: "compras.ver",
+            descricao:
+              "As tabelas que cada fornecedor mandou, sempre na versão mais recente.",
+          },
+          {
+            href: "/compras/importacoes",
+            label: "Importações",
+            icon: FileUp,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "compras.ver",
+            descricao: "Arquivos e integrações que alimentam as tabelas de preço.",
+          },
+          {
+            href: "/compras/historico",
+            label: "Histórico",
+            icon: History,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "compras.ver",
+            descricao:
+              "Como o preço de cada item se moveu e quanto isso já economizou.",
+          },
+          {
+            href: "/compras/reposicao-inteligente",
+            label: "Reposição inteligente",
+            icon: Recycle,
+            enabled: true,
+            ocultoNoMenu: true,
+            semAbas: true,
+            permissao: "compras.pedir",
+            descricao: "Sugestões de compra a partir do giro e da previsão de ruptura.",
+          },
+        ],
+      },
+      {
+        href: "/fornecedores",
+        label: "Fornecedores",
+        icon: Truck,
+        enabled: true,
+        permissao: "fornecedor.ver",
+        descricao: "Quem abastece a loja, com contato e condições.",
+      },
+    ],
+  },
+  {
+    title: "Gestão",
+    items: [
+      {
+        // Item direto, não gaveta: a Central JÁ é o índice de todos os
+        // relatórios, com busca, favoritos e categorias. Repetir treze links
+        // aqui seria o menu gigante que a Central existe para acabar — então as
+        // telas de relatório ficam no mapa (paleta, ícone, rota ativa) com
+        // `ocultoNoMenu`, e o menu tem uma linha só.
+        href: "/relatorios",
+        label: "Relatórios",
+        icon: BarChart3,
+        enabled: true,
+        permissao: "relatorio.ver",
+        descricao: "Central de relatórios: busca, favoritos, exportação e histórico.",
+        children: [
+          {
+            href: "/relatorios/central",
+            label: "Central de relatórios",
+            icon: BarChart3,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "relatorio.ver",
+            descricao: "Todos os relatórios do sistema, com busca, favoritos e histórico.",
+          },
+          {
+            href: "/relatorios/lista",
+            label: "Assistente e documentos",
+            icon: Sparkles,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "relatorio.ver",
+            descricao: "Pergunte à IA e recupere os PDFs gerados neste navegador.",
+          },
+          {
+            href: "/relatorios/consulta",
+            label: "Consulta",
+            icon: Sparkles,
+            enabled: true,
+            ocultoNoMenu: true,
+            semAbas: true,
+            permissao: "relatorio.ver",
+            descricao: "Monte o relatório que você precisa e leve em CSV ou PDF.",
+          },
+          {
+            href: "/relatorios/dashboard",
+            label: "Painel",
+            icon: LineChart,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "relatorio.ver",
+            descricao: "Faturamento, categorias e tendência do período.",
+          },
+          {
+            href: "/relatorios/vendas",
+            label: "Vendas",
+            icon: ShoppingCart,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "relatorio.ver",
+            descricao: "Curva do dia, mix de pagamento e ranking de produtos.",
+          },
+          {
+            href: "/relatorios/estoque",
+            label: "Estoque",
+            icon: Warehouse,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "relatorio.ver",
+            descricao: "Posição, valor parado e ruptura.",
+          },
+          {
+            href: "/relatorios/margem",
+            label: "Margem",
+            icon: Percent,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "relatorio.financeiro",
+            descricao: "Receita, CMV e margem de cada produto.",
+          },
+          {
+            href: "/relatorios/abc",
+            label: "Curva ABC",
+            icon: ChartColumnBig,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "relatorio.ver",
+            descricao: "Quais produtos concentram o faturamento.",
+          },
+          {
+            href: "/relatorios/compras",
+            label: "Compras",
+            icon: ShoppingBag,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "relatorio.ver",
+            descricao: "Entradas por produto e por fornecedor.",
+          },
+          {
+            href: "/relatorios/perdas",
+            label: "Perdas",
+            icon: TriangleAlert,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "relatorio.ver",
+            descricao: "O que foi baixado como perda e quanto custou.",
+          },
+          {
+            href: "/relatorios/pagamentos",
+            label: "Pagamentos",
+            icon: Wallet,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "relatorio.financeiro",
+            descricao: "Mix de recebimento e fechamentos de caixa.",
+          },
+          {
+            href: "/relatorios/producao",
+            label: "Produção",
+            icon: Factory,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "relatorio.ver",
+            descricao: "Consumo de insumos e rendimento das fichas.",
+          },
+          {
+            href: "/relatorios/fiscal",
+            label: "Fiscal",
+            icon: ReceiptText,
+            enabled: true,
+            ocultoNoMenu: true,
+            show: (t) => t.moduloFiscal,
+            permissao: "fiscal.ver",
+            descricao: "Documentos emitidos e situação junto à SEFAZ.",
+          },
+        ],
       },
       {
         href: "/fiscal",
@@ -142,35 +503,235 @@ export const NAV_GROUPS: NavGroup[] = [
         enabled: true,
         show: (t) => t.moduloFiscal,
         permissao: "fiscal.ver",
+        descricao: "Emissão, manifestação e documentos recebidos.",
       },
-      { href: "/financeiro", label: "Financeiro", icon: Wallet, enabled: false },
       {
-        href: "/relatorios",
-        label: "Análises",
-        icon: BarChart3,
+        href: "/comodato",
+        label: "Comodato",
+        icon: Recycle,
         enabled: true,
-        permissao: "relatorio.ver",
+        show: (t) => t.moduloComodato,
+        permissao: "estoque.ver",
+        descricao: "Equipamentos emprestados e onde cada um está.",
+      },
+    ],
+  },
+  {
+    title: null,
+    rodape: true,
+    items: [
+      {
+        href: "/configuracoes",
+        label: "Configurações",
+        icon: Settings,
+        enabled: true,
+        children: [
+          {
+            href: "/configuracoes/empresa",
+            label: "Empresa",
+            icon: Building2,
+            enabled: true,
+            permissao: "config.gerenciar",
+            descricao: "Dados cadastrais, endereço e identidade da loja.",
+          },
+          {
+            href: "/configuracoes/usuarios",
+            label: "Usuários",
+            icon: UserCog,
+            enabled: true,
+            permissao: "config.gerenciar",
+            descricao: "Quem acessa o quê — perfis, convites e lojas.",
+          },
+          {
+            href: "/configuracoes/modulos",
+            label: "Módulos",
+            icon: Blocks,
+            enabled: true,
+            permissao: "config.gerenciar",
+            descricao: "Ligue e desligue o que a operação usa.",
+          },
+          {
+            href: "/configuracoes/plano",
+            label: "Plano",
+            icon: CreditCard,
+            enabled: true,
+            permissao: "config.gerenciar",
+            descricao: "Assinatura, add-ons e faturas.",
+          },
+          {
+            href: "/configuracoes/sites",
+            label: "Lojas e depósitos",
+            icon: Store,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "config.gerenciar",
+            descricao: "Os locais onde há estoque e venda.",
+          },
+          {
+            href: "/configuracoes/caixa",
+            label: "Caixa",
+            icon: Wallet,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "config.gerenciar",
+            descricao: "Abertura, sangria e limite de gaveta.",
+          },
+          {
+            href: "/configuracoes/metodos-pagamento",
+            label: "Métodos de pagamento",
+            icon: CreditCard,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "config.gerenciar",
+            descricao: "Formas aceitas e taxas de cada uma.",
+          },
+          {
+            href: "/configuracoes/estoque",
+            label: "Regras de estoque",
+            icon: Warehouse,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "config.gerenciar",
+            descricao: "Estratégia de reposição e alerta de validade.",
+          },
+          {
+            href: "/configuracoes/fidelizacao",
+            label: "Fidelização",
+            icon: Gift,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "config.gerenciar",
+            descricao: "Pontos, cupons e régua de relacionamento.",
+          },
+          {
+            href: "/configuracoes/notificacoes",
+            label: "Notificações",
+            icon: Bell,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "config.gerenciar",
+            descricao: "O que a loja recebe e por onde.",
+          },
+          {
+            href: "/configuracoes/autoatendimento",
+            label: "Autoatendimento",
+            icon: MonitorSmartphone,
+            enabled: true,
+            ocultoNoMenu: true,
+            show: (t) => t.moduloAutoatendimento,
+            permissao: "config.gerenciar",
+            descricao: "Quiosques, PIN e modo de operação.",
+          },
+          {
+            href: "/configuracoes/fiscal",
+            label: "Fiscal",
+            icon: ReceiptText,
+            enabled: true,
+            ocultoNoMenu: true,
+            show: (t) => t.moduloFiscal,
+            // Guard próprio em configuracoes/fiscal/page.tsx.
+            permissao: "fiscal.configurar",
+            descricao: "Certificado, série e ambiente de emissão.",
+          },
+          {
+            href: "/configuracoes/classificacao-fiscal",
+            label: "Classificação fiscal",
+            icon: Tags,
+            enabled: true,
+            ocultoNoMenu: true,
+            show: (t) => t.moduloFiscal,
+            permissao: "config.gerenciar",
+            descricao: "NCM, CFOP e perfis pendentes de revisão do contador.",
+          },
+        ],
       },
     ],
   },
 ];
 
-const ALL_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
+/**
+ * Pais e filhos numa lista só — quem procura por rota não liga para a gaveta.
+ * O pai vem antes das filhas, o que importa no desempate de `navIcon`.
+ */
+export const NAV_ITEMS_FLAT: NavItem[] = NAV_GROUPS.flatMap((g) =>
+  g.items.flatMap((i) => (i.children ? [i, ...i.children] : [i])),
+);
+
+/** A rota atual está dentro deste item? (igual ou abaixo dele) */
+export const navMatches = (pathname: string, href: string) =>
+  pathname === href || pathname.startsWith(href + "/");
 
 /**
  * Ícone do menu para uma rota — casa o prefixo mais específico
  * (ex.: /configuracoes/usuarios vence /configuracoes).
  */
 export function navIcon(href: string): LucideIcon | undefined {
-  const match = ALL_ITEMS.filter(
-    (i) => href === i.href || href.startsWith(i.href + "/"),
-  ).sort((a, b) => b.href.length - a.href.length)[0];
+  // `sort` é estável: em empate de comprimento (ex.: /estoque pai × filha
+  // "Saldos") o pai vence, porque vem primeiro em NAV_ITEMS_FLAT.
+  const match = NAV_ITEMS_FLAT.filter((i) => navMatches(href, i.href)).sort(
+    (a, b) => b.href.length - a.href.length,
+  )[0];
   return match?.icon;
 }
 
-/** O item aparece para quem tem esses acessos? */
+/**
+ * Abas de um módulo — TODAS as filhas, inclusive as que a sidebar esconde.
+ * É daqui que os cabeçalhos de módulo tiram a barra de abas, em vez de
+ * reescreverem a lista à mão (e divergirem do menu).
+ */
+export function navTabs(moduloHref: string): NavItem[] {
+  const modulo = NAV_ITEMS_FLAT.find((i) => i.href === moduloHref && i.children);
+  return modulo?.children ?? [];
+}
+
+/** Itens da barra inferior do mobile, na ordem em que aparecem no menu. */
+export function navMobile(): NavItem[] {
+  return NAV_ITEMS_FLAT.filter((i) => i.mobile);
+}
+
+/**
+ * Trilha da rota atual: [pai, filha] quando a tela mora numa gaveta, [item]
+ * quando é raiz. Alimenta o rótulo da paleta ("Estoque › Validade").
+ */
+export function navTrilha(pathname: string): NavItem[] {
+  let melhor: NavItem[] = [];
+  const considerar = (trilha: NavItem[]) => {
+    const alvo = trilha[trilha.length - 1];
+    if (!navMatches(pathname, alvo.href)) return;
+    const atual = melhor[melhor.length - 1];
+    if (!atual || alvo.href.length > atual.href.length) melhor = trilha;
+  };
+
+  for (const grupo of NAV_GROUPS) {
+    for (const item of grupo.items) {
+      if (item.children) {
+        // O pai só entra na trilha por meio de uma filha — sozinho ele é
+        // rótulo, não destino.
+        for (const filha of item.children) considerar([item, filha]);
+      } else {
+        considerar([item]);
+      }
+    }
+  }
+  return melhor;
+}
+
+/**
+ * O item aparece para quem tem esses acessos? Pai com gaveta herda a resposta
+ * das filhas: gaveta vazia não vira item morto no menu.
+ */
 export function podeVerItem(item: NavItem, acessos: Acesso[]): boolean {
+  if (item.children) return item.children.some((c) => podeVerItem(c, acessos));
   return !item.permissao || podeEmAlguma(acessos, item.permissao);
+}
+
+/** Item visível para este operador, neste tenant — permissão + toggle. */
+export function itemVisivel(
+  item: NavItem,
+  acessos: Acesso[],
+  toggles: NavToggles,
+): boolean {
+  return (item.show ? item.show(toggles) : true) && podeVerItem(item, acessos);
 }
 
 /**
@@ -185,7 +746,7 @@ const PRIORIDADE_INICIAL = [
   "/produtos",
   "/clientes",
   "/fornecedores",
-  "/relatorios",
+  "/relatorios/central",
 ];
 
 /**
@@ -193,12 +754,14 @@ const PRIORIDADE_INICIAL = [
  * permissão. null = não pode nada (cai em /sem-acesso).
  */
 export function rotaInicial(acessos: Acesso[], toggles: NavToggles): string | null {
-  const disponivel = (i: NavItem) =>
-    i.enabled && (i.show ? i.show(toggles) : true) && podeVerItem(i, acessos);
+  const disponivel = (i: NavItem) => i.enabled && itemVisivel(i, acessos, toggles);
+
+  // Só folhas: um pai de gaveta não é destino, é rótulo.
+  const folhas = NAV_ITEMS_FLAT.filter((i) => !i.children);
 
   for (const href of PRIORIDADE_INICIAL) {
-    const item = ALL_ITEMS.find((i) => i.href === href);
+    const item = folhas.find((i) => i.href === href);
     if (item && disponivel(item)) return href;
   }
-  return ALL_ITEMS.find(disponivel)?.href ?? null;
+  return folhas.find(disponivel)?.href ?? null;
 }

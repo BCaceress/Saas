@@ -73,16 +73,16 @@ enum Atendimento {
 
 // Controle de estoque no PDV: como a venda reage a saldo insuficiente.
 enum ControleEstoquePdv {
-  BLOQUEAR  // não deixa vender sem saldo (padrão)
+  BLOQUEAR // não deixa vender sem saldo (padrão)
   CONFIRMAR // permite vender acima do saldo mediante confirmação do operador
-  IGNORAR   // vende sem validar saldo
+  IGNORAR // vende sem validar saldo
 }
 
 /// Como a empresa decide o que precisa ser comprado. Escolhida no onboarding e
 /// trocável em Configurações → Estoque. Nunca apaga dado: alternar a estratégia
 /// só muda o que aparece na interface e como a sugestão de compra é calculada.
 enum TipoControleEstoque {
-  MINIMO       // só estoque mínimo — repõe ao atingir o piso
+  MINIMO // só estoque mínimo — repõe ao atingir o piso
   MINIMO_IDEAL // mínimo + ideal (padrão histórico do NoHub)
   ROTATIVIDADE // sem metas fixas: média diária de venda × dias de cobertura
 }
@@ -159,13 +159,13 @@ model Tenant {
   /// então tenant antigo não muda de funcionamento ao migrar.
   tipoControleEstoque TipoControleEstoque @default(MINIMO_IDEAL)
   /// Janela de histórico usada para a média diária de venda (15/30/60/90).
-  periodoMediaDias    Int @default(30)
+  periodoMediaDias    Int                 @default(30)
   /// Dias de venda que a compra deve cobrir no modo ROTATIVIDADE (7/14/21/30).
-  diasCobertura       Int @default(7)
+  diasCobertura       Int                 @default(7)
 
-  estoqueMinimoPadrao Int @default(0) // pré-preenche o mínimo ao cadastrar produto
-  produtoParadoDias   Int @default(45) // dias sem movimentação → alerta "parado"
-  validadeAlertaDias  Int @default(30) // dias de antecedência do alerta "vencendo"
+  estoqueMinimoPadrao Int                @default(0) // pré-preenche o mínimo ao cadastrar produto
+  produtoParadoDias   Int                @default(45) // dias sem movimentação → alerta "parado"
+  validadeAlertaDias  Int                @default(30) // dias de antecedência do alerta "vencendo"
   controleEstoquePdv  ControleEstoquePdv @default(BLOQUEAR) // como o PDV trata saldo insuficiente
 
   // Caixa / PDV (Configurações → Caixa)
@@ -198,6 +198,10 @@ model Tenant {
   paymentProvider  PaymentProviderConfig?
   fiscalConfig     FiscalConfig?
   fiscalEmitentes  FiscalEmitente[]
+  savedReports     SavedReport[]
+  reportFavorites  ReportFavorite[]
+  reportRuns       ReportRun[]
+  reportSchedules  ReportSchedule[]
 
   @@index([status])
 }
@@ -294,9 +298,9 @@ model Subscription {
   status SubscriptionStatus @default(PENDENTE)
 
   /// "mercadopago" | "manual" (contrato fechado fora do app, cobrado por boleto)
-  gateway String?
+  gateway     String?
   /// id do preapproval no gateway
-  externalId String?
+  externalId  String?
   /// URL de checkout enquanto PENDENTE — o lojista volta nela para pagar.
   checkoutUrl String?
 
@@ -307,8 +311,8 @@ model Subscription {
   /// Add-ons cobrados junto (slugs de `Addon`, src/lib/planos.ts).
   addons String[] @default([])
 
-  ultimaCobranca  DateTime?
-  proximaCobranca DateTime?
+  ultimaCobranca    DateTime?
+  proximaCobranca   DateTime?
   /// Primeira falha do ciclo atual — base da contagem de tolerância.
   inadimplenteDesde DateTime?
   canceladaEm       DateTime?
@@ -316,7 +320,7 @@ model Subscription {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   events SubscriptionEvent[]
 
   @@index([status])
@@ -330,7 +334,7 @@ model SubscriptionEvent {
   id             String   @id @default(cuid())
   subscriptionId String
   tipo           String // payment.approved, payment.rejected, preapproval.cancelled…
-  externalId     String? @unique // id do evento/pagamento no gateway
+  externalId     String?  @unique // id do evento/pagamento no gateway
   valor          Decimal? @db.Decimal(10, 2)
   detalhe        String?
   createdAt      DateTime @default(now())
@@ -751,8 +755,19 @@ model Supplier {
   indicadorIE          IndicadorIE?
   pedidoMinimo         Decimal?     @db.Decimal(12, 2) // valor mínimo de pedido exigido pelo fornecedor
   ativo                Boolean      @default(true)
-  createdAt            DateTime     @default(now())
-  updatedAt            DateTime     @updatedAt
+
+  // ── Compras com Fornecedores (catálogo/oferta) ──
+  // Campos de vitrine: respondem "dá para receber tabela deste fornecedor e
+  // por onde?" sem abrir a configuração do conector (SupplierIntegration).
+  possuiIntegracao           Boolean                   @default(false)
+  tipoIntegracao             SupplierIntegrationKind?
+  situacaoIntegracao         SupplierIntegrationStatus @default(NAO_CONFIGURADA)
+  ultimaSincronizacao        DateTime?
+  aceitaImportacaoManual     Boolean                   @default(true)
+  aceitaImportacaoAutomatica Boolean                   @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   products        ProductSupplier[]
@@ -761,6 +776,15 @@ model Supplier {
   fiscalDocuments FiscalDocument[]
   fiscalInbounds  FiscalInbound[]
   itemMaps        SupplierItemMap[]
+
+  integration  SupplierIntegration?
+  catalogs     SupplierCatalog[]
+  catalogItems SupplierCatalogItem[]
+  offers       SupplierOffer[]
+  imports      SupplierImport[]
+  priceHistory SupplierPriceHistory[]
+  cartItems    SupplierCartItem[]
+  quotations   QuotationSupplier[]
 
   @@unique([tenantId, cnpj])
   @@index([tenantId])
@@ -849,6 +873,10 @@ model Product {
   tags            ProductTag[]
   salesChannels   ProductSalesChannel[]
   suppliers       ProductSupplier[]
+
+  catalogItems SupplierCatalogItem[]
+  priceHistory SupplierPriceHistory[]
+  cartItems    SupplierCartItem[]
 
   @@unique([tenantId, sku])
   @@index([tenantId])
@@ -1049,6 +1077,7 @@ model Site {
   fiscalSeries       FiscalSerie[]
   fiscalDocuments    FiscalDocument[]
   fiscalInbounds     FiscalInbound[]
+  quotations         Quotation[]
 
   @@unique([tenantId, nome])
   @@index([tenantId])
@@ -1097,7 +1126,7 @@ model StockMovement {
 // Invariante: soma de StockLot.quantidade por (produto × site) == Stock.estoqueFechado.
 // Saldo aberto/fracionado (ml de drink) NÃO é rastreado por lote.
 model StockLot {
-  id        String  @id @default(cuid())
+  id        String @id @default(cuid())
   tenantId  String
   siteId    String
   productId String
@@ -1106,7 +1135,7 @@ model StockLot {
   validade   DateTime? // vencimento (opcional)
   quantidade Decimal   @default(0) @db.Decimal(12, 3) // saldo fechado restante neste lote
 
-  custoUnitario Decimal? @db.Decimal(10, 2)
+  custoUnitario Decimal?  @db.Decimal(10, 2)
   purchaseId    String?
   esgotadoEm    DateTime? // quando zerou
 
@@ -1501,7 +1530,7 @@ model Payment {
   adquirenteCnpj String? // credenciadora → card.CNPJ da NFC-e
   // Id da TRANSAÇÃO no PSP. Diferente de externalId (que é a intenção/pedido
   // enviada à maquininha) — o estorno e a conciliação precisam deste.
-  pspPaymentId String?
+  pspPaymentId   String?
 
   // Comprovante do cartão (via cliente) devolvido pelo TEF/pinpad, texto pronto
   // para reimpressão. Separado do cupom fiscal (DANFCE), que vem do provedor.
@@ -2272,4 +2301,543 @@ model SupplierItemMap {
   @@unique([supplierId, codigoFornecedor])
   @@index([tenantId])
   @@index([productId])
+}
+
+// ============================================================
+// COMPRAS COM FORNECEDORES — catálogo, oferta e comparação
+//
+// O fornecedor manda tabela de mil jeitos (planilha, PDF no WhatsApp, foto,
+// XML, API). O módulo aceita todos e converte para UM formato interno
+// (`OfertaNormalizada`, src/lib/compras-fornecedores/types.ts). Daí para
+// frente — comparador, cesta, carrinho, histórico — nada mais sabe de onde o
+// dado veio: conector novo entra sem tocar no resto.
+//
+// Produto NÃO é duplicado: o item do catálogo aponta para o Product do tenant
+// (`productId`). Sem correspondência, ele fica com matchStatus=PENDENTE e cai
+// na fila de revisão manual — a oferta continua visível, só não entra na
+// comparação por produto.
+// ============================================================
+
+/// Como a tabela do fornecedor chega. Cada valor tem um conector
+/// (src/lib/compras-fornecedores/connectors) que devolve o mesmo formato.
+enum SupplierIntegrationKind {
+  API
+  PLANILHA // .xlsx
+  CSV
+  PDF
+  IMAGEM
+  XML
+  JSON
+  MANUAL // digitado na tela
+}
+
+enum SupplierIntegrationStatus {
+  NAO_CONFIGURADA
+  ONLINE
+  OFFLINE
+  ERRO
+}
+
+enum SupplierImportStatus {
+  PENDENTE
+  PROCESSANDO
+  CONCLUIDA
+  CONCLUIDA_COM_ERROS
+  FALHOU
+}
+
+/// Estado do vínculo item do fornecedor → produto do tenant.
+enum SupplierMatchStatus {
+  VINCULADO
+  PENDENTE // fila de revisão manual
+  IGNORADO // "não vendo isso" — some da fila sem virar produto
+}
+
+/// Por onde o vínculo foi feito — vira confiança na tela de revisão.
+enum SupplierMatchOrigem {
+  EAN
+  CODIGO_FORNECEDOR
+  SKU
+  NOME
+  MANUAL
+}
+
+/// Configuração do conector de um fornecedor (1–1). Credencial vive cifrada
+/// (lib/crypto.ts) e nunca sai do servidor.
+model SupplierIntegration {
+  id         String                  @id @default(cuid())
+  tenantId   String
+  supplierId String                  @unique
+  kind       SupplierIntegrationKind @default(MANUAL)
+  ativo      Boolean                 @default(true)
+
+  // API
+  endpoint   String?
+  authTipo   String? // "bearer" | "basic" | "apikey" | "none"
+  credencial String? // cifrada
+  headers    Json? // cabeçalhos extras
+
+  /// Mapa coluna do arquivo → campo interno. Nulo = detecção automática.
+  mapeamento Json?
+
+  /// Sincronização automática (só quando aceitaImportacaoAutomatica).
+  frequenciaHoras Int?
+  proximaSync     DateTime?
+  ultimaSync      DateTime?
+  ultimoErro      String?
+
+  status SupplierIntegrationStatus @default(NAO_CONFIGURADA)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, proximaSync])
+}
+
+/// Uma tabela de preços do fornecedor. O caso comum é uma só ("Tabela geral");
+/// `referencia` existe para quem manda tabela por região/rede.
+model SupplierCatalog {
+  id         String                  @id @default(cuid())
+  tenantId   String
+  supplierId String
+  nome       String                  @default("Tabela geral")
+  referencia String                  @default("padrao")
+  origem     SupplierIntegrationKind @default(MANUAL)
+  ativo      Boolean                 @default(true)
+  totalItens Int                     @default(0) // contagem cacheada (itens ativos)
+
+  vigenciaInicio DateTime?
+  vigenciaFim    DateTime?
+  atualizadoEm   DateTime? // última ingestão bem-sucedida
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  supplier Supplier              @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  items    SupplierCatalogItem[]
+  imports  SupplierImport[]
+
+  @@unique([supplierId, referencia])
+  @@index([tenantId])
+  @@index([supplierId])
+}
+
+/// Item do catálogo = a oferta VIGENTE daquele produto naquele fornecedor.
+/// É a linha que o comparador lê — por isso o preço corrente mora aqui, e não
+/// só em SupplierOffer (que guarda janelas futuras/escalonadas).
+model SupplierCatalogItem {
+  id         String @id @default(cuid())
+  tenantId   String
+  catalogId  String
+  supplierId String
+
+  /// Chave estável do item dentro do catálogo: código do fornecedor, senão
+  /// EAN, senão a descrição normalizada. É o que evita item duplicado a cada
+  /// reimportação da mesma tabela.
+  chave            String
+  codigoFornecedor String?
+  ean              String?
+  descricao        String
+  marca            String?
+  categoria        String?
+  imagemUrl        String?
+  unidade          String? // "UN", "CX 12", "FD 6"
+  fatorConversao   Decimal @default(1) @db.Decimal(12, 4) // unidades do produto por unidade de compra
+
+  preco             Decimal   @db.Decimal(12, 4)
+  precoPromocional  Decimal?  @db.Decimal(12, 4)
+  emPromocao        Boolean   @default(false)
+  quantidadeMinima  Decimal?  @db.Decimal(12, 3)
+  estoqueDisponivel Decimal?  @db.Decimal(12, 3)
+  validadeOferta    DateTime?
+
+  productId   String?
+  matchStatus SupplierMatchStatus  @default(PENDENTE)
+  matchOrigem SupplierMatchOrigem?
+
+  ativo             Boolean  @default(true) // false = sumiu da última tabela do fornecedor
+  ultimaAtualizacao DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  catalog  SupplierCatalog        @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+  supplier Supplier               @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  product  Product?               @relation(fields: [productId], references: [id])
+  offers   SupplierOffer[]
+  history  SupplierPriceHistory[]
+  cartRefs SupplierCartItem[]
+
+  @@unique([catalogId, chave])
+  @@index([tenantId])
+  @@index([tenantId, productId])
+  @@index([tenantId, ean])
+  @@index([tenantId, matchStatus])
+  @@index([supplierId])
+}
+
+/// Oferta com janela de validade e/ou quantidade mínima escalonada. O item
+/// carrega a oferta vigente; aqui ficam as promoções datadas — inclusive as
+/// que ainda vão começar.
+model SupplierOffer {
+  id               String   @id @default(cuid())
+  tenantId         String
+  supplierId       String
+  catalogItemId    String
+  preco            Decimal  @db.Decimal(12, 4)
+  precoPromocional Decimal? @db.Decimal(12, 4)
+  quantidadeMinima Decimal? @db.Decimal(12, 3)
+
+  inicio   DateTime  @default(now())
+  fim      DateTime?
+  ativa    Boolean   @default(true)
+  importId String?
+
+  createdAt DateTime @default(now())
+
+  supplier    Supplier            @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  catalogItem SupplierCatalogItem @relation(fields: [catalogItemId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([catalogItemId])
+  @@index([tenantId, ativa, fim])
+}
+
+/// Série de preço — uma linha por MUDANÇA de preço (reimportar tabela igual
+/// não polui o gráfico). É o que separa promoção de verdade de "preço de
+/// sempre com etiqueta de promoção".
+model SupplierPriceHistory {
+  id               String   @id @default(cuid())
+  tenantId         String
+  supplierId       String
+  catalogItemId    String
+  productId        String?
+  preco            Decimal  @db.Decimal(12, 4)
+  precoPromocional Decimal? @db.Decimal(12, 4)
+  emPromocao       Boolean  @default(false)
+  data             DateTime @default(now())
+  importId         String?
+
+  supplier    Supplier            @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  catalogItem SupplierCatalogItem @relation(fields: [catalogItemId], references: [id], onDelete: Cascade)
+  product     Product?            @relation(fields: [productId], references: [id])
+
+  @@index([tenantId])
+  @@index([catalogItemId, data])
+  @@index([tenantId, productId, data])
+}
+
+/// Registro de cada ingestão — arquivo, API ou digitação. Mantém o rastro de
+/// quem subiu o quê e o que o conector entendeu.
+model SupplierImport {
+  id         String                  @id @default(cuid())
+  tenantId   String
+  supplierId String
+  catalogId  String?
+  tipo       SupplierIntegrationKind
+  origem     String                  @default("manual") // manual | api | agendado
+
+  arquivoNome    String?
+  arquivoTamanho Int?
+  mimeType       String?
+
+  status SupplierImportStatus @default(PENDENTE)
+
+  totalLinhas      Int @default(0)
+  itensLidos       Int @default(0)
+  itensNovos       Int @default(0)
+  itensAtualizados Int @default(0)
+  itensSemVinculo  Int @default(0)
+
+  mensagem  String?
+  erros     Json?
+  createdBy String?
+
+  createdAt   DateTime  @default(now())
+  concluidoEm DateTime?
+
+  supplier Supplier         @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  catalog  SupplierCatalog? @relation(fields: [catalogId], references: [id])
+
+  @@index([tenantId])
+  @@index([tenantId, createdAt])
+  @@index([supplierId])
+}
+
+/// Carrinho de compras do módulo — por usuário. Vira um PurchaseOrder POR
+/// FORNECEDOR no fechamento; nada aqui mexe em estoque.
+model SupplierCartItem {
+  id            String  @id @default(cuid())
+  tenantId      String
+  userId        String
+  supplierId    String
+  catalogItemId String?
+  productId     String?
+  descricao     String
+  quantidade    Decimal @default(1) @db.Decimal(12, 3)
+  precoUnitario Decimal @default(0) @db.Decimal(12, 4)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  supplier    Supplier             @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  catalogItem SupplierCatalogItem? @relation(fields: [catalogItemId], references: [id], onDelete: Cascade)
+  product     Product?             @relation(fields: [productId], references: [id])
+
+  @@index([tenantId, userId])
+  @@index([supplierId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Cotações (RFQ) — pedir preço antes de comprar
+// ─────────────────────────────────────────────────────────────
+// O operador monta uma lista de itens, escolhe os fornecedores, envia o
+// pedido de cotação e registra as respostas. O comparativo mostra o melhor
+// preço por item e a cotação vira um PurchaseOrder por fornecedor escolhido.
+//
+// Diferença para o Comparador: lá o preço já está na tabela que o fornecedor
+// mandou; aqui o preço ainda não existe — é pergunta feita e resposta dada.
+
+enum QuotationStatus {
+  RASCUNHO // montando a lista, ninguém foi avisado
+  ABERTA // enviada, aguardando respostas
+  ENCERRADA // prazo vencido ou fechada à mão; ainda dá para decidir
+  DECIDIDA // virou pedido de compra
+  CANCELADA
+}
+
+enum QuotationSupplierStatus {
+  PENDENTE // ainda não enviada a este fornecedor
+  ENVIADA // pergunta feita, sem resposta
+  RESPONDIDA // preços registrados
+  RECUSADA // fornecedor não vai cotar
+}
+
+model Quotation {
+  id       String          @id @default(cuid())
+  tenantId String
+  siteId   String // para onde a mercadoria viria
+  numero   String // COT-00042 (sequencial por tenant)
+  titulo   String
+  status   QuotationStatus @default(RASCUNHO)
+
+  prazoResposta DateTime? // até quando o fornecedor pode responder
+  observacao    String?
+
+  enviadaEm   DateTime?
+  encerradaEm DateTime?
+  decididaEm  DateTime?
+  canceladaEm DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  createdBy String?
+
+  site      Site                @relation(fields: [siteId], references: [id])
+  items     QuotationItem[]
+  suppliers QuotationSupplier[]
+
+  @@unique([tenantId, numero])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([siteId])
+}
+
+/// Linha da pergunta: o que se quer comprar e quanto. O produto é opcional —
+/// dá para cotar algo que ainda não está no catálogo.
+model QuotationItem {
+  id          String  @id @default(cuid())
+  tenantId    String
+  quotationId String
+  productId   String?
+  packagingId String? // unidade de compra pedida (caixa, fardo…)
+  descricao   String // o que o fornecedor lê
+  quantidade  Decimal @default(1) @db.Decimal(12, 3)
+  observacao  String?
+  ordem       Int     @default(0)
+
+  quotation Quotation           @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  responses QuotationResponse[]
+
+  @@index([tenantId])
+  @@index([quotationId])
+  @@index([productId])
+}
+
+/// Um convite por fornecedor. Guarda o que vale para a cotação inteira
+/// (frete, prazo, condição de pagamento) — o preço por item mora na resposta.
+model QuotationSupplier {
+  id          String                  @id @default(cuid())
+  tenantId    String
+  quotationId String
+  supplierId  String
+  status      QuotationSupplierStatus @default(PENDENTE)
+
+  enviadaEm    DateTime?
+  respondidaEm DateTime?
+
+  prazoEntregaDias  Int?
+  condicaoPagamento String?
+  frete             Decimal? @db.Decimal(12, 2)
+  observacao        String? // recado do fornecedor ou motivo da recusa
+
+  purchaseOrderId String? // pedido gerado quando esta cotação foi escolhida
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  quotation Quotation           @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  supplier  Supplier            @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  responses QuotationResponse[]
+
+  @@unique([quotationId, supplierId])
+  @@index([tenantId])
+  @@index([supplierId])
+}
+
+/// A resposta de um fornecedor para um item. Sem linha = não respondeu;
+/// `disponivel = false` = respondeu que não tem.
+model QuotationResponse {
+  id                  String @id @default(cuid())
+  tenantId            String
+  quotationSupplierId String
+  quotationItemId     String
+
+  disponivel         Boolean  @default(true)
+  precoUnitario      Decimal  @default(0) @db.Decimal(12, 4)
+  quantidadeOfertada Decimal? @db.Decimal(12, 3) // quando o fornecedor só atende parte
+  marca              String? // "aceito similar" vira isto
+  observacao         String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  quotationSupplier QuotationSupplier @relation(fields: [quotationSupplierId], references: [id], onDelete: Cascade)
+  quotationItem     QuotationItem     @relation(fields: [quotationItemId], references: [id], onDelete: Cascade)
+
+  @@unique([quotationSupplierId, quotationItemId])
+  @@index([tenantId])
+  @@index([quotationItemId])
+}
+
+// ============================================================
+// Análises salvas
+// ============================================================
+
+/// Uma consulta do motor de análises guardada com nome. O corpo é o DSL
+/// (`src/lib/analises/schema.ts`), revalidado por Zod na leitura — DSL gravado
+/// por uma versão antiga do schema falha limpo em vez de quebrar o motor.
+///
+/// `sistema = true` são os relatórios de fábrica (o catálogo curado); os demais
+/// pertencem a quem criou e só aparecem para os outros quando compartilhados.
+model SavedReport {
+  id            String  @id @default(cuid())
+  tenantId      String
+  nome          String
+  descricao     String?
+  consulta      Json
+  ownerUserId   String? // null = relatório de sistema
+  compartilhado Boolean @default(false)
+  sistema       Boolean @default(false)
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([ownerUserId])
+}
+
+// ============================================================
+// Central de Relatórios
+// ============================================================
+
+/// Com que frequência um relatório agendado roda. A execução automática ainda
+/// não existe (não há runner); o modelo entra agora para que agendar seja uma
+/// tela e um job depois, e não uma migration em cima de dado vivo.
+enum ReportFrequencia {
+  DIARIO
+  SEMANAL
+  MENSAL
+}
+
+/// Relatório favoritado por uma pessoa. `relatorioId` é o slug do catálogo em
+/// código (`src/lib/relatorios/catalogo.ts`), não uma FK: o catálogo é código
+/// versionado, e um relatório que sai da lista não pode derrubar o favorito de
+/// ninguém — ele só some da tela.
+model ReportFavorite {
+  id          String   @id @default(cuid())
+  tenantId    String
+  userId      String
+  relatorioId String
+  criadoEm    DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId, relatorioId])
+  @@index([tenantId])
+  @@index([tenantId, userId])
+}
+
+/// Uma execução de relatório. É o que alimenta "última execução", "quantidade
+/// de execuções" e a prateleira de histórico da Central.
+///
+/// Guarda os PARÂMETROS (período, loja, filtros), não o resultado: relatório é
+/// pergunta, não fotografia — reabrir tem de trazer o dado de hoje.
+model ReportRun {
+  id          String   @id @default(cuid())
+  tenantId    String
+  userId      String?
+  relatorioId String
+  /// Parâmetros usados (periodo, de, ate, siteId, filtros) — para "executar de novo".
+  parametros  Json?
+  /// Como saiu: tela, csv, xlsx, pdf, impressao.
+  formato     String   @default("tela")
+  duracaoMs   Int?
+  criadoEm    DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, criadoEm])
+  @@index([tenantId, relatorioId])
+  @@index([tenantId, userId, criadoEm])
+}
+
+/// Envio automático de um relatório. Arquitetura pronta, runner ainda não:
+/// `ativo` nasce false e nada lê `proximaExecucao` — quando o cron entrar, ele
+/// varre esta tabela e usa os mesmos parâmetros da execução manual.
+model ReportSchedule {
+  id          String @id @default(cuid())
+  tenantId    String
+  relatorioId String
+  nome        String
+
+  ownerUserId String?
+  frequencia  ReportFrequencia
+  /// Hora local do disparo (0–23).
+  hora        Int              @default(7)
+  /// 0=domingo … 6=sábado. Só para SEMANAL.
+  diaSemana   Int?
+  /// 1–28. Só para MENSAL (28 é o teto para nunca pular mês).
+  diaMes      Int?
+
+  parametros    Json?
+  formato       String  @default("pdf")
+  /// Lista de destinos: [{ canal: "email" | "whatsapp", valor: "..." }].
+  destinatarios Json    @default("[]")
+  ativo         Boolean @default(false)
+
+  proximaExecucao DateTime?
+  ultimaExecucao  DateTime?
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([ativo, proximaExecucao])
 }

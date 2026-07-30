@@ -10,6 +10,7 @@ import {
   User,
   Mic,
   MicOff,
+  SlidersHorizontal,
 } from "lucide-react";
 import { perguntarIA } from "./actions";
 import type { ResultadoIA } from "./_schema";
@@ -19,11 +20,11 @@ const SUGESTOES = [
   "Top 10 produtos mais vendidos em 30 dias",
   "Produtos com margem abaixo de 20%",
   "Quanto vendi por método de pagamento este mês",
-  "Maiores perdas por custo nos últimos 7 dias",
-  "Curva ABC do faturamento do mês",
-  "Produtos parados com mais valor em estoque",
+  "Faturamento por dia da semana",
   "Receita por categoria este mês",
-  "Compras por fornecedor nos últimos 30 dias",
+  "Ticket médio por loja nos últimos 7 dias",
+  "Faturamento por dia, comparado ao período anterior",
+  "Marcas que mais faturaram no mês",
 ];
 
 type Mensagem =
@@ -263,10 +264,31 @@ export function RelatorioIA({
                     </div>
                   )}
 
-                  <p className="text-[11px] text-faint">
-                    {r.totalLinhas} linha{r.totalLinhas === 1 ? "" : "s"} · dados direto do banco ·
-                    IA só interpreta
-                  </p>
+                  {r.metricasRemovidas.length > 0 && (
+                    <p className="flex items-start gap-2 rounded-(--radius) border border-warn/40 bg-warn-soft px-3 py-2 text-[12px] text-ink">
+                      <TriangleAlert size={13} className="mt-px shrink-0 text-warn" aria-hidden />
+                      <span>
+                        {r.metricasRemovidas.join(", ")} — seu perfil não tem acesso a informações
+                        financeiras, então essas colunas ficaram de fora.
+                      </span>
+                    </p>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[11px] text-faint">
+                      {r.totalLinhas} linha{r.totalLinhas === 1 ? "" : "s"} · dados direto do banco ·
+                      IA só interpreta
+                    </p>
+                    {/* A resposta não morre no chat: abre na tela de consulta,
+                        onde cada pedaço vira um chip que dá para trocar. */}
+                    <a
+                      href={`/relatorios/consulta?q=${r.q}`}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-muted transition-colors hover:border-brand/40 hover:text-ink"
+                    >
+                      <SlidersHorizontal size={12} aria-hidden />
+                      Abrir e ajustar
+                    </a>
+                  </div>
                 </div>
               </div>
             );
