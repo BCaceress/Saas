@@ -3,7 +3,7 @@ import { withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { podeExportar, relatoriosVisiveis } from "@/lib/relatorios/catalogo";
 import { listarFavoritos } from "@/lib/relatorios/favoritos";
-import { execucoesRecentes, usoPorRelatorio } from "@/lib/relatorios/historico";
+import { usoPorRelatorio } from "@/lib/relatorios/historico";
 import { CentralClient } from "./_central";
 
 /**
@@ -23,18 +23,16 @@ export default async function CentralRelatoriosPage() {
 
   const relatorios = relatoriosVisiveis(ctx.acessos);
 
-  const { favoritos, uso, recentes, lojaAtiva } = await withTenant(ctx, async () => {
-    const [favoritos, uso, recentes, sites, siteId] = await Promise.all([
+  const { favoritos, uso, lojaAtiva } = await withTenant(ctx, async () => {
+    const [favoritos, uso, sites, siteId] = await Promise.all([
       listarFavoritos(ctx.user.id),
       usoPorRelatorio(),
-      execucoesRecentes(8),
       listSites(),
       getActiveSiteId(),
     ]);
     return {
       favoritos,
       uso,
-      recentes,
       // A loja é filtro global do app (seletor no header); a Central só mostra
       // qual está valendo, para ninguém gerar um relatório da loja errada.
       lojaAtiva: siteId ? (sites.find((s) => s.id === siteId)?.nome ?? null) : "Todas as lojas",
@@ -51,13 +49,6 @@ export default async function CentralRelatoriosPage() {
           { execucoes: u.execucoes, ultimaEm: u.ultimaEm?.toISOString() ?? null },
         ]),
       )}
-      recentes={recentes.map((r) => ({
-        id: r.id,
-        relatorioId: r.relatorioId,
-        nome: r.nome,
-        formato: r.formato,
-        criadoEm: r.criadoEm.toISOString(),
-      }))}
       podeExportar={podeExportar(ctx.acessos)}
       lojaAtiva={lojaAtiva}
     />

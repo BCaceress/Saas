@@ -18,8 +18,11 @@ export default async function FiscalLayout({ children }: { children: React.React
     );
   }
 
-  const cfg = await runWithTenant(ctx.tenant.id, () =>
-    db.fiscalConfig.findFirst({ select: { ambiente: true, ativo: true } }),
+  // `async () => await` obrigatório: PrismaPromise é lazy e rodaria fora do
+  // contexto de tenant (ver lib/tenant-context.ts).
+  const cfg = await runWithTenant(
+    ctx.tenant.id,
+    async () => await db.fiscalConfig.findFirst({ select: { ambiente: true, ativo: true } }),
   );
 
   return (

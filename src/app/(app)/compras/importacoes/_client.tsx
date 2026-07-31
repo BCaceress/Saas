@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Upload,
@@ -12,6 +13,8 @@ import {
   PencilLine,
   Trash2,
   Plus,
+  Eye,
+  ArrowRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
@@ -44,9 +47,12 @@ const STATUS_META: Record<
 };
 
 /**
- * Importações — a porta de entrada de tudo que não vem por API. O leitor certo
- * é escolhido pelo formato do arquivo; quem sobe a tabela não precisa saber
- * qual conector roda por baixo.
+ * Importações — a tela GLOBAL: todo arquivo e toda sincronização que já
+ * alimentou uma tabela de preço, de qualquer fornecedor. Não pertence a
+ * nenhum deles; é o extrato da operação.
+ *
+ * A configuração de COMO cada fornecedor manda a tabela vive na aba Integração
+ * do próprio fornecedor — daqui só se dispara e se audita.
  */
 export function Importacoes({
   importacoes,
@@ -66,6 +72,7 @@ export function Importacoes({
   const [arrastando, setArrastando] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [digitar, setDigitar] = useState(false);
+  const [detalhe, setDetalhe] = useState<ImportacaoRow | null>(null);
 
   async function enviar(arquivo: File) {
     if (!supplierId) {
@@ -196,17 +203,19 @@ export function Importacoes({
         />
       ) : (
         <div className="overflow-x-auto rounded-[var(--radius-lg)] border border-line bg-surface">
-          <table className="w-full min-w-[820px] text-sm">
+          <table className="w-full min-w-[980px] text-sm">
             <thead>
               <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-faint">
                 <th className="px-4 py-2.5 font-medium">Fornecedor</th>
-                <th className="px-3 py-2.5 font-medium">Arquivo</th>
                 <th className="px-3 py-2.5 font-medium">Origem</th>
-                <th className="px-3 py-2.5 text-right font-medium">Itens</th>
-                <th className="px-3 py-2.5 text-right font-medium">Sem vínculo</th>
+                <th className="px-3 py-2.5 font-medium">Data</th>
+                <th className="px-3 py-2.5 text-right font-medium">Produtos</th>
+                <th className="px-3 py-2.5 text-right font-medium">Atualizados</th>
+                <th className="px-3 py-2.5 text-right font-medium">Novos</th>
+                <th className="px-3 py-2.5 text-right font-medium">Não encontrados</th>
                 <th className="px-3 py-2.5 font-medium">Quem</th>
-                <th className="px-3 py-2.5 font-medium">Quando</th>
-                <th className="px-3 py-2.5 font-medium">Situação</th>
+                <th className="px-3 py-2.5 font-medium">Status</th>
+                <th className="px-3 py-2.5" />
               </tr>
             </thead>
             <tbody>
@@ -215,12 +224,16 @@ export function Importacoes({
                 const Icone = meta.icon;
                 return (
                   <tr key={imp.id} className="border-b border-line last:border-0 hover:bg-surface-2/60">
-                    <td className="px-4 py-2.5 font-medium text-ink">{imp.supplierNome}</td>
-                    <td className="max-w-56 px-3 py-2.5">
-                      <p className="truncate text-[13px] text-ink-2">{imp.arquivoNome ?? "—"}</p>
-                      {imp.mensagem && (
-                        <p className="truncate text-[11px] text-muted" title={imp.mensagem}>
-                          {imp.mensagem}
+                    <td className="max-w-52 px-4 py-2.5">
+                      <Link
+                        href={`/fornecedores/${imp.supplierId}/integracao`}
+                        className="block truncate font-medium text-ink hover:text-brand hover:underline"
+                      >
+                        {imp.supplierNome}
+                      </Link>
+                      {imp.arquivoNome && (
+                        <p className="truncate text-[11px] text-faint" title={imp.arquivoNome}>
+                          {imp.arquivoNome}
                         </p>
                       )}
                     </td>
@@ -228,9 +241,20 @@ export function Importacoes({
                       {KIND_LABEL[imp.tipo]}
                       <span className="text-faint"> · {imp.origem}</span>
                     </td>
+                    <td className="px-3 py-2.5 text-[12px] text-muted">{fmtQuando(imp.createdAt)}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-[12px] text-ink">
                       {imp.itensLidos.toLocaleString("pt-BR")}
                       <span className="text-faint"> / {imp.totalLinhas.toLocaleString("pt-BR")}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right font-mono text-[12px] text-ink-2">
+                      {imp.itensAtualizados.toLocaleString("pt-BR")}
+                    </td>
+                    <td className="px-3 py-2.5 text-right font-mono text-[12px]">
+                      {imp.itensNovos > 0 ? (
+                        <span className="text-ok">+{imp.itensNovos.toLocaleString("pt-BR")}</span>
+                      ) : (
+                        <span className="text-faint">0</span>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono text-[12px]">
                       {imp.itensSemVinculo > 0 ? (
@@ -240,12 +264,27 @@ export function Importacoes({
                       )}
                     </td>
                     <td className="px-3 py-2.5 text-[12px] text-muted">{imp.usuario ?? "Sistema"}</td>
-                    <td className="px-3 py-2.5 text-[12px] text-muted">{fmtQuando(imp.createdAt)}</td>
                     <td className="px-3 py-2.5">
                       <Badge tone={meta.tone}>
                         <Icone size={11} />
                         {meta.label}
                       </Badge>
+                      {imp.mensagem && (
+                        <p className="mt-0.5 max-w-40 truncate text-[11px] text-muted" title={imp.mensagem}>
+                          {imp.mensagem}
+                        </p>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setDetalhe(imp)}
+                        title="Ver detalhes da importação"
+                      >
+                        <Eye size={14} />
+                        Visualizar
+                      </Button>
                     </td>
                   </tr>
                 );
@@ -255,6 +294,8 @@ export function Importacoes({
         </div>
       )}
 
+      {detalhe && <SheetDetalhe importacao={detalhe} onClose={() => setDetalhe(null)} />}
+
       {digitar && (
         <SheetDigitar
           fornecedores={fornecedores}
@@ -263,6 +304,126 @@ export function Importacoes({
         />
       )}
     </div>
+  );
+}
+
+// ── Detalhe de uma importação ───────────────────────────────
+
+function Numero({ label, valor, tom }: { label: string; valor: number; tom?: "ok" | "warn" }) {
+  return (
+    <div className="px-3 py-2.5">
+      <p className="text-[11px] uppercase tracking-wide text-faint">{label}</p>
+      <p
+        className={cn(
+          "mt-0.5 font-mono text-[17px] font-semibold",
+          tom === "ok" ? "text-ok" : tom === "warn" && valor > 0 ? "text-warn" : "text-ink",
+        )}
+      >
+        {valor.toLocaleString("pt-BR")}
+      </p>
+    </div>
+  );
+}
+
+function SheetDetalhe({
+  importacao: imp,
+  onClose,
+}: {
+  importacao: ImportacaoRow;
+  onClose: () => void;
+}) {
+  const meta = STATUS_META[imp.status];
+  const Icone = meta.icon;
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title={imp.supplierNome}
+      description={`${KIND_LABEL[imp.tipo]} · ${imp.origem} · ${fmtQuando(imp.createdAt)}`}
+      width="lg"
+      footer={
+        <div className="flex items-center justify-between gap-2">
+          <Link href={`/fornecedores/${imp.supplierId}/catalogo`}>
+            <Button variant="ghost">
+              Ver catálogo do fornecedor <ArrowRight size={15} />
+            </Button>
+          </Link>
+          <Button variant="secondary" onClick={onClose}>
+            Fechar
+          </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-col gap-4 p-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={meta.tone}>
+            <Icone size={11} />
+            {meta.label}
+          </Badge>
+          {imp.arquivoNome && (
+            <span className="truncate text-[12px] text-muted">{imp.arquivoNome}</span>
+          )}
+          {imp.arquivoTamanho != null && (
+            <span className="text-[11px] text-faint">
+              {(imp.arquivoTamanho / 1024).toLocaleString("pt-BR", { maximumFractionDigits: 0 })} KB
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 divide-x divide-y divide-line overflow-hidden rounded-[var(--radius-lg)] border border-line sm:grid-cols-4 sm:divide-y-0">
+          <Numero label="Linhas lidas" valor={imp.itensLidos} />
+          <Numero label="Novos" valor={imp.itensNovos} tom="ok" />
+          <Numero label="Atualizados" valor={imp.itensAtualizados} />
+          <Numero label="Não encontrados" valor={imp.itensSemVinculo} tom="warn" />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 text-[12px]">
+          <div>
+            <p className="text-faint">Total de linhas no arquivo</p>
+            <p className="font-mono text-ink">{imp.totalLinhas.toLocaleString("pt-BR")}</p>
+          </div>
+          <div>
+            <p className="text-faint">Quem importou</p>
+            <p className="text-ink">{imp.usuario ?? "Sistema"}</p>
+          </div>
+          <div>
+            <p className="text-faint">Início</p>
+            <p className="text-ink">{fmtQuando(imp.createdAt)}</p>
+          </div>
+          <div>
+            <p className="text-faint">Conclusão</p>
+            <p className="text-ink">{imp.concluidoEm ? fmtQuando(imp.concluidoEm) : "—"}</p>
+          </div>
+        </div>
+
+        {imp.mensagem && (
+          <p className="rounded-[var(--radius)] bg-surface-2 p-3 text-[12px] text-ink-2">{imp.mensagem}</p>
+        )}
+
+        {imp.erros.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <p className="text-[12px] font-medium text-ink">Avisos da leitura</p>
+            <ul className="flex max-h-64 flex-col gap-1 overflow-y-auto rounded-[var(--radius)] border border-line bg-surface-2/50 p-3">
+              {imp.erros.map((erro, i) => (
+                <li key={i} className="flex items-start gap-1.5 text-[12px] text-muted">
+                  <AlertCircle size={12} className="mt-0.5 shrink-0 text-warn" />
+                  {erro}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {imp.itensSemVinculo > 0 && (
+          <p className="flex items-start gap-2 rounded-[var(--radius)] bg-warn-soft/40 p-3 text-[12px] text-ink-2">
+            <AlertCircle size={14} className="mt-0.5 shrink-0 text-warn" />
+            {imp.itensSemVinculo} itens não casaram com nenhum produto seu. Vincule-os no catálogo do
+            fornecedor para que entrem na comparação de preço.
+          </p>
+        )}
+      </div>
+    </Sheet>
   );
 }
 

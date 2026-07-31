@@ -268,6 +268,22 @@ export async function toggleStorageLocationAtivo(id: string, ativo: boolean) {
 }
 
 // ── Fornecedores ───────────────────────────────────────────
+// Cadastro de fornecedor é assunto de fornecedor, não de produto: o guard é
+// `fornecedor.editar` (o perfil FINANCEIRO tem essa permissão e não tem
+// `produto.editar` — com o guard antigo ele não conseguia salvar). As funções
+// continuam aqui porque o cadastro rápido dentro do produto usa as mesmas.
+async function txFornecedor<T>(fn: (tid: string) => Promise<T>): Promise<T> {
+  const ctx = await guardAction("fornecedor.editar");
+  return runWithTenant(ctx.tenant.id, () => fn(ctx.tenant.id));
+}
+
+/** Toda tela que lê fornecedor: lista, centro de gestão, produtos e compras. */
+function okFornecedor() {
+  revalidatePath("/fornecedores", "layout");
+  revalidatePath("/produtos");
+  revalidatePath("/compras", "layout");
+}
+
 const supplierSchema = z.object({
   cnpj: z.string().optional(),
   razaoSocial: z.string().min(2, "Informe a razão social."),
@@ -323,7 +339,7 @@ function supplierData(d: z.infer<typeof supplierSchema>) {
 }
 
 export async function createSupplier(input: z.input<typeof supplierSchema>) {
-  return tx(async (tid) => {
+  return txFornecedor(async (tid) => {
     const d = supplierSchema.parse(input);
     const data = supplierData(d);
     if (data.cnpj) {
@@ -331,13 +347,13 @@ export async function createSupplier(input: z.input<typeof supplierSchema>) {
       if (dup) throw new Error(`Já existe um fornecedor com esse CNPJ: «${dup.nomeFantasia || dup.razaoSocial}».`);
     }
     const sup = await db.supplier.create({ data: { tenantId: tid, ...data } });
-    ok();
+    okFornecedor();
     return sup.id;
   });
 }
 
 export async function updateSupplier(id: string, input: z.input<typeof supplierSchema>) {
-  return tx(async () => {
+  return txFornecedor(async () => {
     const d = supplierSchema.parse(input);
     const data = supplierData(d);
     if (data.cnpj) {
@@ -345,14 +361,14 @@ export async function updateSupplier(id: string, input: z.input<typeof supplierS
       if (dup) throw new Error(`Já existe um fornecedor com esse CNPJ: «${dup.nomeFantasia || dup.razaoSocial}».`);
     }
     await db.supplier.update({ where: { id }, data });
-    ok();
+    okFornecedor();
   });
 }
 
 export async function setSupplierActive(id: string, ativo: boolean) {
-  return tx(async () => {
+  return txFornecedor(async () => {
     await db.supplier.update({ where: { id }, data: { ativo } });
-    ok();
+    okFornecedor();
   });
 }
 

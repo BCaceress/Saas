@@ -261,6 +261,28 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Shell autenticado: uma única superfície de rolagem, o <main>. Viewport travada
+   — senão qualquer pixel a mais (barra horizontal, dvh vs vh) cria um segundo
+   scroll por fora e a página inteira, sidebar e navbar junto, sobe ao chegar no
+   fim. A classe é posta pelo AppShell; marketing/auth rolam normal.
+   Classe e não `:has()` de propósito: a trava não pode depender de suporte a
+   seletor nem de a árvore estar montada do jeito que o seletor espera. */
+html.app-lock,
+html.app-lock body {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Mesma trava já no primeiro paint, antes de a classe existir (a classe só
+   entra na hidratação). Onde `:has()` não existir, vale só a classe. */
+body:has([data-app-shell]) {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
 /* Foco visível sempre (piso de qualidade, PRD §7.1). Em @layer base pelo mesmo
    motivo do `*` acima — solta, ela impedia qualquer componente de desenhar o
    próprio anel de foco. */
@@ -825,6 +847,10 @@ body {
   body {
     background: #fff;
   }
+  html.app-lock,
+  html.app-lock body,
+  body:has([data-app-shell]),
+  [data-app-shell],
   main {
     overflow: visible !important;
     height: auto !important;

@@ -134,9 +134,7 @@ export async function alternarAddonAction(input: z.input<typeof addonSchema>) {
  */
 export async function assinarAction(): Promise<string> {
   const ctx = await requireAdmin();
-  const totens = await runWithTenant(ctx.tenant.id, () =>
-    db.totemDevice.count(),
-  );
+  const totens = await runWithTenant(ctx.tenant.id, async () => await db.totemDevice.count());
 
   try {
     const { checkoutUrl } = await iniciarAssinatura(ctx.tenant.id, { totens });
@@ -175,9 +173,7 @@ export async function cancelarAssinaturaAction() {
 /** Preço fechado do que está marcado hoje — o mesmo número que vai ao gateway. */
 export async function precoAtualAction(): Promise<number> {
   const ctx = await requireAdmin();
-  const totens = await runWithTenant(ctx.tenant.id, () =>
-    db.totemDevice.count(),
-  );
+  const totens = await runWithTenant(ctx.tenant.id, async () => await db.totemDevice.count());
   return precoMensal({
     plano: ctx.tenant.plano,
     addons: ctx.tenant.addons,

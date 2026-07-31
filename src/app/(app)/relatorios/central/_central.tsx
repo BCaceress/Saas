@@ -164,22 +164,13 @@ function Icone({
 
 export type UsoCliente = { execucoes: number; ultimaEm: string | null };
 
-export type RecenteCliente = {
-  id: string;
-  relatorioId: string;
-  nome: string;
-  formato: string;
-  criadoEm: string;
-};
+type Chip = "todos" | "favoritos" | "usados" | "recentes";
 
-type Chip = "todos" | "favoritos" | "usados" | "recentes" | "exportaveis";
-
-const CHIPS: { id: Chip; label: string }[] = [
-  { id: "todos", label: "Todos" },
-  { id: "favoritos", label: "Favoritos" },
-  { id: "usados", label: "Mais utilizados" },
-  { id: "recentes", label: "Recentes" },
-  { id: "exportaveis", label: "Exportáveis" },
+const CHIPS: { id: Chip; label: string; icon: LucideIcon }[] = [
+  { id: "todos", label: "Todos", icon: LayoutGrid },
+  { id: "favoritos", label: "Favoritos", icon: Star },
+  { id: "usados", label: "Mais utilizados", icon: TrendingUp },
+  { id: "recentes", label: "Recentes", icon: History },
 ];
 
 const PRESETS: { id: Parametros["periodo"]; label: string }[] = [
@@ -189,14 +180,6 @@ const PRESETS: { id: Parametros["periodo"]; label: string }[] = [
   { id: "mes", label: "Este mês" },
   { id: "custom", label: "Personalizado" },
 ];
-
-const FORMATO_LABEL: Record<string, string> = {
-  tela: "na tela",
-  csv: "em CSV",
-  xlsx: "em Excel",
-  pdf: "em PDF",
-  impressao: "impresso",
-};
 
 function tempoRelativo(iso: string): string {
   const min = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
@@ -219,14 +202,12 @@ export function CentralClient({
   relatorios,
   favoritos: favoritosIniciais,
   uso,
-  recentes,
   podeExportar,
   lojaAtiva,
 }: {
   relatorios: RelatorioDef[];
   favoritos: string[];
   uso: Record<string, UsoCliente>;
-  recentes: RecenteCliente[];
   podeExportar: boolean;
   lojaAtiva: string | null;
 }) {
@@ -279,9 +260,6 @@ export function CentralClient({
     if (categoria) lista = lista.filter((r) => r.categoria === categoria);
 
     if (chip === "favoritos") lista = lista.filter((r) => favoritos.includes(r.id));
-    if (chip === "exportaveis") {
-      lista = lista.filter((r) => r.exportacoes.some((e) => e !== "imprimir"));
-    }
     if (chip === "usados") {
       lista = lista
         .filter((r) => (uso[r.id]?.execucoes ?? 0) > 0)
@@ -362,35 +340,41 @@ export function CentralClient({
           </kbd>
         </div>
 
+        {/* Uma linha só: recortes (todos/favoritos/uso) e categorias são o mesmo
+            gesto — escolher por onde entrar. Separados por um traço, não por
+            duas seções: quem procura não quer decidir em qual lista procurar. */}
         <div className="flex flex-wrap items-center gap-2">
           {CHIPS.map((c) => (
-            <button
+            <Pilula
               key={c.id}
-              type="button"
+              ativa={chip === c.id}
               onClick={() => setChip(c.id)}
-              aria-pressed={chip === c.id}
-              className={cn(
-                "cursor-pointer rounded-full border px-3.5 py-1.5 text-[13px] font-medium transition-colors",
-                chip === c.id
-                  ? "border-brand bg-brand text-on-brand"
-                  : "border-line bg-surface text-muted hover:border-brand/40 hover:text-ink",
-              )}
+              icone={React.createElement(c.icon, { size: 14, "aria-hidden": true })}
             >
               {c.label}
-            </button>
+            </Pilula>
           ))}
-          {categoria && (
-            <button
-              type="button"
-              onClick={() => setCategoria(null)}
-              className="flex cursor-pointer items-center gap-1.5 rounded-full border border-brand/40 bg-brand-soft px-3.5 py-1.5 text-[13px] font-medium text-brand"
-            >
-              {CATEGORIAS.find((c) => c.id === categoria)?.nome}
-              <span aria-hidden>×</span>
-              <span className="sr-only">Limpar filtro de categoria</span>
-            </button>
-          )}
-          <span className="ml-auto text-[13px] text-faint">
+
+          <span className="mx-1 hidden h-5 w-px shrink-0 bg-line sm:block" aria-hidden />
+
+          {CATEGORIAS.map((c) => {
+            const total = contagemCategoria.get(c.id) ?? 0;
+            if (total === 0) return null;
+            const ativa = categoria === c.id;
+            return (
+              <Pilula
+                key={c.id}
+                ativa={ativa}
+                onClick={() => setCategoria(ativa ? null : c.id)}
+                icone={<Icone nome={c.icon} size={14} />}
+                contagem={total}
+              >
+                {c.nome}
+              </Pilula>
+            );
+          })}
+
+          <span className="ml-auto shrink-0 text-[13px] text-faint">
             {filtrados.length} de {relatorios.length} relatórios
           </span>
         </div>
@@ -412,51 +396,6 @@ export function CentralClient({
           </Grade>
         </Prateleira>
       )}
-
-      {/* ------------------------------------------------------------ */}
-      {/* Categorias                                                    */}
-      {/* ------------------------------------------------------------ */}
-      <section aria-label="Categorias">
-        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
-          {CATEGORIAS.map((c) => {
-            const total = contagemCategoria.get(c.id) ?? 0;
-            if (total === 0) return null;
-            const ativa = categoria === c.id;
-            return (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => setCategoria(ativa ? null : c.id)}
-                aria-pressed={ativa}
-                className={cn(
-                  "group flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-all",
-                  "motion-safe:hover:-translate-y-0.5 hover:shadow-(--shadow-float)",
-                  ativa
-                    ? "border-brand bg-brand-soft"
-                    : "border-line bg-surface hover:border-brand/40",
-                )}
-              >
-                <span
-                  className={cn(
-                    "grid h-8 w-8 shrink-0 place-items-center rounded-sm transition-colors",
-                    ativa ? "bg-brand text-on-brand" : "bg-brand-softer text-brand",
-                  )}
-                >
-                  <Icone nome={c.icon} size={16} />
-                </span>
-                <span className="min-w-0">
-                  <span className="block truncate font-display text-[13px] font-bold text-ink">
-                    {c.nome}
-                  </span>
-                  <span className="block text-[11px] text-muted">
-                    {total} {total === 1 ? "relatório" : "relatórios"}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </section>
 
       {/* ------------------------------------------------------------ */}
       {/* Catálogo                                                      */}
@@ -519,52 +458,6 @@ export function CentralClient({
         })
       )}
 
-      {/* ------------------------------------------------------------ */}
-      {/* Histórico                                                     */}
-      {/* ------------------------------------------------------------ */}
-      <Prateleira
-        titulo="Executados recentemente"
-        descricao="O que a loja consultou por último — clique para rodar de novo com os dados de hoje."
-        icone={<History size={15} aria-hidden />}
-      >
-        {recentes.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-line px-5 py-8 text-center">
-            <p className="text-sm text-muted">
-              Nenhum relatório executado ainda. O histórico se preenche sozinho a partir do
-              primeiro <span className="font-medium text-ink">Executar</span>.
-            </p>
-          </div>
-        ) : (
-          <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface">
-            {recentes.map((h) => {
-              const rel = relatorios.find((r) => r.id === h.relatorioId);
-              return (
-                <li key={h.id} className="flex items-center gap-3 px-4 py-3">
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-sm bg-surface-2 text-muted">
-                    {rel ? (
-                      <Icone nome={rel.icon} size={15} />
-                    ) : (
-                      <FileText size={15} aria-hidden />
-                    )}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-ink">{h.nome}</p>
-                    <p className="text-[11px] text-faint">
-                      {tempoRelativo(h.criadoEm)} · {FORMATO_LABEL[h.formato] ?? h.formato}
-                    </p>
-                  </div>
-                  {rel && (
-                    <Button size="sm" variant="secondary" onClick={() => setExecutando(rel)}>
-                      <Play size={13} aria-hidden /> Executar
-                    </Button>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </Prateleira>
-
       {executando && (
         <ModalExecutar
           rel={executando}
@@ -584,6 +477,48 @@ export function CentralClient({
 /* ------------------------------------------------------------------ */
 /* Blocos                                                              */
 /* ------------------------------------------------------------------ */
+
+/** Pílula de filtro — mesma forma para recorte e categoria, de propósito. */
+function Pilula({
+  ativa,
+  icone,
+  contagem,
+  onClick,
+  children,
+}: {
+  ativa: boolean;
+  icone: React.ReactNode;
+  contagem?: number;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={ativa}
+      className={cn(
+        "flex cursor-pointer items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] font-medium transition-colors",
+        ativa
+          ? "border-brand bg-brand text-on-brand"
+          : "border-line bg-surface text-muted hover:border-brand/40 hover:text-ink",
+      )}
+    >
+      <span className={cn("shrink-0", ativa ? "text-on-brand" : "text-faint")}>{icone}</span>
+      {children}
+      {contagem !== undefined && (
+        <span
+          className={cn(
+            "font-mono text-[11px]",
+            ativa ? "text-on-brand/70" : "text-faint",
+          )}
+        >
+          {contagem}
+        </span>
+      )}
+    </button>
+  );
+}
 
 function Prateleira({
   titulo,

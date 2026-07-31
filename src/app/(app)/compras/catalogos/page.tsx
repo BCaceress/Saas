@@ -1,10 +1,8 @@
-import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
-import { loadDashboard } from "../_catalogo/data";
-import { ListaCatalogos } from "./_client";
+import { redirect } from "next/navigation";
 
-export default async function CatalogosPage() {
-  const ctx = await requireActiveTenant();
-  const { fornecedores } = await withTenant(ctx, () => loadDashboard());
+// As tabelas de preço deixaram de ser uma tela de Compras: cada catálogo
+// pertence ao seu fornecedor. Este redirect preserva links e favoritos antigos.
 
-  return <ListaCatalogos fornecedores={fornecedores} />;
+export default function CatalogosRedirect() {
+  redirect("/fornecedores");
 }

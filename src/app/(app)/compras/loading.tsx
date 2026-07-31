@@ -1,8 +1,9 @@
-import { Sk, SkKpis, SkCardGrid } from "@/components/app/skeletons";
+import { Sk, SkKpis, SkTable } from "@/components/app/skeletons";
 
 /**
  * Painel de compras. Cabeçalho e abas vivem no layout (já renderizados),
- * então o esqueleto começa na faixa de métricas.
+ * então o esqueleto começa na faixa de métricas e segue a ordem da tela:
+ * indicadores → alertas → sugestão inteligente de compra.
  */
 export default function ComprasLoading() {
   return (
@@ -12,11 +13,12 @@ export default function ComprasLoading() {
       aria-label="Carregando compras"
     >
       <SkKpis count={6} />
-      <div className="flex flex-wrap gap-2">
-        <Sk className="h-10 w-56 rounded-full" />
-        <Sk className="h-10 w-40 rounded-full" />
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <Sk key={i} className="h-20 rounded-[var(--radius-lg)]" />
+        ))}
       </div>
-      <SkCardGrid count={6} />
+      <SkTable rows={6} thumb={false} />
     </div>
   );
 }

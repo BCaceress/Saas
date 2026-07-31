@@ -754,6 +754,8 @@ model Supplier {
   ie                   String? // inscrição estadual
   indicadorIE          IndicadorIE?
   pedidoMinimo         Decimal?     @db.Decimal(12, 2) // valor mínimo de pedido exigido pelo fornecedor
+  prazoPagamentoDias   Int? // condição negociada (30/45 dias…) — base do indicador financeiro
+  observacoes          String? // anotações internas ("entrega só às quartas")
   ativo                Boolean      @default(true)
 
   // ── Compras com Fornecedores (catálogo/oferta) ──
@@ -2374,6 +2376,7 @@ model SupplierIntegration {
   // API
   endpoint   String?
   authTipo   String? // "bearer" | "basic" | "apikey" | "none"
+  usuario    String? // parte pública do Basic — a senha vive cifrada em `credencial`
   credencial String? // cifrada
   headers    Json? // cabeçalhos extras
 

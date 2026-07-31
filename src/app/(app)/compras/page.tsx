@@ -1,17 +1,23 @@
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { podeEmAlguma } from "@/lib/permissoes";
-import { loadDashboard } from "./_catalogo/data";
-import { PainelFornecedores } from "./_catalogo/painel";
+import { getActiveSiteId } from "@/lib/sites";
+import { policyDoTenant } from "@/lib/estoque-estrategia";
+import { loadPainelCompras } from "./_painel/data";
+import { PainelComprasCliente } from "./_painel/client";
 
-export default async function ComprasFornecedoresPage() {
+// Painel de Compras — dashboard operacional. O que comprar, de quem e quanto
+// economizar. Configuração de fornecedor mora em /fornecedores/[id].
+
+export default async function ComprasPainelPage() {
   const ctx = await requireActiveTenant();
-  const { resumo, fornecedores } = await withTenant(ctx, () => loadDashboard());
+  const policy = policyDoTenant(ctx.tenant);
+
+  const dados = await withTenant(ctx, async () => {
+    const siteId = await getActiveSiteId();
+    return loadPainelCompras(siteId, policy);
+  });
 
   return (
-    <PainelFornecedores
-      resumo={resumo}
-      fornecedores={fornecedores}
-      podeEditar={podeEmAlguma(ctx.acessos, "fornecedor.editar")}
-    />
+    <PainelComprasCliente dados={dados} podePedir={podeEmAlguma(ctx.acessos, "compras.pedir")} />
   );
 }

@@ -38,8 +38,9 @@ export async function salvarConsultaAction(entrada: unknown): Promise<Resultado>
   if (!consulta) return { ok: false, erro: "Consulta inválida. Refaça o relatório e salve de novo." };
 
   const ctx = await guardAction("relatorio.ver");
-  const criado = await runWithTenant(ctx.tenant.id, () =>
-    db.savedReport.create({
+  // `async () => await`: PrismaPromise é lazy e rodaria fora do contexto.
+  const criado = await runWithTenant(ctx.tenant.id, async () =>
+    await db.savedReport.create({
       data: {
         tenantId: ctx.tenant.id,
         nome: parsed.data.nome,
@@ -72,8 +73,8 @@ export async function atualizarSalvoAction(entrada: unknown): Promise<Resultado>
   const ctx = await guardAction("relatorio.ver");
   const { id, ...campos } = parsed.data;
 
-  const alterados = await runWithTenant(ctx.tenant.id, () =>
-    db.savedReport.updateMany({
+  const alterados = await runWithTenant(ctx.tenant.id, async () =>
+    await db.savedReport.updateMany({
       // O dono no WHERE é a autorização: `updateMany` do extension já filtra
       // por tenant, e isto garante que ninguém edite o relatório de outro.
       where: { id, ownerUserId: ctx.user.id, sistema: false },
@@ -118,8 +119,10 @@ export async function excluirSalvoAction(id: string): Promise<Resultado> {
   if (!id) return { ok: false, erro: "Relatório não informado." };
 
   const ctx = await guardAction("relatorio.ver");
-  const apagados = await runWithTenant(ctx.tenant.id, () =>
-    db.savedReport.deleteMany({ where: { id, ownerUserId: ctx.user.id, sistema: false } }),
+  const apagados = await runWithTenant(
+    ctx.tenant.id,
+    async () =>
+      await db.savedReport.deleteMany({ where: { id, ownerUserId: ctx.user.id, sistema: false } }),
   );
   if (apagados.count === 0) return { ok: false, erro: "Esse relatório não é seu para excluir." };
 

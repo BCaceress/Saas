@@ -1,79 +1,51 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Plus,
   Search,
-  MoreVertical,
-  Pencil,
-  Archive,
-  ArchiveRestore,
   Truck,
-  MapPin,
-  Package,
-  CalendarClock,
-  ShoppingCart,
-  Boxes,
-  Phone,
-  Wallet,
-  History,
-  Trash2,
-  ImageIcon,
   ChevronRight,
+  Loader2,
+  MapPin,
+  Tag,
+  Plug,
 } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
-import { Menu, MenuItem } from "@/components/ui/menu";
 import { Button } from "@/components/ui/button";
-import { Input, Select } from "@/components/ui/input";
+import { Input } from "@/components/ui/input";
 import { Field, Badge } from "@/components/ui/misc";
-import { cn, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
+import { toast } from "@/components/ui/toast";
+import { cn } from "@/lib/utils";
 import { maskCnpj, maskPhone } from "@/lib/masks";
-import { fmtData } from "@/lib/customers";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import { ViewToggle, useViewMode } from "@/components/app/view-toggle";
-import { relDia, previsaoLabel, fmtMoney, PEDIDO_STATUS, StatusBadge } from "../compras/_ui";
-import {
-  createSupplier,
-  updateSupplier,
-  setSupplierActive,
-} from "../produtos/actions";
-import type { SupplierRow } from "../produtos/_types";
-import type { IndicadorIE } from "@/generated/prisma";
+import { IntegracaoStatus, fmtQuando } from "../compras/_catalogo/ui";
+import { fmtMoney } from "../compras/_ui";
+import { createSupplier } from "../produtos/actions";
+import type { FornecedorListaRow } from "./_data";
 
-function StatCell({
-  icon, label, value, sub, className,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  sub?: string;
-  className?: string;
-}) {
-  return (
-    <div className={cn("p-3.5", className)}>
-      <div className="flex items-center gap-1.5 text-[11px] font-medium text-faint">
-        {icon} {label}
-      </div>
-      <div className="mt-1 truncate text-[15px] font-semibold text-ink">{value}</div>
-      {sub && <div className="mt-0.5 truncate text-[12px] text-muted">{sub}</div>}
-    </div>
-  );
-}
+// ============================================================
+// Lista de fornecedores — só o índice. Clicar abre o Centro de Gestão do
+// Fornecedor (/fornecedores/[id]), onde mora TUDO daquele parceiro: cadastro,
+// integração, catálogo, preço, pedido e financeiro.
+//
+// Não há mais modal de edição: um fornecedor não cabe numa gaveta.
+// ============================================================
 
-function SupplierLogo({
+function Logo({
   logoUrl,
   nome,
   ativo,
-  size = 36,
-  rounded = "rounded-xl",
+  size = 38,
 }: {
   logoUrl?: string | null;
   nome: string;
   ativo: boolean;
   size?: number;
-  rounded?: string;
 }) {
   if (logoUrl) {
     return (
@@ -81,7 +53,7 @@ function SupplierLogo({
       <img
         src={logoUrl}
         alt={`Logo de ${nome}`}
-        className={cn("shrink-0 border border-line bg-surface object-contain p-1", rounded)}
+        className="shrink-0 rounded-xl border border-line bg-surface object-contain p-1"
         style={{ width: size, height: size }}
       />
     );
@@ -89,8 +61,7 @@ function SupplierLogo({
   return (
     <span
       className={cn(
-        "grid shrink-0 place-items-center",
-        rounded,
+        "grid shrink-0 place-items-center rounded-xl",
         ativo ? "bg-brand-soft text-brand" : "bg-surface-2 text-faint",
       )}
       style={{ width: size, height: size }}
@@ -100,257 +71,91 @@ function SupplierLogo({
   );
 }
 
-type SupplierForm = {
-  id?: string;
-  cnpj: string;
-  razaoSocial: string;
-  nomeFantasia: string;
-  logoUrl: string;
-  email: string;
-  telefone: string;
-  contato: string;
-  website: string;
-  pedidoMinimo: string; // máscara pt-BR — vazio = sem mínimo
-  cep: string;
-  logradouro: string;
-  numero: string;
-  complemento: string;
-  bairro: string;
-  municipio: string;
-  uf: string;
-  /** Fiscal — entrada por XML e devolução ao fornecedor. */
-  ie: string;
-  indicadorIE: "" | IndicadorIE;
-  codigoMunicipio: string;
-};
+type Filtro = "todos" | "ativos" | "integrados" | "revisar";
 
-const UFS = [
-  "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA",
-  "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN",
-  "RS", "RO", "RR", "SC", "SP", "SE", "TO",
+const FILTROS: Array<{ valor: Filtro; label: string }> = [
+  { valor: "todos", label: "Todos" },
+  { valor: "ativos", label: "Ativos" },
+  { valor: "integrados", label: "Com tabela" },
+  { valor: "revisar", label: "A revisar" },
 ];
 
-const emptyForm = (cnpj = ""): SupplierForm => ({
-  cnpj,
-  razaoSocial: "",
-  nomeFantasia: "",
-  logoUrl: "",
-  email: "",
-  telefone: "",
-  contato: "",
-  website: "",
-  pedidoMinimo: "",
-  cep: "",
-  logradouro: "",
-  numero: "",
-  complemento: "",
-  bairro: "",
-  municipio: "",
-  uf: "",
-  ie: "",
-  indicadorIE: "",
-  codigoMunicipio: "",
-});
-
-function formFromRow(s: SupplierRow): SupplierForm {
-  return {
-    id: s.id,
-    cnpj: s.cnpj ? maskCnpj(s.cnpj) : "",
-    razaoSocial: s.razaoSocial,
-    nomeFantasia: s.nomeFantasia ?? "",
-    logoUrl: s.logoUrl ?? "",
-    email: s.email ?? "",
-    telefone: s.telefone ?? "",
-    contato: s.nomeContatoPrincipal ?? "",
-    website: s.website ?? "",
-    pedidoMinimo: s.pedidoMinimo != null ? moneyToMask(s.pedidoMinimo) : "",
-    cep: s.cep ?? "",
-    logradouro: s.logradouro ?? "",
-    numero: s.numero ?? "",
-    complemento: s.complemento ?? "",
-    bairro: s.bairro ?? "",
-    municipio: s.municipio ?? "",
-    uf: s.uf ?? "",
-    ie: s.ie ?? "",
-    indicadorIE: s.indicadorIE ?? "",
-    codigoMunicipio: s.codigoMunicipio ?? "",
-  };
-}
-
-function enderecoMapsUrl(s: SupplierRow): string | null {
-  const partes = [
-    s.logradouro && s.numero ? `${s.logradouro}, ${s.numero}` : s.logradouro,
-    s.bairro,
-    s.municipio,
-    s.uf,
-    s.cep,
-  ].filter(Boolean);
-  if (partes.length === 0) return null;
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(partes.join(", "))}`;
-}
-
-function whatsappUrl(telefone: string): string {
-  const digits = telefone.replace(/\D/g, "");
-  const withDdi = digits.length <= 11 ? `55${digits}` : digits;
-  return `https://wa.me/${withDdi}`;
-}
-
-export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] }) {
+export function FornecedoresManager({
+  suppliers,
+  podeEditar,
+}: {
+  suppliers: FornecedorListaRow[];
+  podeEditar: boolean;
+}) {
   const router = useRouter();
-  const [pending, start] = useTransition();
-  const [loadingCnpj, setLoadingCnpj] = useState(false);
-  const [error, setError] = useState<string>();
   const [q, setQ] = useState("");
+  const [filtro, setFiltro] = useState<Filtro>("todos");
   const [view, setView] = useViewMode("nohub:fornecedores:view");
+  const [criando, setCriando] = useState(false);
 
-  const [form, setForm] = useState<SupplierForm | null>(null);
-  const [modalNote, setModalNote] = useState<string>();
-  const [modalError, setModalError] = useState<string>();
-  const [resumo, setResumo] = useState<SupplierRow | null>(null);
-
-  function refresh() {
-    router.refresh();
-  }
-
-  async function buscarCnpj() {
-    setError(undefined);
-    const digits = (form?.cnpj ?? "").replace(/\D/g, "");
-    if (digits.length !== 14) return setError("CNPJ precisa de 14 dígitos.");
-    setLoadingCnpj(true);
-    setModalNote(undefined);
-    setModalError(undefined);
-    try {
-      const res = await fetch(`/api/fornecedores/cnpj/${digits}`);
-      const d = await res.json();
-      if (res.ok) {
-        setForm({
-          ...emptyForm(maskCnpj(digits)),
-          razaoSocial: d.razaoSocial || "",
-          nomeFantasia: d.nomeFantasia || "",
-          email: d.email || "",
-          telefone: d.telefone ? maskPhone(d.telefone) : "",
-          cep: d.cep || "",
-          logradouro: d.logradouro || "",
-          numero: d.numero || "",
-          complemento: d.complemento || "",
-          bairro: d.bairro || "",
-          municipio: d.municipio || "",
-          uf: d.uf || "",
-        });
-        setModalNote("Confira os dados e complete o que faltar.");
-      } else if (res.status === 404) {
-        setForm(emptyForm(maskCnpj(digits)));
-        setModalNote("CNPJ não encontrado na Receita — preencha manualmente.");
-      } else {
-        setError(d.error ?? "Consulta indisponível. Tente de novo.");
-      }
-    } catch {
-      setError("Falha ao consultar o CNPJ. Verifique a conexão e tente de novo.");
-    } finally {
-      setLoadingCnpj(false);
-    }
-  }
-
-  function upd<K extends keyof SupplierForm>(k: K, v: SupplierForm[K]) {
-    setForm((f) => (f ? { ...f, [k]: v } : f));
-  }
-
-  function salvar() {
-    if (!form) return;
-    setModalError(undefined);
-    const payload = {
-      cnpj: form.cnpj,
-      razaoSocial: form.razaoSocial,
-      nomeFantasia: form.nomeFantasia,
-      logoUrl: form.logoUrl,
-      email: form.email,
-      telefone: form.telefone,
-      nomeContatoPrincipal: form.contato,
-      website: form.website,
-      pedidoMinimo: parseMoney(form.pedidoMinimo),
-      cep: form.cep,
-      logradouro: form.logradouro,
-      numero: form.numero,
-      complemento: form.complemento,
-      bairro: form.bairro,
-      municipio: form.municipio,
-      uf: form.uf,
-      ie: form.ie,
-      indicadorIE: form.indicadorIE || null,
-      codigoMunicipio: form.codigoMunicipio,
-    };
-    start(async () => {
-      try {
-        if (form.id) await updateSupplier(form.id, payload);
-        else await createSupplier(payload);
-        setForm(null);
-        refresh();
-      } catch (e) {
-        setModalError(
-          e instanceof Error ? e.message : "Informe ao menos a razão social.",
-        );
-      }
-    });
-  }
-
-  function toggleActive(s: SupplierRow) {
-    start(async () => {
-      try {
-        await setSupplierActive(s.id, !s.ativo);
-        refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Falha.");
-      }
-    });
-  }
-
-  const list = suppliers
-    .filter((s) =>
-      `${s.razaoSocial} ${s.nomeFantasia ?? ""} ${s.cnpj ?? ""}`
-        .toLowerCase()
-        .includes(q.toLowerCase()),
-    )
-    .sort((a, b) =>
-      (a.nomeFantasia || a.razaoSocial).localeCompare(
-        b.nomeFantasia || b.razaoSocial,
-        "pt-BR",
-      ),
-    );
+  const list = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    return suppliers
+      .filter((s) => {
+        if (t && !`${s.razaoSocial} ${s.nomeFantasia ?? ""} ${s.cnpj ?? ""}`.toLowerCase().includes(t)) {
+          return false;
+        }
+        if (filtro === "ativos") return s.ativo;
+        if (filtro === "integrados") return s.totalCatalogo > 0;
+        if (filtro === "revisar") return s.pendentes > 0;
+        return true;
+      })
+      .sort((a, b) =>
+        (a.nomeFantasia || a.razaoSocial).localeCompare(b.nomeFantasia || b.razaoSocial, "pt-BR"),
+      );
+  }, [suppliers, q, filtro]);
 
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Fornecedores"
         icon={navIcon("/fornecedores")}
-        description="Cadastre e gerencie os fornecedores da sua operação."
+        description="Cada fornecedor tem página própria: cadastro, integração, catálogo, preços, pedidos e financeiro."
         innerClassName="max-w-none"
         actions={
-          <button
-            onClick={() => {
-              setModalNote(undefined);
-              setModalError(undefined);
-              setError(undefined);
-              setForm(emptyForm());
-            }}
-            className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-          >
-            <Plus size={16} /> Adicionar
-          </button>
+          podeEditar && (
+            <button
+              onClick={() => setCriando(true)}
+              className="flex cursor-pointer items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+            >
+              <Plus size={16} /> Adicionar
+            </button>
+          )
         }
       />
 
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1">
-          <Search
-            size={15}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-faint"
-          />
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-52 flex-1">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
           <Input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Buscar fornecedor cadastrado"
             className="pl-9"
           />
+        </div>
+        <div className="flex items-center gap-1">
+          {FILTROS.map((f) => (
+            <button
+              key={f.valor}
+              type="button"
+              onClick={() => setFiltro(f.valor)}
+              aria-pressed={filtro === f.valor}
+              className={cn(
+                "rounded-full border px-3 py-1.5 text-[12px] font-medium transition-colors",
+                filtro === f.valor
+                  ? "border-brand bg-brand-soft text-brand"
+                  : "border-line bg-surface text-muted hover:text-ink",
+              )}
+            >
+              {f.label}
+            </button>
+          ))}
         </div>
         <ViewToggle view={view} onChange={setView} />
       </div>
@@ -359,552 +164,305 @@ export function FornecedoresManager({ suppliers }: { suppliers: SupplierRow[] })
         <div className="flex flex-col items-center gap-3 rounded-[var(--radius-xl)] border border-line bg-surface py-12 text-center">
           <Truck size={32} className="text-faint" />
           <p className="text-sm text-muted">
-            Nenhum fornecedor cadastrado. Adicione o primeiro.
+            {suppliers.length === 0
+              ? "Nenhum fornecedor cadastrado. Adicione o primeiro."
+              : "Nenhum fornecedor com esse filtro."}
           </p>
         </div>
       ) : view === "cards" ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {list.map((s) => (
-            <div
-              key={s.id}
-              onClick={() => setResumo(s)}
-              className={cn(
-                "flex cursor-pointer flex-col gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4 transition-colors hover:border-line-strong hover:bg-surface-2",
-                !s.ativo && "opacity-60",
-              )}
-            >
-              <div className="flex items-start gap-3">
-                <SupplierLogo logoUrl={s.logoUrl} nome={s.nomeFantasia || s.razaoSocial} ativo={s.ativo} />
-                <div className="min-w-0 flex-1">
-                  <p
-                    className={cn(
-                      "truncate text-sm font-medium text-ink",
-                      !s.ativo && "text-faint line-through",
-                    )}
-                  >
-                    {s.nomeFantasia || s.razaoSocial}
-                  </p>
-                  <p className="truncate text-xs text-faint">{s.cnpj ? maskCnpj(s.cnpj) : "sem CNPJ"}</p>
-                </div>
-                {!s.ativo && <Badge>Inativo</Badge>}
-                <div onClick={(e) => e.stopPropagation()}>
-                  <Menu
-                    align="end"
-                    trigger={
-                      <button
-                        type="button"
-                        aria-label="Ações do fornecedor"
-                        title="Ações do fornecedor"
-                        className="cursor-pointer rounded-[var(--radius-sm)] p-1.5 text-muted hover:bg-surface-2 hover:text-ink"
-                      >
-                        <MoreVertical size={16} />
-                      </button>
-                    }
-                  >
-                    <MenuItem
-                      icon={<Pencil size={15} />}
-                      onClick={() => {
-                        setModalNote(undefined);
-                        setModalError(undefined);
-                        setForm(formFromRow(s));
-                      }}
-                    >
-                      Editar
-                    </MenuItem>
-                    {enderecoMapsUrl(s) && (
-                      <MenuItem
-                        icon={<MapPin size={15} />}
-                        onClick={() => window.open(enderecoMapsUrl(s)!, "_blank", "noopener,noreferrer")}
-                      >
-                        Ver endereço no Maps
-                      </MenuItem>
-                    )}
-                    <MenuItem
-                      icon={
-                        s.ativo ? <Archive size={15} /> : <ArchiveRestore size={15} />
-                      }
-                      onClick={() => toggleActive(s)}
-                    >
-                      {s.ativo ? "Inativar" : "Reativar"}
-                    </MenuItem>
-                  </Menu>
-                </div>
-              </div>
-              {(s.telefone || s.email) && (
-                <div className="flex items-center gap-x-2 border-t border-line pt-3 text-xs text-faint">
-                  {s.telefone && (
-                    <a
-                      href={whatsappUrl(s.telefone)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      title="Abrir no WhatsApp"
-                      className="shrink-0 text-faint underline-offset-2 hover:text-brand hover:underline"
-                    >
-                      {maskPhone(s.telefone)}
-                    </a>
-                  )}
-                  {s.telefone && s.email && <span className="shrink-0">·</span>}
-                  {s.email && (
-                    <a
-                      href={`mailto:${s.email}`}
-                      onClick={(e) => e.stopPropagation()}
-                      title="Enviar e-mail"
-                      className="truncate text-faint underline-offset-2 hover:text-brand hover:underline"
-                    >
-                      {s.email}
-                    </a>
-                  )}
-                </div>
-              )}
-            </div>
+            <CardFornecedor key={s.id} s={s} />
           ))}
         </div>
       ) : (
         <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
           {list.map((s, idx) => (
-            <div
-              key={s.id}
-              onClick={() => setResumo(s)}
-              className={cn(
-                "flex cursor-pointer items-center gap-3 px-5 py-3.5 transition-colors hover:bg-surface-2",
-                idx !== 0 && "border-t border-line",
-                !s.ativo && "opacity-60",
-              )}
-            >
-              <SupplierLogo logoUrl={s.logoUrl} nome={s.nomeFantasia || s.razaoSocial} ativo={s.ativo} />
-              <div className="min-w-0 flex-1">
-                <p
-                  className={cn(
-                    "truncate text-sm font-medium text-ink",
-                    !s.ativo && "text-faint line-through",
-                  )}
-                >
-                  {s.nomeFantasia || s.razaoSocial}
-                </p>
-                <p className="flex flex-wrap items-center gap-x-1 text-xs text-faint">
-                  <span>{s.cnpj ? maskCnpj(s.cnpj) : "sem CNPJ"}</span>
-                  {s.telefone && (
-                    <>
-                      <span>·</span>
-                      <a
-                        href={whatsappUrl(s.telefone)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        title="Abrir no WhatsApp"
-                        className="text-faint underline-offset-2 hover:text-brand hover:underline"
-                      >
-                        {maskPhone(s.telefone)}
-                      </a>
-                    </>
-                  )}
-                  {s.email && (
-                    <>
-                      <span>·</span>
-                      <a
-                        href={`mailto:${s.email}`}
-                        onClick={(e) => e.stopPropagation()}
-                        title="Enviar e-mail"
-                        className="text-faint underline-offset-2 hover:text-brand hover:underline"
-                      >
-                        {s.email}
-                      </a>
-                    </>
-                  )}
-                </p>
-              </div>
-              {!s.ativo && <Badge>Inativo</Badge>}
-              <div onClick={(e) => e.stopPropagation()}>
-                <Menu
-                  align="end"
-                  trigger={
-                    <button
-                      type="button"
-                      aria-label="Ações do fornecedor"
-                      title="Ações do fornecedor"
-                      className="cursor-pointer rounded-[var(--radius-sm)] p-1.5 text-muted hover:bg-surface-2 hover:text-ink"
-                    >
-                      <MoreVertical size={16} />
-                    </button>
-                  }
-                >
-                  <MenuItem
-                    icon={<Pencil size={15} />}
-                    onClick={() => {
-                      setModalNote(undefined);
-                      setModalError(undefined);
-                      setForm(formFromRow(s));
-                    }}
-                  >
-                    Editar
-                  </MenuItem>
-                  {enderecoMapsUrl(s) && (
-                    <MenuItem
-                      icon={<MapPin size={15} />}
-                      onClick={() => window.open(enderecoMapsUrl(s)!, "_blank", "noopener,noreferrer")}
-                    >
-                      Ver endereço no Maps
-                    </MenuItem>
-                  )}
-                  <MenuItem
-                    icon={
-                      s.ativo ? <Archive size={15} /> : <ArchiveRestore size={15} />
-                    }
-                    onClick={() => toggleActive(s)}
-                  >
-                    {s.ativo ? "Inativar" : "Reativar"}
-                  </MenuItem>
-                </Menu>
-              </div>
-            </div>
+            <LinhaFornecedor key={s.id} s={s} primeira={idx === 0} />
           ))}
         </div>
       )}
 
-      <Sheet
-        open={!!form}
-        onClose={() => setForm(null)}
-        title={form?.id ? "Editar fornecedor" : "Novo fornecedor"}
-        description="Pesquise pelo CNPJ para preencher automaticamente."
-        width="lg"
-        footer={
-          <div className="flex items-center justify-end gap-2">
-            <Button variant="ghost" onClick={() => setForm(null)} disabled={pending}>
-              Cancelar
-            </Button>
-            <Button onClick={salvar} disabled={pending} className="gap-1">
-              <Plus size={16} /> {pending ? "Salvando…" : "Salvar fornecedor"}
-            </Button>
-          </div>
-        }
-      >
-        <Field label="CNPJ" htmlFor="cnpj">
+      {criando && (
+        <SheetNovoFornecedor
+          onClose={() => setCriando(false)}
+          onCriado={(id) => router.push(`/fornecedores/${id}`)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SinaisCatalogo({ s }: { s: FornecedorListaRow }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <IntegracaoStatus status={s.situacaoIntegracao} kind={s.tipoIntegracao} />
+      {s.totalCatalogo > 0 && (
+        <span className="text-[11px] text-faint">
+          {s.totalCatalogo.toLocaleString("pt-BR")} itens · {fmtQuando(s.ultimaSincronizacao).toLowerCase()}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function CardFornecedor({ s }: { s: FornecedorListaRow }) {
+  return (
+    <Link
+      href={`/fornecedores/${s.id}`}
+      className={cn(
+        "flex flex-col gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4 transition-colors hover:border-line-strong hover:bg-surface-2",
+        !s.ativo && "opacity-60",
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <Logo logoUrl={s.logoUrl} nome={s.nomeFantasia || s.razaoSocial} ativo={s.ativo} />
+        <div className="min-w-0 flex-1">
+          <p className={cn("truncate text-sm font-medium text-ink", !s.ativo && "text-faint line-through")}>
+            {s.nomeFantasia || s.razaoSocial}
+          </p>
+          <p className="truncate text-xs text-faint">{s.cnpj ? maskCnpj(s.cnpj) : "sem CNPJ"}</p>
+        </div>
+        {!s.ativo && <Badge>Inativo</Badge>}
+        <ChevronRight size={16} className="shrink-0 text-faint" />
+      </div>
+
+      <SinaisCatalogo s={s} />
+
+      <div className="grid grid-cols-3 divide-x divide-line rounded-[var(--radius)] bg-surface-2/60 py-2 text-center">
+        <div>
+          <p className="font-mono text-[14px] font-semibold text-ink">{s.totalProdutos}</p>
+          <p className="text-[11px] text-faint">produtos</p>
+        </div>
+        <div>
+          <p
+            className={cn(
+              "font-mono text-[14px] font-semibold",
+              s.emPromocao > 0 ? "text-accent" : "text-ink",
+            )}
+          >
+            {s.emPromocao}
+          </p>
+          <p className="text-[11px] text-faint">em promoção</p>
+        </div>
+        <div>
+          <p className="font-mono text-[14px] font-semibold text-ink tnum">
+            {fmtMoney(s.totalComprado30d)}
+          </p>
+          <p className="text-[11px] text-faint">comprado 30d</p>
+        </div>
+      </div>
+
+      {(s.municipio || s.telefone) && (
+        <div className="flex items-center gap-x-2 border-t border-line pt-3 text-xs text-faint">
+          {s.municipio && (
+            <span className="flex items-center gap-1 truncate">
+              <MapPin size={11} /> {s.municipio}
+              {s.uf ? `/${s.uf}` : ""}
+            </span>
+          )}
+          {s.municipio && s.telefone && <span>·</span>}
+          {s.telefone && <span className="shrink-0">{maskPhone(s.telefone)}</span>}
+        </div>
+      )}
+    </Link>
+  );
+}
+
+function LinhaFornecedor({ s, primeira }: { s: FornecedorListaRow; primeira: boolean }) {
+  return (
+    <Link
+      href={`/fornecedores/${s.id}`}
+      className={cn(
+        "flex items-center gap-3 px-4 py-3 transition-colors hover:bg-surface-2",
+        !primeira && "border-t border-line",
+        !s.ativo && "opacity-60",
+      )}
+    >
+      <Logo logoUrl={s.logoUrl} nome={s.nomeFantasia || s.razaoSocial} ativo={s.ativo} />
+
+      <div className="min-w-0 flex-1">
+        <p className={cn("truncate text-sm font-medium text-ink", !s.ativo && "text-faint line-through")}>
+          {s.nomeFantasia || s.razaoSocial}
+        </p>
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-faint">
+          <span className="font-mono">{s.cnpj ? maskCnpj(s.cnpj) : "sem CNPJ"}</span>
+          {s.telefone && <span>· {maskPhone(s.telefone)}</span>}
+          {s.municipio && (
+            <span>
+              · {s.municipio}
+              {s.uf ? `/${s.uf}` : ""}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="hidden min-w-0 flex-1 sm:block">
+        <SinaisCatalogo s={s} />
+      </div>
+
+      <div className="hidden shrink-0 items-center gap-2 lg:flex">
+        {s.emPromocao > 0 && (
+          <Badge tone="accent">
+            <Tag size={11} />
+            {s.emPromocao}
+          </Badge>
+        )}
+        {s.pendentes > 0 && <Badge tone="warn">{s.pendentes} a revisar</Badge>}
+        {!s.ativo && <Badge>Inativo</Badge>}
+      </div>
+
+      <div className="hidden w-24 shrink-0 text-right sm:block">
+        <p className="font-mono text-[13px] font-semibold text-ink tnum">
+          {fmtMoney(s.totalComprado30d)}
+        </p>
+        <p className="text-[11px] text-faint">últimos 30d</p>
+      </div>
+
+      <ChevronRight size={16} className="shrink-0 text-faint" />
+    </Link>
+  );
+}
+
+// ── Cadastro rápido ─────────────────────────────────────────
+// Só o mínimo para o fornecedor existir. O resto se completa na página dele.
+
+function SheetNovoFornecedor({
+  onClose,
+  onCriado,
+}: {
+  onClose: () => void;
+  onCriado: (id: string) => void;
+}) {
+  const [cnpj, setCnpj] = useState("");
+  const [razaoSocial, setRazaoSocial] = useState("");
+  const [nomeFantasia, setNomeFantasia] = useState("");
+  const [telefone, setTelefone] = useState("");
+  const [email, setEmail] = useState("");
+  const [buscando, setBuscando] = useState(false);
+  const [nota, setNota] = useState<string>();
+  const [pending, start] = useTransition();
+
+  async function buscarCnpj() {
+    const digitos = cnpj.replace(/\D/g, "");
+    if (digitos.length !== 14) {
+      toast.error("CNPJ incompleto", "Informe os 14 dígitos.");
+      return;
+    }
+    setBuscando(true);
+    setNota(undefined);
+    try {
+      const res = await fetch(`/api/fornecedores/cnpj/${digitos}`);
+      const d = await res.json();
+      if (res.ok) {
+        setRazaoSocial(d.razaoSocial || "");
+        setNomeFantasia(d.nomeFantasia || "");
+        setEmail(d.email || "");
+        setTelefone(d.telefone ? maskPhone(d.telefone) : "");
+        setNota("Dados da Receita carregados. Confira antes de salvar.");
+      } else if (res.status === 404) {
+        setNota("CNPJ não encontrado na Receita — preencha manualmente.");
+      } else {
+        toast.error("Consulta indisponível", d.error ?? "Tente de novo em instantes.");
+      }
+    } catch {
+      toast.error("Falha ao consultar o CNPJ", "Verifique a conexão e tente de novo.");
+    } finally {
+      setBuscando(false);
+    }
+  }
+
+  function salvar() {
+    start(async () => {
+      try {
+        const id = await createSupplier({
+          cnpj,
+          razaoSocial,
+          nomeFantasia,
+          telefone,
+          email,
+        });
+        toast.success("Fornecedor criado", "Complete o cadastro e configure a integração.");
+        onCriado(id);
+      } catch (e) {
+        toast.error("Não deu para criar", e instanceof Error ? e.message : "Informe a razão social.");
+      }
+    });
+  }
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title="Novo fornecedor"
+      description="Pesquise pelo CNPJ para preencher automaticamente. O resto se completa na página dele."
+      width="md"
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={pending}>
+            Cancelar
+          </Button>
+          <Button onClick={salvar} disabled={pending || razaoSocial.trim().length < 2}>
+            {pending ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
+            Criar e abrir
+          </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-col gap-4 p-5">
+        <Field label="CNPJ" htmlFor="novo-cnpj">
           <div className="flex gap-2">
             <Input
-              id="cnpj"
-              value={form?.cnpj ?? ""}
-              onChange={(e) => upd("cnpj", maskCnpj(e.target.value))}
+              id="novo-cnpj"
+              value={cnpj}
+              onChange={(e) => setCnpj(maskCnpj(e.target.value))}
               placeholder="00.000.000/0000-00"
               inputMode="numeric"
               maxLength={18}
+              className="font-mono"
               onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), buscarCnpj())}
             />
-            <Button
-              type="button"
-              onClick={buscarCnpj}
-              disabled={loadingCnpj}
-              className="shrink-0 gap-1.5"
-            >
-              <Search size={16} /> {loadingCnpj ? "Buscando…" : "Pesquisar"}
+            <Button type="button" variant="secondary" onClick={buscarCnpj} disabled={buscando} className="shrink-0">
+              {buscando ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}
+              Pesquisar
             </Button>
           </div>
         </Field>
-        {error && <p className="mt-2 text-sm text-danger">{error}</p>}
 
-        {modalNote && (
-          <p className="mt-4 rounded-[var(--radius-sm)] bg-brand-soft px-3 py-2 text-xs text-brand-strong">
-            {modalNote}
-          </p>
+        {nota && (
+          <p className="rounded-[var(--radius-sm)] bg-brand-soft px-3 py-2 text-xs text-brand-strong">{nota}</p>
         )}
-        {form && (
-          <div className="mt-4 grid grid-cols-12 gap-x-3 gap-y-2">
-            <Field className="col-span-12" label="Razão social" htmlFor="m-razao">
-              <Input id="m-razao" value={form.razaoSocial} onChange={(e) => upd("razaoSocial", e.target.value)} />
-            </Field>
 
-            <Field className="col-span-12 sm:col-span-7" label="Nome fantasia" htmlFor="m-fant">
-              <Input id="m-fant" value={form.nomeFantasia} onChange={(e) => upd("nomeFantasia", e.target.value)} />
-            </Field>
-            <Field className="col-span-12 sm:col-span-5" label="Contato principal" htmlFor="m-cont">
-              <Input id="m-cont" value={form.contato} onChange={(e) => upd("contato", e.target.value)} />
-            </Field>
+        <Field label="Razão social" htmlFor="novo-razao" required>
+          <Input id="novo-razao" value={razaoSocial} onChange={(e) => setRazaoSocial(e.target.value)} autoFocus />
+        </Field>
 
-            <Field className="col-span-12 sm:col-span-7" label="E-mail" htmlFor="m-mail">
-              <Input id="m-mail" type="email" value={form.email} onChange={(e) => upd("email", e.target.value)} />
-            </Field>
-            <Field className="col-span-12 sm:col-span-5" label="Telefone / WhatsApp" htmlFor="m-tel">
-              <Input id="m-tel" value={form.telefone} onChange={(e) => upd("telefone", maskPhone(e.target.value))} inputMode="numeric" maxLength={15} placeholder="(11) 99999-9999" />
-            </Field>
+        <Field label="Nome fantasia" htmlFor="novo-fant">
+          <Input id="novo-fant" value={nomeFantasia} onChange={(e) => setNomeFantasia(e.target.value)} />
+        </Field>
 
-            <Field className="col-span-12 sm:col-span-7" label="Website" htmlFor="m-site">
-              <Input id="m-site" value={form.website} onChange={(e) => upd("website", e.target.value)} placeholder="https://" />
-            </Field>
-            <Field className="col-span-12 sm:col-span-5" label="Pedido mínimo (R$)" htmlFor="m-minimo">
-              <Input
-                id="m-minimo"
-                value={form.pedidoMinimo}
-                onChange={(e) => upd("pedidoMinimo", maskMoney(e.target.value))}
-                inputMode="numeric"
-                placeholder="Sem mínimo"
-              />
-            </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Telefone / WhatsApp" htmlFor="novo-tel">
+            <Input
+              id="novo-tel"
+              value={telefone}
+              onChange={(e) => setTelefone(maskPhone(e.target.value))}
+              inputMode="numeric"
+              maxLength={15}
+              placeholder="(11) 99999-9999"
+            />
+          </Field>
+          <Field label="E-mail" htmlFor="novo-mail">
+            <Input id="novo-mail" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </Field>
+        </div>
 
-            <p className="col-span-12 mt-1 text-[11px] font-medium uppercase tracking-wider text-faint">Endereço</p>
-
-            <Field className="col-span-12 sm:col-span-4" label="CEP" htmlFor="m-cep">
-              <Input id="m-cep" value={form.cep} onChange={(e) => upd("cep", e.target.value)} inputMode="numeric" />
-            </Field>
-            <Field className="col-span-12 sm:col-span-8" label="Município" htmlFor="m-mun">
-              <Input id="m-mun" value={form.municipio} onChange={(e) => upd("municipio", e.target.value)} />
-            </Field>
-
-            <Field className="col-span-6 sm:col-span-5" label="Bairro" htmlFor="m-bairro">
-              <Input id="m-bairro" value={form.bairro} onChange={(e) => upd("bairro", e.target.value)} />
-            </Field>
-            <Field className="col-span-6 sm:col-span-3" label="UF" htmlFor="m-uf">
-              <Select id="m-uf" value={form.uf} onChange={(e) => upd("uf", e.target.value)}>
-                <option value="">—</option>
-                {UFS.map((uf) => (
-                  <option key={uf} value={uf}>
-                    {uf}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field className="col-span-12 sm:col-span-4" label="Compl." htmlFor="m-comp">
-              <Input id="m-comp" value={form.complemento} onChange={(e) => upd("complemento", e.target.value)} />
-            </Field>
-
-            <Field className="col-span-8 sm:col-span-9" label="Logradouro" htmlFor="m-log">
-              <Input id="m-log" value={form.logradouro} onChange={(e) => upd("logradouro", e.target.value)} />
-            </Field>
-            <Field className="col-span-4 sm:col-span-3" label="Número" htmlFor="m-num">
-              <Input id="m-num" value={form.numero} onChange={(e) => upd("numero", e.target.value)} />
-            </Field>
-
-            {/*
-              Fiscal: usado na entrada por XML e na devolução ao fornecedor.
-              Chega preenchido sozinho quando o fornecedor nasce de uma nota.
-            */}
-            <details className="group col-span-12 border-t border-line pt-3">
-              <summary className="flex cursor-pointer select-none list-none items-center gap-2 text-sm text-muted transition-colors hover:text-ink-2 [&::-webkit-details-marker]:hidden">
-                <ChevronRight
-                  size={13}
-                  className="shrink-0 transition-transform duration-200 group-open:rotate-90"
-                />
-                Dados fiscais
-              </summary>
-              <div className="mt-3 grid grid-cols-12 gap-x-3 gap-y-3">
-                <Field className="col-span-6 sm:col-span-4" label="Inscrição estadual" htmlFor="m-ie">
-                  <Input id="m-ie" value={form.ie} onChange={(e) => upd("ie", e.target.value)} className="font-mono" />
-                </Field>
-                <Field className="col-span-6 sm:col-span-4" label="Indicador de IE" htmlFor="m-indie">
-                  <Select
-                    id="m-indie"
-                    value={form.indicadorIE}
-                    onChange={(e) => upd("indicadorIE", e.target.value as SupplierForm["indicadorIE"])}
-                  >
-                    <option value="">—</option>
-                    <option value="CONTRIBUINTE">Contribuinte</option>
-                    <option value="ISENTO">Isento</option>
-                    <option value="NAO_CONTRIBUINTE">Não contribuinte</option>
-                  </Select>
-                </Field>
-                <Field
-                  className="col-span-12 sm:col-span-4"
-                  label="Código IBGE do município"
-                  htmlFor="m-ibge"
-                  hint="7 dígitos."
-                >
-                  <Input
-                    id="m-ibge"
-                    value={form.codigoMunicipio}
-                    onChange={(e) => upd("codigoMunicipio", e.target.value.replace(/\D/g, "").slice(0, 7))}
-                    inputMode="numeric"
-                    className="font-mono"
-                    placeholder="4314902"
-                  />
-                </Field>
-              </div>
-            </details>
-
-            <Field className="col-span-12" label="Logo do fornecedor (URL)" htmlFor="m-logo">
-              <div className="flex items-center gap-3">
-                {form.logoUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={form.logoUrl}
-                    alt="Logo do fornecedor"
-                    className="h-16 w-16 shrink-0 rounded-xl border border-line bg-surface-2 object-contain p-1"
-                  />
-                ) : (
-                  <span className="grid h-16 w-16 shrink-0 place-items-center rounded-xl border border-dashed border-line bg-surface-2 text-faint">
-                    <ImageIcon size={22} />
-                  </span>
-                )}
-                <Input
-                  id="m-logo"
-                  type="url"
-                  value={form.logoUrl}
-                  onChange={(e) => upd("logoUrl", e.target.value)}
-                  placeholder="https://exemplo.com/logo.png"
-                />
-                {form.logoUrl && (
-                  <Button type="button" variant="outline" className="shrink-0" onClick={() => upd("logoUrl", "")}>
-                    <Trash2 size={16} /> Remover
-                  </Button>
-                )}
-              </div>
-            </Field>
-          </div>
-        )}
-        {modalError && <p className="mt-2 text-sm text-danger">{modalError}</p>}
-      </Sheet>
-
-      <Sheet
-        open={!!resumo}
-        onClose={() => setResumo(null)}
-        title={resumo ? (resumo.nomeFantasia || resumo.razaoSocial) : ""}
-        description={resumo?.createdAt ? `Fornecedor desde ${fmtData(resumo.createdAt)}` : undefined}
-        width="md"
-        footer={
-          resumo && (
-            <div className="flex flex-col gap-2 sm:flex-row ">
-              <Button
-                variant="secondary"
-                className="flex-1 gap-1.5 "
-                onClick={() =>
-                  router.push(
-                    `/compras?tab=pedidos&q=${encodeURIComponent(resumo.nomeFantasia || resumo.razaoSocial)}`,
-                  )
-                }
-              >
-                <ShoppingCart size={15} /> Ver pedidos
-              </Button>
-              <Button
-                variant="secondary"
-                className="flex-1 gap-1.5"
-                onClick={() =>
-                  router.push(
-                    `/produtos?fornecedorId=${resumo.id}&fornecedorNome=${encodeURIComponent(resumo.nomeFantasia || resumo.razaoSocial)}`,
-                  )
-                }
-              >
-                <Boxes size={15} /> Ver produtos
-              </Button>
-            </div>
-          )
-        }
-      >
-        {resumo && (
-          <div className="flex flex-col gap-5">
-            {/* Identificação */}
-            <div className="flex items-start gap-3">
-              <SupplierLogo
-                logoUrl={resumo.logoUrl}
-                nome={resumo.nomeFantasia || resumo.razaoSocial}
-                ativo={resumo.ativo}
-                size={44}
-                rounded="rounded-full"
-              />
-              <div className="min-w-0 flex-1 pt-0.5">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
-                  <span className={cn("flex items-center gap-1.5 font-medium", resumo.ativo ? "text-ok" : "text-faint")}>
-                    <span className={cn("h-1.5 w-1.5 rounded-full", resumo.ativo ? "bg-ok" : "bg-faint")} />
-                    {resumo.ativo ? "Ativo" : "Inativo"}
-                  </span>
-                  {resumo.cnpj && (
-                    <>
-                      <span className="text-faint">·</span>
-                      <span className="font-mono text-muted">{maskCnpj(resumo.cnpj)}</span>
-                    </>
-                  )}
-                </div>
-                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted">
-                  {resumo.telefone && (
-                    <a
-                      href={whatsappUrl(resumo.telefone)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="Abrir no WhatsApp"
-                      className="flex items-center gap-1 hover:text-brand hover:underline"
-                    >
-                      <Phone size={11} /> {maskPhone(resumo.telefone)}
-                    </a>
-                  )}
-                  {resumo.nomeContatoPrincipal && <span>{resumo.nomeContatoPrincipal}</span>}
-                </div>
-              </div>
-            </div>
-
-            {!resumo.ativo && (
-              <p className="rounded-[var(--radius-sm)] bg-surface-2 px-3 py-2 text-xs font-medium text-muted">
-                Fornecedor inativo — reative para voltar a receber sugestões de compra.
-              </p>
-            )}
-
-            {/* Resumo — indicadores em bloco único */}
-            <div className="rounded-[var(--radius-lg)] border border-line bg-surface-2/60">
-              <div className="grid grid-cols-2">
-                <StatCell
-                  className="border-r border-b border-line"
-                  icon={<Package size={13} />}
-                  label="Produtos fornecidos"
-                  value={String(resumo.totalProdutos ?? 0)}
-                />
-                <StatCell
-                  className="border-b border-line"
-                  icon={<Wallet size={13} />}
-                  label="Comprado (30d)"
-                  value={fmtMoney(resumo.totalComprado30d ?? 0)}
-                />
-                <StatCell
-                  className="border-r border-line"
-                  icon={<History size={13} />}
-                  label="Última solicitação"
-                  value={resumo.ultimaSolicitacao ? relDia(resumo.ultimaSolicitacao.data) : "—"}
-                  sub={resumo.ultimaSolicitacao?.numero}
-                />
-                <StatCell
-                  icon={<CalendarClock size={13} />}
-                  label="Próxima entrega"
-                  value={previsaoLabel(resumo.proximaEntrega ?? null)}
-                />
-              </div>
-            </div>
-
-            {/* Últimos pedidos */}
-            <div>
-              <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
-                <ShoppingCart size={12} /> Últimos pedidos
-              </h3>
-              {resumo.ultimosPedidos && resumo.ultimosPedidos.length > 0 ? (
-                <div className="divide-y divide-line rounded-[var(--radius-lg)] border border-line">
-                  {resumo.ultimosPedidos.map((p) => {
-                    const st = PEDIDO_STATUS[p.status] ?? PEDIDO_STATUS.RASCUNHO;
-                    const StatusIcon = st.icon;
-                    return (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() =>
-                          router.push(`/compras?tab=pedidos&q=${encodeURIComponent(p.numero)}`)
-                        }
-                        className="flex w-full cursor-pointer items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2"
-                      >
-                        <span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg", st.soft, st.text)}>
-                          <StatusIcon size={14} />
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="font-mono text-[13px] font-semibold text-ink">{p.numero}</p>
-                          <p className="text-[12px] text-muted">{relDia(p.data)}</p>
-                        </div>
-                        <span className="shrink-0 font-mono text-[13px] font-semibold text-ink tnum">
-                          {fmtMoney(p.valorTotal)}
-                        </span>
-                        <StatusBadge status={p.status} />
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="text-[13px] text-muted">Nenhum pedido registrado ainda.</p>
-              )}
-            </div>
-          </div>
-        )}
-      </Sheet>
-    </div>
+        <p className="flex items-start gap-2 rounded-[var(--radius)] bg-surface-2 p-3 text-[12px] text-muted">
+          <Plug size={14} className="mt-0.5 shrink-0 text-brand" />
+          Depois de criar, o próximo passo é a aba Integração — é lá que a tabela de preços deste
+          fornecedor passa a chegar sozinha.
+        </p>
+      </div>
+    </Sheet>
   );
 }

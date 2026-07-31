@@ -57,6 +57,14 @@ export function AppShell({
   const [drawerAberto, setDrawerAberto] = useState(false);
   const [buscaAberta, setBuscaAberta] = useState(false);
 
+  // Trava a viewport enquanto o shell estiver na tela: quem rola é o <main>.
+  // Sem isso sobra um scroll no documento e a tela inteira — sidebar e navbar
+  // junto — sobe ao chegar no fim do conteúdo.
+  useEffect(() => {
+    document.documentElement.classList.add("app-lock");
+    return () => document.documentElement.classList.remove("app-lock");
+  }, []);
+
   // Ctrl/⌘+K de qualquer lugar. O `preventDefault` é necessário: no Firefox o
   // atalho é da barra de endereços.
   useEffect(() => {
@@ -88,7 +96,13 @@ export function AppShell({
         Pular para o conteúdo
       </a>
 
-      <div className="flex h-dvh gap-0 overflow-hidden bg-canvas p-2 sm:gap-3 sm:p-3">
+      {/* `data-app-shell` é o gancho do globals.css que trava o scroll do body:
+          o shell ocupa a viewport exata e quem rola é o <main>. Sem isso sobra
+          um segundo scroll por fora e a tela inteira (sidebar + navbar) sobe. */}
+      <div
+        data-app-shell
+        className="flex h-dvh gap-0 overflow-hidden bg-canvas p-2 sm:gap-3 sm:p-3"
+      >
         <Sidebar
           toggles={toggles}
           acessos={acessos}

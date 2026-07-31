@@ -16,7 +16,6 @@ import {
   ReceiptText,
   Scale,
   FileQuestion,
-  BookOpen,
   FileUp,
   History,
   Settings,
@@ -265,6 +264,9 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: ShoppingBag,
         enabled: true,
         mobile: true,
+        // Compras é operação pura: o que comprar, de quem e por quanto. A
+        // configuração de cada fornecedor (integração, catálogo, condições)
+        // mora em /fornecedores/[id] — por isso o menu tem só três linhas.
         children: [
           {
             href: "/compras",
@@ -273,7 +275,7 @@ export const NAV_GROUPS: NavGroup[] = [
             enabled: true,
             permissao: "compras.ver",
             descricao:
-              "O estado das compras num relance — fornecedores, tabelas e o que precisa de atenção.",
+              "O que comprar, de quem comprar e quanto dá para economizar hoje.",
           },
           {
             href: "/compras/pedidos",
@@ -284,10 +286,19 @@ export const NAV_GROUPS: NavGroup[] = [
             descricao: "Acompanhe cada pedido de compra do envio ao recebimento.",
           },
           {
+            href: "/compras/importacoes",
+            label: "Importações",
+            icon: FileUp,
+            enabled: true,
+            permissao: "compras.ver",
+            descricao: "Todo arquivo e sincronização que já alimentou uma tabela de preço.",
+          },
+          {
             href: "/compras/cotacoes",
             label: "Cotações",
             icon: FileQuestion,
             enabled: true,
+            ocultoNoMenu: true,
             permissao: "compras.ver",
             descricao:
               "Peça preço a vários fornecedores de uma vez e compare as respostas lado a lado.",
@@ -297,6 +308,7 @@ export const NAV_GROUPS: NavGroup[] = [
             label: "Comparador",
             icon: Scale,
             enabled: true,
+            ocultoNoMenu: true,
             permissao: "compras.ver",
             descricao:
               "Monte a cesta e veja qual fornecedor sai mais barato item a item.",
@@ -306,26 +318,9 @@ export const NAV_GROUPS: NavGroup[] = [
             label: "Cesta",
             icon: ShoppingBasket,
             enabled: true,
-            permissao: "compras.ver",
-            descricao: "Revise o que foi escolhido e feche o pedido de cada fornecedor.",
-          },
-          {
-            href: "/compras/catalogos",
-            label: "Tabelas de preço",
-            icon: BookOpen,
-            enabled: true,
-            permissao: "compras.ver",
-            descricao:
-              "As tabelas que cada fornecedor mandou, sempre na versão mais recente.",
-          },
-          {
-            href: "/compras/importacoes",
-            label: "Importações",
-            icon: FileUp,
-            enabled: true,
             ocultoNoMenu: true,
             permissao: "compras.ver",
-            descricao: "Arquivos e integrações que alimentam as tabelas de preço.",
+            descricao: "Revise o que foi escolhido e feche o pedido de cada fornecedor.",
           },
           {
             href: "/compras/historico",
@@ -355,7 +350,8 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: Truck,
         enabled: true,
         permissao: "fornecedor.ver",
-        descricao: "Quem abastece a loja, com contato e condições.",
+        descricao:
+          "O centro de gestão de cada parceiro: cadastro, integração, catálogo, preços e financeiro.",
       },
     ],
   },

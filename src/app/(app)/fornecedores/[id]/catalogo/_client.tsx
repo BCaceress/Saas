@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import {
   Search,
-  ArrowLeft,
   ShoppingCart,
   Link2,
   LineChart as LineChartIcon,
@@ -14,6 +13,8 @@ import {
   CircleSlash,
   Check,
   Tag,
+  Scale,
+  ImageOff,
 } from "lucide-react";
 import { Input, Select } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -22,23 +23,23 @@ import { Sheet } from "@/components/ui/sheet";
 import { toast } from "@/components/ui/toast";
 import { LineChart } from "@/components/charts/line-chart";
 import { cn } from "@/lib/utils";
-import type { FornecedorCard, ItemCatalogo, PontoPreco } from "../../_catalogo/types";
-import {
-  EstadoVazio,
-  IntegracaoStatus,
-  PromoBadge,
-  SupplierAvatar,
-  fmtPreco,
-  fmtQtd,
-  fmtQuando,
-} from "../../_catalogo/ui";
+import type { FornecedorCard, ItemCatalogo, PontoPreco } from "../../../compras/_catalogo/types";
+import { EstadoVazio, PromoBadge, fmtPreco, fmtQtd, fmtQuando } from "../../../compras/_catalogo/ui";
 import {
   adicionarAoCarrinhoAction,
   buscarProdutosAction,
   historicoPrecoAction,
   ignorarItemAction,
   vincularItemAction,
-} from "../../_catalogo/actions";
+} from "../../../compras/_catalogo/actions";
+
+// ============================================================
+// Aba Catálogo — a tabela de preços deste fornecedor, do jeito que ele mandou.
+//
+// Cada linha responde três coisas de uma vez: o que é (imagem, marca, EAN),
+// quanto custa hoje (preço, promoção, validade da oferta) e se vale comprar
+// aqui (diferença contra o melhor preço de mercado).
+// ============================================================
 
 type Filtro = {
   busca: string;
@@ -91,39 +92,13 @@ export function CatalogoFornecedor({
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Identificação do fornecedor — cabeçalho do módulo já está no layout */}
-      <div className="flex flex-wrap items-center gap-3 rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-3">
-        <Link
-          href="/compras/catalogos"
-          className="flex h-9 w-9 items-center justify-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-          aria-label="Voltar para catálogos"
-        >
-          <ArrowLeft size={16} />
-        </Link>
-        <SupplierAvatar nome={fornecedor.nome} logoUrl={fornecedor.logoUrl} size={40} />
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate font-display text-[16px] font-semibold text-ink">{fornecedor.nome}</h2>
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5">
-            <IntegracaoStatus status={fornecedor.situacaoIntegracao} kind={fornecedor.tipoIntegracao} />
-            <span className="text-[11px] text-faint">
-              {fornecedor.totalProdutos.toLocaleString("pt-BR")} produtos · atualizado{" "}
-              {fmtQuando(fornecedor.ultimaSincronizacao).toLowerCase()}
-            </span>
-          </div>
-        </div>
-        {fornecedor.pedidoMinimo != null && (
-          <Badge tone="neutral">Pedido mínimo {fmtPreco(fornecedor.pedidoMinimo)}</Badge>
-        )}
-      </div>
-
-      {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-56 flex-1 sm:max-w-80">
           <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-faint" />
           <Input
             value={busca}
             onChange={(e) => setBusca(e.target.value)}
-            placeholder="Buscar por nome, EAN ou código"
+            placeholder="Buscar por nome, EAN, marca ou código"
             className="pl-9"
             aria-label="Buscar no catálogo"
           />
@@ -172,33 +147,43 @@ export function CatalogoFornecedor({
             <Link2 size={13} /> A revisar <span className="font-mono">{fornecedor.pendentes}</span>
           </Pilula>
         )}
+
+        <Link href="/compras/comparador" className="ml-auto">
+          <Button size="sm" variant="secondary">
+            <Scale size={14} />
+            Comparar preços
+          </Button>
+        </Link>
       </div>
 
       {itens.length === 0 ? (
         <EstadoVazio
           icon={<PackageSearch size={20} />}
           titulo="Nenhum item nesta tabela"
-          descricao="Importe a tabela deste fornecedor ou ajuste os filtros para ver as ofertas."
+          descricao="Configure como a tabela deste fornecedor chega e importe a primeira versão."
           acao={
-            <Link href={`/compras/importacoes?fornecedor=${fornecedor.id}`}>
+            <Link href={`/fornecedores/${fornecedor.id}/integracao`}>
               <Button size="sm" variant="secondary">
-                Importar tabela
+                Abrir integração
               </Button>
             </Link>
           }
         />
       ) : (
         <div className="overflow-x-auto rounded-[var(--radius-lg)] border border-line bg-surface">
-          <table className="w-full min-w-[880px] text-sm">
+          <table className="w-full min-w-[1080px] text-sm">
             <thead>
               <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-faint">
                 <th className="px-4 py-2.5 font-medium">Produto</th>
-                <th className="px-3 py-2.5 font-medium">Código</th>
+                <th className="px-3 py-2.5 font-medium">EAN / código</th>
+                <th className="px-3 py-2.5 font-medium">Categoria</th>
                 <th className="px-3 py-2.5 text-right font-medium">Preço</th>
+                <th className="px-3 py-2.5 text-right font-medium">Promocional</th>
                 <th className="px-3 py-2.5 text-right font-medium">Mercado</th>
-                <th className="px-3 py-2.5 text-right font-medium">Mín.</th>
-                <th className="px-3 py-2.5 text-right font-medium">Estoque</th>
+                <th className="px-3 py-2.5 text-right font-medium">Qtd. mín.</th>
                 <th className="px-3 py-2.5 font-medium">Oferta até</th>
+                <th className="px-3 py-2.5 font-medium">Disponib.</th>
+                <th className="px-3 py-2.5 font-medium">Atualizado</th>
                 <th className="px-3 py-2.5" />
               </tr>
             </thead>
@@ -250,6 +235,25 @@ function Pilula({
   );
 }
 
+function ImagemItem({ url, alt }: { url: string | null; alt: string }) {
+  if (!url) {
+    return (
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line bg-surface-2 text-faint">
+        <ImageOff size={14} />
+      </span>
+    );
+  }
+  return (
+    // Imagem vem da tabela do fornecedor — host arbitrário não passa pelo next/image.
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt={alt}
+      className="h-9 w-9 shrink-0 rounded-[var(--radius-sm)] border border-line bg-surface object-contain p-0.5"
+    />
+  );
+}
+
 function LinhaItem({
   item,
   podeEditar,
@@ -275,11 +279,18 @@ function LinhaItem({
       ? item.precoEfetivo - item.melhorPrecoMercado
       : null;
 
+  // O servidor já derrubou a promoção vencida (o preço efetivo volta a ser o
+  // de tabela) — a data em vermelho só marca o que perdeu a validade.
+  const ofertaVencida = item.validadeOferta != null && item.precoPromocional != null && !item.emPromocao;
+
   function adicionar() {
     startTransition(async () => {
       try {
-        await adicionarAoCarrinhoAction({ catalogItemId: item.id, quantidade: item.quantidadeMinima ?? 1 });
-        toast.success("Adicionado ao carrinho", item.descricao);
+        await adicionarAoCarrinhoAction({
+          catalogItemId: item.id,
+          quantidade: item.quantidadeMinima ?? 1,
+        });
+        toast.success("Adicionado à cesta", item.descricao);
         router.refresh();
       } catch (e) {
         toast.error("Não deu para adicionar", e instanceof Error ? e.message : undefined);
@@ -290,34 +301,62 @@ function LinhaItem({
   return (
     <tr className="border-b border-line last:border-0 hover:bg-surface-2/60">
       <td className="max-w-72 px-4 py-2.5">
-        <p className="truncate font-medium text-ink">{item.descricao}</p>
-        <p className="mt-0.5 flex items-center gap-1.5 truncate text-[11px] text-muted">
-          {item.marca && <span>{item.marca}</span>}
-          {item.unidade && <span className="text-faint">· {item.unidade}</span>}
-          {item.matchStatus === "VINCULADO" && item.produtoSku ? (
-            <span className="font-mono text-brand">· {item.produtoSku}</span>
-          ) : item.matchStatus === "PENDENTE" ? (
-            <Badge tone="warn" className="ml-0.5">
-              sem vínculo
-            </Badge>
-          ) : null}
-        </p>
+        <div className="flex items-center gap-2.5">
+          <ImagemItem url={item.imagemUrl} alt="" />
+          <div className="min-w-0">
+            <p className="truncate font-medium text-ink">{item.descricao}</p>
+            <p className="mt-0.5 flex items-center gap-1.5 truncate text-[11px] text-muted">
+              {item.marca && <span>{item.marca}</span>}
+              {item.unidade && <span className="text-faint">· {item.unidade}</span>}
+              {item.matchStatus === "VINCULADO" && item.produtoSku ? (
+                <span className="font-mono text-brand">· {item.produtoSku}</span>
+              ) : item.matchStatus === "PENDENTE" ? (
+                <Badge tone="warn" className="ml-0.5">
+                  sem vínculo
+                </Badge>
+              ) : null}
+            </p>
+          </div>
+        </div>
       </td>
 
       <td className="px-3 py-2.5">
-        <p className="font-mono text-[12px] text-ink-2">{item.codigoFornecedor ?? "—"}</p>
-        {item.ean && <p className="font-mono text-[11px] text-faint">{item.ean}</p>}
+        <p className="font-mono text-[12px] text-ink-2">{item.ean ?? "—"}</p>
+        {item.codigoFornecedor && (
+          <p className="font-mono text-[11px] text-faint">{item.codigoFornecedor}</p>
+        )}
+      </td>
+
+      <td className="max-w-36 px-3 py-2.5 text-[12px] text-muted">
+        <span className="block truncate">{item.categoria ?? "—"}</span>
       </td>
 
       <td className="px-3 py-2.5 text-right">
-        <p className={cn("font-mono text-sm font-semibold", item.emPromocao ? "text-accent" : "text-ink")}>
-          {fmtPreco(item.precoEfetivo)}
+        <p
+          className={cn(
+            "font-mono text-sm font-semibold",
+            item.emPromocao ? "text-faint line-through" : "text-ink",
+          )}
+        >
+          {fmtPreco(item.preco)}
         </p>
-        {item.emPromocao && (
-          <p className="mt-0.5 flex items-center justify-end gap-1">
-            <span className="font-mono text-[11px] text-faint line-through">{fmtPreco(item.preco)}</span>
-            <PromoBadge desconto={desconto} />
-          </p>
+      </td>
+
+      <td className="px-3 py-2.5 text-right">
+        {item.precoPromocional == null ? (
+          <span className="text-[12px] text-faint">—</span>
+        ) : (
+          <div className="flex flex-col items-end gap-0.5">
+            <span
+              className={cn(
+                "font-mono text-sm font-semibold",
+                item.emPromocao ? "text-accent" : "text-faint line-through",
+              )}
+            >
+              {fmtPreco(item.precoPromocional)}
+            </span>
+            {item.emPromocao && <PromoBadge desconto={desconto} />}
+          </div>
         )}
       </td>
 
@@ -337,15 +376,31 @@ function LinhaItem({
         {item.quantidadeMinima != null ? fmtQtd(item.quantidadeMinima) : "—"}
       </td>
 
-      <td className="px-3 py-2.5 text-right font-mono text-[12px] text-ink-2">
-        {item.estoqueDisponivel != null ? fmtQtd(item.estoqueDisponivel) : "—"}
+      <td className="px-3 py-2.5 text-[12px]">
+        {item.validadeOferta ? (
+          <span className={ofertaVencida ? "text-danger" : "text-muted"}>
+            {new Date(item.validadeOferta).toLocaleDateString("pt-BR", {
+              day: "2-digit",
+              month: "2-digit",
+              year: "2-digit",
+            })}
+          </span>
+        ) : (
+          <span className="text-faint">—</span>
+        )}
       </td>
 
-      <td className="px-3 py-2.5 text-[12px] text-muted">
-        {item.validadeOferta
-          ? new Date(item.validadeOferta).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })
-          : "—"}
+      <td className="px-3 py-2.5 text-[12px]">
+        {item.estoqueDisponivel == null ? (
+          <Badge tone="neutral">disponível</Badge>
+        ) : item.estoqueDisponivel <= 0 ? (
+          <Badge tone="danger">em falta</Badge>
+        ) : (
+          <span className="font-mono text-ink-2">{fmtQtd(item.estoqueDisponivel)}</span>
+        )}
       </td>
+
+      <td className="px-3 py-2.5 text-[12px] text-muted">{fmtQuando(item.ultimaAtualizacao)}</td>
 
       <td className="px-3 py-2.5">
         <div className="flex items-center justify-end gap-1">
@@ -374,7 +429,9 @@ function LinhaItem({
 function SheetRevisao({ item, onClose }: { item: ItemCatalogo; onClose: () => void }) {
   const router = useRouter();
   const [termo, setTermo] = useState(item.descricao.slice(0, 40));
-  const [resultados, setResultados] = useState<Array<{ id: string; nome: string; sku: string; ean: string | null }>>([]);
+  const [resultados, setResultados] = useState<
+    Array<{ id: string; nome: string; sku: string; ean: string | null }>
+  >([]);
   const [buscando, setBuscando] = useState(false);
   const [pending, startTransition] = useTransition();
 
@@ -493,7 +550,7 @@ function SheetRevisao({ item, onClose }: { item: ItemCatalogo; onClose: () => vo
   );
 }
 
-// ── Histórico de preço ──────────────────────────────────────
+// ── Histórico de preço de um item ───────────────────────────
 
 const JANELAS = [
   { dias: 7, label: "7 dias" },
@@ -504,8 +561,6 @@ const JANELAS = [
 
 function SheetHistorico({ item, onClose }: { item: ItemCatalogo; onClose: () => void }) {
   const [dias, setDias] = useState(30);
-  // A janela buscada vem junto da série: enquanto ela não bate com a escolhida,
-  // a tela mostra "carregando" sem precisar zerar o estado dentro do efeito.
   const [carga, setCarga] = useState<{ dias: number; pontos: PontoPreco[] } | null>(null);
   const pontos = carga && carga.dias === dias ? carga.pontos : null;
 
@@ -528,13 +583,7 @@ function SheetHistorico({ item, onClose }: { item: ItemCatalogo; onClose: () => 
   const maior = pontos && pontos.length > 0 ? Math.max(...pontos.map((p) => p.precoEfetivo)) : null;
 
   return (
-    <Sheet
-      open
-      onClose={onClose}
-      title="Histórico de preço"
-      description={item.descricao}
-      width="xl"
-    >
+    <Sheet open onClose={onClose} title="Histórico de preço" description={item.descricao} width="xl">
       <div className="flex flex-col gap-4 p-5">
         <div className="flex flex-wrap items-center gap-1.5">
           {JANELAS.map((j) => (

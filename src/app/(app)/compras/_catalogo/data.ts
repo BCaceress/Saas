@@ -7,146 +7,20 @@ import type {
   ItemCarrinho,
   ItemCatalogo,
   LinhaHistorico,
-  ResumoDashboard,
   ResumoEconomia,
 } from "./types";
 
 // ============================================================
-// Leituras do módulo. Tudo roda dentro de `runWithTenant` (RSC chama o `db`
-// estendido direto — ver CLAUDE.md).
+// Kit de catálogo de fornecedor — leituras compartilhadas entre Compras
+// (comparador, cesta, importações, histórico) e o Centro de Gestão do
+// Fornecedor (aba Catálogo). Tudo roda dentro de `runWithTenant` (RSC chama o
+// `db` estendido direto — ver CLAUDE.md).
 // ============================================================
 
 const DIA_MS = 24 * 60 * 60 * 1000;
 
-function inicioDoDia(d = new Date()): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
 function inicioDoMes(d = new Date()): Date {
   return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-
-// ── Dashboard ───────────────────────────────────────────────
-
-export async function loadDashboard(): Promise<{
-  resumo: ResumoDashboard;
-  fornecedores: FornecedorCard[];
-}> {
-  const hoje = inicioDoDia();
-
-  const [suppliers, itens, catalogos] = await Promise.all([
-    db.supplier.findMany({
-      where: { ativo: true },
-      orderBy: { razaoSocial: "asc" },
-      select: {
-        id: true,
-        razaoSocial: true,
-        nomeFantasia: true,
-        logoUrl: true,
-        pedidoMinimo: true,
-        ativo: true,
-        possuiIntegracao: true,
-        tipoIntegracao: true,
-        situacaoIntegracao: true,
-        aceitaImportacaoManual: true,
-        aceitaImportacaoAutomatica: true,
-        ultimaSincronizacao: true,
-      },
-    }),
-    db.supplierCatalogItem.findMany({
-      where: { ativo: true },
-      select: {
-        supplierId: true,
-        productId: true,
-        preco: true,
-        precoPromocional: true,
-        validadeOferta: true,
-        matchStatus: true,
-      },
-    }),
-    db.supplierCatalog.findMany({
-      select: { supplierId: true, atualizadoEm: true, totalItens: true },
-    }),
-  ]);
-
-  const porFornecedor = new Map<string, { total: number; promo: number; pendentes: number }>();
-  const porProduto = new Map<string, number[]>();
-  let promocoes = 0;
-  let pendentes = 0;
-
-  for (const item of itens) {
-    const acc = porFornecedor.get(item.supplierId) ?? { total: 0, promo: 0, pendentes: 0 };
-    acc.total++;
-
-    const efetivo = precoEfetivo(item);
-    const emPromocao = efetivo < Number(item.preco);
-    if (emPromocao) {
-      acc.promo++;
-      promocoes++;
-    }
-    if (item.matchStatus === "PENDENTE") {
-      acc.pendentes++;
-      pendentes++;
-    }
-    porFornecedor.set(item.supplierId, acc);
-
-    if (item.productId && item.matchStatus === "VINCULADO") {
-      const precos = porProduto.get(item.productId) ?? [];
-      precos.push(efetivo);
-      porProduto.set(item.productId, precos);
-    }
-  }
-
-  // "Economia encontrada" = o que se deixa de gastar comprando cada produto no
-  // mais barato em vez do mais caro. Uma unidade de cada — é indicador de
-  // oportunidade, não previsão de compra.
-  let economiaPotencial = 0;
-  let produtosComparaveis = 0;
-  for (const precos of porProduto.values()) {
-    if (precos.length < 2) continue;
-    produtosComparaveis++;
-    economiaPotencial += Math.max(...precos) - Math.min(...precos);
-  }
-
-  const catalogosHoje = catalogos.filter((c) => c.atualizadoEm && c.atualizadoEm >= hoje).length;
-  const comCatalogo = new Set(catalogos.filter((c) => c.totalItens > 0).map((c) => c.supplierId));
-  const ultimaSync = suppliers
-    .map((s) => s.ultimaSincronizacao)
-    .filter((d): d is Date => !!d)
-    .sort((a, b) => b.getTime() - a.getTime())[0];
-
-  return {
-    resumo: {
-      fornecedoresAtivos: suppliers.length,
-      fornecedoresComCatalogo: comCatalogo.size,
-      produtosImportados: itens.length,
-      catalogosHoje,
-      produtosEmPromocao: promocoes,
-      ultimaSincronizacao: ultimaSync?.toISOString() ?? null,
-      economiaPotencial: Math.round(economiaPotencial * 100) / 100,
-      produtosComparaveis,
-      itensPendentes: pendentes,
-    },
-    fornecedores: suppliers.map((s) => {
-      const acc = porFornecedor.get(s.id);
-      return {
-        id: s.id,
-        nome: s.nomeFantasia ?? s.razaoSocial,
-        logoUrl: s.logoUrl,
-        tipoIntegracao: s.tipoIntegracao,
-        situacaoIntegracao: s.situacaoIntegracao,
-        possuiIntegracao: s.possuiIntegracao,
-        aceitaImportacaoManual: s.aceitaImportacaoManual,
-        aceitaImportacaoAutomatica: s.aceitaImportacaoAutomatica,
-        ultimaSincronizacao: s.ultimaSincronizacao?.toISOString() ?? null,
-        totalProdutos: acc?.total ?? 0,
-        emPromocao: acc?.promo ?? 0,
-        pendentes: acc?.pendentes ?? 0,
-        pedidoMinimo: s.pedidoMinimo == null ? null : Number(s.pedidoMinimo),
-        ativo: s.ativo,
-      };
-    }),
-  };
 }
 
 // ── Catálogo de um fornecedor ───────────────────────────────

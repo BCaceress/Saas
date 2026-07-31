@@ -26,19 +26,6 @@ export type FornecedorCard = {
   ativo: boolean;
 };
 
-export type ResumoDashboard = {
-  fornecedoresAtivos: number;
-  fornecedoresComCatalogo: number;
-  produtosImportados: number;
-  catalogosHoje: number;
-  produtosEmPromocao: number;
-  ultimaSincronizacao: string | null;
-  /** Soma da diferença entre o pior e o melhor preço dos produtos com 2+ ofertas. */
-  economiaPotencial: number;
-  produtosComparaveis: number;
-  itensPendentes: number;
-};
-
 export type ItemCatalogo = {
   id: string;
   descricao: string;
