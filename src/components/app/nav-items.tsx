@@ -55,7 +55,9 @@ export function acharAtivo(
 ): string | undefined {
   return grupos
     .flatMap((g) =>
-      g.items.flatMap((i) => (i.children ?? [i]).filter((x) => x.enabled)),
+      // Gaveta que ficou sem filha visível (todas `ocultoNoMenu`) vira link do
+      // próprio pai — então ela também precisa concorrer à rota ativa.
+      g.items.flatMap((i) => (i.children?.length ? i.children : [i]).filter((x) => x.enabled)),
     )
     .map((i) => i.href)
     .filter((href) => navMatches(pathname, href))

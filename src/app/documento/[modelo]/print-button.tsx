@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import { Printer, X } from "lucide-react";
 
 /**
@@ -7,8 +8,18 @@ import { Printer, X } from "lucide-react";
  * `.no-print`). "Baixar PDF" usa o diálogo de impressão do navegador (Salvar
  * como PDF); zero dependência. Migrar para PDF binário (@react-pdf) é um upgrade
  * posterior sem mexer no resto.
+ *
+ * `auto` abre o diálogo sozinho: é o que separa "Imprimir" de "PDF" na tela de
+ * configuração — mesmo documento, um a mais de clique a menos.
  */
-export function DocActions() {
+export function DocActions({ auto = false }: { auto?: boolean }) {
+  React.useEffect(() => {
+    if (!auto) return;
+    // Um quadro depois da pintura: imprimir antes do layout assentar sai torto.
+    const id = window.setTimeout(() => window.print(), 350);
+    return () => window.clearTimeout(id);
+  }, [auto]);
+
   return (
     <div className="no-print fixed right-5 top-5 z-50 flex items-center gap-2">
       <button

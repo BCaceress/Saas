@@ -202,6 +202,7 @@ model Tenant {
   reportFavorites  ReportFavorite[]
   reportRuns       ReportRun[]
   reportSchedules  ReportSchedule[]
+  reportPresets    ReportPreset[]
 
   @@index([status])
 }
@@ -2843,4 +2844,32 @@ model ReportSchedule {
 
   @@index([tenantId])
   @@index([ativo, proximaExecucao])
+}
+
+/// Um jeito salvo de gerar um relatório: quais filtros, quais colunas, em que
+/// ordem e agrupado por quê. É o "Relatório do contador", o "resumido", o "da
+/// franquia" — o mesmo relatório com a configuração de sempre.
+///
+/// Guarda CONFIGURAÇÃO, nunca resultado: abrir um modelo tem de trazer o dado
+/// de hoje, não a fotografia do dia em que foi salvo.
+model ReportPreset {
+  id          String @id @default(cuid())
+  tenantId    String
+  relatorioId String
+  nome        String
+
+  /// `ReportConfig` (src/lib/relatorios/config.ts) — validado ao ler e ao gravar.
+  config Json
+
+  ownerUserId   String?
+  compartilhado Boolean @default(false)
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, relatorioId, ownerUserId, nome])
+  @@index([tenantId, relatorioId])
+  @@index([tenantId, ownerUserId])
 }

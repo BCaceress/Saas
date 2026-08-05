@@ -8,6 +8,25 @@ import { cn } from "@/lib/utils";
  * Slide-over para os sidepanels (Marcas, Categorias, Armazenagem, Fornecedores)
  * e formulários de produto. Controlado por `open`/`onClose`.
  */
+/**
+ * Larguras do slide-over. `full` é o teto para conteúdo largo (tabela de
+ * relatório): quase a tela toda, mas nunca colada na borda.
+ */
+export type SheetWidth = "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl" | "5xl" | "6xl" | "full";
+
+/** Largura máxima de cada degrau, em px — quem decide o degrau precisa medir. */
+export const SHEET_WIDTH_PX: Record<SheetWidth, number> = {
+  md: 448,
+  lg: 512,
+  xl: 672,
+  "2xl": 768,
+  "3xl": 896,
+  "4xl": 1024,
+  "5xl": 1152,
+  "6xl": 1280,
+  full: Number.POSITIVE_INFINITY,
+};
+
 export function Sheet({
   open,
   onClose,
@@ -26,7 +45,8 @@ export function Sheet({
   headerActions?: React.ReactNode;
   children: React.ReactNode;
   footer?: React.ReactNode;
-  width?: "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl";
+  /** Pode mudar com o painel aberto — a troca é animada. */
+  width?: SheetWidth;
 }) {
   React.useEffect(() => {
     if (!open) return;
@@ -41,7 +61,17 @@ export function Sheet({
 
   if (!open) return null;
 
-  const widths = { md: "max-w-md", lg: "max-w-lg", xl: "max-w-2xl", "2xl": "max-w-3xl", "3xl": "max-w-4xl", "4xl": "max-w-5xl" };
+  const widths: Record<SheetWidth, string> = {
+    md: "max-w-md",
+    lg: "max-w-lg",
+    xl: "max-w-2xl",
+    "2xl": "max-w-3xl",
+    "3xl": "max-w-4xl",
+    "4xl": "max-w-5xl",
+    "5xl": "max-w-6xl",
+    "6xl": "max-w-7xl",
+    full: "max-w-[min(96vw,100rem)]",
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label={title}>
@@ -54,6 +84,10 @@ export function Sheet({
         className={cn(
           "relative flex h-full w-full flex-col overflow-hidden rounded-l-[var(--radius-xl)] bg-surface shadow-[var(--shadow-2)]",
           "animate-[slidein_160ms_cubic-bezier(0.22,1,0.36,1)]",
+          // A largura pode mudar com o painel aberto (prévia larga pede mais
+          // espaço). Anima o degrau em vez de saltar — e quem pediu menos
+          // movimento não vê animação nenhuma.
+          "transition-[max-width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
           widths[width]
         )}
       >

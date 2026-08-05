@@ -4,7 +4,7 @@
  * intervalos são [inicio, fim) (fim exclusivo → meia-noite do dia seguinte).
  */
 
-export type PeriodPreset = "hoje" | "7d" | "30d" | "mes" | "custom";
+export type PeriodPreset = "hoje" | "7d" | "30d" | "mes" | "6m" | "1a" | "custom";
 
 export type Periodo = {
   preset: PeriodPreset;
@@ -27,6 +27,8 @@ const PRESET_LABEL: Record<Exclude<PeriodPreset, "custom">, string> = {
   "7d": "Últimos 7 dias",
   "30d": "Últimos 30 dias",
   mes: "Este mês",
+  "6m": "Últimos 6 meses",
+  "1a": "Últimos 12 meses",
 };
 
 /** Resolve o período a partir dos searchParams (?periodo=&de=&ate=). */
@@ -56,6 +58,12 @@ export function resolvePeriodo(params: {
   } else if (preset === "mes") {
     inicio = new Date(hojeZero.getFullYear(), hojeZero.getMonth(), 1);
     label = PRESET_LABEL.mes;
+  } else if (preset === "6m" || preset === "1a") {
+    // Recuo em MESES, não em múltiplos de 30 dias: "6 meses" que termina no
+    // dia 28 porque fevereiro tem 28 confunde quem confere o fechamento.
+    const meses = preset === "6m" ? 6 : 12;
+    inicio = new Date(hojeZero.getFullYear(), hojeZero.getMonth() - meses, hojeZero.getDate());
+    label = PRESET_LABEL[preset];
   } else {
     inicio = new Date(hojeZero.getTime() - 6 * DIA);
     label = PRESET_LABEL["7d"];

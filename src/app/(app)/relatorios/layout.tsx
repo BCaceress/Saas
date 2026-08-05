@@ -20,7 +20,7 @@ export default async function RelatoriosLayout({ children }: { children: React.R
       <PageHeader
         title="Central de Relatórios"
         icon={navIcon("/relatorios")}
-        description="Visualize, filtre, exporte e compartilhe relatórios do seu negócio."
+        description="Visualize, filtre e exporte os relatórios do seu negócio."
         innerClassName="max-w-none"
         actions={
           multiSite ? (

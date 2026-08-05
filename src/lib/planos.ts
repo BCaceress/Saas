@@ -102,6 +102,36 @@ export const PLANOS: Record<Plan, PlanoDef> = {
 /** Ordem comercial — usada na tela de planos e para comparar (upgrade/downgrade). */
 export const PLANOS_ORDEM: readonly Plan[] = ["PRATA", "OURO", "DIAMANTE"];
 
+/**
+ * Dias de teste. Fato comercial, então mora aqui e não em `provisioning` (que
+ * é `server-only` e não pode ser importado pela landing/telas de cliente).
+ * Espelhado nos e-mails e nos Termos de uso.
+ */
+export const TRIAL_DIAS = 14;
+
+/**
+ * Rótulo comercial de cada feature. Mora aqui — e não na tela — porque a
+ * landing pública e a tela de plano do app precisam dizer EXATAMENTE a mesma
+ * coisa: quem lê "PDV com operador e caixa" antes de assinar tem que achar o
+ * mesmo texto depois de entrar. Ordem = ordem de exibição.
+ */
+export const FEATURE_LABEL: Record<Feature, string> = {
+  pdv: "PDV com operador e caixa",
+  autoatendimento: "Autoatendimento (totem)",
+  fiscal: "Emissão fiscal (NFC-e / NF-e)",
+  comodato: "Comodato de ativos",
+  rota: "Rota de reposição",
+  "compras.recebimento": "Recebimento e entrada por pedido",
+  "crm.fidelizacao": "Fidelização e cupons",
+  "equipe.perfis": "Perfis de acesso por loja",
+  "relatorios.avancados": "Curva ABC, giro e histórico",
+  "relatorios.exportar": "Exportar relatórios em CSV",
+  multiloja: "Mais de uma loja",
+  api: "API e integrações",
+};
+
+export const FEATURES_ORDEM = Object.keys(FEATURE_LABEL) as Feature[];
+
 export function planoAtendeOuSuperior(atual: Plan, minimo: Plan): boolean {
   return PLANOS_ORDEM.indexOf(atual) >= PLANOS_ORDEM.indexOf(minimo);
 }

@@ -1,6 +1,7 @@
 import "server-only";
 import { db } from "@/lib/prisma";
 import { getRelatorio, type Parametros } from "./catalogo";
+import type { ReportConfig } from "./config";
 
 /**
  * Histórico de execução — o que dá à Central a noção de uso.
@@ -15,11 +16,19 @@ import { getRelatorio, type Parametros } from "./catalogo";
 
 export type FormatoExecucao = "tela" | "csv" | "xlsx" | "pdf" | "impressao";
 
+/**
+ * O que foi pedido na execução. Duas formas convivem: a `ReportConfig` do
+ * motor genérico (colunas, ordem, agrupamento) e os `Parametros` antigos dos
+ * relatórios que ainda abrem em tela dedicada. Quem lê distingue pelo campo
+ * `colunas` — ver `ultimaConfig` em `modelos-salvos.ts`.
+ */
+export type ParametrosExecucao = Parametros | ReportConfig;
+
 export async function registrarExecucao(args: {
   tenantId: string;
   userId: string;
   relatorioId: string;
-  parametros: Parametros;
+  parametros: ParametrosExecucao;
   formato: FormatoExecucao;
   duracaoMs?: number;
 }): Promise<void> {

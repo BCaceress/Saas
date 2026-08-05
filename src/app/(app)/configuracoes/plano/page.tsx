@@ -14,29 +14,12 @@ import {
   limitesDe,
   planoAtendeOuSuperior,
   ehAddonSlug,
-  type Feature,
+  FEATURE_LABEL,
+  FEATURES_ORDEM,
   type Limites,
 } from "@/lib/planos";
 
 export const metadata = { title: "Plano — NoHub Market" };
-
-/** Rótulo de cada feature na tabela comparativa. Ordem = ordem de exibição. */
-const FEATURE_LABEL: Record<Feature, string> = {
-  pdv: "PDV com operador e caixa",
-  autoatendimento: "Autoatendimento (totem)",
-  fiscal: "Emissão fiscal (NFC-e / NF-e)",
-  comodato: "Comodato de ativos",
-  rota: "Rota de reposição",
-  "compras.recebimento": "Recebimento e entrada por pedido",
-  "crm.fidelizacao": "Fidelização e cupons",
-  "equipe.perfis": "Perfis de acesso por loja",
-  "relatorios.avancados": "Curva ABC, giro e histórico",
-  "relatorios.exportar": "Exportar relatórios em CSV",
-  multiloja: "Mais de uma loja",
-  api: "API e integrações",
-};
-
-const FEATURES_ORDEM = Object.keys(FEATURE_LABEL) as Feature[];
 
 function limiteTexto(v: number | null, sufixo: string): string {
   return v === null ? `${sufixo} ilimitados` : `${v} ${sufixo}`;

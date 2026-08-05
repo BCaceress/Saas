@@ -25,9 +25,9 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "NoHub Market — ERP para mercados de bebidas",
+  title: "NoHub Market — o ERP do mercado de bairro",
   description:
-    "Controle de produtos, estoque e perdas para mercados autônomos, conveniências e mercadinhos. Teste grátis por 14 dias.",
+    "Produtos, estoque, compras, PDV, fiscal e clientes para mercados autônomos, conveniências, adegas e mercadinhos.",
 };
 
 export default async function RootLayout({

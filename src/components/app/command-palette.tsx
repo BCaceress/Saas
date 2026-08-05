@@ -118,8 +118,10 @@ function montarDestinos(acessos: Acesso[], toggles: NavToggles): Destino[] {
   for (const grupo of NAV_GROUPS) {
     for (const item of grupo.items) {
       // Pai de gaveta é rótulo, não destino — quem entra escolhe a filha.
+      // Salvo quando o pai é tela ele mesmo (`indice`), como /relatorios.
       if (item.children) {
         if (!itemVisivel(item, acessos, toggles)) continue;
+        if (item.indice) push(item);
         for (const filha of item.children) push(filha, item);
       } else {
         push(item);

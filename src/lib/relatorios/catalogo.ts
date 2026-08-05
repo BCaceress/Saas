@@ -319,7 +319,7 @@ const COMPRAS: RelatorioDef[] = [
   {
     id: "compras-comparativo",
     nome: "Comparativo de preços",
-    descricao: "Mesma cesta em vários fornecedores — quem está mais barato hoje.",
+    descricao: "Preço de cada item nos fornecedores com catálogo — quem está mais barato hoje.",
     categoria: "compras",
     icon: "Scale",
     permissao: "compras.ver",
@@ -332,7 +332,7 @@ const COMPRAS: RelatorioDef[] = [
   {
     id: "compras-economia",
     nome: "Economia obtida",
-    descricao: "Diferença entre o preço pago e o melhor preço disponível na cotação.",
+    descricao: "Diferença entre o custo médio pago e o melhor preço conseguido no período.",
     categoria: "compras",
     icon: "PiggyBank",
     permissao: "compras.ver",

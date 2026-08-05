@@ -7,11 +7,12 @@ import { enviarEmail } from "./email";
 import { emailBoasVindas } from "./email/templates";
 import { logErro } from "./log";
 import { tenantUrl } from "./urls";
+import { TRIAL_DIAS } from "./planos";
 
 const RESERVED = new Set(["www", "app", "api", "admin", "mail", "static", "assets"]);
 
-/** Dias de teste do plano. Espelhado nos e-mails e nos Termos de uso. */
-export const TRIAL_DIAS = 14;
+/** Dias de teste do plano — definido em `lib/planos` (fonte comercial). */
+export { TRIAL_DIAS };
 
 function slugifyBase(s: string): string {
   const base = s

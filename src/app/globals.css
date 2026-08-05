@@ -973,3 +973,95 @@ body:has([data-app-shell]) {
 .ready-glow {
   animation: ready-glow 0.7s ease-out both;
 }
+
+/* ============================================================
+   Landing (marketing) — a primeira tela antes do login. Mesma
+   linguagem do .auth-theme: canvas quente, poeira de pontos e
+   um halo laranja atrás do herói. Escopo em .mkt-* para não
+   vazar para o shell do app.
+   ============================================================ */
+
+/* Halo do herói: dois focos de luz laranja em cima do canvas. Baixíssimo
+   contraste de propósito — dá profundidade sem virar "fundo colorido". */
+.mkt-aura {
+  background:
+    radial-gradient(
+      ellipse 65% 55% at 76% 6%,
+      color-mix(in srgb, var(--brand) 24%, transparent),
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 50% 45% at 4% 0%,
+      color-mix(in srgb, var(--accent) 14%, transparent),
+      transparent 66%
+    ),
+    linear-gradient(180deg, color-mix(in srgb, var(--brand) 5%, transparent), transparent 45%);
+}
+
+/* Poeira de pontos com máscara — some antes de encostar no texto. */
+.mkt-dots {
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--ink) 9%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 32px 32px;
+  -webkit-mask-image: radial-gradient(ellipse 100% 80% at 50% 0%, #000 0%, transparent 70%);
+  mask-image: radial-gradient(ellipse 100% 80% at 50% 0%, #000 0%, transparent 70%);
+}
+
+/* Faixa escura (seções full-bleed) — o mesmo halo, invertido para o escuro.
+   A borda existe só para o tema escuro: sobre o canvas claro a faixa já se
+   separa sozinha; sobre o canvas escuro, sem ela, a seção some no fundo. */
+.mkt-slab {
+  background:
+    radial-gradient(
+      ellipse 60% 80% at 85% 0%,
+      color-mix(in srgb, var(--brand) 22%, transparent),
+      transparent 62%
+    ),
+    var(--mkt-slab-base);
+  --mkt-slab-base: #101318;
+}
+:root[data-theme="dark"] .mkt-slab {
+  --mkt-slab-base: #08090c;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+/* Entrada dos blocos do herói: sobe, desembaça e aparece (delay inline). */
+@keyframes mkt-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+.mkt-rise {
+  animation: mkt-rise 0.62s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Cartão flutuante ao lado da prévia — respira devagar, quase parado. */
+@keyframes mkt-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+.mkt-float {
+  animation: mkt-float 6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mkt-rise,
+  .mkt-float {
+    animation: none !important;
+  }
+}

@@ -93,6 +93,12 @@ export type NavItem = {
    */
   semAbas?: boolean;
   /**
+   * Pai que também é tela: o próprio href renderiza uma página (a Central de
+   * Relatórios, por exemplo), então ele vale como destino — inclusive de
+   * `rotaInicial`, que fora isso só considera folhas.
+   */
+  indice?: boolean;
+  /**
    * Subitens. O pai vira uma gaveta: abre ao clicar e já nasce aberta quando
    * a tela atual é uma das filhas. Um pai só aparece se sobrar ao menos uma
    * filha visível — a permissão mora na filha, não no pai.
@@ -370,16 +376,8 @@ export const NAV_GROUPS: NavGroup[] = [
         enabled: true,
         permissao: "relatorio.ver",
         descricao: "Central de relatórios: busca, favoritos, exportação e histórico.",
+        indice: true,
         children: [
-          {
-            href: "/relatorios/central",
-            label: "Central de relatórios",
-            icon: BarChart3,
-            enabled: true,
-            ocultoNoMenu: true,
-            permissao: "relatorio.ver",
-            descricao: "Todos os relatórios do sistema, com busca, favoritos e histórico.",
-          },
           {
             href: "/relatorios/lista",
             label: "Assistente e documentos",
@@ -702,7 +700,8 @@ export function navTrilha(pathname: string): NavItem[] {
     for (const item of grupo.items) {
       if (item.children) {
         // O pai só entra na trilha por meio de uma filha — sozinho ele é
-        // rótulo, não destino.
+        // rótulo, não destino. Exceção: pai que também é tela (`indice`).
+        if (item.indice) considerar([item]);
         for (const filha of item.children) considerar([item, filha]);
       } else {
         considerar([item]);
@@ -742,7 +741,7 @@ const PRIORIDADE_INICIAL = [
   "/produtos",
   "/clientes",
   "/fornecedores",
-  "/relatorios/central",
+  "/relatorios",
 ];
 
 /**
@@ -752,8 +751,8 @@ const PRIORIDADE_INICIAL = [
 export function rotaInicial(acessos: Acesso[], toggles: NavToggles): string | null {
   const disponivel = (i: NavItem) => i.enabled && itemVisivel(i, acessos, toggles);
 
-  // Só folhas: um pai de gaveta não é destino, é rótulo.
-  const folhas = NAV_ITEMS_FLAT.filter((i) => !i.children);
+  // Só folhas (e pais que são tela): um pai de gaveta não é destino, é rótulo.
+  const folhas = NAV_ITEMS_FLAT.filter((i) => !i.children || i.indice);
 
   for (const href of PRIORIDADE_INICIAL) {
     const item = folhas.find((i) => i.href === href);

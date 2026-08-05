@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
 import {
   ArrowDownFromLine,
   ArrowDownToLine,
@@ -11,11 +10,10 @@ import {
   Cake,
   CalendarClock,
   CalendarDays,
-  CalendarPlus,
   CalendarRange,
   CalendarX,
   ChartColumnBig,
-  Check,
+  ChevronDown,
   Circle,
   CirclePause,
   ClipboardList,
@@ -24,30 +22,24 @@ import {
   CreditCard,
   Crown,
   Download,
-  FileSpreadsheet,
+  Eye,
   FileText,
   FlaskConical,
   History,
   Landmark,
   LayoutDashboard,
   LayoutGrid,
-  Link2,
-  LoaderCircle,
   Lock,
-  Mail,
-  MessageCircle,
   PackagePlus,
   PackageX,
   Percent,
   PiggyBank,
-  Play,
-  Printer,
   Receipt,
   ReceiptText,
   Scale,
   Search,
-  Share2,
   ShoppingCart,
+  SlidersHorizontal,
   Star,
   TrendingDown,
   TrendingUp,
@@ -62,23 +54,19 @@ import {
   Wine,
   type LucideIcon,
 } from "lucide-react";
-import { Modal } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { semAcento } from "@/lib/normalize";
 import {
   CATEGORIAS,
-  FILTRO_LABEL,
-  PARAMETROS_PADRAO,
-  hrefExecucao,
-  hrefExport,
   type CategoriaId,
-  type Exportacao,
-  type FiltroId,
-  type Parametros,
   type RelatorioDef,
 } from "@/lib/relatorios/catalogo";
-import { alternarFavoritoAction, registrarExecucaoAction } from "./actions";
+import { ConfiguradorRelatorio } from "./_configurador/configurador";
+import { VisualizadorRelatorio } from "./_configurador/visualizador";
+import { MenuExportar, hrefSaida, type Saida } from "./_configurador/previa";
+import { registrarSaidaPadraoAction } from "./_configurador/actions";
+import { alternarFavoritoAction } from "./_central-actions";
 
 /**
  * Central de Relatórios (client).
@@ -173,27 +161,6 @@ const CHIPS: { id: Chip; label: string; icon: LucideIcon }[] = [
   { id: "recentes", label: "Recentes", icon: History },
 ];
 
-const PRESETS: { id: Parametros["periodo"]; label: string }[] = [
-  { id: "hoje", label: "Hoje" },
-  { id: "7d", label: "7 dias" },
-  { id: "30d", label: "30 dias" },
-  { id: "mes", label: "Este mês" },
-  { id: "custom", label: "Personalizado" },
-];
-
-function tempoRelativo(iso: string): string {
-  const min = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-  if (min < 1) return "agora";
-  if (min < 60) return `há ${min} min`;
-  const h = Math.floor(min / 60);
-  if (h < 24) return `há ${h} h`;
-  const d = Math.floor(h / 24);
-  if (d === 1) return "ontem";
-  if (d < 30) return `há ${d} dias`;
-  const m = Math.floor(d / 30);
-  return `há ${m} ${m > 1 ? "meses" : "mês"}`;
-}
-
 /* ------------------------------------------------------------------ */
 /* Central                                                             */
 /* ------------------------------------------------------------------ */
@@ -203,22 +170,32 @@ export function CentralClient({
   favoritos: favoritosIniciais,
   uso,
   podeExportar,
-  lojaAtiva,
 }: {
   relatorios: RelatorioDef[];
   favoritos: string[];
   uso: Record<string, UsoCliente>;
   podeExportar: boolean;
-  lojaAtiva: string | null;
 }) {
   const [busca, setBusca] = React.useState("");
   const [chip, setChip] = React.useState<Chip>("todos");
   const [categoria, setCategoria] = React.useState<CategoriaId | null>(null);
   const [favoritos, setFavoritos] = React.useState<string[]>(favoritosIniciais);
-  const [executando, setExecutando] = React.useState<RelatorioDef | null>(null);
-  const [compartilhando, setCompartilhando] = React.useState<RelatorioDef | null>(null);
+  const [visualizando, setVisualizando] = React.useState<RelatorioDef | null>(null);
+  const [personalizando, setPersonalizando] = React.useState<RelatorioDef | null>(null);
   const [, iniciar] = React.useTransition();
   const inputRef = React.useRef<HTMLInputElement>(null);
+
+  /**
+   * "Exportar" direto do card: o arquivo sai no padrão, sem passar por tela
+   * nenhuma. A rota executa o relatório sem `?c=` e cai no mesmo padrão que o
+   * servidor usaria — por isso não precisamos carregar definição aqui.
+   */
+  function exportarPadrao(rel: RelatorioDef, formato: Saida) {
+    // Abrir a janela ANTES do await: navegador só confia em `window.open` que
+    // nasce do clique — depois de um `await` ele trata como popup e bloqueia.
+    window.open(hrefSaida(rel.id, formato), "_blank", "noopener");
+    void registrarSaidaPadraoAction({ relatorioId: rel.id, formato }).catch(() => {});
+  }
 
   // "/" foca a busca de qualquer lugar da página — o mesmo atalho do hub.
   React.useEffect(() => {
@@ -304,11 +281,11 @@ export function CentralClient({
 
   const propsCard = {
     favoritos,
-    uso,
     podeExportar,
     onFavoritar: alternarFavorito,
-    onExecutar: setExecutando,
-    onCompartilhar: setCompartilhando,
+    onVisualizar: setVisualizando,
+    onPersonalizar: setPersonalizando,
+    onExportar: exportarPadrao,
   };
 
   return (
@@ -458,18 +435,34 @@ export function CentralClient({
         })
       )}
 
-      {executando && (
-        <ModalExecutar
-          rel={executando}
-          lojaAtiva={lojaAtiva}
-          podeExportar={podeExportar}
-          onClose={() => setExecutando(null)}
+      {/* Visualizar: abre já com o resultado, no padrão, sem perguntar nada. */}
+      {visualizando && (
+        <VisualizadorRelatorio
+          relatorioId={visualizando.id}
+          nome={visualizando.nome}
+          descricao={visualizando.descricao}
+          categoria={CATEGORIAS.find((c) => c.id === visualizando.categoria)?.nome ?? ""}
+          exportacoes={podeExportar ? visualizando.exportacoes : []}
+          onPersonalizar={() => {
+            setPersonalizando(visualizando);
+            setVisualizando(null);
+          }}
+          onClose={() => setVisualizando(null)}
         />
       )}
 
-      {compartilhando && (
-        <ModalCompartilhar rel={compartilhando} onClose={() => setCompartilhando(null)} />
+      {/* Personalizar: o painel de colunas, para quem realmente precisa. */}
+      {personalizando && (
+        <ConfiguradorRelatorio
+          relatorioId={personalizando.id}
+          nome={personalizando.nome}
+          descricao={personalizando.descricao}
+          categoria={CATEGORIAS.find((c) => c.id === personalizando.categoria)?.nome ?? ""}
+          exportacoes={personalizando.exportacoes}
+          onClose={() => setPersonalizando(null)}
+        />
       )}
+
     </div>
   );
 }
@@ -559,25 +552,32 @@ function Grade({ children }: { children: React.ReactNode }) {
   return <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{children}</div>;
 }
 
+/**
+ * Card do catálogo: ícone, nome, descrição, estrela e três ações.
+ *
+ * A hierarquia é a do uso real: **Visualizar** abre o relatório no padrão sem
+ * perguntar nada, **Exportar** entrega o arquivo (também no padrão, o formato
+ * escolhido no menu) e **Personalizar** — o menor dos três — leva ao painel de
+ * colunas. Configurar deixou de ser pedágio para virar exceção.
+ */
 function CardRelatorio({
   rel,
   favoritos,
-  uso,
   podeExportar,
   onFavoritar,
-  onExecutar,
-  onCompartilhar,
+  onVisualizar,
+  onPersonalizar,
+  onExportar,
 }: {
   rel: RelatorioDef;
   favoritos: string[];
-  uso: Record<string, UsoCliente>;
   podeExportar: boolean;
   onFavoritar: (rel: RelatorioDef) => void;
-  onExecutar: (rel: RelatorioDef) => void;
-  onCompartilhar: (rel: RelatorioDef) => void;
+  onVisualizar: (rel: RelatorioDef) => void;
+  onPersonalizar: (rel: RelatorioDef) => void;
+  onExportar: (rel: RelatorioDef, formato: Saida) => void;
 }) {
   const favorito = favoritos.includes(rel.id);
-  const u = uso[rel.id];
   const motivo = rel.destino.tipo === "indisponivel" ? rel.destino.motivo : null;
   const indisponivel = motivo !== null;
 
@@ -590,425 +590,123 @@ function CardRelatorio({
           : "border-line motion-safe:hover:-translate-y-0.5 hover:border-brand/50 hover:shadow-(--shadow-float)",
       )}
     >
-      <div className="flex flex-1 flex-col gap-2 p-3.5">
-        <div className="flex items-start gap-2.5">
-          <span
+      <div className="flex flex-1 items-start gap-2.5 p-3">
+        <span
+          className={cn(
+            "grid h-8 w-8 shrink-0 place-items-center rounded-sm",
+            indisponivel ? "bg-surface-2 text-faint" : "bg-brand-softer text-brand",
+          )}
+        >
+          {indisponivel ? <Lock size={15} aria-hidden /> : <Icone nome={rel.icon} size={16} />}
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <h3
             className={cn(
-              "grid h-9 w-9 shrink-0 place-items-center rounded-sm",
-              indisponivel ? "bg-surface-2 text-faint" : "bg-brand-softer text-brand",
+              "font-display text-[13.5px] font-bold leading-tight transition-colors",
+              indisponivel ? "text-muted" : "text-ink group-hover:text-brand",
             )}
           >
-            {indisponivel ? <Lock size={16} aria-hidden /> : <Icone nome={rel.icon} size={17} />}
-          </span>
-          <div className="min-w-0 flex-1">
-            <h3
-              className={cn(
-                "font-display text-sm font-bold transition-colors",
-                indisponivel ? "text-muted" : "text-ink group-hover:text-brand",
-              )}
-            >
-              {rel.nome}
-            </h3>
-            <p className="mt-0.5 text-[13px] leading-snug text-muted">{rel.descricao}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => onFavoritar(rel)}
-            aria-pressed={favorito}
-            title={favorito ? "Remover dos favoritos" : "Favoritar"}
-            className={cn(
-              "grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full transition-colors",
-              favorito ? "text-accent" : "text-faint hover:bg-surface-2 hover:text-ink",
-            )}
-          >
-            <Star size={15} fill={favorito ? "currentColor" : "none"} aria-hidden />
-            <span className="sr-only">{favorito ? "Remover dos favoritos" : "Favoritar"}</span>
-          </button>
+            {rel.nome}
+          </h3>
+          <p className="mt-0.5 line-clamp-2 text-[12px] leading-snug text-muted">
+            {motivo ?? rel.descricao}
+          </p>
         </div>
 
-        {/* Rodapé de metadados: só aparece quando há algo a dizer — sem ele o
-            card fica uma linha mais baixo, e o tempo de geração não ajudava. */}
-        {(motivo || u?.ultimaEm || u?.execucoes) && (
-          <p className="flex flex-wrap items-center gap-x-2 text-[11px] text-faint">
-            {motivo ? (
-              <span className="text-muted">{motivo}</span>
-            ) : (
-              <>
-                {u?.ultimaEm && <span>Executado {tempoRelativo(u.ultimaEm)}</span>}
-                {u?.ultimaEm && u?.execucoes ? <span aria-hidden>·</span> : null}
-                {u?.execucoes ? (
-                  <span>
-                    {u.execucoes}× {u.execucoes === 1 ? "vez" : "vezes"}
-                  </span>
-                ) : null}
-              </>
-            )}
-          </p>
-        )}
+        <button
+          type="button"
+          onClick={() => onFavoritar(rel)}
+          aria-pressed={favorito}
+          title={favorito ? "Remover dos favoritos" : "Favoritar"}
+          className={cn(
+            "grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full transition-colors",
+            favorito ? "text-accent" : "text-faint hover:bg-surface-2 hover:text-ink",
+          )}
+        >
+          <Star size={14} fill={favorito ? "currentColor" : "none"} aria-hidden />
+          <span className="sr-only">{favorito ? "Remover dos favoritos" : "Favoritar"}</span>
+        </button>
       </div>
 
       {!indisponivel && (
-        <div className="flex items-center border-t border-line">
-          <button
-            type="button"
-            onClick={() => onExecutar(rel)}
-            className="flex flex-1 cursor-pointer items-center justify-center gap-1.5 py-2 text-[12.5px] font-medium text-muted transition-colors hover:bg-brand-soft hover:text-brand"
-          >
-            <Play size={14} aria-hidden />
-            Executar
-          </button>
+        <div className="flex items-center gap-1.5 border-t border-line px-2.5 py-2">
+          <AcaoCard tom="primaria" icone={Eye} onClick={() => onVisualizar(rel)}>
+            Visualizar
+          </AcaoCard>
+
           {podeExportar && rel.exportacoes.length > 0 && (
-            <>
-              <span className="h-5 w-px bg-line" aria-hidden />
-              <button
-                type="button"
-                onClick={() => onExecutar(rel)}
-                title="Exportar — escolha o formato na tela de parâmetros"
-                className="flex flex-1 cursor-pointer items-center justify-center gap-1.5 py-2 text-[12.5px] font-medium text-muted transition-colors hover:bg-brand-soft hover:text-brand"
-              >
-                <Download size={14} aria-hidden />
-                Exportar
-              </button>
-            </>
+            <MenuExportar
+              exportacoes={rel.exportacoes}
+              ocupado={null}
+              onExportar={(f) => onExportar(rel, f)}
+              trigger={
+                <AcaoCard tom="secundaria" icone={Download} seta>
+                  Exportar
+                </AcaoCard>
+              }
+            />
           )}
-          <span className="h-5 w-px bg-line" aria-hidden />
-          <button
-            type="button"
-            onClick={() => onCompartilhar(rel)}
-            className="flex flex-1 cursor-pointer items-center justify-center gap-1.5 py-2 text-[12.5px] font-medium text-muted transition-colors hover:bg-brand-soft hover:text-brand"
+
+          <AcaoCard
+            tom="icone"
+            icone={SlidersHorizontal}
+            title="Personalizar colunas e ordem"
+            onClick={() => onPersonalizar(rel)}
           >
-            <Share2 size={14} aria-hidden />
-            Compartilhar
-          </button>
+            <span className="sr-only">Personalizar {rel.nome}</span>
+          </AcaoCard>
         </div>
       )}
     </article>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Execução — parâmetros e saída                                       */
-/* ------------------------------------------------------------------ */
-
-/** Filtros de dimensão que o motor sabe aplicar. Tela dedicada tem os seus. */
-const FILTROS_DIMENSAO: FiltroId[] = ["categoria", "fornecedor", "produto", "cliente"];
-
-function ModalExecutar({
-  rel,
-  lojaAtiva,
-  podeExportar,
-  onClose,
-}: {
-  rel: RelatorioDef;
-  lojaAtiva: string | null;
-  podeExportar: boolean;
-  onClose: () => void;
-}) {
-  const router = useRouter();
-  const [params, setParams] = React.useState<Parametros>(PARAMETROS_PADRAO);
-  const [ocupado, setOcupado] = React.useState<string | null>(null);
-
-  const usaPeriodo = rel.filtros.includes("periodo");
-  const usaSite = rel.filtros.includes("site");
-  const camposDimensao = rel.destino.tipo === "consulta"
-    ? rel.filtros.filter((f) => FILTROS_DIMENSAO.includes(f))
-    : [];
-
-  function setFiltro(chave: string, valor: string) {
-    setParams((p) => ({ ...p, filtros: { ...p.filtros, [chave]: valor } }));
-  }
-
-  async function gerar(formato: "tela" | Exportacao) {
-    const href =
-      formato === "tela" ? hrefExecucao(rel, params) : hrefExport(rel, params, formato);
-    if (!href) return;
-
-    setOcupado(formato);
-    // O log da execução vai antes da navegação: é ele que faz o histórico e o
-    // "mais utilizados" existirem, e falhar aqui não pode impedir o relatório.
-    await registrarExecucaoAction({
-      relatorioId: rel.id,
-      parametros: params,
-      formato: formato === "imprimir" ? "impressao" : formato,
-    }).catch(() => {});
-
-    if (formato === "tela") {
-      router.push(href);
-      onClose();
-      return;
-    }
-    window.open(href, "_blank", "noopener");
-    setOcupado(null);
-  }
-
-  const exportaveis = rel.exportacoes.filter((e) => e !== "imprimir");
-  const podeImprimir = rel.exportacoes.includes("imprimir");
-
-  return (
-    <Modal
-      open
-      onClose={onClose}
-      title={rel.nome}
-      description={rel.descricao}
-      width="lg"
-      footer={
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            Cancelar
-          </Button>
-          <Button size="sm" onClick={() => gerar("tela")} disabled={ocupado !== null}>
-            {ocupado === "tela" ? (
-              <LoaderCircle size={15} className="animate-spin" aria-hidden />
-            ) : (
-              <Play size={15} aria-hidden />
-            )}
-            Gerar relatório
-          </Button>
-        </div>
-      }
-    >
-      <div className="space-y-5">
-        {usaPeriodo && (
-          <div>
-            <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-muted">
-              Período
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {PRESETS.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => setParams((atual) => ({ ...atual, periodo: p.id }))}
-                  className={cn(
-                    "cursor-pointer rounded-full border px-3 py-1.5 text-sm font-medium transition-colors",
-                    params.periodo === p.id
-                      ? "border-brand bg-brand text-on-brand"
-                      : "border-line text-muted hover:text-ink",
-                  )}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            {params.periodo === "custom" && (
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-muted">Data inicial</label>
-                  <input
-                    type="date"
-                    value={params.de ?? ""}
-                    onChange={(e) => setParams((p) => ({ ...p, de: e.target.value }))}
-                    className="h-10 w-full rounded-(--radius) border border-line bg-surface px-3 text-sm text-ink"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-muted">Data final</label>
-                  <input
-                    type="date"
-                    value={params.ate ?? ""}
-                    onChange={(e) => setParams((p) => ({ ...p, ate: e.target.value }))}
-                    className="h-10 w-full rounded-(--radius) border border-line bg-surface px-3 text-sm text-ink"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {camposDimensao.length > 0 && (
-          <div className="grid gap-3 sm:grid-cols-2">
-            {camposDimensao.map((f) => (
-              <div key={f}>
-                <label className="mb-1 block text-xs font-medium text-muted">
-                  {FILTRO_LABEL[f]}
-                </label>
-                <input
-                  type="text"
-                  value={params.filtros[f] ?? ""}
-                  onChange={(e) => setFiltro(f, e.target.value)}
-                  placeholder="Todos"
-                  className="h-10 w-full rounded-(--radius) border border-line bg-surface px-3 text-sm text-ink placeholder:text-faint"
-                />
-              </div>
-            ))}
-            <p className="text-[12px] text-faint sm:col-span-2">
-              Deixe em branco para trazer tudo. O filtro casa por parte do nome — “cerv” encontra
-              “Cervejas”.
-            </p>
-          </div>
-        )}
-
-        {usaSite && (
-          <div className="rounded-(--radius) border border-line bg-surface-2 px-3.5 py-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted">Loja</p>
-            <p className="mt-1 text-sm text-ink">{lojaAtiva ?? "Todas as lojas"}</p>
-            <p className="mt-0.5 text-[12px] text-faint">
-              O relatório usa a loja selecionada no topo da tela. Troque lá para comparar pontos.
-            </p>
-          </div>
-        )}
-
-        {rel.destino.tipo === "pagina" && (
-          <p className="text-[12px] text-muted">
-            Este relatório abre na tela dedicada, que tem os próprios filtros e colunas.
-          </p>
-        )}
-
-        {(exportaveis.length > 0 || podeImprimir) && (
-          <div className="border-t border-line pt-4">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-              Baixar direto
-            </p>
-            {podeExportar ? (
-              <div className="flex flex-wrap gap-2">
-                {exportaveis.includes("csv") && (
-                  <BotaoSaida
-                    icon={FileText}
-                    label="CSV"
-                    ocupado={ocupado === "csv"}
-                    onClick={() => gerar("csv")}
-                  />
-                )}
-                {exportaveis.includes("xlsx") && (
-                  <BotaoSaida
-                    icon={FileSpreadsheet}
-                    label="Excel"
-                    ocupado={ocupado === "xlsx"}
-                    onClick={() => gerar("xlsx")}
-                  />
-                )}
-                {exportaveis.includes("pdf") && (
-                  <BotaoSaida
-                    icon={FileText}
-                    label="PDF"
-                    ocupado={ocupado === "pdf"}
-                    onClick={() => gerar("pdf")}
-                  />
-                )}
-                {podeImprimir && (
-                  <BotaoSaida
-                    icon={Printer}
-                    label="Imprimir"
-                    ocupado={ocupado === "imprimir"}
-                    onClick={() => gerar("imprimir")}
-                  />
-                )}
-              </div>
-            ) : (
-              <p className="text-[13px] text-muted">
-                Seu perfil não tem permissão para exportar. Peça a um administrador.
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-    </Modal>
-  );
-}
-
-function BotaoSaida({
-  icon: Icon,
-  label,
-  ocupado,
+/**
+ * Botão do rodapé do card — três pesos para três intenções.
+ *
+ * `primaria` (Visualizar) puxa o olho e ocupa o espaço que sobra: é o que 9 em
+ * 10 pessoas querem. `secundaria` (Exportar) é contorno, e `icone`
+ * (Personalizar) é só o símbolo — ação de exceção não merece rótulo ocupando
+ * largura em trinta cards. `onClick` pode chegar por `cloneElement` (quando o
+ * botão é o gatilho do menu), então é repassado em vez de fixado.
+ */
+function AcaoCard({
+  tom,
+  icone: Icon,
+  seta,
+  title,
   onClick,
+  children,
 }: {
-  icon: LucideIcon;
-  label: string;
-  ocupado: boolean;
-  onClick: () => void;
+  tom: "primaria" | "secundaria" | "icone";
+  icone: LucideIcon;
+  /** Sinaliza que o clique abre um menu. */
+  seta?: boolean;
+  title?: string;
+  onClick?: () => void;
+  children: React.ReactNode;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={ocupado}
-      className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-1.5 text-[13px] font-medium text-muted transition-colors hover:border-brand/40 hover:bg-brand-soft hover:text-brand disabled:cursor-wait disabled:opacity-60"
-    >
-      {ocupado ? (
-        <LoaderCircle size={14} className="animate-spin" aria-hidden />
-      ) : (
-        <Icon size={14} aria-hidden />
+      title={title}
+      className={cn(
+        "flex h-8 cursor-pointer items-center justify-center gap-1.5 rounded-full border text-[12.5px] font-medium transition-colors",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+        tom === "primaria" &&
+          "flex-1 border-brand/35 bg-brand-soft px-3 text-brand-strong hover:border-brand hover:bg-brand hover:text-on-brand",
+        tom === "secundaria" &&
+          "border-line bg-surface px-3 text-muted hover:border-brand/40 hover:bg-brand-soft hover:text-brand-strong",
+        tom === "icone" &&
+          "w-8 shrink-0 border-line bg-surface text-faint hover:border-brand/40 hover:bg-brand-soft hover:text-brand-strong",
       )}
-      {label}
+    >
+      <Icon size={14} aria-hidden />
+      {children}
+      {seta && <ChevronDown size={13} className="-ml-0.5 opacity-70" aria-hidden />}
     </button>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Compartilhamento                                                    */
-/* ------------------------------------------------------------------ */
-
-function ModalCompartilhar({ rel, onClose }: { rel: RelatorioDef; onClose: () => void }) {
-  const [copiado, setCopiado] = React.useState(false);
-
-  const caminho = hrefExecucao(rel, PARAMETROS_PADRAO) ?? "/relatorios/central";
-  const url = typeof window === "undefined" ? caminho : `${window.location.origin}${caminho}`;
-  const texto = `${rel.nome} — ${rel.descricao}`;
-
-  async function copiar() {
-    await navigator.clipboard.writeText(url);
-    setCopiado(true);
-    setTimeout(() => setCopiado(false), 2000);
-  }
-
-  return (
-    <Modal
-      open
-      onClose={onClose}
-      title={`Compartilhar ${rel.nome}`}
-      description="O link abre o relatório com os dados do momento em que for aberto — não é uma cópia congelada."
-      footer={
-        <div className="flex justify-end">
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            Fechar
-          </Button>
-        </div>
-      }
-    >
-      <div className="space-y-4">
-        <div className="flex items-center gap-2 rounded-(--radius) border border-line bg-surface-2 px-3 py-2">
-          <Link2 size={15} className="shrink-0 text-faint" aria-hidden />
-          <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted">{url}</span>
-          <Button size="sm" variant="secondary" onClick={copiar}>
-            {copiado ? <Check size={14} className="text-ok" aria-hidden /> : null}
-            {copiado ? "Copiado" : "Copiar"}
-          </Button>
-        </div>
-
-        <div className="grid gap-2 sm:grid-cols-2">
-          <a
-            href={`https://wa.me/?text=${encodeURIComponent(`${texto}\n${url}`)}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2.5 rounded-(--radius) border border-line bg-surface px-3.5 py-3 text-sm font-medium text-ink transition-colors hover:border-brand/40 hover:bg-brand-soft"
-          >
-            <MessageCircle size={16} className="text-muted" aria-hidden />
-            WhatsApp
-          </a>
-          <a
-            href={`mailto:?subject=${encodeURIComponent(rel.nome)}&body=${encodeURIComponent(`${texto}\n\n${url}`)}`}
-            className="flex items-center gap-2.5 rounded-(--radius) border border-line bg-surface px-3.5 py-3 text-sm font-medium text-ink transition-colors hover:border-brand/40 hover:bg-brand-soft"
-          >
-            <Mail size={16} className="text-muted" aria-hidden />
-            E-mail
-          </a>
-        </div>
-
-        <div className="rounded-(--radius) border border-dashed border-line px-3.5 py-3">
-          <p className="flex items-center gap-2 text-sm font-medium text-muted">
-            <CalendarPlus size={15} aria-hidden />
-            Envio automático
-          </p>
-          <p className="mt-1 text-[13px] text-faint">
-            Diário, semanal ou mensal por e-mail. A estrutura já está no banco; o disparo entra na
-            próxima fase — até lá, o botão ficaria mentindo.
-          </p>
-        </div>
-
-        <p className="text-[12px] text-faint">
-          Quem receber o link precisa ter acesso a esta conta e permissão para o relatório.
-        </p>
-      </div>
-    </Modal>
-  );
-}
