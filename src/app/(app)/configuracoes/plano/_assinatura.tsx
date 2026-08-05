@@ -211,7 +211,7 @@ export function BotaoAddon({
   quantidade,
   bloqueado,
 }: {
-  slug: "fiscal" | "autoatendimento" | "loja-extra";
+  slug: "fiscal" | "autoatendimento" | "loja-extra" | "copiloto-ia";
   contratado: boolean;
   quantidade?: number;
   bloqueado?: boolean;

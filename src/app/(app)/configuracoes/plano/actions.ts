@@ -82,7 +82,7 @@ export async function trocarPlanoAction(input: z.input<typeof planoSchema>) {
 }
 
 const addonSchema = z.object({
-  slug: z.enum(["fiscal", "autoatendimento", "loja-extra"]),
+  slug: z.enum(["fiscal", "autoatendimento", "loja-extra", "copiloto-ia"]),
   contratar: z.boolean(),
   /** Só para "loja-extra": quantas lojas além das do plano. */
   quantidade: z.coerce.number().int().min(0).max(50).optional(),

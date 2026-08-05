@@ -12,10 +12,11 @@ import { cn } from "@/lib/utils";
  * Larguras do slide-over. `full` é o teto para conteúdo largo (tabela de
  * relatório): quase a tela toda, mas nunca colada na borda.
  */
-export type SheetWidth = "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl" | "5xl" | "6xl" | "full";
+export type SheetWidth = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl" | "5xl" | "6xl" | "full";
 
 /** Largura máxima de cada degrau, em px — quem decide o degrau precisa medir. */
 export const SHEET_WIDTH_PX: Record<SheetWidth, number> = {
+  sm: 384,
   md: 448,
   lg: 512,
   xl: 672,
@@ -62,6 +63,7 @@ export function Sheet({
   if (!open) return null;
 
   const widths: Record<SheetWidth, string> = {
+    sm: "max-w-sm",
     md: "max-w-md",
     lg: "max-w-lg",
     xl: "max-w-2xl",

@@ -31,7 +31,9 @@ export type Feature =
   | "relatorios.exportar"
   // Escala
   | "multiloja"
-  | "api";
+  | "api"
+  // IA
+  | "ia.copiloto"; // chat de IA com acesso a vendas, estoque, compras e relatórios
 
 /** Limites numéricos do plano. `null` = ilimitado. */
 export type Limites = {
@@ -128,6 +130,7 @@ export const FEATURE_LABEL: Record<Feature, string> = {
   "relatorios.exportar": "Exportar relatórios em CSV",
   multiloja: "Mais de uma loja",
   api: "API e integrações",
+  "ia.copiloto": "NoHub IA — copiloto operacional",
 };
 
 export const FEATURES_ORDEM = Object.keys(FEATURE_LABEL) as Feature[];
@@ -143,7 +146,7 @@ export function planoMinimo(feature: Feature): Plan | null {
 
 // ── Add-ons ─────────────────────────────────────────────────
 
-export type AddonSlug = "fiscal" | "autoatendimento" | "loja-extra";
+export type AddonSlug = "fiscal" | "autoatendimento" | "loja-extra" | "copiloto-ia";
 
 export type AddonDef = {
   nome: string;
@@ -181,6 +184,15 @@ export const ADDONS: Record<AddonSlug, AddonDef> = {
     porUnidade: true,
     feature: null,
     requerPlano: "OURO",
+  },
+  "copiloto-ia": {
+    nome: "NoHub IA — copiloto operacional",
+    descricao:
+      "Pergunte em linguagem natural sobre vendas, estoque, compras e financeiro. Inclui um volume mensal de perguntas; excedente cobrado por pergunta.",
+    // Placeholder — TODO: precificar direito antes de vender (custo é por token de LLM).
+    preco: 49,
+    feature: "ia.copiloto",
+    requerPlano: "OURO", // pressupõe operação com relatórios avançados já em uso
   },
 };
 

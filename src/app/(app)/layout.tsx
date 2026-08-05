@@ -8,8 +8,8 @@ import { estadoAcesso } from "@/lib/assinatura";
 import { caixaAbertoDoOperador, relatorioCaixa } from "@/lib/caixa";
 import { listSitePaymentMethods } from "@/lib/vendas";
 import { signOutAction } from "./actions";
-import { PERFIL_LABEL, isAdmin, type Acesso } from "@/lib/permissoes";
-import { togglesEfetivos, PLANOS } from "@/lib/planos";
+import { PERFIL_LABEL, isAdmin, podeEmAlguma, type Acesso } from "@/lib/permissoes";
+import { togglesEfetivos, featureAtiva, PLANOS } from "@/lib/planos";
 
 function trialDaysLeft(trialEndsAt: Date | null): number | null {
   if (!trialEndsAt) return null;
@@ -97,6 +97,7 @@ export default async function ShellLayout({
       userEmail={user.email ?? ""}
       userCargo={cargoLabel(acessos)}
       podeConfigurar={isAdmin(acessos)}
+      podeCopiloto={featureAtiva(tenant, "ia.copiloto") && isAdmin(acessos)}
       menuRecolhido={menuRecolhido}
       trialDias={tenant.status === "TRIAL" ? trialDaysLeft(tenant.trialEndsAt) : null}
       vocabularioPonto={vocabularioPonto}

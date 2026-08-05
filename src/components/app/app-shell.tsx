@@ -6,6 +6,7 @@ import { Navbar } from "@/components/app/navbar";
 import { MobileNav } from "@/components/app/mobile-nav";
 import { BottomNav } from "@/components/app/bottom-nav";
 import { CommandPalette } from "@/components/app/command-palette";
+import { CopilotoLauncher } from "@/components/app/copiloto/copiloto-launcher";
 import { AlertsProvider } from "@/components/app/alerts-provider";
 import type { CaixaInfo } from "@/components/app/caixa-sheet";
 import type { PaymentMethod } from "@/generated/prisma";
@@ -23,6 +24,7 @@ export function AppShell({
   userEmail,
   userCargo,
   podeConfigurar,
+  podeCopiloto,
   menuRecolhido,
   trialDias,
   vocabularioPonto,
@@ -42,6 +44,8 @@ export function AppShell({
   userCargo: string;
   /** Só administrador vê o atalho de Configurações na navbar. */
   podeConfigurar: boolean;
+  /** Plano com o add-on de IA contratado e ativo + permissão de relatório. */
+  podeCopiloto: boolean;
   /** Estado do menu na carga anterior, vindo do cookie. */
   menuRecolhido: boolean;
   trialDias: number | null;
@@ -159,6 +163,8 @@ export function AppShell({
           acessos={acessos}
           toggles={toggles}
         />
+
+        <CopilotoLauncher podeVer={podeCopiloto} />
       </div>
     </AlertsProvider>
   );
