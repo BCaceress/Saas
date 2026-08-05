@@ -8,7 +8,7 @@ import { estadoAcesso } from "@/lib/assinatura";
 import { caixaAbertoDoOperador, relatorioCaixa } from "@/lib/caixa";
 import { listSitePaymentMethods } from "@/lib/vendas";
 import { signOutAction } from "./actions";
-import { PERFIL_LABEL, isAdmin, podeEmAlguma, type Acesso } from "@/lib/permissoes";
+import { PERFIL_LABEL, isAdmin, type Acesso } from "@/lib/permissoes";
 import { togglesEfetivos, featureAtiva, PLANOS } from "@/lib/planos";
 
 function trialDaysLeft(trialEndsAt: Date | null): number | null {

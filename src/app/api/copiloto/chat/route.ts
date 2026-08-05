@@ -2,7 +2,7 @@ import { z } from "zod";
 import { getActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
-import { podeEmAlguma } from "@/lib/permissoes";
+import { isAdmin } from "@/lib/permissoes";
 import { featureAtiva } from "@/lib/planos";
 import { llmConfigured } from "@/lib/llm";
 import { consumir } from "@/lib/rate-limit";
@@ -46,8 +46,8 @@ const bodySchema = z.object({
 export async function POST(req: Request) {
   const ctx = await getActiveTenant();
   if (!ctx) return new Response("Não autenticado.", { status: 401 });
-  if (!podeEmAlguma(ctx.acessos, "relatorio.ver")) {
-    return new Response("Sem permissão para usar o copiloto.", { status: 403 });
+  if (!isAdmin(ctx.acessos)) {
+    return new Response("Só administradores podem usar o copiloto.", { status: 403 });
   }
   if (!featureAtiva(ctx.tenant, "ia.copiloto")) {
     return new Response("Recurso não contratado neste plano.", { status: 402 });
