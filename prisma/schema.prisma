@@ -877,9 +877,10 @@ model Product {
   salesChannels   ProductSalesChannel[]
   suppliers       ProductSupplier[]
 
-  catalogItems SupplierCatalogItem[]
-  priceHistory SupplierPriceHistory[]
-  cartItems    SupplierCartItem[]
+  catalogItems    SupplierCatalogItem[]
+  catalogVinculos SupplierCatalogItemProduct[]
+  priceHistory    SupplierPriceHistory[]
+  cartItems       SupplierCartItem[]
 
   @@unique([tenantId, sku])
   @@index([tenantId])
@@ -2467,12 +2468,13 @@ model SupplierCatalogItem {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  catalog  SupplierCatalog        @relation(fields: [catalogId], references: [id], onDelete: Cascade)
-  supplier Supplier               @relation(fields: [supplierId], references: [id], onDelete: Cascade)
-  product  Product?               @relation(fields: [productId], references: [id])
+  catalog  SupplierCatalog              @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+  supplier Supplier                     @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  product  Product?                     @relation(fields: [productId], references: [id])
   offers   SupplierOffer[]
   history  SupplierPriceHistory[]
   cartRefs SupplierCartItem[]
+  vinculos SupplierCatalogItemProduct[]
 
   @@unique([catalogId, chave])
   @@index([tenantId])
@@ -2480,6 +2482,28 @@ model SupplierCatalogItem {
   @@index([tenantId, ean])
   @@index([tenantId, matchStatus])
   @@index([supplierId])
+}
+
+/// Vínculo item↔produto além do principal (SupplierCatalogItem.productId).
+/// Item de encarte tipo "Baly 2L — todos os sabores" cobre vários produtos de
+/// verdade: o principal é quem entra no carrinho/pedido; os demais só entram
+/// na comparação de preço de cada produto. Automático (EAN/código) nunca
+/// grava mais de uma linha aqui — multi-vínculo só nasce de revisão manual.
+model SupplierCatalogItemProduct {
+  id            String   @id @default(cuid())
+  tenantId      String
+  catalogItemId String
+  productId     String
+  principal     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  catalogItem SupplierCatalogItem @relation(fields: [catalogItemId], references: [id], onDelete: Cascade)
+  product     Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([catalogItemId, productId])
+  @@index([tenantId])
+  @@index([productId])
+  @@index([catalogItemId])
 }
 
 /// Oferta com janela de validade e/ou quantidade mínima escalonada. O item

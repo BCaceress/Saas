@@ -39,6 +39,19 @@ type Tipo = "SIMPLES" | "INSUMO";
 
 type PackagingRow = { nome: string; ean: string; fatorConversao: string };
 
+/** Dados de um item de catálogo de fornecedor (encarte/tabela importada) que
+ * o operador não achou no catálogo e decidiu cadastrar como produto novo. */
+export type ProductPrefill = {
+  itemId: string;
+  nome: string;
+  ean: string | null;
+  marca: string | null;
+  custo: number | null;
+  subcategoryIdSugerido: string | null;
+  supplierId: string;
+  supplierNome: string;
+};
+
 type FormProps = {
   mode: "new" | "edit";
   tipo: Tipo;
@@ -53,6 +66,9 @@ type FormProps = {
   defaultEstoqueMinimo?: number;
   /** Estratégia de controle de estoque da empresa — decide quais metas aparecem. */
   policy?: EstoquePolicy;
+  /** Cadastro veio de um item de catálogo de fornecedor sem vínculo (aba
+   * Catálogo do fornecedor → "cadastrar produto novo"). Só SIMPLES usa. */
+  prefill?: ProductPrefill;
 };
 
 /**

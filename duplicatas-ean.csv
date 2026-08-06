@@ -1,0 +1,19 @@
+﻿produto_csv;sku_csv;ean_csv;preco_csv;custo_csv;estoque_csv;criado_csv;produto_oficial;sku_oficial;ean_oficial;preco_oficial;custo_oficial;estoque_oficial;tem_imagem_oficial;criado_oficial
+Agua 1,5l S/Gas;BEB-AGU-6925;78985713600730;5.00;—;12;05/08/2026;Água Mineral sem Gás Valle Vita 1,5L;BEB-AGU-7266;7898571360073;3.50;1.50;18;sim;03/07/2026
+Cerv Brahma 473ml Chopp;BEB-CER-5205;78911490110010;6.00;—;201;05/08/2026;Cerveja Brahma Lata 473ml;BEB-CER-5402;7891149011001;6.00;4.00;61;sim;24/06/2026
+Cerv Heineken 473ml;BEB-CER-4719;78960455062480;7.75;—;262;05/08/2026;Cerveja Lager Puro Malte Heineken Lata 473ml;BEB-CER-7569;7896045506248;9.00;4.50;33;sim;06/07/2026
+Cerv Skol 473ml;BEB-CER-5510;78911492010060;6.00;—;4;05/08/2026;Cerveja Pilsen Skol Lata 473ml;BEB-CER-5023;7891149201006;6.50;3.50;42;sim;22/06/2026
+Energ Baly 2l Melancia;BEB-ENE-9453;78980806643890;15.00;—;0;05/08/2026;Energético Melancia Baly Garrafa 2L;BEB-ENE-3724;7898080664389;7.00;2.00;15;sim;22/06/2026
+Energ Baly 2l Morango;BEB-ENE-8489;78980806650100;15.00;—;9;05/08/2026;Energético Morango e Pêssego das Galáxias Baly Garrafa 2L;BEB-ENE-3646;7898080665010;15.00;8.00;15;sim;24/06/2026
+Energ Baly 2l Tradicional;BEB-ENE-1843;78980806626680;15.00;—;28.5;05/08/2026;Energético Tradicional Baly Garrafa 2L;BEB-ENE-8730;7898080662668;8.00;3.50;44;sim;22/06/2026
+Energ Monster 473ml Tradicional;BEB-ENE-7635;708470220150;11.75;—;73;05/08/2026;Energético Monster Energy Lata 473ml;BEB-ENE-5968;070847022015;11.75;5.00;26;sim;08/07/2026
+Espumante Garibaldi 750ml Rose;BEB-VIN-8824;78960343010760;43.00;—;0;05/08/2026;Espumante Brasileiro Rosé Garibaldi Moscatel Serra Gaúcha 750ml;BEB-VIN-9576;7896034301076;40.00;18.00;0;sim;27/07/2026
+Gin Rocks 1l Doce;BEB-DES-9868;78960379186460;45.00;—;1;05/08/2026;Gin Doce Strawberry Rocks 1L;BEB-DES-8751;7896037918646;45.00;22.00;0;sim;27/07/2026
+Refr Fanta 2l Uva;BEB-REF-2610;78949000515130;11.00;—;5;05/08/2026;Refrigerante Uva Fanta Garrafa 2L;BEB-REF-4401;7894900051513;9.00;6.00;24;sim;13/07/2026
+Refr Fanta 350ml Uva;BEB-REF-3786;78949000500110;5.00;—;4;05/08/2026;Refrigerante Uva Fanta Lata 350ml;BEB-REF-8577;7894900050011;5.00;3.00;29;sim;22/06/2026
+Refr Fruki 2l Guarana;BEB-REF-5826;78964361000620;8.50;—;18;05/08/2026;Refrigerante Guaraná Fruki Garrafa 2L;BEB-REF-5337;7896436100062;8.00;5.00;41;sim;03/07/2026
+Refr H2O 500ml Limao;BEB-AGU-2981;78928408124230;6.00;—;12;05/08/2026;Refrigerante Citrus Zero Açúcar H2OH! Garrafa 500ml;BEB-REF-5524;7892840812423;8.00;4.00;6;sim;28/07/2026
+Refr Pepsi 2l;BEB-REF-1525;78928408000000;11.00;—;73;05/08/2026;Refrigerante de Cola Pepsi 2L;BEB-REF-8220;7892840800000;11.00;7.09;24;sim;24/06/2026
+Refr Pepsi 350ml;BEB-REF-8698;78928408000790;5.00;—;5;05/08/2026;Refrigerante Cola Pepsi Lata 350ml;BEB-REF-9585;7892840800079;4.50;2.50;39;sim;24/06/2026
+Seda Zomo 33 Folhas;TAB-SED-8158;784202740;6.00;—;59;05/08/2026;Papel Seda Zomo Natural Perfect;TAB-SED-1178;78420274;2.00;0.95;25;sim;09/07/2026
+Whisky Passport 1l;BEB-DES-2354;78910500001010;65.00;—;2;05/08/2026;Whisky Escocês Blended Passport Selection 1L;BEB-DES-4552;7891050000101;70.00;30.00;7;sim;06/07/2026

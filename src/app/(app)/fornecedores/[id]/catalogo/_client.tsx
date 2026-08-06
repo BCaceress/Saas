@@ -527,6 +527,17 @@ function SheetRevisao({ item, onClose }: { item: ItemCatalogo; onClose: () => vo
               vendo isso&rdquo;.
             </p>
           )}
+          {!buscando && (
+            <Link
+              href={`/produtos/novo/simples?fromItem=${item.id}`}
+              className="mt-1 flex items-center justify-between gap-3 rounded-[var(--radius)] border border-dashed border-line-strong px-3 py-2.5 text-left transition-colors hover:border-brand hover:bg-brand-soft/40"
+            >
+              <span className="min-w-0 text-sm font-medium text-ink">
+                Não achei — cadastrar produto novo com estes dados
+              </span>
+              <PackageSearch size={16} className="shrink-0 text-brand" />
+            </Link>
+          )}
           {resultados.map((p) => (
             <button
               key={p.id}

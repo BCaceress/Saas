@@ -172,6 +172,46 @@ export async function buscarProdutosAction(termo: string) {
   });
 }
 
+/**
+ * Dados do item do fornecedor pra pré-preencher `/produtos/novo/simples`
+ * quando o operador não achou o produto na busca e vai cadastrar do zero.
+ * Permissão é `produto.editar` (não `fornecedor.editar`) — é quem pode
+ * cadastrar produto que deve chegar aqui.
+ */
+export async function carregarItemParaNovoProdutoAction(itemId: string) {
+  return tx("produto.editar", async () => {
+    const item = await db.supplierCatalogItem.findFirst({
+      where: { id: itemId },
+      select: {
+        descricao: true,
+        ean: true,
+        marca: true,
+        categoria: true,
+        unidade: true,
+        preco: true,
+        matchStatus: true,
+        supplierId: true,
+        supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+      },
+    });
+    if (!item) throw new Error("Item não encontrado.");
+    if (item.matchStatus === "VINCULADO") {
+      throw new Error("Este item já está vinculado a um produto.");
+    }
+
+    return {
+      descricao: item.descricao,
+      ean: item.ean,
+      marca: item.marca,
+      categoria: item.categoria,
+      unidade: item.unidade,
+      custo: Number(item.preco),
+      supplierId: item.supplierId,
+      supplierNome: item.supplier.nomeFantasia ?? item.supplier.razaoSocial,
+    };
+  });
+}
+
 // ── Comparador ──────────────────────────────────────────────
 
 export async function buscarOfertasAction(termo: string) {

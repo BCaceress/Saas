@@ -68,6 +68,7 @@ import {
   sugerirMargemSubcategoria,
   sugerirDescricaoOnline,
 } from "../actions";
+import { vincularItemAction } from "../../compras/_catalogo/actions";
 import type { SalesChannel } from "@/generated/prisma";
 import type {
   BrandOpt,
@@ -78,6 +79,7 @@ import type {
   FiscalOpt,
   ProductRow,
 } from "../_types";
+import type { ProductPrefill } from "./product-form";
 
 type PackagingRow = { nome: string; ean: string; fatorConversao: string };
 
@@ -500,6 +502,7 @@ export function SimpleProductForm({
   fiscalProfiles,
   defaultEstoqueMinimo,
   policy = POLICY_PADRAO,
+  prefill,
 }: {
   mode: "new" | "edit";
   product?: ProductRow | null;
@@ -512,6 +515,9 @@ export function SimpleProductForm({
   defaultEstoqueMinimo?: number;
   /** Estratégia de controle da empresa — decide quais metas aparecem. */
   policy?: EstoquePolicy;
+  /** Veio da revisão do catálogo de um fornecedor (encarte/tabela importada
+   * sem vínculo). Só faz sentido com `mode: "new"`. */
+  prefill?: ProductPrefill;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -519,14 +525,17 @@ export function SimpleProductForm({
   const [error, setError] = useState<string>();
   const nomeRef = useRef<HTMLInputElement>(null);
   const savedRef = useRef(false);
+  // Item do fornecedor pendente de vínculo — a primeira gravação herda,
+  // "salvar e cadastrar próximo" depois disso já é produto sem origem.
+  const [itemParaVincular, setItemParaVincular] = useState(prefill?.itemId ?? null);
 
   // Identidade
-  const [ean, setEan] = useState(product?.ean ?? "");
-  const [nome, setNome] = useState(product?.nome ?? "");
+  const [ean, setEan] = useState(product?.ean ?? prefill?.ean ?? "");
+  const [nome, setNome] = useState(product?.nome ?? prefill?.nome ?? "");
   const [sku, setSku] = useState(product?.sku ?? "");
-  const [marca, setMarca] = useState(product?.marca ?? "");
+  const [marca, setMarca] = useState(product?.marca ?? prefill?.marca ?? "");
   const [subcategoryId, setSubcategoryId] = useState(
-    product?.subcategoryId ?? "",
+    product?.subcategoryId ?? prefill?.subcategoryIdSugerido ?? "",
   );
   const [imagemUrl, setImagemUrl] = useState(product?.imagemUrl ?? "");
   const imgFileRef = useRef<HTMLInputElement>(null);
@@ -549,8 +558,9 @@ export function SimpleProductForm({
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const touch = (k: string) => setTouched((t) => ({ ...t, [k]: true }));
 
-  // Só depois de identificar o produto o resto da tela aparece.
-  const [revealed, setRevealed] = useState(mode === "edit");
+  // Só depois de identificar o produto o resto da tela aparece — prefill do
+  // encarte já identifica, então pula direto pro resto.
+  const [revealed, setRevealed] = useState(mode === "edit" || !!prefill);
   const [naoEncontrado, setNaoEncontrado] = useState(false);
   const [foundCard, setFoundCard] = useState<{
     nome: string;
@@ -563,7 +573,7 @@ export function SimpleProductForm({
 
   // Preço
   const [precoVenda, setPrecoVenda] = useState(moneyToMask(product?.precoVenda));
-  const [custo, setCusto] = useState(moneyToMask(product?.custo));
+  const [custo, setCusto] = useState(moneyToMask(product?.custo ?? prefill?.custo));
 
   // Compra
   const [compraMode, setCompraMode] = useState<CompraMode | null>(
@@ -1294,10 +1304,30 @@ export function SimpleProductForm({
 
     start(async () => {
       try {
-        if (product) await updateProduct(product.id, input);
-        else await createProduct(input);
+        let created: { id: string; sku: string } | undefined;
+        if (product) {
+          await updateProduct(product.id, input);
+        } else {
+          created = await createProduct(input);
+        }
         savedRef.current = true;
         limparRascunho();
+
+        // Só a primeira gravação herda o vínculo com o item do fornecedor —
+        // "salvar e cadastrar próximo" depois disso é produto sem origem.
+        const itemId = itemParaVincular;
+        if (itemId) setItemParaVincular(null);
+        if (itemId && created) {
+          try {
+            await vincularItemAction(itemId, created.id);
+          } catch {
+            toast.error(
+              "Produto criado, mas não vinculei ao item do fornecedor",
+              "Vincule à mão na aba Catálogo do fornecedor.",
+            );
+          }
+        }
+
         if (andNew && !product) {
           resetForNext();
           router.refresh();
@@ -1305,7 +1335,7 @@ export function SimpleProductForm({
           requestAnimationFrame(() => document.getElementById("ean")?.focus());
           return;
         }
-        router.push("/produtos");
+        router.push(itemId && prefill ? `/fornecedores/${prefill.supplierId}/catalogo` : "/produtos");
         router.refresh();
       } catch (e) {
         savedRef.current = false;
@@ -1385,6 +1415,25 @@ export function SimpleProductForm({
         <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_324px]">
           {/* ── Coluna do assistente ── */}
           <div className="flex flex-col gap-4">
+            {/* Cadastro veio da revisão do catálogo de um fornecedor — dados
+                abaixo já saíram do encarte/tabela importada, só confirme. */}
+            {itemParaVincular && prefill && (
+              <div className="fade-up flex flex-wrap items-center gap-3 rounded-[var(--radius)] border border-brand/30 bg-brand-soft px-4 py-3">
+                <Truck size={15} className="shrink-0 text-brand-strong" />
+                <p className="min-w-0 flex-1 text-sm text-ink-2">
+                  Cadastrando a partir do encarte de{" "}
+                  <span className="font-medium text-ink">{prefill.supplierNome}</span> — confira os
+                  dados antes de salvar.
+                </p>
+                <Link
+                  href={`/fornecedores/${prefill.supplierId}/catalogo`}
+                  className="shrink-0 text-[13px] font-medium text-brand-strong hover:underline"
+                >
+                  Cancelar e voltar
+                </Link>
+              </div>
+            )}
+
             {/* Rascunho de um cadastro que ficou pelo caminho */}
             {draft && mode === "new" && (
               <div className="fade-up flex flex-wrap items-center gap-3 rounded-[var(--radius)] border border-info/30 bg-info-soft px-4 py-3">

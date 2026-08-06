@@ -9,7 +9,7 @@ import {
   MoreVertical, EyeOff, Eye, X,
   Barcode, Hash, ChevronLeft, ChevronRight,
   ArrowUp, ArrowDown, ChevronsUpDown, Globe, SlidersHorizontal, Columns3,
-  Download, Rows2, LayoutGrid, FilterX, Percent, BottleWine, Printer,
+  Download, Rows2, LayoutGrid, FilterX, Percent, BottleWine, Printer, ImagePlus,
 } from "lucide-react";
 import { cn, brl, margem } from "@/lib/utils";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
@@ -25,6 +25,7 @@ import {
 import { BrandSheet, CategorySheet, StorageSheet, SupplierSheet } from "./_sheets/sidepanels";
 import { CsvSheet } from "./_sheets/csv-sheet";
 import { EtiquetasSheet } from "./_sheets/etiquetas-sheet";
+import { ImagensSheet, type ProdutoImagem } from "./_sheets/imagens-sheet";
 import { archiveProduct, getGerenciarExtras } from "./actions";
 import type {
   ProductRow, BrandOpt, SubcategoryFilterOpt,
@@ -32,7 +33,13 @@ import type {
 } from "./_types";
 import type { GerenciarExtras } from "./_data";
 
-type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv";
+type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv" | "imagens";
+
+/**
+ * Teto de produtos por rodada de busca de imagem. A cota da base de códigos é
+ * finita: melhor rodar em tandas e ver o resultado do que queimar tudo de uma vez.
+ */
+const IMAGENS_POR_RODADA = 100;
 
 const POR_PAGINA = [25, 50, 100, 200];
 
@@ -146,6 +153,8 @@ export function ProdutosClient(props: {
   const [, start] = useTransition();
 
   const [sheet, setSheet] = useState<SheetKind>(null);
+  /** Fila da busca de imagens — congelada na abertura do painel. */
+  const [imagensAlvo, setImagensAlvo] = useState<ProdutoImagem[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
 
@@ -310,7 +319,24 @@ export function ProdutosClient(props: {
     exportCsv(escolhidos.length ? escolhidos : sorted);
   }
 
+  // ── Imagens por código de barras ──
+  const semImagem = rows.filter((p) => p.ativo && !p.imagemUrl);
+  function abrirImagens(lista: ProductRow[]) {
+    setImagensAlvo(
+      lista.slice(0, IMAGENS_POR_RODADA).map<ProdutoImagem>((p) => ({
+        id: p.id,
+        nome: p.nome,
+        sku: p.sku,
+        ean: p.ean,
+        imagemUrl: p.imagemUrl,
+      })),
+    );
+    setSheet("imagens");
+  }
+
   const temProdutos = rows.length > 0;
+  /** Qualquer camada modal na tela (slide-over, sidepanel do produto, visualizador). */
+  const painelAberto = sheet !== null || etiquetasOpen || !!selectedProduct || !!imageUrl;
   const cellPad = "py-1.5";
   const cozy = density === "cozy";
 
@@ -343,6 +369,13 @@ export function ProdutosClient(props: {
               <MenuItem icon={<Truck size={15} />} onClick={() => { ensureExtras(); setSheet("supplier"); }}>Fornecedores</MenuItem>
               <div className="my-1 h-px bg-line" role="separator" />
               <MenuItem icon={<Upload size={15} />} onClick={() => setSheet("csv")}>Importar CSV</MenuItem>
+              <MenuItem
+                icon={<ImagePlus size={15} />}
+                onClick={() => abrirImagens(semImagem)}
+                disabled={semImagem.length === 0}
+              >
+                Buscar imagens{semImagem.length > 0 ? ` (${semImagem.length})` : ""}
+              </MenuItem>
             </Menu>
 
             <div className="inline-flex shadow-[var(--shadow-1)] rounded-full">
@@ -536,6 +569,7 @@ export function ProdutosClient(props: {
                   onImage={p.imagemUrl ? () => setImageUrl(p.imagemUrl) : undefined}
                   onEdit={() => editar(p)}
                   onArchive={() => toggleInativo(p)}
+                  onBuscarImagem={() => abrirImagens([p])}
                 />
               ))}
             </ul>
@@ -688,6 +722,13 @@ export function ProdutosClient(props: {
                               }
                             >
                               <MenuItem icon={<Pencil size={15} />} onClick={() => editar(p)}>Editar</MenuItem>
+                              <MenuItem
+                                icon={<ImagePlus size={15} />}
+                                onClick={() => abrirImagens([p])}
+                                disabled={!p.ean}
+                              >
+                                Buscar imagem
+                              </MenuItem>
                               <div className="my-1 h-px bg-line" role="separator" />
                               <MenuItem
                                 icon={p.ativo ? <EyeOff size={15} /> : <Eye size={15} />}
@@ -719,6 +760,7 @@ export function ProdutosClient(props: {
                   onImage={p.imagemUrl ? () => setImageUrl(p.imagemUrl) : undefined}
                   onEdit={() => editar(p)}
                   onArchive={() => toggleInativo(p)}
+                  onBuscarImagem={() => abrirImagens([p])}
                 />
               ))}
             </ul>
@@ -792,14 +834,26 @@ export function ProdutosClient(props: {
             : <LoadingSheet title="Fornecedores" onClose={() => setSheet(null)} />
         )}
         {sheet === "csv" && <CsvSheet open onClose={() => setSheet(null)} policy={policy} />}
+        {sheet === "imagens" && (
+          <ImagensSheet
+            open
+            onClose={() => setSheet(null)}
+            produtos={imagensAlvo}
+            onAplicado={() => router.refresh()}
+          />
+        )}
       </div>
 
-      {/* ── Barra de ações em lote ── */}
-      {selected.size > 0 && (
+      {/* ── Barra de ações em lote ──
+          Some enquanto um painel está aberto: ela é `fixed` no rodapé e, vindo
+          depois no DOM, ficava por cima do rodapé do slide-over — engolindo o
+          botão de salvar do painel que ela mesma abriu. */}
+      {selected.size > 0 && !painelAberto && (
         <BulkBar
           count={selected.size}
           onEtiquetas={() => setEtiquetasOpen(true)}
           onExportar={exportarSelecionados}
+          onImagens={() => abrirImagens(rows.filter((p) => selected.has(p.id)))}
           onLimpar={() => setSelected(new Set())}
         />
       )}
@@ -916,15 +970,18 @@ function DensityBtn({ active, onClick, icon, children }: { active: boolean; onCl
 // ── Barra de ações em lote (flutuante) ───────────────────────────────────────
 
 function BulkBar({
-  count, onEtiquetas, onExportar, onLimpar,
+  count, onEtiquetas, onExportar, onImagens, onLimpar,
 }: {
   count: number;
   onEtiquetas: () => void;
   onExportar: () => void;
+  onImagens: () => void;
   onLimpar: () => void;
 }) {
   return (
-    <div className="fixed inset-x-0 bottom-4 z-50 flex justify-center px-4">
+    // z-40: um degrau abaixo do slide-over (z-50). Empatar em 50 fazia a ordem
+    // do DOM decidir quem cobre quem — e a barra ganhava.
+    <div className="fixed inset-x-0 bottom-4 z-40 flex justify-center px-4">
       <div className="flex flex-wrap items-center justify-center gap-2 rounded-full border border-line bg-surface px-3 py-2 shadow-[var(--shadow-2)]">
         <span className="pl-1 pr-1 text-sm font-medium text-ink">
           {count} selecionado{count === 1 ? "" : "s"}
@@ -932,6 +989,9 @@ function BulkBar({
         <div className="h-5 w-px bg-line" />
         <Button size="sm" onClick={onEtiquetas} className="gap-1.5">
           <Printer size={15} /> Imprimir etiquetas
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onImagens} className="gap-1.5">
+          <ImagePlus size={15} /> Buscar imagens
         </Button>
         <Button variant="ghost" size="sm" onClick={onExportar} className="gap-1.5">
           <Download size={15} /> Exportar
@@ -957,7 +1017,7 @@ function BulkBar({
  * categoria/tipo, que não cabem na versão compacta do mobile.
  */
 function ProductCard({
-  p, selected, onToggle, onOpen, onImage, onEdit, onArchive, big, cols, info,
+  p, selected, onToggle, onOpen, onImage, onEdit, onArchive, onBuscarImagem, big, cols, info,
 }: {
   p: ProductRow;
   selected: boolean;
@@ -966,6 +1026,8 @@ function ProductCard({
   onImage?: () => void;
   onEdit: () => void;
   onArchive: () => void;
+  /** Busca a foto do produto pelo código de barras. */
+  onBuscarImagem: () => void;
   big?: boolean;
   cols: Record<ColKey, boolean>;
   info: Record<InfoKey, boolean>;
@@ -1058,6 +1120,9 @@ function ProductCard({
         }
       >
         <MenuItem icon={<Pencil size={15} />} onClick={onEdit}>Editar</MenuItem>
+        <MenuItem icon={<ImagePlus size={15} />} onClick={onBuscarImagem} disabled={!p.ean}>
+          Buscar imagem
+        </MenuItem>
         <div className="my-1 h-px bg-line" role="separator" />
         <MenuItem icon={p.ativo ? <EyeOff size={15} /> : <Eye size={15} />} onClick={onArchive}>
           {p.ativo ? "Inativar" : "Ativar"}
