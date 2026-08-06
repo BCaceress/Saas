@@ -18,6 +18,7 @@ import {
   type PerfilTotem, type ResultadoTotem, type PixTotem,
 } from "./actions";
 import { PixQr } from "@/components/app/pix-qr";
+import { useEhCelular } from "@/components/mobile/use-media-query";
 import { iconeCategoria, termosSugeridos, fmtVolume, norm } from "./_catalog";
 
 const brl = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -315,11 +316,11 @@ function BoasVindas({ tenantNome, tenantLogoUrl, onCpf, onCadastro, onSemCadastr
 }) {
   const inicial = tenantNome.trim().charAt(0).toUpperCase() || "N";
   return (
-    <div className="relative min-h-[calc(100dvh-2rem)] overflow-hidden">
+    <div className="relative min-h-[calc(100dvh-1rem)] sm:min-h-[calc(100dvh-2rem)] overflow-hidden">
       {/* Fundo decorativo */}
       <div className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-gradient-to-b from-brand-soft to-transparent" />
 
-      <div className="relative mx-auto flex min-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col items-center justify-center gap-10 p-4 text-center">
+      <div className="relative mx-auto flex min-h-[calc(100dvh-1rem)] sm:min-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col items-center justify-center gap-10 p-4 text-center">
         {/* Identidade da loja */}
         <div className="flex flex-col items-center gap-4">
           {tenantLogoUrl ? (
@@ -495,6 +496,10 @@ function CadastroStep({ pending, error, onVoltar, onConfirmar, onEntrar, onPular
     });
   }
 
+  // Abaixo de `sm` o teclado desenhado sai de cena e quem digita é o do
+  // sistema — daí o campo precisar saber em que aparelho está.
+  const ehCelular = useEhCelular();
+
   const titulos = [
     { titulo: "Qual é o seu nome?", hint: "Ex.: João da Silva" },
     { titulo: "Agora informe seu CPF", hint: "000.000.000-00" },
@@ -527,16 +532,25 @@ function CadastroStep({ pending, error, onVoltar, onConfirmar, onEntrar, onPular
         </BotaoGrande>
       )}
 
-      {/* Campo ativo — único da tela */}
+      {/* Campo ativo — único da tela.
+          É um <input> de verdade, não um visor: no celular o teclado desenhado
+          não cabe (ver TecladoABC) e o único caminho é o teclado do sistema.
+          No tablet fica `readOnly`, para um toque à toa não abrir o teclado do
+          SO por cima do quiosque — lá quem digita é o TecladoABC. */}
       {passo === 0 && (
-        <div className={cn(
-          "w-full max-w-md rounded-2xl border-2 bg-surface px-5 py-5 text-center font-display text-2xl font-bold transition-colors",
-          nomeOk ? "border-ok text-ink" : "border-brand",
-          nome ? "text-ink" : "text-faint",
-        )} aria-live="polite">
-          {nome || titulos.hint}
-          <span className="ml-0.5 inline-block h-6 w-0.5 animate-pulse bg-brand align-middle" aria-hidden />
-        </div>
+        <input
+          value={nome}
+          readOnly={!ehCelular}
+          onChange={(e) => setNome(tituloCase(e.target.value).slice(0, 60))}
+          placeholder={titulos.hint}
+          aria-label="Seu nome"
+          autoComplete="name"
+          className={cn(
+            "w-full max-w-md rounded-2xl border-2 bg-surface px-5 py-5 text-center font-display text-2xl font-bold transition-colors outline-none",
+            "placeholder:text-faint",
+            nomeOk ? "border-ok text-ink" : "border-brand text-ink",
+          )}
+        />
       )}
       {passo === 1 && (
         <div className={cn(
@@ -563,7 +577,11 @@ function CadastroStep({ pending, error, onVoltar, onConfirmar, onEntrar, onPular
         </p>
       )}
 
-      {/* Teclado contextual — mesma posição, muda conforme o campo */}
+      {/* Teclado contextual — mesma posição, muda conforme o campo.
+          O alfabético some no celular: são 10 teclas numa linha, o que em
+          390px dá ~30px por tecla — menor que a ponta do dedo. O teclado do
+          sistema assume, via o <input> acima. O numérico FICA: para CPF e
+          telefone, alvos grandes ganham do teclado nativo. */}
       {passo === 0 ? (
         <TecladoABC onLetra={letra}
           onEspaco={() => setNome((p) => (p && !p.endsWith(" ") ? p + " " : p))}
@@ -594,6 +612,20 @@ function CadastroStep({ pending, error, onVoltar, onConfirmar, onEntrar, onPular
   );
 }
 
+/**
+ * Title Case do nome — primeira letra de cada palavra em maiúscula.
+ *
+ * A regra já existia embutida em `letra()`, letra a letra. O campo de texto do
+ * celular recebe a palavra inteira de uma vez (colar, autocompletar, corrigir
+ * no meio), então precisa da mesma regra aplicada sobre a string toda.
+ */
+function tituloCase(s: string): string {
+  return s.replace(
+    /(^|\s)(\S)/g,
+    (_, espaco: string, letra: string) => espaco + letra.toUpperCase(),
+  );
+}
+
 /* Teclado alfabético touch — teclas grandes, layout QWERTY, Title Case automático. */
 function TecladoABC({ onLetra, onEspaco, onApagar, onLimpar }: {
   onLetra: (l: string) => void; onEspaco: () => void; onApagar: () => void; onLimpar: () => void;
@@ -605,7 +637,9 @@ function TecladoABC({ onLetra, onEspaco, onApagar, onLimpar }: {
   ];
   const tecla = "h-20 flex-1 rounded-2xl border border-line bg-surface font-display text-3xl font-bold text-ink transition-colors hover:bg-brand-soft active:scale-95 active:bg-brand-soft";
   return (
-    <div className="flex w-full max-w-3xl flex-col gap-2.5">
+    // `hidden sm:flex`: dez teclas numa linha não cabem em 390px com alvo
+    // utilizável. No celular quem digita é o teclado do sistema.
+    <div className="hidden w-full max-w-3xl flex-col gap-2.5 sm:flex">
       {linhas.map((linha, i) => (
         <div key={i} className={cn("flex gap-2.5", i === 1 && "px-[5%]", i === 2 && "px-[10%]")}>
           {linha.map((l) => (
@@ -696,11 +730,14 @@ function Loja({
   }, [cliente, maisVendidos, byId]);
   const temDestaques = destaques.length > 0;
 
+  // Em celular a coluna de categorias vira faixa horizontal no topo: 96px de
+  // rail num aparelho de 390px deixariam 280px para a grade de produtos. O
+  // padding do quiosque também muda (p-2 em vez de p-4), daí a altura.
   return (
-    <div className="flex h-[calc(100dvh-2rem)] gap-3">
-      {/* ── Menu lateral fixo de categorias ── */}
+    <div className="flex h-[calc(100dvh-1rem)] flex-col gap-2 sm:h-[calc(100dvh-2rem)] sm:flex-row sm:gap-3">
+      {/* ── Menu de categorias: faixa no celular, coluna no tablet ── */}
       <nav aria-label="Categorias"
-        className="scrollbar-none flex w-24 shrink-0 flex-col gap-1 overflow-y-auto rounded-3xl border border-line bg-surface p-1.5 sm:w-28">
+        className="scrollbar-none flex w-full shrink-0 flex-row gap-1 overflow-x-auto rounded-2xl border border-line bg-surface p-1.5 sm:w-28 sm:flex-col sm:overflow-x-visible sm:overflow-y-auto sm:rounded-3xl">
         <RailItem ativo={catAtiva == null} onClick={() => setCatAtiva(null)}
           icone={temDestaques ? <Star size={24} /> : <ShoppingCart size={24} />}
           label={temDestaques ? (cliente ? "Para você" : "Destaques") : "Todos"} />
@@ -762,7 +799,7 @@ function Loja({
         {error && <Erro>{error}</Erro>}
 
         {/* ── Barra do pedido ── */}
-        <div className="flex items-center gap-3 rounded-3xl border border-line bg-surface p-3">
+        <div className="flex items-center gap-2 rounded-3xl border border-line bg-surface p-2 sm:gap-3 sm:p-3">
           <button onClick={() => numItens > 0 && setCarrinhoAberto(true)} disabled={numItens === 0}
             aria-label="Ver carrinho"
             className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl px-2 py-1.5 text-left transition-colors hover:bg-surface-2 disabled:pointer-events-none">
@@ -780,8 +817,12 @@ function Loja({
             </span>
           </button>
           <BotaoGrande disabled={numItens === 0 || pending} onClick={onConcluir}
-            className="w-auto shrink-0 px-8 py-4 text-lg">
-            Concluir pedido <ArrowRight size={20} />
+            className="w-auto shrink-0 px-5 py-3 text-base sm:px-8 sm:py-4 sm:text-lg">
+            {/* O rótulo encolhe junto: "Concluir pedido" + seta empurrava o
+                total do carrinho para fora em 360px. */}
+            <span className="sm:hidden">Concluir</span>
+            <span className="hidden sm:inline">Concluir pedido</span>
+            <ArrowRight size={20} />
           </BotaoGrande>
         </div>
       </div>
@@ -926,7 +967,7 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-2 backdrop-blur-sm sm:p-4 lg:p-8"
       role="dialog" aria-modal="true" aria-label={`Montar ${p.nome}`} onClick={onFechar}>
       <div
-        className="flex h-[94dvh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl bg-bg shadow-[var(--shadow-2)] motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95"
+        className="flex h-[94dvh] max-h-[94dvh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl bg-bg shadow-[var(--shadow-2)] motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95"
         onClick={(e) => e.stopPropagation()}>
 
         {/* Cabeçalho compacto — só quando a coluna do produto não cabe */}
@@ -1043,7 +1084,10 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
                       )}
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 2xl:grid-cols-4">
+                    {/* Uma coluna nos aparelhos estreitos: em 360px, dois
+                        cards de 44px de altura mínima com foto viram dois
+                        selos ilegíveis. */}
+                    <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 sm:grid-cols-3 2xl:grid-cols-4">
                       {g.items.map((item) => {
                         const marcado = atual.includes(item.componentProductId);
                         const bloqueado = !item.disponivel;
@@ -1143,8 +1187,10 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
           </div>
         </div>
 
-        {/* ── Rodapé fixo: preço vivo + ação única ── */}
-        <div className="flex items-center gap-4 border-t border-line bg-surface p-4 sm:px-6">
+        {/* ── Rodapé fixo: preço vivo + ação única ──
+            Empilha no celular: lado a lado, o preço e o botão de 200px+
+            disputavam os mesmos 390px e o valor era truncado. */}
+        <div className="flex flex-col items-stretch gap-2 border-t border-line bg-surface p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:flex-row sm:items-center sm:gap-4 sm:p-4 sm:pb-4 sm:px-6">
           <div className="min-w-0">
             <p className="text-sm text-muted">Total do item</p>
             <p key={totalUnit}
@@ -1155,7 +1201,7 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
           <button disabled={!valido}
             onClick={() => onConfirmar(escolhidos.map((i) => i.componentProductId), precoExtra, detalhe)}
             className={cn(
-              "ml-auto flex h-16 shrink-0 items-center justify-center gap-3 rounded-2xl px-6 font-display text-lg font-bold transition-all sm:px-10 sm:text-xl",
+              "flex h-14 w-full shrink-0 items-center justify-center gap-3 rounded-2xl px-6 font-display text-lg font-bold transition-all sm:ml-auto sm:h-16 sm:w-auto sm:px-10 sm:text-xl",
               valido
                 ? "bg-brand text-on-brand shadow-[var(--shadow-2)] hover:bg-brand-strong active:scale-[0.98]"
                 : "cursor-not-allowed bg-surface-2 text-muted",
@@ -1180,7 +1226,9 @@ function RailItem({ ativo, onClick, icone, label }: {
   return (
     <button onClick={onClick} aria-current={ativo || undefined}
       className={cn(
-        "flex w-full flex-col items-center gap-1.5 rounded-2xl px-1 py-3 transition-colors active:scale-95",
+        // Na faixa horizontal cada item precisa de largura mínima própria; na
+        // coluna volta a ocupar a largura toda do rail.
+        "flex min-w-16 shrink-0 flex-col items-center gap-1.5 rounded-2xl px-2 py-2 transition-colors active:scale-95 sm:w-full sm:min-w-0 sm:px-1 sm:py-3",
         ativo ? "bg-brand text-on-brand" : "text-ink-2 hover:bg-surface-2",
       )}>
       {icone}
@@ -1190,8 +1238,16 @@ function RailItem({ ativo, onClick, icone, label }: {
 }
 
 /* ═══════════════════ CARD / GRADE ═══════════════════ */
-/** Largura única do card em TODAS as telas (grade e fileiras). */
-const CARD_W = "w-40";
+/**
+ * Largura única do card em TODAS as telas (grade e fileiras).
+ *
+ * No celular, metade da largura menos 12px. A conta serve aos dois usos: na
+ * `Grade` (flex-wrap, gap de 12px) cabem exatamente duas colunas; na `Fileira`
+ * (rolagem lateral) sobram 12px do terceiro card à direita — a fresta é o que
+ * avisa que dá para arrastar. Em `w-40` fixo, um aparelho de 390px mostrava
+ * 1,5 card e um vão morto.
+ */
+const CARD_W = "w-[calc(50%-0.75rem)] max-w-44 sm:w-40";
 
 function Grade({ produtos, onPick, qtd }: { produtos: ProdutoVenda[]; onPick: (p: ProdutoVenda) => void; qtd: (id: string) => number }) {
   return (
@@ -1365,7 +1421,7 @@ function Revisao({
   pending: boolean; error: string | null; onVoltar: () => void; onPagar: () => void;
 }) {
   return (
-    <div className="mx-auto flex h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col gap-4">
+    <div className="mx-auto flex h-[calc(100dvh-1rem)] sm:h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col gap-4">
       <div className="flex items-center gap-3 pt-1">
         <button onClick={onVoltar} aria-label="Voltar aos produtos"
           className="grid h-12 w-12 shrink-0 place-items-center rounded-full border border-line bg-surface text-ink transition-colors hover:bg-surface-2 active:scale-95">
@@ -1588,7 +1644,7 @@ function TerminalIndisponivel({ tenantNome, terminalNome }: {
 /* ═══════════════════ PRIMITIVOS ═══════════════════ */
 function Centro({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("mx-auto flex min-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col items-center justify-center gap-5 p-4 text-center", className)}>
+    <div className={cn("mx-auto flex min-h-[calc(100dvh-1rem)] sm:min-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col items-center justify-center gap-5 p-4 text-center", className)}>
       {children}
     </div>
   );

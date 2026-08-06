@@ -2,39 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import {
-  Bell, Check, X, PackageX, AlertTriangle, Tag, PackagePlus, ShoppingCart,
-  ArrowLeftRight, Truck, ClipboardList, Sparkles, PauseCircle, Coins, Percent,
-  Wine, TrendingUp, TrendingDown, Flame, Loader2, CheckCheck, Cake, Gift,
-} from "lucide-react";
+import { Bell, Check, X, Loader2, CheckCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAlerts } from "@/components/app/alerts-provider";
+import { ALERT_ICON } from "@/components/app/alert-icons";
 import {
-  type AlertItem, type AlertIcon, CATEGORY_ORDER, CATEGORY_LABEL,
+  type AlertItem, CATEGORY_ORDER, CATEGORY_LABEL,
   PRIORITY_STYLE, tempoRelativo,
 } from "@/lib/alerts-types";
-
-const ICON: Record<AlertIcon, React.ReactNode> = {
-  "sem-estoque": <PackageX size={16} />,
-  minimo: <AlertTriangle size={16} />,
-  "sem-preco": <Tag size={16} />,
-  reposicao: <PackagePlus size={16} />,
-  compra: <ShoppingCart size={16} />,
-  transferencia: <ArrowLeftRight size={16} />,
-  recebimento: <Truck size={16} />,
-  inventario: <ClipboardList size={16} />,
-  divergencia: <AlertTriangle size={16} />,
-  novo: <Sparkles size={16} />,
-  parado: <PauseCircle size={16} />,
-  custo: <Coins size={16} />,
-  margem: <Percent size={16} />,
-  consumo: <Wine size={16} />,
-  alta: <TrendingUp size={16} />,
-  baixa: <TrendingDown size={16} />,
-  campeao: <Flame size={16} />,
-  aniversario: <Cake size={16} />,
-  "cliente-risco": <Gift size={16} />,
-};
 
 export function NotificationBell() {
   const [open, setOpen] = useState(false);
@@ -179,6 +154,7 @@ function AlertRow({
   onNavegar: () => void;
 }) {
   const style = PRIORITY_STYLE[alerta.priority];
+  const Icone = ALERT_ICON[alerta.icon];
   return (
     <li className="group relative flex items-start gap-3 px-4 py-2.5 transition-colors hover:bg-surface-2">
       <span
@@ -189,7 +165,7 @@ function AlertRow({
         )}
         aria-hidden
       >
-        {ICON[alerta.icon]}
+        <Icone size={16} />
       </span>
 
       <div className="min-w-0 flex-1">

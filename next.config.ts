@@ -17,6 +17,21 @@ const nextConfig: NextConfig = {
     remotePatterns: [{ protocol: "https", hostname: "**.bluesoft.com.br" }],
   },
 
+  // O service worker não pode ser cacheado: alguns browsers seguram a versão
+  // antiga por até 24h, e aí uma correção no SW só chega no dia seguinte.
+  // Service-Worker-Allowed: / permite que ele controle a origem inteira.
+  async headers() {
+    return [
+      {
+        source: "/sw.js",
+        headers: [
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
+          { key: "Service-Worker-Allowed", value: "/" },
+        ],
+      },
+    ];
+  },
+
   // Compras virou um módulo só: o que era /compras-fornecedores/* mudou de
   // casa. Links salvos e favoritos antigos continuam abrindo a tela certa.
   async redirects() {

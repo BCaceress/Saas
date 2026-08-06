@@ -2,6 +2,7 @@ import NextAuth from "next-auth";
 import { NextResponse } from "next/server";
 import { authConfig } from "./auth.config";
 import { getSubdomainFromHost } from "./lib/subdomain";
+import { SUPERFICIE_COOKIE, SUPERFICIE_MOBILE } from "./lib/superficie";
 
 const { auth } = NextAuth(authConfig);
 
@@ -42,15 +43,29 @@ export default auth((req) => {
     return NextResponse.redirect(loginUrl);
   }
 
-  // Raiz do subdomínio → home do app (dashboard).
+  // Raiz do subdomínio → home do app. Qual home depende da superfície escolhida
+  // no aparelho (ver lib/superficie). É redirect, não rewrite: o path final é
+  // real, então nada aqui esbarra na restrição de hidratação explicada acima.
   if (pathname === "/") {
-    return NextResponse.redirect(new URL("/inicio", req.url));
+    const mobile = req.cookies.get(SUPERFICIE_COOKIE)?.value === SUPERFICIE_MOBILE;
+    return NextResponse.redirect(new URL(mobile ? "/m" : "/inicio", req.url));
   }
 
   return NextResponse.next();
 });
 
 export const config = {
-  // Tudo, menos assets/HMR do Next e o endpoint do Auth.js.
-  matcher: ["/((?!_next|favicon.ico|api/auth).*)"],
+  // Tudo, menos assets/HMR do Next, o endpoint do Auth.js e os arquivos do PWA.
+  //
+  // Manifest, service worker, página offline e ícones PRECISAM ficar de fora: o
+  // browser busca o manifest sem credenciais, então no subdomínio ele cairia no
+  // gate de sessão acima, receberia o redirect para o /login do domínio raiz e o
+  // app deixaria de ser instalável. Mesma história para o registro do SW num
+  // aparelho com a sessão expirada.
+  // `wasm/` é o leitor de código de barras (biblioteca aberta, zero dado de
+  // tenant). Ficando dentro do gate, o binário viraria um redirect para o
+  // login e o scanner do iOS não carregaria.
+  matcher: [
+    "/((?!_next|favicon.ico|manifest.webmanifest|sw.js|offline.html|icons/|wasm/|apple-touch-icon.png|api/auth).*)",
+  ],
 };

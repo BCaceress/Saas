@@ -15,6 +15,15 @@ const HEARTBEAT_MS = 45_000;
 const MAX_ERROS = 5;
 const COOLDOWN_MS = 30_000;
 
+/** App instalado na tela de início — a tela já é cheia. */
+function emStandalone(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    window.matchMedia("(display-mode: standalone)").matches ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true
+  );
+}
+
 export function TotemKiosk({
   siteId,
   produtos,
@@ -64,8 +73,12 @@ export function TotemKiosk({
   }, [siteId]);
 
   function iniciar() {
-    // Best-effort: iPhone Safari não tem a API; o container fixed cobre a tela.
-    document.documentElement.requestFullscreen?.().catch(() => {});
+    // Instalado como app já abre em tela cheia — pedir de novo só gera exceção
+    // silenciosa. Fora disso é best-effort: iPhone Safari não tem a API, e o
+    // container fixed cobre a tela de qualquer jeito.
+    if (!emStandalone()) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    }
     setIniciado(true);
   }
 
@@ -74,26 +87,58 @@ export function TotemKiosk({
     router.push("/inicio");
   }
 
+  // Tela apagando no meio da venda é o pior defeito de um quiosque em celular:
+  // o cliente perde o carrinho e chama o operador. O wake lock cai sozinho
+  // quando a aba vai para segundo plano, então é preciso repedir na volta.
+  useEffect(() => {
+    if (!iniciado) return;
+    let sentinel: WakeLockSentinel | null = null;
+    let vivo = true;
+
+    const pedir = async () => {
+      try {
+        sentinel = (await navigator.wakeLock?.request("screen")) ?? null;
+      } catch {
+        // Sem suporte, bateria baixa ou permissão negada: segue sem travar.
+      }
+    };
+
+    const aoVoltar = () => {
+      if (vivo && document.visibilityState === "visible") void pedir();
+    };
+
+    void pedir();
+    document.addEventListener("visibilitychange", aoVoltar);
+
+    return () => {
+      vivo = false;
+      document.removeEventListener("visibilitychange", aoVoltar);
+      void sentinel?.release().catch(() => {});
+    };
+  }, [iniciado]);
+
   // ── Tela inicial ──
+  // Escalas em dois degraus: o desenho nasceu para tablet em pé, e em 390px a
+  // logo de 160px mais o título de 36px empurravam o botão para fora da dobra.
   if (!iniciado) {
     return (
-      <div className="flex min-h-dvh flex-col items-center justify-center gap-8 p-6 text-center">
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-6 p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] text-center sm:gap-8 sm:p-6">
         {tenantLogoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={tenantLogoUrl} alt={tenantNome}
-            className="h-40 w-40 rounded-3xl border border-line bg-surface object-contain p-3 shadow-[var(--shadow-1)]" />
+            className="h-28 w-28 rounded-3xl border border-line bg-surface object-contain p-3 shadow-[var(--shadow-1)] sm:h-40 sm:w-40" />
         ) : (
           <span className="grid h-20 w-20 place-items-center rounded-3xl bg-brand-soft text-brand">
             <MonitorSmartphone size={40} />
           </span>
         )}
         <div>
-          <h1 className="font-display text-4xl font-bold text-ink">{tenantNome}</h1>
-          <p className="mt-2 text-lg text-muted">Autoatendimento</p>
+          <h1 className="font-display text-3xl font-bold text-ink sm:text-4xl">{tenantNome}</h1>
+          <p className="mt-2 text-base text-muted sm:text-lg">Autoatendimento</p>
         </div>
         <button
           onClick={iniciar}
-          className="rounded-3xl bg-brand px-12 py-6 font-display text-2xl font-bold text-on-brand shadow-[var(--shadow-1)] transition-colors hover:bg-brand-strong"
+          className="w-full max-w-sm rounded-3xl bg-brand px-8 py-5 font-display text-xl font-bold text-on-brand shadow-[var(--shadow-1)] transition-colors hover:bg-brand-strong sm:w-auto sm:px-12 sm:py-6 sm:text-2xl"
         >
           Toque para começar
         </button>
@@ -109,7 +154,7 @@ export function TotemKiosk({
 
   // ── Modo quiosque ──
   return (
-    <div className="scrollbar-none fixed inset-0 z-50 overflow-y-auto bg-bg p-4">
+    <div className="scrollbar-none fixed inset-0 z-50 overflow-y-auto bg-bg p-2 sm:p-4">
       <TotemVenda
         siteId={siteId}
         produtos={produtos}
@@ -126,7 +171,9 @@ export function TotemKiosk({
       <button
         onClick={() => (temPin ? setPinOpen(true) : sair())}
         aria-label="Sair do modo quiosque"
-        className="fixed right-3 top-3 z-[60] grid h-9 w-9 place-items-center rounded-full border border-line bg-surface/80 text-faint backdrop-blur transition-colors hover:text-ink"
+        // O notch come o canto superior direito quando o app roda em tela
+        // cheia; sem a área segura, o botão de sair fica embaixo dele.
+        className="fixed right-3 top-[max(0.75rem,env(safe-area-inset-top))] z-[60] grid h-9 w-9 place-items-center rounded-full border border-line bg-surface/80 text-faint backdrop-blur transition-colors hover:text-ink"
       >
         <Lock size={15} />
       </button>
@@ -207,7 +254,7 @@ function PinDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: () 
             <button
               key={d}
               onClick={() => digito(d)}
-              className="rounded-xl border border-line bg-surface-2 py-4 font-display text-xl font-bold text-ink transition-colors hover:bg-brand-soft"
+              className="rounded-xl border border-line bg-surface-2 min-h-14 py-4 font-display text-xl font-bold text-ink transition-colors hover:bg-brand-soft"
             >
               {d}
             </button>
@@ -215,20 +262,20 @@ function PinDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: () 
           <button
             onClick={() => setPin((p) => p.slice(0, -1))}
             aria-label="Apagar"
-            className="grid place-items-center rounded-xl border border-line bg-surface-2 py-4 text-ink hover:bg-surface"
+            className="grid place-items-center rounded-xl border border-line bg-surface-2 min-h-14 py-4 text-ink hover:bg-surface"
           >
             <Delete size={20} />
           </button>
           <button
             onClick={() => digito("0")}
-            className="rounded-xl border border-line bg-surface-2 py-4 font-display text-xl font-bold text-ink transition-colors hover:bg-brand-soft"
+            className="rounded-xl border border-line bg-surface-2 min-h-14 py-4 font-display text-xl font-bold text-ink transition-colors hover:bg-brand-soft"
           >
             0
           </button>
           <button
             onClick={confirmar}
             disabled={pin.length < 4 || pending}
-            className="grid place-items-center rounded-xl bg-brand py-4 font-bold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-40"
+            className="grid place-items-center rounded-xl bg-brand min-h-14 py-4 font-bold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-40"
           >
             {pending ? <Loader2 size={20} className="animate-spin" /> : "OK"}
           </button>

@@ -15,6 +15,7 @@ import {
   type Limites,
 } from "./planos";
 import { rotaInicial } from "@/components/app/nav-config";
+import { rotaInicialMobile } from "@/components/mobile/nav";
 
 // ============================================================
 // Guard de PÁGINA. Esconder item do menu é cosmético — quem digita a URL entra
@@ -73,6 +74,19 @@ export async function requirePermissao(permissao: Permissao): Promise<ActiveTena
   if (podeEmAlguma(ctx.acessos, permissao)) return ctx;
 
   redirect(rotaInicial(ctx.acessos, togglesEfetivos(ctx.tenant)) ?? "/sem-acesso");
+}
+
+/**
+ * Mesmo guard, para as telas de `/m`. Existe porque `requirePermissao` cai em
+ * `rotaInicial`, que é rota de DESKTOP: quem está no celular seria cuspido para
+ * fora da superfície mobile por falta de uma permissão, sem entender o que
+ * aconteceu. Aqui a queda é dentro do próprio `/m`.
+ */
+export async function requirePermissaoMobile(permissao: Permissao): Promise<ActiveTenant> {
+  const ctx = await requireActiveTenant();
+  if (podeEmAlguma(ctx.acessos, permissao)) return ctx;
+
+  redirect(rotaInicialMobile(ctx.acessos, togglesEfetivos(ctx.tenant)));
 }
 
 // ============================================================

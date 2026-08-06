@@ -180,31 +180,74 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships      Membership[]
-  invites          Invite[]
-  subscription     Subscription?
-  brands           Brand[]
-  categories       Category[]
-  subcategories    Subcategory[]
-  fiscalProfiles   FiscalProfile[]
-  storageLocations StorageLocation[]
-  suppliers        Supplier[]
-  products         Product[]
-  tags             Tag[]
-  sites            Site[]
-  customers        Customer[]
-  comodatoAssets   ComodatoAsset[]
-  containerTypes   ContainerType[]
-  paymentProvider  PaymentProviderConfig?
-  fiscalConfig     FiscalConfig?
-  fiscalEmitentes  FiscalEmitente[]
-  savedReports     SavedReport[]
-  reportFavorites  ReportFavorite[]
-  reportRuns       ReportRun[]
-  reportSchedules  ReportSchedule[]
-  reportPresets    ReportPreset[]
+  memberships       Membership[]
+  invites           Invite[]
+  subscription      Subscription?
+  brands            Brand[]
+  categories        Category[]
+  subcategories     Subcategory[]
+  fiscalProfiles    FiscalProfile[]
+  storageLocations  StorageLocation[]
+  suppliers         Supplier[]
+  products          Product[]
+  tags              Tag[]
+  sites             Site[]
+  customers         Customer[]
+  comodatoAssets    ComodatoAsset[]
+  containerTypes    ContainerType[]
+  paymentProvider   PaymentProviderConfig?
+  fiscalConfig      FiscalConfig?
+  fiscalEmitentes   FiscalEmitente[]
+  savedReports      SavedReport[]
+  reportFavorites   ReportFavorite[]
+  reportRuns        ReportRun[]
+  reportSchedules   ReportSchedule[]
+  reportPresets     ReportPreset[]
+  pushSubscriptions PushSubscription[]
 
   @@index([status])
+}
+
+/// Inscrição de push de um aparelho. Uma por (usuário × navegador): o
+/// `endpoint` é a identidade do aparelho no serviço de push do fabricante.
+///
+/// Os alertas são computados ao vivo (lib/alertas/computar) — não existe tabela
+/// de notificação. Por isso a deduplicação mora AQUI, em `alertasEnviados`: o
+/// job grava os IDs que acabou de mandar e, na próxima rodada, só notifica o
+/// que não está na lista.
+model PushSubscription {
+  id       String @id @default(cuid())
+  tenantId String
+  userId   String
+
+  /// URL do serviço de push. Único por aparelho.
+  endpoint  String
+  p256dh    String
+  auth      String
+  userAgent String?
+
+  /// IDs de AlertItem já notificados neste aparelho (ex.: "sem-estoque:<id>").
+  /// O job grava a INTERSEÇÃO com os alertas atuais, não a união: um alerta que
+  /// se resolve sai daqui e volta a notificar se reaparecer, e o array não
+  /// cresce sem limite.
+  alertasEnviados String[] @default([])
+
+  /// Falhas consecutivas do serviço de push. 410/404 remove na hora; o resto
+  /// acumula até o teto e então remove.
+  falhas        Int       @default(0)
+  ultimoEnvio   DateTime?
+  /// Silencia este aparelho até a data (não usado ainda pela interface).
+  silenciadoAte DateTime?
+
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Chave composta e NÃO `@@unique([endpoint])`: o extension injeta tenantId
+  /// no WHERE, e findUnique é proibido em tabela de negócio (ver CLAUDE.md).
+  @@unique([tenantId, endpoint])
+  @@index([tenantId])
+  @@index([tenantId, userId])
 }
 
 model Membership {

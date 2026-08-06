@@ -42,3 +42,7 @@ next-env.d.ts
 
 # prisma generated client
 /src/generated
+
+# wasm do leitor de codigo de barras — gerado no postinstall
+# (scripts/copiar-wasm.mjs). Commitar sairia do ar quando a dep subir de versao.
+/public/wasm
