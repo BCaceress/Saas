@@ -66,16 +66,20 @@ export function SiteHeader() {
           ))}
         </nav>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2">
           <div className="hidden sm:block">
             <ThemeToggle />
           </div>
-          <Link href="/login" className="hidden sm:block">
+          {/* "Entrar" fica visível também no celular: quem já é cliente abre a
+              landing só para achar a porta de entrada. No mobile o CTA de
+              cadastro sai da barra (o herói e o menu carregam ele) — os três
+              juntos não cabem em 360px sem espremer a marca. */}
+          <Link href="/login">
             <Button variant="ghost" size="sm">
               Entrar
             </Button>
           </Link>
-          <Link href="/cadastro">
+          <Link href="/cadastro" className="hidden sm:block">
             <Button size="sm">Testar grátis</Button>
           </Link>
           <button
@@ -104,9 +108,9 @@ export function SiteHeader() {
               </a>
             ))}
             <div className="mt-2 flex items-center gap-2 border-t border-line pt-3">
-              <Link href="/login" onClick={() => setAberto(false)} className="flex-1">
-                <Button variant="secondary" size="sm" className="w-full">
-                  Entrar
+              <Link href="/cadastro" onClick={() => setAberto(false)} className="flex-1">
+                <Button size="md" className="w-full">
+                  Testar grátis
                 </Button>
               </Link>
               <ThemeToggle />

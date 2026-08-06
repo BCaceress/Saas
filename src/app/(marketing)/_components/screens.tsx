@@ -280,8 +280,8 @@ function TelaRelatorios() {
         </span>
       </div>
 
-      <div className="overflow-hidden rounded-[var(--radius)] border border-line bg-canvas">
-        <table className="w-full text-left">
+      <div className="overflow-x-auto rounded-[var(--radius)] border border-line bg-canvas">
+        <table className="w-full min-w-[19rem] text-left">
           <thead>
             <tr className="border-b border-line text-[10px] uppercase tracking-wider text-faint">
               <th className="px-3 py-2 font-medium">Produto</th>

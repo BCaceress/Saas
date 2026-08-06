@@ -74,21 +74,26 @@ export function HeroVisual() {
 
         <table className="w-full text-left">
           <thead>
+            {/* Preço sai no celular: Produto + SKU + medidor já não cabem em
+                360px com uma quarta medida ao lado — e o medidor é o que a
+                landing promete. */}
             <tr className="border-b border-line text-[10px] uppercase tracking-wider text-faint">
-              <th className="px-4 py-2 font-medium">Produto</th>
-              <th className="px-4 py-2 font-medium">Preço</th>
-              <th className="px-4 py-2 font-medium">Estoque</th>
+              <th className="px-3 py-2 font-medium sm:px-4">Produto</th>
+              <th className="hidden px-3 py-2 font-medium sm:table-cell sm:px-4">Preço</th>
+              <th className="px-3 py-2 font-medium sm:px-4">Estoque</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
             {LINHAS.map((r) => (
               <tr key={r.sku}>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3 sm:px-4">
                   <div className="text-[13px] font-medium text-ink">{r.nome}</div>
                   <SkuTag sku={r.sku} className="mt-1" />
                 </td>
-                <td className="px-4 py-3 font-mono text-[13px] text-ink-2 tnum">{r.preco}</td>
-                <td className="px-4 py-3">
+                <td className="hidden px-3 py-3 font-mono text-[13px] text-ink-2 tnum sm:table-cell sm:px-4">
+                  {r.preco}
+                </td>
+                <td className="px-3 py-3 sm:px-4">
                   <StockGauge
                     fechado={r.fechado}
                     ideal={r.ideal}
