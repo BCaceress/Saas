@@ -78,7 +78,7 @@ export function AlertasClient() {
   return (
     <div className="space-y-3">
       {categorias.length > 1 && (
-        <div className="scrollbar-none -mx-3 flex gap-1.5 overflow-x-auto px-3">
+        <div className="scrollbar-none -mx-4 flex gap-2 overflow-x-auto px-4">
           <Chip ativo={filtroEfetivo === null} onClick={() => setFiltro(null)}>
             Tudo {alerts.length}
           </Chip>

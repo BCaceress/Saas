@@ -119,7 +119,7 @@ export function InstalarApp({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        "relative rounded-2xl border border-line bg-surface p-4 text-ink shadow-[var(--shadow-1)]",
+        "relative rounded-[var(--radius-m)] border border-line bg-surface p-4 text-ink shadow-[var(--shadow-m)]",
         className,
       )}
     >
@@ -127,7 +127,7 @@ export function InstalarApp({ className }: { className?: string }) {
         type="button"
         onClick={dispensar}
         aria-label="Dispensar"
-        className="absolute top-2 right-2 grid h-9 w-9 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-ink"
+        className="tap absolute top-2 right-2 grid h-11 w-11 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-ink active:bg-surface-2"
       >
         <X className="h-4 w-4" />
       </button>

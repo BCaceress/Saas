@@ -128,7 +128,7 @@ export function EstoqueClient({
         />
       </div>
 
-      <div className="scrollbar-none -mx-3 flex gap-1.5 overflow-x-auto px-3">
+      <div className="scrollbar-none -mx-4 flex gap-2 overflow-x-auto px-4">
         <Chip ativo={filtro === "tudo"} onClick={() => setFiltro("tudo")}>
           {FILTRO_LABEL.tudo} {saldos.length}
         </Chip>

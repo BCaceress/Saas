@@ -35,9 +35,12 @@ export function MobileTabBar({
   return (
     <nav
       aria-label="Navegação"
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)] print:hidden"
+      className="fixed inset-x-0 bottom-0 z-40 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] print:hidden"
     >
-      <div className="flex items-stretch">
+      {/* Barra "flutuante": descolada da borda, com sombra própria — em vez de
+          uma faixa grudada no rodapé, lê como um bloco de app por cima do
+          conteúdo. */}
+      <div className="flex items-stretch rounded-full border border-line bg-surface/95 px-2 shadow-[var(--shadow-2)] backdrop-blur">
         {abas.map((aba) => (
           <Aba
             key={aba.href}
@@ -69,33 +72,36 @@ function Aba({
       href={aba.href}
       aria-current={ativo ? "page" : undefined}
       className={cn(
-        "relative flex min-h-14 flex-1 flex-col items-center justify-center gap-0.5 px-1 py-2 transition-colors",
+        "tap relative flex min-h-16 flex-1 flex-col items-center justify-center gap-1 px-1 py-2",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]",
         ativo ? "text-brand" : "text-muted",
       )}
     >
-      {ativo && !aba.destaque && (
-        <span className="absolute inset-x-4 top-0 h-0.5 rounded-full bg-brand" aria-hidden />
-      )}
-
       <span
         className={cn(
-          "relative grid place-items-center",
-          // O alvo de destaque sobe e vira cápsula: o polegar acha sem olhar.
+          "relative grid place-items-center transition-colors",
+          // Aba comum: o estado ativo é uma pastilha atrás do ícone — mais
+          // legível de relance que o filete no topo, e não some no dedo.
+          !aba.destaque && "h-8 w-12 rounded-full",
+          !aba.destaque && ativo && "bg-brand-soft",
+          // O alvo de destaque sobe e vira botão flutuante: o polegar acha sem
+          // olhar. A elevação é a única sombra forte da tela — de propósito.
           aba.destaque &&
-            "-mt-5 h-12 w-12 rounded-full bg-brand text-on-brand shadow-[var(--shadow-1)]",
+            "-mt-6 h-14 w-14 rounded-full bg-brand text-on-brand shadow-[var(--shadow-2)] ring-4 ring-surface",
         )}
       >
-        <Icone size={aba.destaque ? 22 : 20} />
+        <Icone size={aba.destaque ? 26 : 22} strokeWidth={ativo && !aba.destaque ? 2.4 : 2} />
         {alertas > 0 && (
           <span
-            className="absolute -top-0.5 -right-1 h-2 w-2 rounded-full bg-danger ring-2 ring-surface"
+            className="absolute top-0.5 right-2 h-2 w-2 rounded-full bg-danger ring-2 ring-surface"
             aria-label={`${alertas} ${alertas === 1 ? "alerta" : "alertas"}`}
           />
         )}
       </span>
 
-      <span className="text-[11px] leading-none font-medium">{aba.label}</span>
+      <span className={cn("text-[11px] leading-none", ativo ? "font-semibold" : "font-medium")}>
+        {aba.label}
+      </span>
     </Link>
   );
 }

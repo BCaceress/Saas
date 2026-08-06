@@ -79,6 +79,12 @@
   --shadow-2: 0 18px 48px -16px rgba(16, 18, 22, 0.2);
   /* Sombra suave de elemento flutuante (sidebar, navbar, cards) */
   --shadow-float: 0 1px 3px rgba(16, 18, 22, 0.04), 0 8px 24px -12px rgba(16, 18, 22, 0.1);
+
+  /* Superfície mobile (/m) — escala de forma própria. Em tela de celular o
+     canto de 24px come área útil e a sombra do desktop vira sujeira: aqui o
+     card fecha em 20px e a elevação é só o suficiente para descolar do canvas. */
+  --radius-m: 1.25rem; /* 20px — cards do PWA */
+  --shadow-m: 0 1px 2px rgba(16, 18, 22, 0.04), 0 6px 16px -12px rgba(16, 18, 22, 0.12);
 }
 
 /* Tema escuro — variáveis. Aplicado pelo sistema (sem data-theme) OU manual
@@ -126,6 +132,7 @@
 
     --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-2: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+    --shadow-m: 0 1px 2px rgba(0, 0, 0, 0.35);
   }
 }
 
@@ -171,6 +178,7 @@
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+  --shadow-m: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
 @theme inline {
@@ -326,6 +334,42 @@ body:has([data-app-shell]) {
 }
 @media (prefers-reduced-motion: reduce) {
   .card-hover:hover {
+    transform: none;
+  }
+}
+
+/* ── Toque de app (superfície /m) ─────────────────────────────────────────
+   No celular não existe hover: o retorno do toque é o alvo afundar um triz e
+   voltar. Curto (140ms) e só transform/cor — nada que force layout. */
+.tap {
+  transition:
+    transform 140ms ease-out,
+    background-color 140ms ease-out,
+    box-shadow 140ms ease-out;
+  -webkit-tap-highlight-color: transparent;
+}
+.tap:active {
+  transform: scale(0.97);
+}
+/* A regra global de reduced-motion zera a duração, mas não o transform em si. */
+@media (prefers-reduced-motion: reduce) {
+  .tap:active {
+    transform: none;
+  }
+}
+
+/* Bloco que chega depois do streaming (KPIs, faixa de operação): entra em
+   fade curto em vez de aparecer seco no lugar do esqueleto. */
+.fade-in-m {
+  animation: fade-in-m 220ms ease-out both;
+}
+@keyframes fade-in-m {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
     transform: none;
   }
 }

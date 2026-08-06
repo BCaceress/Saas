@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, ChevronRight } from "lucide-react";
+import { usePathname } from "next/navigation";
+import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { AlertsProvider, useAlerts } from "@/components/app/alerts-provider";
+import { AlertsProvider } from "@/components/app/alerts-provider";
 import { MobileTabBar } from "@/components/mobile/tab-bar";
+import { SinoAlertas } from "@/components/mobile/sino";
 import type { NavToggles } from "@/components/app/nav-config";
 import type { Acesso } from "@/lib/permissoes";
 
@@ -31,6 +33,12 @@ export function MobileShell({
   tenantNome: string;
   children: React.ReactNode;
 }) {
+  // Na home a barra do topo sairia repetindo o que a própria tela já diz —
+  // empresa, sino — em corpo menor. Lá o cabeçalho é o conteúdo (saudação,
+  // empresa, sino), então a barra fica de fora e o `<main>` assume a área
+  // segura do aparelho.
+  const home = usePathname() === "/m";
+
   return (
     <AlertsProvider>
       <a
@@ -41,10 +49,19 @@ export function MobileShell({
       </a>
 
       <div className="flex min-h-dvh flex-col bg-canvas">
-        <Cabecalho tenantNome={tenantNome} />
+        {!home && <Cabecalho tenantNome={tenantNome} />}
 
-        {/* pb-24 reserva a barra fixa: sem isso o último card fica embaixo dela. */}
-        <main id="conteudo" className="flex-1 px-3 pt-3 pb-24">
+        {/* pb-32 reserva a barra flutuante (64px + respiro + área segura): sem
+            isso o último card fica embaixo dela. O px-4 é a margem de conteúdo
+            da superfície inteira — quem sangra até a borda cancela com
+            `-mx-4 px-4`. */}
+        <main
+          id="conteudo"
+          className={cn(
+            "flex-1 px-4 pb-32",
+            home ? "pt-[calc(env(safe-area-inset-top)+1.5rem)]" : "pt-4",
+          )}
+        >
           {children}
         </main>
 
@@ -55,40 +72,24 @@ export function MobileShell({
 }
 
 function Cabecalho({ tenantNome }: { tenantNome: string }) {
-  const { alerts, loaded } = useAlerts();
-  const total = alerts.length;
-
   return (
-    <header className="sticky top-0 z-30 flex h-12 items-center gap-2 border-b border-line bg-surface px-3 pt-[env(safe-area-inset-top)]">
+    // Fundo do canvas, não do card: a barra é contexto, não conteúdo. A borda
+    // só aparece quando a página rolou por baixo dela.
+    <header className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b border-line/70 bg-canvas/90 px-4 pt-[env(safe-area-inset-top)] backdrop-blur">
+      {/* Empresa é rótulo de onde você está, não a manchete da tela — texto
+          pequeno e em tinta secundária. O destaque é o nome de quem abriu o
+          app, e esse mora no cabeçalho da home. */}
       <Link
         href="/m"
-        className="flex min-w-0 flex-1 items-center gap-1 rounded-full focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+        className="tap flex min-w-0 flex-1 items-center gap-1 rounded-[var(--radius-m)] py-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
       >
-        <span className="truncate font-display text-sm font-semibold text-ink">
+        <span className="truncate text-[13px] font-medium tracking-wide text-ink-2">
           {tenantNome}
         </span>
         <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
       </Link>
 
-      <Link
-        href="/m/alertas"
-        aria-label={
-          loaded && total > 0
-            ? `Alertas: ${total} ${total === 1 ? "pendência" : "pendências"}`
-            : "Alertas"
-        }
-        className={cn(
-          "relative grid h-10 w-10 place-items-center rounded-full text-ink-2",
-          "hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
-        )}
-      >
-        <Bell className="h-5 w-5" />
-        {loaded && total > 0 && (
-          <span className="absolute top-1 right-1 grid h-4 min-w-4 place-items-center rounded-full bg-danger px-1 text-[10px] leading-none font-semibold text-white ring-2 ring-surface">
-            {total > 9 ? "9+" : total}
-          </span>
-        )}
-      </Link>
+      <SinoAlertas className="-mr-1" />
     </header>
   );
 }

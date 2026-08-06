@@ -28,34 +28,34 @@ export function AlertaCard({
   const destino = alerta.href ? hrefMobile(alerta.href) : null;
 
   return (
-    <div className="flex items-start gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-3">
+    <div className="flex items-start gap-4 rounded-[var(--radius-m)] border border-line bg-surface p-4 shadow-[var(--shadow-m)]">
       <span
         className={cn(
-          "mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full",
+          "grid h-10 w-10 shrink-0 place-items-center rounded-full",
           style.soft,
           style.text,
         )}
         aria-hidden
       >
-        <Icone size={18} />
+        <Icone size={20} />
       </span>
 
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", style.dot)} aria-hidden />
-          <p className="truncate text-sm font-semibold text-ink">{alerta.titulo}</p>
+          <p className="truncate text-base leading-tight font-semibold text-ink">{alerta.titulo}</p>
         </div>
 
-        <p className="mt-0.5 text-[13px] leading-snug text-ink-2">{alerta.descricao}</p>
+        <p className="mt-1 text-[13px] leading-snug text-ink-2">{alerta.descricao}</p>
 
         <div className="mt-2 flex items-center gap-2">
           {destino && (
             <Link
               href={destino}
-              className="inline-flex min-h-9 items-center gap-1 rounded-full bg-surface-2 px-3 text-[13px] font-medium text-ink transition-colors hover:bg-brand-soft hover:text-brand-strong focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+              className="tap inline-flex min-h-11 items-center gap-1 rounded-full bg-surface-2 px-4 text-[13px] font-medium text-ink hover:bg-brand-soft hover:text-brand-strong active:bg-brand-soft focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
             >
               {alerta.acaoLabel ?? "Abrir"}
-              <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+              <ChevronRight className="h-4 w-4" aria-hidden />
             </Link>
           )}
 
@@ -63,9 +63,9 @@ export function AlertaCard({
             <button
               type="button"
               onClick={() => onResolver(alerta.id)}
-              className="inline-flex min-h-9 cursor-pointer items-center gap-1 rounded-full px-3 text-[13px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+              className="tap inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-full px-4 text-[13px] font-medium text-muted hover:bg-surface-2 hover:text-ink active:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
             >
-              <Check className="h-3.5 w-3.5" aria-hidden />
+              <Check className="h-4 w-4" aria-hidden />
               Resolver
             </button>
           )}

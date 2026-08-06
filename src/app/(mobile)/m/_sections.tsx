@@ -3,17 +3,16 @@ import {
   AlertTriangle,
   CalendarClock,
   DollarSign,
-  Receipt,
   TrendingUp,
   Truck,
   type LucideIcon,
 } from "lucide-react";
 import { withTenant, type ActiveTenant } from "@/lib/current-tenant";
-import { variacao, type Variacao } from "@/lib/periodo";
+import { resolvePeriodo, variacao, type Variacao } from "@/lib/periodo";
 import { brl, cn } from "@/lib/utils";
-import { Card } from "@/components/ui/misc";
+import { BarraTom, Bolha, MCard, Sparkline, TOM_TEXTO, type Tom } from "@/components/mobile/ui";
 import { KpiCarousel, KpiSlide } from "@/components/mobile/kpi-carousel";
-import { resumoVendas, ruptura, type Range } from "@/app/(app)/relatorios/_data";
+import { resumoVendas, ruptura, serieFinanceiraDiaria, type Range } from "@/app/(app)/relatorios/_data";
 import { contarVencimentos } from "@/app/(app)/estoque/_data";
 import { pedidosEmAndamento } from "@/app/(app)/inicio/_data";
 import type { EstoquePolicy } from "@/lib/estoque-estrategia";
@@ -43,43 +42,47 @@ export type MobileCtx = {
 /* ── Indicadores do dia ─────────────────────────────────────── */
 
 export async function KpisSection({ d }: { d: MobileCtx }) {
-  const { resumo, prev } = await withTenant(d.ctx, async () => {
-    const [resumo, prev] = await Promise.all([
+  // A tendência (sparkline) é sempre "últimos 7 dias", independente do
+  // período do card (hoje): mostra a forma da semana, não refaz o filtro.
+  const serie7d: Range = (() => {
+    const p = resolvePeriodo({ periodo: "7d" });
+    return { inicio: p.inicio, fim: p.fim };
+  })();
+
+  const { resumo, prev, serie } = await withTenant(d.ctx, async () => {
+    const [resumo, prev, serie] = await Promise.all([
       resumoVendas(d.range, d.siteId),
       resumoVendas(d.prevRange, d.siteId),
+      serieFinanceiraDiaria(serie7d, d.siteId),
     ]);
-    return { resumo, prev };
+    return { resumo, prev, serie };
   });
 
   return (
-    <KpiCarousel>
-      <KpiSlide>
+    // Carrossel de largura cheia, não duas colunas: o número do dia é a
+    // manchete da tela e ninguém divide linha com ele. Quem avisa que há mais
+    // indicadores para o lado são os pontos, já que não sobra borda de vizinho.
+    <KpiCarousel pontos>
+      <KpiSlide largura="cheia">
         <Tile
-          label="Receita"
+          label="Receita de hoje"
           valor={brl(resumo.faturamento)}
           delta={variacao(resumo.faturamento, prev.faturamento)}
+          nota={`${resumo.numVendas} ${resumo.numVendas === 1 ? "venda" : "vendas"} · vs. ontem`}
           icone={DollarSign}
-          tom="brand"
+          tom="accent"
+          serie={serie.map((p) => p.receita)}
         />
       </KpiSlide>
-      <KpiSlide>
+      <KpiSlide largura="cheia">
         <Tile
           label="Lucro bruto"
           valor={brl(resumo.margemBruta)}
           delta={variacao(resumo.margemBruta, prev.margemBruta)}
-          nota={`${Math.round(resumo.margemPct)}% da receita`}
+          nota={`${Math.round(resumo.margemPct)}% da receita · vs. ontem`}
           icone={TrendingUp}
           tom="ok"
-        />
-      </KpiSlide>
-      <KpiSlide>
-        <Tile
-          label="Vendas"
-          valor={String(resumo.numVendas)}
-          delta={variacao(resumo.numVendas, prev.numVendas)}
-          nota={`ticket ${brl(resumo.ticket)}`}
-          icone={Receipt}
-          tom="info"
+          serie={serie.map((p) => p.lucro)}
         />
       </KpiSlide>
     </KpiCarousel>
@@ -89,20 +92,19 @@ export async function KpisSection({ d }: { d: MobileCtx }) {
 export function KpisFallback() {
   return (
     <KpiCarousel>
-      {[0, 1, 2].map((i) => (
-        <KpiSlide key={i}>
-          <Card className="h-28 animate-pulse bg-surface-2" />
-        </KpiSlide>
-      ))}
+      <KpiSlide largura="cheia">
+        <MCard className="h-32 animate-pulse bg-surface-2" />
+      </KpiSlide>
     </KpiCarousel>
   );
 }
 
-const TOM_TILE = {
-  brand: "bg-brand-soft text-brand",
-  ok: "bg-ok-soft text-ok",
-  info: "bg-info-soft text-info",
-  danger: "bg-danger-soft text-danger",
+/** Variação em pastilha: tinta + fundo do próprio sinal, porque agora o card
+ * é branco — verde sobre branco é legível sem competir com o valor. */
+const TOM_DELTA = {
+  up: "bg-ok-soft text-ok",
+  down: "bg-danger-soft text-danger",
+  flat: "bg-surface-2 text-muted",
 } as const;
 
 function Tile({
@@ -110,43 +112,61 @@ function Tile({
   valor,
   delta,
   nota,
-  icone: Icone,
+  icone,
   tom,
+  serie,
 }: {
   label: string;
   valor: string;
   delta?: Variacao | null;
   nota?: string;
   icone: LucideIcon;
-  tom: keyof typeof TOM_TILE;
+  tom: Tom;
+  serie?: number[];
 }) {
+  const dir = delta?.dir ?? "flat";
+
   return (
-    <Card className="flex h-full flex-col gap-2 p-4">
+    // h-32 fixo: os dois cards terminam na mesma linha. Cartão branco — a cor
+    // do tom entra só no ícone, na tendência e (quando há) na pastilha.
+    <MCard className="fade-in-m flex h-32 flex-col justify-between overflow-hidden p-4">
+      {/* Ícone e rótulo na mesma linha: o que o número mede se lê antes dele. */}
       <div className="flex items-center gap-2">
-        <span className={cn("grid h-7 w-7 place-items-center rounded-full", TOM_TILE[tom])}>
-          <Icone className="h-4 w-4" aria-hidden />
-        </span>
-        <span className="text-xs font-medium text-ink-2">{label}</span>
-      </div>
-
-      <p className="font-display text-2xl leading-none font-semibold text-ink">{valor}</p>
-
-      <div className="flex min-h-4 items-center gap-2 text-[11px]">
+        <Bolha icone={icone} tom={tom} tamanho="sm" />
+        <p className="min-w-0 flex-1 truncate text-[13px] leading-tight font-medium text-ink-2">
+          {label}
+        </p>
         {delta?.pct != null && (
           // Seta + sinal, não só cor: daltonismo não pode custar a leitura.
           <span
             className={cn(
-              "font-medium",
-              delta.dir === "up" ? "text-ok" : delta.dir === "down" ? "text-danger" : "text-muted",
+              "inline-flex shrink-0 items-center gap-0.5 rounded-full px-2 py-1 text-[11px] leading-none font-semibold tabular-nums",
+              TOM_DELTA[dir],
             )}
           >
-            {delta.dir === "up" ? "▲" : delta.dir === "down" ? "▼" : "—"}{" "}
+            {dir === "up" ? "▲" : dir === "down" ? "▼" : "—"}
             {Math.abs(delta.pct).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%
           </span>
         )}
-        {nota && <span className="truncate text-muted">{nota}</span>}
       </div>
-    </Card>
+
+      {/* O valor é o que se lê de longe, de pé: 30px, tinta cheia — a largura
+          do carrossel é justamente o que compra esse tamanho. */}
+      <p className="font-display text-[30px] leading-none font-semibold text-ink tabular-nums">
+        {valor}
+      </p>
+
+      <div className="flex items-end justify-between gap-3">
+        {nota && <p className="min-w-0 truncate text-[12px] text-muted">{nota}</p>}
+        {serie && serie.length > 1 && (
+          // A tendência é rodapé, não moldura: 80×28 no canto, do tamanho de
+          // um gesto — quem quer a série abre o relatório.
+          <div className="h-7 w-20 shrink-0">
+            <Sparkline valores={serie} tom={tom} />
+          </div>
+        )}
+      </div>
+    </MCard>
   );
 }
 
@@ -198,42 +218,42 @@ export async function OperacaoSection({ d }: { d: MobileCtx }) {
   ];
 
   return (
-    <Card className="divide-y divide-line overflow-hidden">
+    // Três cards lado a lado, não uma lista dividida: cada pendência respira
+    // sozinha e o número grande (a informação que importa de relance) fica
+    // livre pra usar a cor do tom, sem disputar linha com ícone e texto.
+    // Tudo centrado na coluna — a 118px de largura não há margem esquerda que
+    // valha o alinhamento, e a pilha ícone→texto→número lê de cima a baixo.
+    <div className="grid grid-cols-3 gap-2">
       {linhas.map((l) => (
         <Link
           key={l.label}
           href={l.href}
-          className="flex min-h-14 items-center gap-3 px-4 py-3 transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          className="tap fade-in-m flex min-h-36 flex-col items-center gap-2 rounded-[var(--radius-m)] border border-line bg-surface p-3 text-center shadow-[var(--shadow-m)] hover:border-line-strong active:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
         >
-          <span
-            className={cn(
-              "grid h-8 w-8 shrink-0 place-items-center rounded-full",
-              l.tom === "danger"
-                ? "bg-danger-soft text-danger"
-                : l.tom === "warn"
-                  ? "bg-warn-soft text-warn"
-                  : l.tom === "ok"
-                    ? "bg-ok-soft text-ok"
-                    : "bg-info-soft text-info",
-            )}
-          >
-            <l.icone className="h-4 w-4" aria-hidden />
-          </span>
+          <Bolha icone={l.icone} tom={l.tom} tamanho="md" />
 
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-medium text-ink">{l.label}</span>
-            <span className="block truncate text-xs text-muted">{l.nota}</span>
-          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[12px] leading-tight font-medium text-ink">{l.label}</p>
+            <p className="mt-0.5 truncate text-[11px] leading-tight text-muted">{l.nota}</p>
+          </div>
 
-          <span className="font-display text-lg font-semibold text-ink tabular-nums">
+          <p className={cn("font-display text-2xl leading-none font-semibold tabular-nums", TOM_TEXTO[l.tom])}>
             {l.valor}
-          </span>
+          </p>
+
+          <BarraTom tom={l.tom} ativo={l.valor > 0} />
         </Link>
       ))}
-    </Card>
+    </div>
   );
 }
 
 export function OperacaoFallback() {
-  return <Card className="h-44 animate-pulse bg-surface-2" />;
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      <MCard className="h-36 animate-pulse bg-surface-2" />
+      <MCard className="h-36 animate-pulse bg-surface-2" />
+      <MCard className="h-36 animate-pulse bg-surface-2" />
+    </div>
+  );
 }

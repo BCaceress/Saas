@@ -48,7 +48,7 @@ export default async function RelatoriosMobilePage({
         descricao={`${visiveis.length} disponíveis para você.`}
       />
 
-      <div className="scrollbar-none -mx-3 mb-3 flex gap-1.5 overflow-x-auto px-3">
+      <div className="scrollbar-none -mx-4 mb-4 flex gap-2 overflow-x-auto px-4">
         {(
           [
             ["hoje", "Hoje"],

@@ -281,7 +281,7 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
       </ul>
 
       {/* Barra fixa acima da barra de abas do shell. */}
-      <div className="fixed inset-x-0 bottom-14 z-30 border-t border-line bg-surface px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+      <div className="fixed inset-x-0 bottom-16 z-30 border-t border-line bg-surface px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <div className="flex items-center gap-2">
           <div className="min-w-0 flex-1">
             <p className="text-[13px] font-medium text-ink">
