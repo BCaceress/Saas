@@ -697,6 +697,179 @@ export async function bulkArchiveProducts(ids: string[], ativo: boolean) {
   });
 }
 
+// ── Edição em lote (listagem) ──────────────────────────────
+const bulkEditSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1, "Selecione ao menos um produto."),
+  /** Ausente = campo não é tocado. */
+  subcategoryId: z.string().min(1).optional(),
+  /** Ausente = não toca; `null` = tira a marca do produto. */
+  brandId: z.string().min(1).nullable().optional(),
+  /** Marca nova pelo nome — cria (ou reaproveita a existente) e ganha do brandId. */
+  marcaNome: z.string().optional(),
+  fornecedores: z
+    .object({
+      // substituir com lista vazia = deixa o produto sem fornecedor.
+      modo: z.enum(["substituir", "adicionar", "remover"]),
+      ids: z.array(z.string().min(1)).default([]),
+    })
+    .optional(),
+});
+
+export type BulkEditInput = z.input<typeof bulkEditSchema>;
+
+/**
+ * Aplica categoria/subcategoria, marca e fornecedores a vários produtos de uma
+ * vez (barra de seleção da listagem). Campo ausente não é tocado — o painel
+ * manda só o que o operador escolheu mexer.
+ *
+ * O SKU **não** é regerado ao trocar a subcategoria: ele é a etiqueta física da
+ * prateleira e já está impresso/colado. Devolve quantos produtos foram alterados.
+ */
+export async function bulkEditProducts(input: BulkEditInput): Promise<number> {
+  return tx(async (tid) => {
+    const d = bulkEditSchema.parse(input);
+    const ids = [...new Set(d.ids)];
+
+    // Confere que os produtos são deste tenant antes de gravar qualquer coisa:
+    // o extension filtra o WHERE, então a lista já volta peneirada.
+    const alvos = await db.product.findMany({
+      where: { id: { in: ids } },
+      select: { id: true },
+    });
+    const alvoIds = alvos.map((a) => a.id);
+    if (!alvoIds.length) return 0;
+
+    // ── Campos escalares do produto ──
+    const data: { subcategoryId?: string; brandId?: string | null } = {};
+
+    if (d.subcategoryId) {
+      const sub = await db.subcategory.findFirst({
+        where: { id: d.subcategoryId },
+        select: { id: true },
+      });
+      if (!sub) throw new Error("Subcategoria inválida.");
+      data.subcategoryId = d.subcategoryId;
+    }
+
+    if (d.marcaNome?.trim()) {
+      data.brandId = await resolveBrandId(tid, null, d.marcaNome);
+    } else if (d.brandId !== undefined) {
+      if (d.brandId) {
+        const brand = await db.brand.findFirst({
+          where: { id: d.brandId },
+          select: { id: true },
+        });
+        if (!brand) throw new Error("Marca inválida.");
+      }
+      data.brandId = d.brandId; // null = limpa
+    }
+
+    if (Object.keys(data).length) {
+      await db.product.updateMany({ where: { id: { in: alvoIds } }, data });
+    }
+
+    // ── Fornecedores ──
+    if (d.fornecedores) {
+      const { modo } = d.fornecedores;
+      const pedidos = [...new Set(d.fornecedores.ids)].filter(Boolean);
+      const validos = pedidos.length
+        ? await db.supplier.findMany({
+            where: { id: { in: pedidos } },
+            select: { id: true },
+          })
+        : [];
+      const validSet = new Set(validos.map((s) => s.id));
+      // Ordem preservada: o primeiro da lista é quem vira principal.
+      const lista = pedidos.filter((id) => validSet.has(id));
+      if (pedidos.length && !lista.length) throw new Error("Fornecedor inválido.");
+
+      if (modo === "substituir") {
+        // Custo negociado é dado do operador, não do vínculo: quem continua na
+        // lista leva o custo junto em vez de voltar a zero.
+        const antes = await db.productSupplier.findMany({
+          where: { productId: { in: alvoIds } },
+          select: { productId: true, supplierId: true, custoFornecedor: true, codigoNoFornecedor: true },
+        });
+        const memoria = new Map(
+          antes.map((a) => [`${a.productId}:${a.supplierId}`, a]),
+        );
+        await db.productSupplier.deleteMany({ where: { productId: { in: alvoIds } } });
+        if (lista.length) {
+          await db.productSupplier.createMany({
+            data: alvoIds.flatMap((productId) =>
+              lista.map((supplierId, i) => {
+                const antigo = memoria.get(`${productId}:${supplierId}`);
+                return {
+                  tenantId: tid,
+                  productId,
+                  supplierId,
+                  custoFornecedor: antigo?.custoFornecedor ?? null,
+                  codigoNoFornecedor: antigo?.codigoNoFornecedor ?? null,
+                  isPrincipal: i === 0,
+                };
+              }),
+            ),
+          });
+        }
+      } else if (modo === "adicionar" && lista.length) {
+        const atuais = await db.productSupplier.findMany({
+          where: { productId: { in: alvoIds } },
+          select: { productId: true, supplierId: true, isPrincipal: true },
+        });
+        const porProduto = new Map<string, { sids: Set<string>; temPrincipal: boolean }>();
+        for (const pid of alvoIds) porProduto.set(pid, { sids: new Set(), temPrincipal: false });
+        for (const a of atuais) {
+          const e = porProduto.get(a.productId);
+          if (!e) continue;
+          e.sids.add(a.supplierId);
+          if (a.isPrincipal) e.temPrincipal = true;
+        }
+        const novos = alvoIds.flatMap((productId) => {
+          const e = porProduto.get(productId)!;
+          return lista
+            .filter((supplierId) => !e.sids.has(supplierId))
+            .map((supplierId) => {
+              // Produto que ainda não tinha ninguém ganha o primeiro como principal.
+              const isPrincipal = !e.temPrincipal;
+              e.temPrincipal = true;
+              return { tenantId: tid, productId, supplierId, isPrincipal };
+            });
+        });
+        if (novos.length) await db.productSupplier.createMany({ data: novos });
+      } else if (modo === "remover" && lista.length) {
+        await db.productSupplier.deleteMany({
+          where: { productId: { in: alvoIds }, supplierId: { in: lista } },
+        });
+        // Produto que perdeu o principal fica com uma lista sem dono — elege o
+        // primeiro que sobrou, senão nenhuma tela sabe qual custo usar.
+        const restantes = await db.productSupplier.findMany({
+          where: { productId: { in: alvoIds } },
+          select: { id: true, productId: true, isPrincipal: true },
+        });
+        const orfaos = new Map<string, string>();
+        const comDono = new Set<string>();
+        for (const r of restantes) {
+          if (r.isPrincipal) comDono.add(r.productId);
+          else if (!orfaos.has(r.productId)) orfaos.set(r.productId, r.id);
+        }
+        const promover = [...orfaos.entries()]
+          .filter(([pid]) => !comDono.has(pid))
+          .map(([, linkId]) => linkId);
+        if (promover.length) {
+          await db.productSupplier.updateMany({
+            where: { id: { in: promover } },
+            data: { isPrincipal: true },
+          });
+        }
+      }
+    }
+
+    ok();
+    revalidatePath("/fornecedores", "layout");
+    return alvoIds.length;
+  });
+}
+
 async function attachTags(tid: string, productId: string, tags: string[]) {
   for (const raw of tags) {
     const nome = raw.trim();

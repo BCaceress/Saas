@@ -4,6 +4,7 @@ import { Cloud, Headphones } from "lucide-react";
 import { AuthTopbar } from "./_components/auth-topbar";
 import { BrandSymbol } from "./_components/brand-symbol";
 import { Showcase } from "./_components/showcase";
+import { version } from "../../../package.json";
 
 const garantias = [
   { icon: Cloud, titulo: "Backup automático", texto: "Seus dados salvos todos os dias." },
@@ -93,6 +94,11 @@ export default async function AuthLayout({ children }: { children: React.ReactNo
                 ))}
               </div>
             </div>
+
+            {/* Versão do build: ajuda o suporte a saber o que o operador está vendo. */}
+            <p className="mt-5 text-center font-mono text-[11px] tracking-tight text-[var(--auth-muted)]">
+              {version}
+            </p>
           </div>
         </div>
       </div>

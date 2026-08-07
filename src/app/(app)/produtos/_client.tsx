@@ -26,6 +26,7 @@ import { BrandSheet, CategorySheet, StorageSheet, SupplierSheet } from "./_sheet
 import { CsvSheet } from "./_sheets/csv-sheet";
 import { EtiquetasSheet } from "./_sheets/etiquetas-sheet";
 import { ImagensSheet, type ProdutoImagem } from "./_sheets/imagens-sheet";
+import { LoteSheet } from "./_sheets/lote-sheet";
 import { archiveProduct, getGerenciarExtras } from "./actions";
 import type {
   ProductRow, BrandOpt, SubcategoryFilterOpt,
@@ -33,7 +34,7 @@ import type {
 } from "./_types";
 import type { GerenciarExtras } from "./_data";
 
-type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv" | "imagens";
+type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv" | "imagens" | "lote";
 
 /**
  * Teto de produtos por rodada de busca de imagem. A cota da base de códigos é
@@ -332,6 +333,15 @@ export function ProdutosClient(props: {
       })),
     );
     setSheet("imagens");
+  }
+
+  // ── Edição em lote (categoria, marca, fornecedores) ──
+  /** Fila congelada na abertura do painel — mesma ideia da busca de imagens. */
+  const [loteAlvo, setLoteAlvo] = useState<{ id: string; nome: string; sku: string }[]>([]);
+  function abrirLote(lista: ProductRow[]) {
+    setLoteAlvo(lista.map((p) => ({ id: p.id, nome: p.nome, sku: p.sku })));
+    ensureExtras();
+    setSheet("lote");
   }
 
   const temProdutos = rows.length > 0;
@@ -842,6 +852,19 @@ export function ProdutosClient(props: {
             onAplicado={() => router.refresh()}
           />
         )}
+        {sheet === "lote" && (
+          extras
+            ? <LoteSheet
+                open
+                onClose={() => setSheet(null)}
+                produtos={loteAlvo}
+                categoryTree={extras.categoryTree}
+                brands={brandOpts}
+                suppliers={extras.supplierRows}
+                onAplicado={() => { setSelected(new Set()); router.refresh(); }}
+              />
+            : <LoadingSheet title="Editar em lote" onClose={() => setSheet(null)} />
+        )}
       </div>
 
       {/* ── Barra de ações em lote ──
@@ -851,6 +874,7 @@ export function ProdutosClient(props: {
       {selected.size > 0 && !painelAberto && (
         <BulkBar
           count={selected.size}
+          onEditar={() => abrirLote(rows.filter((p) => selected.has(p.id)))}
           onEtiquetas={() => setEtiquetasOpen(true)}
           onExportar={exportarSelecionados}
           onImagens={() => abrirImagens(rows.filter((p) => selected.has(p.id)))}
@@ -970,9 +994,11 @@ function DensityBtn({ active, onClick, icon, children }: { active: boolean; onCl
 // ── Barra de ações em lote (flutuante) ───────────────────────────────────────
 
 function BulkBar({
-  count, onEtiquetas, onExportar, onImagens, onLimpar,
+  count, onEditar, onEtiquetas, onExportar, onImagens, onLimpar,
 }: {
   count: number;
+  /** Categoria/subcategoria, marca e fornecedores dos selecionados. */
+  onEditar: () => void;
   onEtiquetas: () => void;
   onExportar: () => void;
   onImagens: () => void;
@@ -987,7 +1013,10 @@ function BulkBar({
           {count} selecionado{count === 1 ? "" : "s"}
         </span>
         <div className="h-5 w-px bg-line" />
-        <Button size="sm" onClick={onEtiquetas} className="gap-1.5">
+        <Button size="sm" onClick={onEditar} className="gap-1.5">
+          <SlidersHorizontal size={15} /> Editar em lote
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onEtiquetas} className="gap-1.5">
           <Printer size={15} /> Imprimir etiquetas
         </Button>
         <Button variant="ghost" size="sm" onClick={onImagens} className="gap-1.5">
