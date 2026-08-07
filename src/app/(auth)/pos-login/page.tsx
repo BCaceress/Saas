@@ -2,10 +2,12 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { basePrisma } from "@/lib/prisma";
 import { tenantUrl, rootUrl } from "@/lib/urls";
+import { homeDoLogin } from "@/lib/superficie-server";
 
 /**
  * Roteador pós-login OAuth: descobre o tenant do usuário (provisionado no
- * evento createUser) e manda para o subdomínio — onboarding ou produtos.
+ * evento createUser) e manda para o subdomínio — onboarding, PWA (`/m`, quando
+ * entrou pelo celular) ou app completo.
  */
 export default async function PosLoginPage() {
   const session = await auth();
@@ -23,5 +25,6 @@ export default async function PosLoginPage() {
   }
 
   const { subdomain, onboardingDone } = membership.tenant;
-  redirect(tenantUrl(subdomain, onboardingDone ? "/inicio" : "/onboarding"));
+  if (!onboardingDone) redirect(tenantUrl(subdomain, "/onboarding"));
+  redirect(tenantUrl(subdomain, await homeDoLogin()));
 }

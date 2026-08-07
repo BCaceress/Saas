@@ -9,6 +9,7 @@ import { basePrisma } from "@/lib/prisma";
 import { signupWithTenant, SignupError } from "@/lib/provisioning";
 import { consumir, liberar, mensagemBloqueio } from "@/lib/rate-limit";
 import { tenantUrl } from "@/lib/urls";
+import { homeDoLogin } from "@/lib/superficie-server";
 
 /** `email`/`name` voltam junto do erro: o formulário se repõe sozinho em vez de
  *  obrigar a digitar tudo de novo (o React reseta os campos após a action). */
@@ -55,7 +56,11 @@ const loginSchema = z.object({
   password: z.string().min(1, "Informe a senha."),
 });
 
-/** Destino pós-login do usuário: subdomínio do tenant + onboarding ou produtos. */
+/**
+ * Destino pós-login do usuário: subdomínio do tenant + onboarding ou a home da
+ * superfície do aparelho (`/m` no celular, `/inicio` no computador). O
+ * onboarding vem antes das duas — ele só existe na superfície completa.
+ */
 async function destinationForUser(email: string): Promise<string> {
   const user = await basePrisma.user.findUnique({
     where: { email: email.toLowerCase().trim() },
@@ -69,7 +74,8 @@ async function destinationForUser(email: string): Promise<string> {
   });
   const tenant = user?.memberships[0]?.tenant;
   if (!tenant) return tenantUrl("app", "/"); // fallback improvável
-  return tenantUrl(tenant.subdomain, tenant.onboardingDone ? "/inicio" : "/onboarding");
+  if (!tenant.onboardingDone) return tenantUrl(tenant.subdomain, "/onboarding");
+  return tenantUrl(tenant.subdomain, await homeDoLogin());
 }
 
 export async function signupAction(

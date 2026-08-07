@@ -2,7 +2,7 @@ import NextAuth from "next-auth";
 import { NextResponse } from "next/server";
 import { authConfig } from "./auth.config";
 import { getSubdomainFromHost } from "./lib/subdomain";
-import { SUPERFICIE_COOKIE, SUPERFICIE_MOBILE } from "./lib/superficie";
+import { SUPERFICIE_COOKIE, homeDaSuperficie } from "./lib/superficie";
 
 const { auth } = NextAuth(authConfig);
 
@@ -43,12 +43,17 @@ export default auth((req) => {
     return NextResponse.redirect(loginUrl);
   }
 
-  // Raiz do subdomínio → home do app. Qual home depende da superfície escolhida
-  // no aparelho (ver lib/superficie). É redirect, não rewrite: o path final é
-  // real, então nada aqui esbarra na restrição de hidratação explicada acima.
+  // Raiz do subdomínio → home do app. Qual home: a escolha do aparelho quando
+  // existe, senão o palpite pelo user-agent (ver lib/superficie). É redirect,
+  // não rewrite: o path final é real, então nada aqui esbarra na restrição de
+  // hidratação explicada acima.
   if (pathname === "/") {
-    const mobile = req.cookies.get(SUPERFICIE_COOKIE)?.value === SUPERFICIE_MOBILE;
-    return NextResponse.redirect(new URL(mobile ? "/m" : "/inicio", req.url));
+    const home = homeDaSuperficie({
+      cookie: req.cookies.get(SUPERFICIE_COOKIE)?.value,
+      userAgent: req.headers.get("user-agent"),
+      chUaMobile: req.headers.get("sec-ch-ua-mobile"),
+    });
+    return NextResponse.redirect(new URL(home, req.url));
   }
 
   return NextResponse.next();
