@@ -6,6 +6,7 @@ import { getActiveSiteId } from "@/lib/sites";
 import { listSitePaymentMethods } from "@/lib/vendas";
 import { db } from "@/lib/prisma";
 import { loadProdutosVenda } from "@/app/(app)/vendas/_data";
+import { homeDoLogin } from "@/lib/superficie-server";
 import { TotemKiosk } from "./_kiosk";
 
 export const metadata = { title: "Autoatendimento — NoHub Market" };
@@ -15,6 +16,10 @@ export default async function TotemPage() {
   // Fora do grupo (app): os guards do shell não valem aqui.
   if (!ctx.tenant.onboardingDone) redirect("/onboarding");
   if (!featureAtiva(ctx.tenant, "autoatendimento")) redirect("/inicio");
+
+  // Para onde o "voltar ao painel" leva: quem abriu o quiosque no tablet volta
+  // para o `/m`, não para a tela de mesa.
+  const painelHref = await homeDoLogin();
 
   return runWithTenant(ctx.tenant.id, async () => {
     const siteId = await getActiveSiteId();
@@ -46,6 +51,7 @@ export default async function TotemPage() {
         controleIdade={site?.controleIdade ?? false}
         temPin={!!ctx.tenant.totemPinHash}
         maisVendidos={maisVendidos}
+        painelHref={painelHref}
       />
     );
   });

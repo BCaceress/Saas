@@ -3,6 +3,7 @@ import { FaixaAssinatura } from "@/components/app/faixa-assinatura";
 import { Toaster } from "@/components/ui/toast";
 import { carregarShell } from "@/lib/shell-context";
 import { withTenant } from "@/lib/current-tenant";
+import { featureAtiva } from "@/lib/planos";
 import { db } from "@/lib/prisma";
 
 /**
@@ -41,6 +42,7 @@ export default async function MobileLayout({
       toggles={toggles}
       tenantNome={ctx.tenant.nome}
       multiSite={totalSites > 1}
+      podeCopiloto={featureAtiva(ctx.tenant, "ia.copiloto") && admin}
     >
       {/* Cobrança pendente precisa aparecer nas duas superfícies: quem só usa o
           celular não pode ser o último a saber que a conta vai travar. */}

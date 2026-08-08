@@ -3,6 +3,7 @@
 import * as React from "react";
 import { usePathname } from "next/navigation";
 import { Sparkles } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { CopilotoPanel } from "./copiloto-panel";
 
 /** Telas onde o copiloto não deve aparecer: PDV e autoatendimento pedem tela cheia. */
@@ -13,7 +14,19 @@ const ROTAS_BLOQUEADAS = ["/vendas", "/totem"];
  * `CommandPalette`. Some enquanto o painel está aberto (o `Sheet` já cobre a
  * tela) em vez de disputar z-index com ele.
  */
-export function CopilotoLauncher({ podeVer }: { podeVer: boolean }) {
+export function CopilotoLauncher({
+  podeVer,
+  posicao,
+}: {
+  podeVer: boolean;
+  /**
+   * Posição do botão. O padrão sobe acima da `BottomNav` do app e desce no
+   * desktop; a superfície `/m` passa a sua, porque lá a barra de polegar é
+   * flutuante e existe em TODA largura — inclusive no tablet, onde o `md:` do
+   * padrão jogaria o botão para cima dela.
+   */
+  posicao?: string;
+}) {
   const pathname = usePathname();
   const [aberto, setAberto] = React.useState(false);
 
@@ -30,7 +43,10 @@ export function CopilotoLauncher({ podeVer }: { podeVer: boolean }) {
           type="button"
           onClick={() => setAberto(true)}
           aria-label="Abrir NoHub IA"
-          className="fixed bottom-20 right-4 z-45 flex h-14 w-14 cursor-pointer items-center justify-center rounded-full bg-brand text-on-brand shadow-[var(--shadow-2)] transition-transform hover:scale-105 md:bottom-5 md:right-5 print:hidden"
+          className={cn(
+            "fixed z-45 flex h-14 w-14 cursor-pointer items-center justify-center rounded-full bg-brand text-on-brand shadow-[var(--shadow-2)] transition-transform hover:scale-105 print:hidden",
+            posicao ?? "bottom-20 right-4 md:bottom-5 md:right-5",
+          )}
         >
           <Sparkles size={22} />
         </button>

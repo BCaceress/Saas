@@ -21,6 +21,7 @@ import { rotaInicialMobile } from "@/components/mobile/nav";
 import { InstalarApp } from "@/components/mobile/instalar-app";
 import { Bolha, MCardLink, SecaoTitulo } from "@/components/mobile/ui";
 import { PrecisaDeVoce } from "./_precisa-de-voce";
+import { UltimasFallback, UltimasSection, VerExtrato } from "./_ultimas";
 import {
   KpisSection,
   KpisFallback,
@@ -121,6 +122,15 @@ export default async function MobileHome() {
           <OperacaoSection d={d} />
         </Suspense>
       </section>
+
+      {podeEmAlguma(ctx.acessos, "estoque.ver") && (
+        <section className="fade-up space-y-2" style={{ animationDelay: "150ms" }}>
+          <SecaoTitulo acao={<VerExtrato />}>Últimas movimentações</SecaoTitulo>
+          <Suspense fallback={<UltimasFallback />}>
+            <UltimasSection d={d} />
+          </Suspense>
+        </section>
+      )}
 
       <div className="fade-up" style={{ animationDelay: "180ms" }}>
         <Atalhos acessos={ctx.acessos} />

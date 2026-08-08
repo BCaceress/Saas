@@ -150,9 +150,14 @@ function Miolo({
         )}
       </span>
 
-      <span className={cn("text-[11px] leading-none", ativo ? "font-semibold" : "font-medium")}>
-        {aba.label}
-      </span>
+      {/* O alvo de destaque não leva rótulo: a cápsula elevada com o "+" já diz
+          o que faz, e a palavra embaixo dela só empurrava o botão para dentro
+          da linha dos vizinhos. O nome continua no `aria-label` da aba. */}
+      {!aba.destaque && (
+        <span className={cn("text-[11px] leading-none", ativo ? "font-semibold" : "font-medium")}>
+          {aba.label}
+        </span>
+      )}
     </>
   );
 }

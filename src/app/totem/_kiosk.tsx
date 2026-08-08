@@ -33,6 +33,7 @@ export function TotemKiosk({
   controleIdade,
   temPin,
   maisVendidos,
+  painelHref,
 }: {
   siteId: string | null;
   produtos: ProdutoVenda[];
@@ -42,6 +43,12 @@ export function TotemKiosk({
   controleIdade: boolean;
   temPin: boolean;
   maisVendidos: string[];
+  /**
+   * Painel de volta: `/m` num aparelho de mão, `/inicio` no computador. O
+   * quiosque roda fora do `(app)` e do `(mobile)`, então quem sabe disso é o
+   * servidor que montou a página (ver `lib/superficie-server`).
+   */
+  painelHref: string;
 }) {
   const router = useRouter();
   const [iniciado, setIniciado] = useState(false);
@@ -84,7 +91,7 @@ export function TotemKiosk({
 
   function sair() {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    router.push("/inicio");
+    router.push(painelHref);
   }
 
   // Tela apagando no meio da venda é o pior defeito de um quiosque em celular:
@@ -143,7 +150,7 @@ export function TotemKiosk({
           Toque para começar
         </button>
         <button
-          onClick={() => router.push("/inicio")}
+          onClick={() => router.push(painelHref)}
           className="text-sm text-faint underline-offset-4 hover:text-muted hover:underline"
         >
           Voltar ao painel

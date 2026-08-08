@@ -111,7 +111,12 @@ export function Sheet({
         </header>
         <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
         {footer && (
-          <footer className="border-t border-line px-5 py-3.5">{footer}</footer>
+          // A área segura entra no rodapé porque o Sheet ocupa a tela inteira
+          // no celular: sem ela, a barra de gestos do iPhone come o campo de
+          // digitar. No computador `env()` vale zero e nada muda.
+          <footer className="border-t border-line px-5 py-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))]">
+            {footer}
+          </footer>
         )}
       </div>
       <style>{`

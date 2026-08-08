@@ -3,14 +3,26 @@ import {
   AlertTriangle,
   CalendarClock,
   DollarSign,
+  PackageSearch,
   TrendingUp,
   Truck,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import { withTenant, type ActiveTenant } from "@/lib/current-tenant";
+import { podeEmAlguma } from "@/lib/permissoes";
+import { db } from "@/lib/prisma";
 import { resolvePeriodo, variacao, type Variacao } from "@/lib/periodo";
 import { brl, cn } from "@/lib/utils";
-import { BarraTom, Bolha, MCard, Sparkline, TOM_TEXTO, type Tom } from "@/components/mobile/ui";
+import {
+  BarraTom,
+  Bolha,
+  MCard,
+  MCardLink,
+  Sparkline,
+  TOM_TEXTO,
+  type Tom,
+} from "@/components/mobile/ui";
 import { KpiCarousel, KpiSlide } from "@/components/mobile/kpi-carousel";
 import { resumoVendas, ruptura, serieFinanceiraDiaria, type Range } from "@/app/(app)/relatorios/_data";
 import { contarVencimentos } from "@/app/(app)/estoque/_data";
@@ -49,13 +61,22 @@ export async function KpisSection({ d }: { d: MobileCtx }) {
     return { inicio: p.inicio, fim: p.fim };
   })();
 
-  const { resumo, prev, serie } = await withTenant(d.ctx, async () => {
-    const [resumo, prev, serie] = await Promise.all([
+  // Cadastro só entra no carrossel para quem enxerga o cadastro: um card de
+  // "0 clientes" para quem não tem o módulo é ruído, não indicador.
+  const veProdutos = podeEmAlguma(d.ctx.acessos, "produto.ver");
+  const veClientes = podeEmAlguma(d.ctx.acessos, "cliente.ver");
+
+  const { resumo, prev, serie, produtos, clientes } = await withTenant(d.ctx, async () => {
+    const [resumo, prev, serie, produtos, clientes] = await Promise.all([
       resumoVendas(d.range, d.siteId),
       resumoVendas(d.prevRange, d.siteId),
       serieFinanceiraDiaria(serie7d, d.siteId),
+      // Contagem, não listagem: os dois são `count` indexado por tenant, na
+      // mesma ida das leituras que a seção já fazia.
+      veProdutos ? db.product.count({ where: { ativo: true } }) : Promise.resolve(0),
+      veClientes ? db.customer.count({ where: { ativo: true } }) : Promise.resolve(0),
     ]);
-    return { resumo, prev, serie };
+    return { resumo, prev, serie, produtos, clientes };
   });
 
   return (
@@ -85,6 +106,33 @@ export async function KpisSection({ d }: { d: MobileCtx }) {
           serie={serie.map((p) => p.lucro)}
         />
       </KpiSlide>
+      {/* Os dois de cadastro fecham o carrossel: são retrato, não movimento —
+          não têm "vs. ontem" nem tendência, e por isso vêm depois dos dois
+          números do dia. */}
+      {veProdutos && (
+        <KpiSlide largura="cheia">
+          <Tile
+            label="Produtos ativos"
+            valor={produtos.toLocaleString("pt-BR")}
+            nota="no catálogo"
+            icone={PackageSearch}
+            tom="brand"
+            href="/m/produtos"
+          />
+        </KpiSlide>
+      )}
+      {veClientes && (
+        <KpiSlide largura="cheia">
+          <Tile
+            label="Clientes ativos"
+            valor={clientes.toLocaleString("pt-BR")}
+            nota="cadastrados"
+            icone={Users}
+            tom="violeta"
+            href="/m/clientes"
+          />
+        </KpiSlide>
+      )}
     </KpiCarousel>
   );
 }
@@ -115,6 +163,7 @@ function Tile({
   icone,
   tom,
   serie,
+  href,
 }: {
   label: string;
   valor: string;
@@ -123,13 +172,17 @@ function Tile({
   icone: LucideIcon;
   tom: Tom;
   serie?: number[];
+  /** Quando o número tem uma tela por trás, o card inteiro vira o alvo. */
+  href?: string;
 }) {
   const dir = delta?.dir ?? "flat";
 
-  return (
-    // h-32 fixo: os dois cards terminam na mesma linha. Cartão branco — a cor
-    // do tom entra só no ícone, na tendência e (quando há) na pastilha.
-    <MCard className="fade-in-m flex h-32 flex-col justify-between overflow-hidden p-4">
+  // h-32 fixo: os cards terminam todos na mesma linha. Cartão branco — a cor
+  // do tom entra só no ícone, na tendência e (quando há) na pastilha.
+  const classe = "fade-in-m flex h-32 flex-col justify-between overflow-hidden p-4";
+
+  const miolo = (
+    <>
       {/* Ícone e rótulo na mesma linha: o que o número mede se lê antes dele. */}
       <div className="flex items-center gap-2">
         <Bolha icone={icone} tom={tom} tamanho="sm" />
@@ -166,7 +219,15 @@ function Tile({
           </div>
         )}
       </div>
-    </MCard>
+    </>
+  );
+
+  return href ? (
+    <MCardLink href={href} className={classe}>
+      {miolo}
+    </MCardLink>
+  ) : (
+    <MCard className={classe}>{miolo}</MCard>
   );
 }
 

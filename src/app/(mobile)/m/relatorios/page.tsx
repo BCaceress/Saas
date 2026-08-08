@@ -8,20 +8,18 @@ import {
   PARAMETROS_PADRAO,
   type Parametros,
 } from "@/lib/relatorios/catalogo";
+import { temDefinicao } from "@/lib/relatorios/definicoes";
 import { MobilePageHeader } from "@/components/mobile/page-header";
 import { Card } from "@/components/ui/misc";
 
 /**
  * Catálogo de relatórios.
  *
- * ESCOPO ASSUMIDO: aqui o celular lista e abre; quem desenha a tabela é a tela
- * de desktop. Trazer o motor genérico (`executarRelatorio` + configurador de
- * colunas, filtros e indicadores) para 390px seria reconstruir a tela mais
- * densa do sistema — e o gestor que abre um relatório no celular quer o
- * número, que a home e `/m/vendas` já entregam nativos.
- *
- * O que o mobile ganha de verdade: ver TUDO a que tem direito num lugar só,
- * com o período já preenchido, e abrir com um toque.
+ * Quem TEM definição no motor genérico é gerado aqui mesmo, em
+ * `/m/relatorios/[id]` — mesmo motor do desktop, desenho de cartão em vez de
+ * tabela. O que ainda aponta para uma TELA do app (comparador de compras,
+ * validade, ABC) continua abrindo a versão de computador, e a lista avisa
+ * antes com o ícone de monitor.
  */
 export default async function RelatoriosMobilePage({
   searchParams,
@@ -86,7 +84,12 @@ export default async function RelatoriosMobilePage({
 
               <Card className="divide-y divide-line overflow-hidden">
                 {doGrupo.map((r) => {
-                  const href = hrefExecucao(r, params);
+                  // Tem definição = o motor sabe gerar; então gera aqui, com o
+                  // período que a pessoa acabou de escolher nos chips.
+                  const nativo = temDefinicao(r.id);
+                  const href = nativo
+                    ? `/m/relatorios/${r.id}?periodo=${params.periodo}`
+                    : hrefExecucao(r, params);
                   const conteudo = (
                     <>
                       <span className="min-w-0 flex-1">
@@ -97,6 +100,14 @@ export default async function RelatoriosMobilePage({
                           {r.destino.tipo === "indisponivel" ? r.destino.motivo : r.descricao}
                         </span>
                       </span>
+                      {/* O aviso agora é por linha: sem ele, quem toca num dos
+                          poucos que ainda são tela de mesa é pego de surpresa. */}
+                      {href && !nativo && (
+                        <Monitor
+                          className="h-3.5 w-3.5 shrink-0 text-faint"
+                          aria-label="Abre na versão de computador"
+                        />
+                      )}
                       {href ? (
                         <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
                       ) : null}
@@ -128,8 +139,8 @@ export default async function RelatoriosMobilePage({
 
       <p className="mt-4 flex items-start gap-2 rounded-[var(--radius-lg)] border border-line bg-surface p-3 text-[13px] text-ink-2">
         <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-muted" aria-hidden />
-        As tabelas abrem na versão de computador. Os números do dia a dia estão em
-        Início e Vendas, já prontos para o celular.
+        Os relatórios são gerados aqui mesmo, com PDF e Excel. Só os marcados com este
+        ícone abrem na versão de computador — são telas do app, não tabelas.
       </p>
     </>
   );

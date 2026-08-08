@@ -6,6 +6,7 @@ import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AlertsProvider } from "@/components/app/alerts-provider";
 import { MobileTabBar } from "@/components/mobile/tab-bar";
+import { CopilotoLauncher } from "@/components/app/copiloto/copiloto-launcher";
 import { SinoAlertas } from "@/components/mobile/sino";
 import type { NavToggles } from "@/components/app/nav-config";
 import type { Acesso } from "@/lib/permissoes";
@@ -27,6 +28,7 @@ export function MobileShell({
   toggles,
   tenantNome,
   multiSite,
+  podeCopiloto,
   children,
 }: {
   acessos: Acesso[];
@@ -34,6 +36,8 @@ export function MobileShell({
   tenantNome: string;
   /** A empresa tem mais de um local ativo (esconde transferência na folha). */
   multiSite: boolean;
+  /** Plano com o add-on de IA ativo + perfil que pode usar (igual ao desktop). */
+  podeCopiloto: boolean;
   children: React.ReactNode;
 }) {
   // Na home a barra do topo sairia repetindo o que a própria tela já diz —
@@ -69,6 +73,13 @@ export function MobileShell({
         </main>
 
         <MobileTabBar acessos={acessos} toggles={toggles} multiSite={multiSite} />
+
+        {/* Mesmo copiloto do desktop, só que acima da barra flutuante — em
+            qualquer largura, porque no `/m` a barra existe no tablet também. */}
+        <CopilotoLauncher
+          podeVer={podeCopiloto}
+          posicao="bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] right-4"
+        />
       </div>
     </AlertsProvider>
   );
