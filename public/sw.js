@@ -11,7 +11,7 @@
 // Vender offline de verdade (carrinho/fila local) é fase posterior — aqui é só
 // não perder o shell e avisar com elegância.
 
-const VERSION = "v3";
+const VERSION = "v4";
 const STATIC_CACHE = `nohub-static-${VERSION}`;
 const OFFLINE_URL = "/offline.html";
 
@@ -33,6 +33,16 @@ self.addEventListener("activate", (event) => {
       await Promise.all(
         keys.filter((k) => !k.endsWith(VERSION)).map((k) => caches.delete(k)),
       );
+
+      // Navigation preload: o browser dispara a requisição da navegação EM
+      // PARALELO com o boot deste worker, em vez de esperar ele acordar para só
+      // então chamar `fetch`. Um SW parado leva dezenas a centenas de ms para
+      // subir num celular modesto, e esse tempo entrava em TODA navegação do /m
+      // sem contrapartida nenhuma — aqui as navegações vão direto para a rede.
+      if (self.registration.navigationPreload) {
+        await self.registration.navigationPreload.enable();
+      }
+
       await self.clients.claim();
     })(),
   );
@@ -74,10 +84,19 @@ self.addEventListener("fetch", (event) => {
   // exceção explícita para essas rotas.
   if (request.mode === "navigate") {
     event.respondWith(
-      fetch(request).catch(async () => {
-        const cache = await caches.open(STATIC_CACHE);
-        return (await cache.match(OFFLINE_URL)) ?? Response.error();
-      }),
+      (async () => {
+        try {
+          // A resposta que o browser já começou a buscar enquanto este worker
+          // subia. `undefined` quando o navegador não suporta preload — aí é o
+          // `fetch` de sempre.
+          const preload = await event.preloadResponse;
+          if (preload) return preload;
+          return await fetch(request);
+        } catch {
+          const cache = await caches.open(STATIC_CACHE);
+          return (await cache.match(OFFLINE_URL)) ?? Response.error();
+        }
+      })(),
     );
   }
 });

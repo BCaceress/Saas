@@ -10,13 +10,16 @@ export default async function AprovacoesPage() {
   const ctx = await requirePermissaoMobile("compras.pedir");
 
   const { pedidos, cotacoes } = await withTenant(ctx, async () => {
-    const [todos, cot] = await Promise.all([loadPedidosCompra(), loadCotacoes()]);
-    return {
+    const [pedidos, cot] = await Promise.all([
       // Rascunho espera envio; enviado/aguardando esperam confirmação do
       // fornecedor. O resto já é operação de recebimento, que mora em /m/receber.
-      pedidos: todos.filter((p) =>
-        ["RASCUNHO", "ENVIADO", "AGUARDANDO"].includes(p.status),
-      ),
+      // O corte vai no banco: peneirar no Node significava hidratar itens,
+      // produtos e operadores de cem pedidos para mostrar os três que importam.
+      loadPedidosCompra({ status: ["RASCUNHO", "ENVIADO", "AGUARDANDO"] }),
+      loadCotacoes(),
+    ]);
+    return {
+      pedidos,
       cotacoes: cot.linhas.filter((c) => c.status === "ABERTA" || c.status === "ENCERRADA"),
     };
   });

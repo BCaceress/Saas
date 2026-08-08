@@ -818,15 +818,38 @@ export type PedidoCompraView = {
   items: PedidoCompraItemView[];
 };
 
-export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
+/**
+ * Recorte OPCIONAL, aplicado no banco.
+ *
+ * Existe porque quem precisa de um pedido — a tela de recebimento do celular —
+ * estava trazendo os cem últimos, com todos os itens, os produtos e os
+ * operadores hidratados, para depois achar um com `.find()`. Sem argumento
+ * nenhum o comportamento é o de antes, então as telas que querem a inbox
+ * inteira continuam iguais.
+ */
+export type PedidosCompraFiltro = {
+  id?: string;
+  status?: string[];
+  siteId?: string | null;
+  take?: number;
+};
+
+export async function loadPedidosCompra(
+  filtro: PedidosCompraFiltro = {},
+): Promise<PedidoCompraView[]> {
   const pedidos = await db.purchaseOrder.findMany({
+    where: {
+      ...(filtro.id ? { id: filtro.id } : {}),
+      ...(filtro.status ? { status: { in: filtro.status as never } } : {}),
+      ...(filtro.siteId ? { siteId: filtro.siteId } : {}),
+    },
     include: {
       supplier: { select: { razaoSocial: true, nomeFantasia: true, telefone: true, email: true, logoUrl: true } },
       site: { select: { nome: true } },
       items: true,
     },
     orderBy: { createdAt: "desc" },
-    take: 100,
+    take: filtro.take ?? 100,
   });
 
   const productIds = [...new Set(pedidos.flatMap((p) => p.items.map((i) => i.productId)))];
@@ -892,14 +915,30 @@ export async function loadPedidosCompra(): Promise<PedidoCompraView[]> {
   }));
 }
 
+/** Status em que um pedido ainda espera mercadoria na porta. */
+const STATUS_A_RECEBER = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"];
+
 /** Pedidos abertos para conferência/recebimento, opcionalmente do site ativo. */
 export async function loadPedidosAReceber(siteId: string | null): Promise<PedidoCompraView[]> {
-  const all = await loadPedidosCompra();
-  return all.filter(
-    (p) =>
-      ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"].includes(p.status) &&
-      (!siteId || p.siteId === siteId),
-  );
+  return loadPedidosCompra({ status: STATUS_A_RECEBER, siteId });
+}
+
+/**
+ * UM pedido a receber. `null` quando não existe, não é deste tenant, não é
+ * desta loja ou já foi fechado — do ponto de vista da tela de recebimento, os
+ * quatro casos são o mesmo "não há o que conferir aqui".
+ */
+export async function loadPedidoAReceber(
+  id: string,
+  siteId: string | null,
+): Promise<PedidoCompraView | null> {
+  const [pedido] = await loadPedidosCompra({
+    id,
+    status: STATUS_A_RECEBER,
+    siteId,
+    take: 1,
+  });
+  return pedido ?? null;
 }
 
 export async function loadComprasFormOptions() {

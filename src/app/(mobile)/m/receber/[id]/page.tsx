@@ -3,7 +3,7 @@ import { requirePermissaoMobile } from "@/lib/guard";
 import { withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { db } from "@/lib/prisma";
-import { loadPedidosAReceber } from "@/app/(app)/estoque/_data";
+import { loadPedidoAReceber } from "@/app/(app)/estoque/_data";
 import { MobilePageHeader } from "@/components/mobile/page-header";
 import { ReceberClient } from "./_client";
 
@@ -17,10 +17,7 @@ export default async function ReceberPedidoPage({
 
   const dados = await withTenant(ctx, async () => {
     const siteId = await getActiveSiteId();
-    // Não existe carregador de UM pedido: o desktop também lista e filtra, e a
-    // consulta já é limitada a 100. Criar um loader novo só para o celular
-    // duplicaria a hidratação (fornecedor, embalagem, operador).
-    const pedido = (await loadPedidosAReceber(siteId)).find((p) => p.id === id);
+    const pedido = await loadPedidoAReceber(id, siteId);
     if (!pedido) return null;
 
     // Códigos de barras para o bipe casar com o item do pedido. Vêm à parte

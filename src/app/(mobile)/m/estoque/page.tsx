@@ -3,14 +3,18 @@ import { withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { podeEmAlguma } from "@/lib/permissoes";
-import { loadSaldos, contarVencimentos } from "@/app/(app)/estoque/_data";
+import { contarVencimentos } from "@/app/(app)/estoque/_data";
 import { MobilePageHeader } from "@/components/mobile/page-header";
+import { loadSaldosMobile } from "./_data";
 import { EstoqueClient } from "./_client";
 
 /**
- * Saldos no celular. Aqui SIM `loadSaldos` é o carregador certo: a tela é a
- * lista inteira, que é exatamente o que ele entrega (diferente da ficha de um
- * produto, onde varrer o catálogo seria desperdício).
+ * Saldos no celular.
+ *
+ * Usa `loadSaldosMobile` (ver `_data.ts`), não o `loadSaldos` do desktop: a
+ * lista aqui mostra doze campos e aquele carrega a linha completa da tela de
+ * mesa — cinco consultas, uma varredura de 5.000 movimentos e objetos
+ * aninhados que desceriam inteiros no payload para ninguém ler.
  *
  * Sem paginação de propósito: o operador filtra por chip ou busca pelo nome;
  * um mercadinho tem centenas de itens, não milhares, e rolagem infinita numa
@@ -28,7 +32,7 @@ export default async function EstoqueMobilePage({
   const { saldos, sites, siteId, vencimentos } = await withTenant(ctx, async () => {
     const siteId = await getActiveSiteId();
     const [saldos, sites, vencimentos] = await Promise.all([
-      loadSaldos(siteId, policy),
+      loadSaldosMobile(siteId, policy),
       listSites(),
       contarVencimentos(siteId, ctx.tenant.validadeAlertaDias || 30),
     ]);

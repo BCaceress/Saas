@@ -17,7 +17,7 @@ import {
   type EstoquePolicy,
   type NivelCobertura,
 } from "@/lib/estoque-estrategia";
-import type { SaldoRow } from "@/app/(app)/estoque/_data";
+import type { SaldoMobile } from "./_data";
 
 type Site = { id: string; nome: string };
 
@@ -55,7 +55,7 @@ export function EstoqueClient({
   podeAjustar,
   podeTransferir,
 }: {
-  saldos: SaldoRow[];
+  saldos: SaldoMobile[];
   sites: Site[];
   siteAtivo: string | null;
   policy: EstoquePolicy;
@@ -71,7 +71,7 @@ export function EstoqueClient({
       : "tudo",
   );
   const [busca, setBusca] = React.useState("");
-  const [alvo, setAlvo] = React.useState<{ row: SaldoRow; acao: Acao } | null>(null);
+  const [alvo, setAlvo] = React.useState<{ row: SaldoMobile; acao: Acao } | null>(null);
 
   const linhas = React.useMemo(() => {
     const termo = busca.trim().toLowerCase();
@@ -196,7 +196,7 @@ function LinhaProduto({
   podeTransferir,
   onAcao,
 }: {
-  row: SaldoRow;
+  row: SaldoMobile;
   policy: EstoquePolicy;
   podeAjustar: boolean;
   podeTransferir: boolean;
