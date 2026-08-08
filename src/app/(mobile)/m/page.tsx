@@ -1,7 +1,14 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ChevronRight, ClipboardList, ScanLine, Truck, Wallet, type LucideIcon } from "lucide-react";
+import {
+  ChevronRight,
+  ClipboardList,
+  PackageSearch,
+  ScanLine,
+  Truck,
+  type LucideIcon,
+} from "lucide-react";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { resolvePeriodo } from "@/lib/periodo";
@@ -12,7 +19,6 @@ import { togglesEfetivos } from "@/lib/planos";
 import { saudacao } from "@/app/(app)/inicio/_insights";
 import { rotaInicialMobile } from "@/components/mobile/nav";
 import { InstalarApp } from "@/components/mobile/instalar-app";
-import { SinoAlertas } from "@/components/mobile/sino";
 import { Bolha, MCardLink, SecaoTitulo } from "@/components/mobile/ui";
 import { PrecisaDeVoce } from "./_precisa-de-voce";
 import {
@@ -71,24 +77,23 @@ export default async function MobileHome() {
     // fora da escala de 8 — é o que tira a sensação de caixas empilhadas.
     <div className="space-y-6">
       {/* A home não usa a barra do topo (ver `MobileShell`): quem cumprimenta é
-          a própria tela. Saudação com o nome é a manchete; a empresa vira o
-          seletor logo abaixo, e o sino fica à direita, no alcance do polegar. */}
-      <header className="fade-up flex items-start justify-between gap-4 px-1">
-        <div className="min-w-0">
-          <h1 className="truncate font-display text-[26px] leading-tight font-semibold text-ink">
-            {saudacao()}
-            {nomeUsuario ? `, ${nomeUsuario}` : ""}
-          </h1>
-          <Link
-            href="/m/mais"
-            className="tap -ml-1 mt-1 inline-flex max-w-full items-center gap-0.5 rounded-full px-1 py-0.5 text-[13px] font-medium text-muted hover:text-ink-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-          >
-            <span className="truncate">{ctx.tenant.nome}</span>
-            <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
-          </Link>
-        </div>
+          a própria tela. Saudação com o nome é a manchete; a empresa ocupa a
+          direita, onde antes ficava o sino — pendências já têm aba própria e o
+          bloco "Precisa de você" logo abaixo, então o sino era terceira via
+          para a mesma coisa. */}
+      <header className="fade-up flex items-center justify-between gap-3 px-1">
+        <h1 className="min-w-0 truncate font-display text-[22px] leading-tight font-semibold text-ink">
+          {saudacao()}
+          {nomeUsuario ? `, ${nomeUsuario}` : ""}
+        </h1>
 
-        <SinoAlertas />
+        <Link
+          href="/m/mais"
+          className="tap flex max-w-[45%] shrink-0 items-center gap-0.5 rounded-full px-1 py-0.5 text-[13px] font-medium text-muted hover:text-ink-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+        >
+          <span className="truncate">{ctx.tenant.nome}</span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
+        </Link>
       </header>
 
       <div className="fade-up" style={{ animationDelay: "60ms" }}>
@@ -118,7 +123,7 @@ export default async function MobileHome() {
       </section>
 
       <div className="fade-up" style={{ animationDelay: "180ms" }}>
-        <Atalhos acessos={ctx.acessos} pdv={toggles.moduloPdv} />
+        <Atalhos acessos={ctx.acessos} />
       </div>
 
       <InstalarApp />
@@ -126,8 +131,8 @@ export default async function MobileHome() {
   );
 }
 
-/** Quatro alvos grandes para as tarefas que se fazem em pé. */
-function Atalhos({ acessos, pdv }: { acessos: Acesso[]; pdv: boolean }) {
+/** Alvos grandes para as tarefas que se fazem em pé. */
+function Atalhos({ acessos }: { acessos: Acesso[] }) {
   const itens: Array<{
     href: string;
     label: string;
@@ -156,12 +161,14 @@ function Atalhos({ acessos, pdv }: { acessos: Acesso[]; pdv: boolean }) {
       icone: Truck,
       mostrar: podeEmAlguma(acessos, "compras.receber"),
     },
+    // Caixa saiu do celular: abrir/fechar caixa é trabalho de PDV, feito na
+    // máquina que tem gaveta e impressora (ver `/m/mais` e `nav.ts`).
     {
-      href: "/m/caixa",
-      label: "Caixa",
-      descricao: "Abrir ou fechar",
-      icone: Wallet,
-      mostrar: pdv && podeEmAlguma(acessos, "caixa.abrir"),
+      href: "/m/produtos",
+      label: "Produtos",
+      descricao: "Consultar cadastro",
+      icone: PackageSearch,
+      mostrar: podeEmAlguma(acessos, "produto.ver"),
     },
   ];
 

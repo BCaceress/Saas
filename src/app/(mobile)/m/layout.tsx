@@ -2,6 +2,8 @@ import { MobileShell } from "@/components/mobile/mobile-shell";
 import { FaixaAssinatura } from "@/components/app/faixa-assinatura";
 import { Toaster } from "@/components/ui/toast";
 import { carregarShell } from "@/lib/shell-context";
+import { withTenant } from "@/lib/current-tenant";
+import { db } from "@/lib/prisma";
 
 /**
  * Casca da superfície mobile.
@@ -23,11 +25,17 @@ export default async function MobileLayout({
 }) {
   const { ctx, toggles, acesso, admin } = await carregarShell();
 
+  // Contagem real de locais, não `numPontos` do cadastro: o que decide se
+  // "Transferência" existe é haver para onde transferir. Um `count` indexado
+  // por tenant é barato o bastante para o layout.
+  const totalSites = await withTenant(ctx, () => db.site.count({ where: { ativo: true } }));
+
   return (
     <MobileShell
       acessos={ctx.acessos}
       toggles={toggles}
       tenantNome={ctx.tenant.nome}
+      multiSite={totalSites > 1}
     >
       {/* Cobrança pendente precisa aparecer nas duas superfícies: quem só usa o
           celular não pode ser o último a saber que a conta vai travar. */}

@@ -15,7 +15,6 @@ import {
   Tag,
   Truck,
   Users,
-  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import { carregarShell } from "@/lib/shell-context";
@@ -26,7 +25,6 @@ import { InstalarApp } from "@/components/mobile/instalar-app";
 import { AtivarNotificacoes } from "@/components/mobile/ativar-notificacoes";
 import { Card } from "@/components/ui/misc";
 import { signOutAction } from "@/app/(app)/actions";
-import { usarVersaoCompletaAction } from "./actions";
 
 /**
  * O resto do app. Serve de duas coisas: dar acesso ao que não coube nas cinco
@@ -37,8 +35,7 @@ import { usarVersaoCompletaAction } from "./actions";
  * versões `/m`, cada linha troca de href.
  */
 export default async function MaisPage() {
-  const { ctx, toggles, cargoLabel, planoLabel, vocabularioPonto, admin } =
-    await carregarShell();
+  const { ctx, toggles, planoLabel, vocabularioPonto, admin } = await carregarShell();
 
   const modulos: Array<{
     href: string;
@@ -50,7 +47,8 @@ export default async function MaisPage() {
     desktop?: boolean;
   }> = [
     { href: "/m/vendas", label: "Vendas", icone: Receipt, permissao: "relatorio.ver" },
-    { href: "/m/caixa", label: "Caixa", icone: Wallet, permissao: "caixa.abrir", mostrar: (t) => t.moduloPdv },
+    // Sem Caixa: abrir/fechar caixa mora no PDV, na máquina com gaveta e
+    // impressora. Um botão aqui só serviria para abrir caixa longe dele.
     { href: "/m/receber", label: "Receber pedidos", icone: Truck, permissao: "compras.receber" },
     { href: "/m/estoque/contagem", label: "Contagem", icone: ClipboardList, permissao: "estoque.inventario" },
     { href: "/m/pedido", label: "Pedido de compra", icone: ShoppingCart, permissao: "compras.pedir" },
@@ -58,7 +56,7 @@ export default async function MaisPage() {
     { href: "/m/etiquetas", label: "Etiquetas", icone: Tag, permissao: "produto.preco" },
     { href: "/m/encarte", label: "Ler encarte", icone: ImageIcon, permissao: "produto.preco" },
     { href: "/m/relatorios", label: "Relatórios", icone: BarChart3, permissao: "relatorio.ver" },
-    { href: "/produtos", label: "Produtos", icone: Store, permissao: "produto.ver", desktop: true },
+    { href: "/m/produtos", label: "Produtos", icone: Store, permissao: "produto.ver" },
     { href: "/m/clientes", label: "Clientes", icone: Users, permissao: "cliente.ver" },
     {
       href: "/totem",
@@ -66,7 +64,8 @@ export default async function MaisPage() {
       icone: MonitorSmartphone,
       permissao: "venda.registrar",
       mostrar: (t) => t.moduloAutoatendimento,
-      desktop: true,
+      // Sem selo de "versão de computador": o quiosque é responsivo e roda no
+      // próprio tablet, que é justamente onde ele costuma ficar.
     },
   ];
 
@@ -84,7 +83,8 @@ export default async function MaisPage() {
         <p className="font-display text-base font-semibold text-ink">
           {ctx.user.name ?? ctx.user.email}
         </p>
-        <p className="text-sm text-ink-2">{cargoLabel}</p>
+        {/* Sem o cargo: quem abre o app sabe o que faz na loja — o rótulo do
+            perfil só ocupava a linha logo abaixo do nome. */}
         <p className="mt-1 text-xs text-muted">
           {ctx.tenant.nome} · {planoLabel} · {vocabularioPonto.toLowerCase()}
         </p>
@@ -140,24 +140,8 @@ export default async function MaisPage() {
             </Link>
           )}
 
-          <form action={usarVersaoCompletaAction}>
-            <button
-              type="submit"
-              className="flex min-h-14 w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-            >
-              <Monitor className="h-5 w-5 shrink-0 text-ink-2" aria-hidden />
-              <span className="flex-1">
-                <span className="block text-sm font-medium text-ink">
-                  Usar a versão completa
-                </span>
-                <span className="block text-xs text-muted">
-                  Todos os módulos, feita para tela grande
-                </span>
-              </span>
-              <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
-            </button>
-          </form>
-
+          {/* Sem "usar a versão completa": no aparelho de mão o app é este.
+              Quem precisa da tela de mesa abre o app pelo computador. */}
           <form action={signOutAction}>
             <button
               type="submit"

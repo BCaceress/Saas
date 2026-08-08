@@ -26,11 +26,14 @@ export function MobileShell({
   acessos,
   toggles,
   tenantNome,
+  multiSite,
   children,
 }: {
   acessos: Acesso[];
   toggles: NavToggles;
   tenantNome: string;
+  /** A empresa tem mais de um local ativo (esconde transferência na folha). */
+  multiSite: boolean;
   children: React.ReactNode;
 }) {
   // Na home a barra do topo sairia repetindo o que a própria tela já diz —
@@ -65,7 +68,7 @@ export function MobileShell({
           {children}
         </main>
 
-        <MobileTabBar acessos={acessos} toggles={toggles} />
+        <MobileTabBar acessos={acessos} toggles={toggles} multiSite={multiSite} />
       </div>
     </AlertsProvider>
   );

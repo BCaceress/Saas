@@ -91,8 +91,22 @@ export type InsightsInput = {
 const DIAS_SEMANA = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
 const DEMOTE_IGNORE_RATIO = 0.7;
 
+/**
+ * Fuso do relógio da saudação. O servidor roda em UTC (Vercel), então
+ * `getHours()` diria "Bom dia" às 22h de Brasília. O horário que interessa é o
+ * do balcão — daí o fuso fixo do Brasil, com escape por env para quem opera
+ * fora dele.
+ */
+const FUSO_SAUDACAO = process.env.APP_TIMEZONE ?? "America/Sao_Paulo";
+
+const HORA_FMT = new Intl.DateTimeFormat("pt-BR", {
+  hour: "numeric",
+  hourCycle: "h23",
+  timeZone: FUSO_SAUDACAO,
+});
+
 export function saudacao(agora = new Date()): string {
-  const h = agora.getHours();
+  const h = Number(HORA_FMT.format(agora));
   if (h < 12) return "Bom dia";
   if (h < 18) return "Boa tarde";
   return "Boa noite";

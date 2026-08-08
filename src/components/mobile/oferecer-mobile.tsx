@@ -5,7 +5,13 @@ import { Smartphone, X } from "lucide-react";
 import { usarVersaoMobileAction } from "@/app/(mobile)/m/mais/actions";
 
 const DISPENSADO = "nohub:mobile:dispensado";
-const CONSULTA = "(max-width: 767px)";
+/**
+ * Aparelho de mão: tela pequena OU tela de tablet com dedo (ponteiro grosso e
+ * sem hover). O segundo caso existe por causa do iPad em modo desktop, que se
+ * anuncia como Macintosh — o servidor não tem como saber, o navegador sim.
+ */
+const CONSULTA =
+  "(max-width: 767px), (max-width: 1180px) and (pointer: coarse) and (hover: none)";
 
 /* Store externo pelo mesmo motivo do InstalarApp: "cabe numa tela pequena?" é
    estado do navegador, não do React, e ler isso num efeito viraria setState em
@@ -65,11 +71,13 @@ export function OferecerMobile() {
   if (!mostrar) return null;
 
   return (
-    <div className="relative flex items-center gap-3 rounded-[var(--radius-lg)] border border-line bg-brand-soft p-3 md:hidden">
+    // Sem `md:hidden`: em tablet o convite precisa aparecer, e quem decide se
+    // ele existe é a media query do store, não o breakpoint do layout.
+    <div className="relative flex items-center gap-3 rounded-[var(--radius-lg)] border border-line bg-brand-soft p-3">
       <Smartphone className="h-5 w-5 shrink-0 text-brand-strong" aria-hidden />
 
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-semibold text-ink">Você está no celular</p>
+        <p className="text-sm font-semibold text-ink">Você está num aparelho de mão</p>
         <p className="text-[13px] text-ink-2">
           A versão mobile é mais rápida e feita para usar de pé.
         </p>

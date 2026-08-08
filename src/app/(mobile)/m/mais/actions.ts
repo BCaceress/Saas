@@ -30,16 +30,9 @@ async function gravar(valor: typeof SUPERFICIE_APP | typeof SUPERFICIE_MOBILE) {
   });
 }
 
-/**
- * Sai da superfície mobile e volta ao app completo.
- *
- * Grava `app` em vez de apagar o cookie: apagado seria indistinguível de "nunca
- * escolheu", e o palpite por user-agent jogaria o celular de volta no `/m`.
- */
-export async function usarVersaoCompletaAction() {
-  await gravar(SUPERFICIE_APP);
-  redirect("/inicio");
-}
+// A ação inversa ("usar a versão completa") saiu junto com o botão do `/m/mais`:
+// no aparelho de mão o app é o `/m`. Quem precisa da tela de mesa abre pelo
+// computador — ou entra por um link direto, que continua funcionando.
 
 /** Passa a abrir no `/m` ao entrar pela raiz do subdomínio. */
 export async function usarVersaoMobileAction() {

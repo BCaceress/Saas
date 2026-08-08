@@ -141,8 +141,9 @@ const EQUIVALENTE: Array<[prefixo: string, destino: string]> = [
   ["/compras/pedidos", "/m/aprovacoes"],
   ["/compras/cotacoes", "/m/aprovacoes"],
   ["/estoque", "/m/estoque"],
-  ["/produtos", "/m/estoque"],
-  ["/vendas/caixa", "/m/caixa"],
+  ["/produtos", "/m/produtos"],
+  // Caixa não tem equivalente mobile de propósito: abrir/fechar caixa é
+  // trabalho de PDV, na máquina com gaveta. O alerta abre a tela de mesa.
   ["/clientes", "/m/clientes"],
 ];
 

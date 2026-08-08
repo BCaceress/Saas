@@ -39,6 +39,8 @@ type Operacao = {
   icone: LucideIcon;
   permissao?: Permissao;
   mostrar?: (t: NavToggles) => boolean;
+  /** Só faz sentido com mais de um local: transferir para onde, senão? */
+  exigeMultiSite?: boolean;
 };
 
 const OPERACOES: Operacao[] = [
@@ -62,6 +64,7 @@ const OPERACOES: Operacao[] = [
     descricao: "Mandar para outra loja",
     icone: ArrowLeftRight,
     permissao: "estoque.transferir",
+    exigeMultiSite: true,
   },
   {
     href: "/m/estoque",
@@ -98,11 +101,14 @@ export function NovaOperacaoSheet({
   onClose,
   acessos,
   toggles,
+  multiSite,
 }: {
   open: boolean;
   onClose: () => void;
   acessos: Acesso[];
   toggles: NavToggles;
+  /** A empresa tem mais de um local ativo. */
+  multiSite: boolean;
 }) {
   const router = useRouter();
   const { contar } = useAlerts();
@@ -112,9 +118,10 @@ export function NovaOperacaoSheet({
       OPERACOES.filter(
         (o) =>
           (!o.mostrar || o.mostrar(toggles)) &&
+          (!o.exigeMultiSite || multiSite) &&
           (!o.permissao || podeEmAlguma(acessos, o.permissao)),
       ),
-    [acessos, toggles],
+    [acessos, toggles, multiSite],
   );
 
   function ir(href: string) {

@@ -154,7 +154,9 @@ export function TotemKiosk({
 
   // ── Modo quiosque ──
   return (
-    <div className="scrollbar-none fixed inset-0 z-50 overflow-y-auto bg-bg p-2 sm:p-4">
+    // O respiro cresce com a tela: num monitor touch em pé, 16px de margem
+    // deixam o conteúdo colado na moldura.
+    <div className="scrollbar-none fixed inset-0 z-50 overflow-y-auto bg-bg p-2 sm:p-4 lg:p-6">
       <TotemVenda
         siteId={siteId}
         produtos={produtos}

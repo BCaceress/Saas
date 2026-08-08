@@ -50,7 +50,9 @@ export default async function EstoqueMobilePage({
         filtroInicial={filtro ?? null}
         totalVencendo={vencimentos.vencidos + vencimentos.vencendo}
         podeAjustar={podeEmAlguma(ctx.acessos, "estoque.ajustar")}
-        podeTransferir={podeEmAlguma(ctx.acessos, "estoque.transferir")}
+        // Com um local só não há para onde transferir — o botão viraria uma
+        // folha com o seletor de destino vazio.
+        podeTransferir={sites.length > 1 && podeEmAlguma(ctx.acessos, "estoque.transferir")}
       />
     </>
   );

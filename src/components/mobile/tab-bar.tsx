@@ -26,9 +26,12 @@ import type { Acesso } from "@/lib/permissoes";
 export function MobileTabBar({
   acessos,
   toggles,
+  multiSite,
 }: {
   acessos: Acesso[];
   toggles: NavToggles;
+  /** Mais de um local ativo — a folha esconde transferência sem isso. */
+  multiSite: boolean;
 }) {
   const pathname = usePathname();
   const { contar } = useAlerts();
@@ -67,6 +70,7 @@ export function MobileTabBar({
         onClose={() => setOperacoes(false)}
         acessos={acessos}
         toggles={toggles}
+        multiSite={multiSite}
       />
     </>
   );

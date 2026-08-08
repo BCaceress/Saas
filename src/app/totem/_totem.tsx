@@ -320,7 +320,7 @@ function BoasVindas({ tenantNome, tenantLogoUrl, onCpf, onCadastro, onSemCadastr
       {/* Fundo decorativo */}
       <div className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-gradient-to-b from-brand-soft to-transparent" />
 
-      <div className="relative mx-auto flex min-h-[calc(100dvh-1rem)] sm:min-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col items-center justify-center gap-10 p-4 text-center">
+      <div className="relative mx-auto flex min-h-[calc(100dvh-1rem)] sm:min-h-[calc(100dvh-2rem)] lg:min-h-[calc(100dvh-3rem)] w-full max-w-3xl lg:max-w-4xl flex-col items-center justify-center gap-10 p-4 text-center">
         {/* Identidade da loja */}
         <div className="flex flex-col items-center gap-4">
           {tenantLogoUrl ? (
@@ -734,10 +734,10 @@ function Loja({
   // rail num aparelho de 390px deixariam 280px para a grade de produtos. O
   // padding do quiosque também muda (p-2 em vez de p-4), daí a altura.
   return (
-    <div className="flex h-[calc(100dvh-1rem)] flex-col gap-2 sm:h-[calc(100dvh-2rem)] sm:flex-row sm:gap-3">
+    <div className="flex h-[calc(100dvh-1rem)] flex-col gap-2 sm:h-[calc(100dvh-2rem)] sm:flex-row sm:gap-3 lg:h-[calc(100dvh-3rem)] lg:gap-4">
       {/* ── Menu de categorias: faixa no celular, coluna no tablet ── */}
       <nav aria-label="Categorias"
-        className="scrollbar-none flex w-full shrink-0 flex-row gap-1 overflow-x-auto rounded-2xl border border-line bg-surface p-1.5 sm:w-28 sm:flex-col sm:overflow-x-visible sm:overflow-y-auto sm:rounded-3xl">
+        className="scrollbar-none flex w-full shrink-0 flex-row gap-1 overflow-x-auto rounded-2xl border border-line bg-surface p-1.5 sm:w-28 sm:flex-col sm:overflow-x-visible sm:overflow-y-auto sm:rounded-3xl lg:w-32 lg:gap-1.5 lg:p-2 xl:w-40">
         <RailItem ativo={catAtiva == null} onClick={() => setCatAtiva(null)}
           icone={temDestaques ? <Star size={24} /> : <ShoppingCart size={24} />}
           label={temDestaques ? (cliente ? "Para você" : "Destaques") : "Todos"} />
@@ -749,20 +749,20 @@ function Loja({
       </nav>
 
       {/* ── Coluna principal ── */}
-      <div className="flex min-w-0 flex-1 flex-col gap-3">
+      <div className="flex min-w-0 flex-1 flex-col gap-3 lg:gap-4">
         {/* Cabeçalho: saudação + pontos + cancelar */}
         <div className="flex items-center justify-between gap-3">
-          <span className="truncate font-display text-lg font-bold text-ink">
+          <span className="truncate font-display text-lg font-bold text-ink lg:text-2xl">
             {cliente ? `Olá, ${cliente.primeiroNome} 👋` : "Escolha seus produtos"}
           </span>
           <div className="flex shrink-0 items-center gap-2">
             {cliente && (
-              <span className="flex items-center gap-1.5 rounded-full bg-brand-soft px-4 py-2 text-sm font-bold text-brand">
+              <span className="flex items-center gap-1.5 rounded-full bg-brand-soft px-4 py-2 text-sm font-bold text-brand lg:px-5 lg:py-3 lg:text-base">
                 <Award size={16} /> {cliente.pontos} pts
               </span>
             )}
             <button onClick={() => setCancelando(true)}
-              className="flex items-center gap-1.5 rounded-full border border-line px-4 py-2 text-sm font-medium text-muted transition-colors hover:bg-danger-soft hover:text-danger">
+              className="flex min-h-11 items-center gap-1.5 rounded-full border border-line px-4 py-2 text-sm font-medium text-muted transition-colors hover:bg-danger-soft hover:text-danger lg:px-5 lg:py-3 lg:text-base">
               <X size={16} /> Cancelar compra
             </button>
           </div>
@@ -772,8 +772,8 @@ function Loja({
         <div className="scrollbar-none min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-1">
           {catAtiva ? (
             <>
-              <h2 className="mb-3 flex items-center gap-2 font-display text-xl font-bold text-ink">
-                <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-soft text-brand"><CatIcon nome={catAtiva} size={18} /></span>
+              <h2 className="mb-3 flex items-center gap-2 font-display text-xl font-bold text-ink lg:mb-4 lg:text-2xl">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand lg:h-11 lg:w-11"><CatIcon nome={catAtiva} size={18} /></span>
                 {catAtiva}
               </h2>
               {daCategoria.length ? <Grade produtos={daCategoria} onPick={pick} qtd={qtdNoCarrinho} />
@@ -783,8 +783,8 @@ function Loja({
             <div className="flex flex-col gap-6">
               {destaques.map((s) => (
                 <section key={s.titulo}>
-                  <h2 className="mb-3 flex items-center gap-2 font-display text-xl font-bold text-ink">
-                    <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-soft text-brand">{s.icone}</span>
+                  <h2 className="mb-3 flex items-center gap-2 font-display text-xl font-bold text-ink lg:mb-4 lg:text-2xl">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand lg:h-11 lg:w-11">{s.icone}</span>
                     {s.titulo}
                   </h2>
                   <Fileira produtos={s.itens} onPick={pick} qtd={qtdNoCarrinho} />
@@ -799,25 +799,25 @@ function Loja({
         {error && <Erro>{error}</Erro>}
 
         {/* ── Barra do pedido ── */}
-        <div className="flex items-center gap-2 rounded-3xl border border-line bg-surface p-2 sm:gap-3 sm:p-3">
+        <div className="flex items-center gap-2 rounded-3xl border border-line bg-surface p-2 sm:gap-3 sm:p-3 lg:p-4">
           <button onClick={() => numItens > 0 && setCarrinhoAberto(true)} disabled={numItens === 0}
             aria-label="Ver carrinho"
-            className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl px-2 py-1.5 text-left transition-colors hover:bg-surface-2 disabled:pointer-events-none">
-            <span className="relative grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-surface-2 text-ink">
+            className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl px-2 py-1.5 text-left transition-colors hover:bg-surface-2 disabled:pointer-events-none lg:gap-4">
+            <span className="relative grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-surface-2 text-ink lg:h-16 lg:w-16">
               <ShoppingCart size={24} />
               {numItens > 0 && (
                 <span className="absolute -right-1.5 -top-1.5 grid h-6 min-w-6 place-items-center rounded-full bg-brand px-1 text-xs font-bold text-on-brand">{numItens}</span>
               )}
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-sm text-muted">
+              <span className="block truncate text-sm text-muted lg:text-base">
                 {numItens === 0 ? "Toque nos produtos para adicionar" : `${numItens} ${numItens === 1 ? "item" : "itens"} · ver carrinho`}
               </span>
-              <span className="block font-display text-2xl font-bold tabular-nums leading-tight text-ink">{brl(total)}</span>
+              <span className="block font-display text-2xl font-bold tabular-nums leading-tight text-ink lg:text-4xl">{brl(total)}</span>
             </span>
           </button>
           <BotaoGrande disabled={numItens === 0 || pending} onClick={onConcluir}
-            className="w-auto shrink-0 px-5 py-3 text-base sm:px-8 sm:py-4 sm:text-lg">
+            className="w-auto shrink-0 px-5 py-3 text-base sm:px-8 sm:py-4 sm:text-lg lg:px-10 lg:py-6 lg:text-xl">
             {/* O rótulo encolhe junto: "Concluir pedido" + seta empurrava o
                 total do carrinho para fora em 360px. */}
             <span className="sm:hidden">Concluir</span>
@@ -830,7 +830,7 @@ function Loja({
       {/* ── Carrinho (drawer) ── */}
       {carrinhoAberto && (
         <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/40" onClick={() => setCarrinhoAberto(false)}>
-          <div className="mx-auto flex max-h-[85dvh] w-full max-w-2xl flex-col rounded-t-3xl bg-bg p-4" onClick={(e) => e.stopPropagation()}>
+          <div className="mx-auto flex max-h-[85dvh] w-full max-w-2xl flex-col rounded-t-3xl bg-bg p-4 lg:max-w-3xl lg:p-6" onClick={(e) => e.stopPropagation()}>
             <div className="mb-2 flex items-center justify-between">
               <span className="font-display text-xl font-bold text-ink">Seu pedido</span>
               <button onClick={() => setCarrinhoAberto(false)} aria-label="Fechar"
@@ -881,7 +881,7 @@ function Loja({
 /* Fileira horizontal de cards — o scroll lateral é da fileira, sem barra visível. */
 function Fileira({ produtos, onPick, qtd }: { produtos: ProdutoVenda[]; onPick: (p: ProdutoVenda) => void; qtd: (id: string) => number }) {
   return (
-    <div className="scrollbar-none -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
+    <div className="scrollbar-none -mx-1 flex gap-3 overflow-x-auto px-1 pb-1 lg:gap-4">
       {produtos.map((p) => (
         <div key={p.id} className={cn("shrink-0", CARD_W)}>
           <Card p={p} onPick={onPick} noCarrinho={qtd(p.id)} />
@@ -1228,11 +1228,11 @@ function RailItem({ ativo, onClick, icone, label }: {
       className={cn(
         // Na faixa horizontal cada item precisa de largura mínima própria; na
         // coluna volta a ocupar a largura toda do rail.
-        "flex min-w-16 shrink-0 flex-col items-center gap-1.5 rounded-2xl px-2 py-2 transition-colors active:scale-95 sm:w-full sm:min-w-0 sm:px-1 sm:py-3",
+        "flex min-w-16 shrink-0 flex-col items-center gap-1.5 rounded-2xl px-2 py-2 transition-colors active:scale-95 sm:w-full sm:min-w-0 sm:px-1 sm:py-3 lg:gap-2 lg:py-4",
         ativo ? "bg-brand text-on-brand" : "text-ink-2 hover:bg-surface-2",
       )}>
       {icone}
-      <span className="line-clamp-2 w-full text-center text-[11px] font-semibold leading-tight">{label}</span>
+      <span className="line-clamp-2 w-full text-center text-[11px] font-semibold leading-tight lg:text-[13px]">{label}</span>
     </button>
   );
 }
@@ -1247,11 +1247,17 @@ function RailItem({ ativo, onClick, icone, label }: {
  * avisa que dá para arrastar. Em `w-40` fixo, um aparelho de 390px mostrava
  * 1,5 card e um vão morto.
  */
-const CARD_W = "w-[calc(50%-0.75rem)] max-w-44 sm:w-40";
+/*
+ * A partir de `sm` o `max-w-44` sai de cena: num monitor touch de 1080px em pé
+ * ele prenderia o card em 176px e a tela viraria seis colunas de letra miúda,
+ * lida a um metro de distância. O card cresce por degrau em vez de multiplicar
+ * colunas.
+ */
+const CARD_W = "w-[calc(50%-0.75rem)] max-w-44 sm:w-40 sm:max-w-none lg:w-52 xl:w-60";
 
 function Grade({ produtos, onPick, qtd }: { produtos: ProdutoVenda[]; onPick: (p: ProdutoVenda) => void; qtd: (id: string) => number }) {
   return (
-    <div className="flex flex-wrap gap-3">
+    <div className="flex flex-wrap gap-3 lg:gap-4">
       {produtos.map((p) => (
         <div key={p.id} className={cn("shrink-0", CARD_W)}>
           <Card p={p} onPick={onPick} noCarrinho={qtd(p.id)} />
@@ -1309,13 +1315,14 @@ function Card({ p, onPick, noCarrinho }: { p: ProdutoVenda; onPick: (p: ProdutoV
           </span>
         )}
       </div>
-      {/* Info — alturas fixas para grade uniforme */}
-      <div className="flex w-full flex-col gap-0.5 p-2.5">
-        <span className="line-clamp-2 min-h-9 text-sm font-semibold leading-tight text-ink">{p.nome}</span>
-        <span className="min-h-4 font-mono text-xs text-muted">{vol}</span>
+      {/* Info — alturas fixas para grade uniforme. Tipografia e alvo do "+"
+          sobem no monitor grande: o card cresce, a letra tem de crescer junto. */}
+      <div className="flex w-full flex-col gap-0.5 p-2.5 lg:p-3.5">
+        <span className="line-clamp-2 min-h-9 text-sm font-semibold leading-tight text-ink lg:min-h-11 lg:text-base">{p.nome}</span>
+        <span className="min-h-4 font-mono text-xs text-muted lg:text-sm">{vol}</span>
         <div className="flex items-center justify-between pt-1">
-          <span className="font-display text-lg font-bold tabular-nums text-ink">{brl(precoBase(p))}</span>
-          <span className="grid h-8 w-8 place-items-center rounded-full bg-brand text-on-brand transition-transform motion-safe:group-hover:scale-110 group-active:scale-95">
+          <span className="font-display text-lg font-bold tabular-nums text-ink lg:text-xl">{brl(precoBase(p))}</span>
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand text-on-brand transition-transform motion-safe:group-hover:scale-110 group-active:scale-95 lg:h-11 lg:w-11">
             <Plus size={18} strokeWidth={2.5} />
           </span>
         </div>
@@ -1644,7 +1651,7 @@ function TerminalIndisponivel({ tenantNome, terminalNome }: {
 /* ═══════════════════ PRIMITIVOS ═══════════════════ */
 function Centro({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("mx-auto flex min-h-[calc(100dvh-1rem)] sm:min-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col items-center justify-center gap-5 p-4 text-center", className)}>
+    <div className={cn("mx-auto flex min-h-[calc(100dvh-1rem)] sm:min-h-[calc(100dvh-2rem)] lg:min-h-[calc(100dvh-3rem)] w-full max-w-2xl flex-col items-center justify-center gap-5 p-4 text-center lg:gap-7", className)}>
       {children}
     </div>
   );

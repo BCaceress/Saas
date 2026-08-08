@@ -7,7 +7,8 @@
  * 1. **Escolha explícita** no cookie `nohub-superficie` (`m` | `app`). Quem
  *    tocou em "ver versão completa" no celular mandou; nada abaixo desfaz isso.
  * 2. **Palpite pelo aparelho** (`ehAparelhoMobile`) quando não há escolha: quem
- *    entra pelo celular cai direto no PWA, sem precisar descobrir o `/m`.
+ *    entra pelo celular ou tablet cai direto no PWA, sem precisar descobrir o
+ *    `/m`.
  *
  * O cookie mora no domínio raiz (`.nohub.market`) porque quem escreve é a tela
  * do tenant e quem lê pode ser o login, que roda no domínio raiz.
@@ -41,27 +42,37 @@ export function superficieCookieDomain(): string | undefined {
   return root.includes(".") ? `.${root}` : undefined;
 }
 
+/** Tablets que se declaram como tal no user-agent. */
+const TABLET = /iPad|Tablet|PlayBook|Silk|Kindle|Nexus (?:7|9|10)|Android(?!.*Mobile)/i;
+
+/** Celulares. */
+const CELULAR = /Android|iPhone|iPod|Windows Phone|IEMobile|BlackBerry|Opera Mini|Mobile Safari/i;
+
 /**
- * O aparelho é um celular?
+ * O aparelho é de mão (celular OU tablet)?
  *
- * `Sec-CH-UA-Mobile` manda quando existe (Chrome/Edge): é declaração do próprio
- * browser, não adivinhação de string. Safari e Firefox não mandam — aí sobra o
- * user-agent.
+ * Tablet entra junto com o celular: quem opera de pé na loja usa a mesma tela
+ * de polegar, e o app completo num 10" em pé fica apertado. O teste do tablet
+ * vem ANTES do `Sec-CH-UA-Mobile` porque o Chrome de tablet Android manda `?0`
+ * — a dica só distingue celular de "não celular", não de "não é de mão".
  *
- * Tablet conta como desktop de propósito: o app completo cabe em 10", e o iPad
- * moderno se anuncia como Macintosh de qualquer jeito.
+ * Fica de fora o que o servidor não tem como saber: iPad com Safari em modo
+ * desktop se anuncia como Macintosh, sem nenhuma pista no cabeçalho. Para esse
+ * caso o convite aparece no cliente, onde dá para ler toque e tamanho de tela
+ * (ver `components/mobile/oferecer-mobile.tsx`).
  */
 export function ehAparelhoMobile(
   userAgent: string | null | undefined,
   chUaMobile?: string | null,
 ): boolean {
+  const ua = userAgent ?? "";
+  if (TABLET.test(ua)) return true;
+
   if (chUaMobile === "?1") return true;
   if (chUaMobile === "?0") return false;
 
-  const ua = userAgent ?? "";
   if (!ua) return false;
-  if (/iPad|Tablet|PlayBook|Silk|Android(?!.*Mobile)/i.test(ua)) return false;
-  return /Android|iPhone|iPod|Windows Phone|IEMobile|BlackBerry|Opera Mini|Mobile Safari/i.test(ua);
+  return CELULAR.test(ua);
 }
 
 /**
