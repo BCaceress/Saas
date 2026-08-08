@@ -28,7 +28,12 @@ export default async function MobileLayout({
   // Contagem real de locais, não `numPontos` do cadastro: o que decide se
   // "Transferência" existe é haver para onde transferir. Um `count` indexado
   // por tenant é barato o bastante para o layout.
-  const totalSites = await withTenant(ctx, () => db.site.count({ where: { ativo: true } }));
+  // `await` DENTRO do callback: PrismaPromise é preguiçoso, e devolver a
+  // promessa crua faria a query rodar depois que o contexto de tenant já saiu
+  // de cena (o extension em `lib/prisma` derruba a chamada nesse caso).
+  const totalSites = await withTenant(ctx, async () => {
+    return await db.site.count({ where: { ativo: true } });
+  });
 
   return (
     <MobileShell
