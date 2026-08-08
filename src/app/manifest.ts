@@ -54,13 +54,22 @@ export default function manifest(): MetadataRoute.Manifest {
       },
     ],
 
-    // Atalhos do toque longo no ícone: as três coisas que se faz em pé.
+    // Atalhos do toque longo no ícone: as quatro coisas que se faz em pé, e que
+    // no app custariam abrir + escolher. Escanear vem primeiro porque é o
+    // começo de quase toda operação — e aqui ele pula até a folha "Nova
+    // operação", indo direto à câmera.
     shortcuts: [
       {
         name: "Escanear produto",
         short_name: "Escanear",
-        description: "Ler o código de barras e ver preço, saldo e validade",
+        description: "Ler código de barras, nota fiscal ou QR de pedido",
         url: "/m/scan",
+      },
+      {
+        name: "Receber mercadoria",
+        short_name: "Receber",
+        description: "Conferir o pedido que chegou na porta",
+        url: "/m/receber",
       },
       {
         name: "Alertas",

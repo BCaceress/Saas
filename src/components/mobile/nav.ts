@@ -2,7 +2,7 @@ import {
   Bell,
   Home,
   Menu,
-  ScanLine,
+  Plus,
   ShoppingBag,
   Warehouse,
   type LucideIcon,
@@ -39,6 +39,12 @@ export type MobileTab = {
   show?: (t: NavToggles) => boolean;
   /** Alvo central, em cápsula elevada. Um só — é a ação do dia a dia. */
   destaque?: boolean;
+  /**
+   * Abre a folha "Nova operação" em vez de navegar. O `href` continua valendo
+   * como destino de fallback (atalho do PWA, navegação por teclado, JS fora do
+   * ar) — por isso ele aponta para a operação mais comum, e não para "#".
+   */
+  abreOperacoes?: boolean;
 };
 
 /**
@@ -51,12 +57,17 @@ const TABS: MobileTab[] = [
   // tela vazia, então some da barra em vez de virar beco sem saída.
   { href: "/m", label: "Início", icon: Home, permissao: "relatorio.ver", pronto: true },
   { href: "/m/alertas", label: "Alertas", icon: Bell, pronto: true },
+  // O centro deixou de ser um destino e virou o começo de qualquer operação:
+  // escanear, receber, contar, transferir, dar baixa, mudar preço, pedir. O
+  // scanner continua sendo o primeiro item da folha, em alvo grande — é o que
+  // mais se faz e não pode custar dois toques.
   {
     href: "/m/scan",
-    label: "Escanear",
-    icon: ScanLine,
+    label: "Nova",
+    icon: Plus,
     permissao: "produto.ver",
     destaque: true,
+    abreOperacoes: true,
     pronto: true,
   },
   {
@@ -132,6 +143,7 @@ const EQUIVALENTE: Array<[prefixo: string, destino: string]> = [
   ["/estoque", "/m/estoque"],
   ["/produtos", "/m/estoque"],
   ["/vendas/caixa", "/m/caixa"],
+  ["/clientes", "/m/clientes"],
 ];
 
 /** Converte um href de alerta para o destino mobile, quando houver. */

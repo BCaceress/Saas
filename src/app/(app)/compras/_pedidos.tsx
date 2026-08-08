@@ -29,6 +29,7 @@ import {
   ArrowUpRight,
   Sparkles,
   Check,
+  QrCode,
 } from "lucide-react";
 import { cn, moneyToMask, parseMoney } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
@@ -47,6 +48,7 @@ import {
 } from "../estoque/actions";
 import { SolicitarSheet, type GrupoEnvio, copiarTexto } from "./_solicitar";
 import { ReenviarSheet } from "./_reenviar";
+import { QrPedidoSheet } from "@/components/app/qr-pedido";
 import { fmtMoney, fmtQtd, previsaoLabel, relDiaHora, Thumb } from "./_ui";
 import { PurchaseItemCard, PurchaseListHeader, defaultPackaging, precoSugerido } from "./_purchase-item";
 import { BonusItemCard, BonusItemSidePanel, BonusListHeader, type BonusDraftItem } from "./_bonus";
@@ -149,6 +151,7 @@ export function PedidoDrawer({
   const [pending, setPending] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [reenviar, setReenviar] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
   const [bonusOpen, setBonusOpen] = useState(false);
   const [produtosAbertos, setProdutosAbertos] = useState(true);
   const [bonusAbertos, setBonusAbertos] = useState(true);
@@ -171,6 +174,7 @@ export function PedidoDrawer({
     setPending(null);
     setErro(null);
     setReenviar(false);
+    setQrOpen(false);
     setBonusOpen(false);
     setStepAberto(null);
   }, [pedidoId]);
@@ -405,6 +409,11 @@ export function PedidoDrawer({
                 Adicionar bonificação
               </MenuItem>
             )}
+            {/* Vai impresso junto da carga: na entrega, quem confere aponta a
+                câmera do celular e o recebimento abre neste pedido. */}
+            <MenuItem icon={<QrCode size={14} />} onClick={() => setQrOpen(true)}>
+              QR de recebimento
+            </MenuItem>
             <MenuItem
               icon={<Copy size={14} />}
               onClick={async () => {
@@ -524,6 +533,17 @@ export function PedidoDrawer({
           }}
           empresa={empresa}
           onClose={() => setReenviar(false)}
+        />
+      )}
+
+      {p && (
+        <QrPedidoSheet
+          open={qrOpen}
+          onClose={() => setQrOpen(false)}
+          pedidoId={p.id}
+          numero={p.numero}
+          fornecedor={p.supplierNome}
+          empresa={empresa}
         />
       )}
 

@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   Boxes,
   CalendarClock,
@@ -7,6 +6,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { brl, cn } from "@/lib/utils";
+import { AcoesProduto, type AcaoInicial } from "@/components/mobile/acoes-produto";
 import { Badge, Card } from "@/components/ui/misc";
 import { NIVEL_COBERTURA_LABEL, type NivelCobertura } from "@/lib/estoque-estrategia";
 import type { FichaProduto, LoteFicha } from "@/app/(mobile)/m/_produto-data";
@@ -291,14 +291,22 @@ function Embalagens({ ficha }: { ficha: FichaProduto }) {
   );
 }
 
-/** Rodapé de ações da ficha. As telas de escrita chegam na Fase 3. */
-export function AcoesFicha({ ficha }: { ficha: FichaProduto }) {
-  return (
-    <Link
-      href={`/produtos/${ficha.id}/editar`}
-      className="flex min-h-12 items-center justify-center rounded-full border border-line-button bg-surface text-sm font-medium text-ink"
-    >
-      Abrir cadastro completo
-    </Link>
-  );
+/**
+ * Rodapé de ações da ficha.
+ *
+ * Fica aqui como reexport para que quem já renderiza a ficha não precise saber
+ * que agora existe um grafo de client components por trás (sheets, teclado,
+ * fila de etiquetas). Quem tem a ficha em mãos continua escrevendo
+ * `<FichaProdutoView />` + `<AcoesFicha />`.
+ */
+export function AcoesFicha({
+  ficha,
+  inicial,
+  onAtualizar,
+}: {
+  ficha: FichaProduto;
+  inicial?: AcaoInicial | null;
+  onAtualizar?: () => void;
+}) {
+  return <AcoesProduto ficha={ficha} inicial={inicial} onAtualizar={onAtualizar} />;
 }

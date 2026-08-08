@@ -16,11 +16,24 @@ import {
   registrarPerdaAction,
   registrarTransferenciaAction,
 } from "@/app/(app)/estoque/actions";
-import type { SaldoRow } from "@/app/(app)/estoque/_data";
 
 export type Acao = "ajuste" | "perda" | "transferencia";
 
 type Site = { id: string; nome: string };
+
+/**
+ * O mínimo que a sheet precisa saber do produto. Deliberadamente menor que
+ * `SaldoRow`: a lista de saldos tem a linha inteira em mãos, mas a ficha do
+ * scanner só tem a ficha — exigir `SaldoRow` obrigaria a inventar campos que
+ * ninguém lê aqui.
+ */
+export type AlvoEstoque = {
+  productId: string;
+  nome: string;
+  sku: string;
+  unidadeBase: string;
+  estoqueFechado: number;
+};
 
 /**
  * Ações rápidas de estoque no celular.
@@ -60,26 +73,35 @@ const CONFIG: Record<
 };
 
 export function AcaoEstoqueSheet({
-  row,
+  alvo,
   acao,
   sites,
   siteAtivo,
+  quantidadeInicial,
+  motivoInicial,
   onFechar,
   onConcluir,
 }: {
-  row: SaldoRow;
+  alvo: AlvoEstoque;
   acao: Acao;
   sites: Site[];
   siteAtivo: string | null;
+  /** Pré-preenchimento vindo do ditado por voz ("perda de 3"). */
+  quantidadeInicial?: string;
+  motivoInicial?: string;
   onFechar: () => void;
   onConcluir: (mensagem: string) => void;
 }) {
   const cfg = CONFIG[acao];
 
-  const [quantidade, setQuantidade] = React.useState("");
+  const [quantidade, setQuantidade] = React.useState(quantidadeInicial ?? "");
   const [sinal, setSinal] = React.useState<1 | -1>(1);
-  const [motivo, setMotivo] = React.useState<string>("");
-  const [observacao, setObservacao] = React.useState("");
+  const [motivo, setMotivo] = React.useState<string>(
+    motivoInicial && cfg.motivos.includes(motivoInicial) ? motivoInicial : "",
+  );
+  const [observacao, setObservacao] = React.useState(
+    motivoInicial && !cfg.motivos.includes(motivoInicial) ? motivoInicial : "",
+  );
   const [destino, setDestino] = React.useState<string>("");
   const [salvando, setSalvando] = React.useState(false);
 
@@ -103,7 +125,7 @@ export function AcaoEstoqueSheet({
       if (acao === "ajuste") {
         await registrarAjusteAction({
           siteId: origem,
-          productId: row.productId,
+          productId: alvo.productId,
           deltaFechado: qtd * sinal,
           observacao: texto,
         });
@@ -111,7 +133,7 @@ export function AcaoEstoqueSheet({
       } else if (acao === "perda") {
         await registrarPerdaAction({
           siteId: origem,
-          productId: row.productId,
+          productId: alvo.productId,
           deltaFechado: qtd,
           observacao: texto,
         });
@@ -120,7 +142,7 @@ export function AcaoEstoqueSheet({
         await registrarTransferenciaAction({
           origemSiteId: origem,
           destinoSiteId: destino,
-          items: [{ productId: row.productId, quantidade: qtd }],
+          items: [{ productId: alvo.productId, quantidade: qtd }],
           observacao: observacao.trim() || null,
         });
         const nome = sites.find((s) => s.id === destino)?.nome ?? "outra loja";
@@ -143,7 +165,7 @@ export function AcaoEstoqueSheet({
       titulo={cfg.titulo}
       descricao={
         <span className="line-clamp-1">
-          {row.nome} · <span className="font-mono text-xs">{row.sku}</span>
+          {alvo.nome} · <span className="font-mono text-xs">{alvo.sku}</span>
         </span>
       }
       rodape={
@@ -167,8 +189,8 @@ export function AcaoEstoqueSheet({
 
         <VisorQuantidade
           valor={quantidade}
-          unidade={row.unidadeBase.toLowerCase()}
-          atual={row.estoqueFechado}
+          unidade={alvo.unidadeBase.toLowerCase()}
+          atual={alvo.estoqueFechado}
         />
 
         <TecladoNumerico valor={quantidade} onChange={setQuantidade} decimais={3} />
@@ -245,7 +267,7 @@ function BotaoSinal({
   );
 }
 
-function Chip({
+export function Chip({
   ativo,
   onClick,
   children,

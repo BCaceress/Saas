@@ -30,7 +30,22 @@ type Estado =
   | "sem-camera"
   | "sem-suporte";
 
-const FORMATOS = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "itf"] as const;
+/** Códigos de produto: o que está impresso na embalagem e no fardo. */
+const FORMATOS_PRODUTO = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "itf"] as const;
+
+/**
+ * Tudo que o app sabe interpretar. Acrescenta QR (chave da NFC-e, pedido nosso)
+ * e Data Matrix. Não é o padrão porque cada formato a mais é trabalho por
+ * quadro: numa contagem de 300 itens, procurar QR que nunca vem custa leitura.
+ */
+const FORMATOS_TODOS = [...FORMATOS_PRODUTO, "qr_code", "data_matrix"] as const;
+
+export type PerfilLeitura = "produto" | "universal";
+
+const PERFIS: Record<PerfilLeitura, readonly string[]> = {
+  produto: FORMATOS_PRODUTO,
+  universal: FORMATOS_TODOS,
+};
 
 /** Ignora releituras do mesmo código por este tempo. */
 const DEBOUNCE_MS = 1500;
@@ -39,10 +54,10 @@ type DetectorLike = {
   detect: (fonte: CanvasImageSource) => Promise<Array<{ rawValue: string }>>;
 };
 
-async function criarDetector(): Promise<DetectorLike | null> {
+async function criarDetector(formatos: readonly string[]): Promise<DetectorLike | null> {
   const nativo = (globalThis as { BarcodeDetector?: new (o: unknown) => DetectorLike })
     .BarcodeDetector;
-  if (nativo) return new nativo({ formats: FORMATOS });
+  if (nativo) return new nativo({ formats: formatos });
 
   try {
     const { BarcodeDetector, setZXingModuleOverrides } = await import(
@@ -51,7 +66,14 @@ async function criarDetector(): Promise<DetectorLike | null> {
     // Precisa vir ANTES de construir o detector: é quem decide de onde o wasm
     // é baixado, e o padrão da biblioteca é um CDN externo.
     setZXingModuleOverrides({ locateFile: () => "/wasm/zxing_reader.wasm" });
-    return new BarcodeDetector({ formats: [...FORMATOS] }) as DetectorLike;
+    // O tipo do ponyfill exige a união literal de formatos; a lista vem de uma
+    // constante nossa e já é subconjunto dela. Um `as` num ponto só, com a
+    // fonte da verdade logo acima, é melhor que espalhar o tipo do ponyfill
+    // pela assinatura do componente.
+    const Construtor = BarcodeDetector as unknown as new (o: {
+      formats: readonly string[];
+    }) => DetectorLike;
+    return new Construtor({ formats: formatos });
   } catch {
     return null;
   }
@@ -62,6 +84,8 @@ export function Scanner({
   onFechar,
   continuo = false,
   ocupado = false,
+  perfil = "produto",
+  dica,
 }: {
   onCodigo: (codigo: string) => void;
   onFechar?: () => void;
@@ -69,6 +93,13 @@ export function Scanner({
   continuo?: boolean;
   /** Trava a leitura enquanto o pai processa o código anterior. */
   ocupado?: boolean;
+  /**
+   * `universal` acrescenta QR e Data Matrix — use só onde a tela sabe o que
+   * fazer com uma chave de nota ou um QR de pedido.
+   */
+  perfil?: PerfilLeitura;
+  /** Substitui a legenda da mira. */
+  dica?: string;
 }) {
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const streamRef = React.useRef<MediaStream | null>(null);
@@ -102,7 +133,7 @@ export function Scanner({
         return;
       }
 
-      const detector = await criarDetector();
+      const detector = await criarDetector(PERFIS[perfil]);
       if (!detector) {
         setEstado("sem-suporte");
         return;
@@ -192,7 +223,7 @@ export function Scanner({
       for (const t of streamRef.current?.getTracks() ?? []) t.stop();
       streamRef.current = null;
     };
-  }, [continuo]);
+  }, [continuo, perfil]);
 
   async function alternarLanterna() {
     const track = streamRef.current?.getVideoTracks()[0];
@@ -230,7 +261,7 @@ export function Scanner({
           </div>
 
           <p className="pointer-events-none absolute inset-x-0 bottom-3 text-center text-xs font-medium text-white/90">
-            {ocupado ? "Consultando…" : "Aponte para o código de barras"}
+            {ocupado ? "Consultando…" : (dica ?? "Aponte para o código de barras")}
           </p>
         </>
       )}

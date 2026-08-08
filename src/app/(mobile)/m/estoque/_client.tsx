@@ -7,7 +7,7 @@ import { PackageOpen, Search, SlidersHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Card } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
-import { AcaoEstoqueSheet, type Acao } from "./_acoes";
+import { AcaoEstoqueSheet, type Acao } from "@/components/mobile/acao-estoque";
 import {
   coberturaDias,
   mediaDiaria,
@@ -177,7 +177,7 @@ export function EstoqueClient({
 
       {alvo && (
         <AcaoEstoqueSheet
-          row={alvo.row}
+          alvo={alvo.row}
           acao={alvo.acao}
           sites={sites}
           siteAtivo={siteAtivo}
