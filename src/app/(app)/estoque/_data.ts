@@ -323,6 +323,24 @@ export async function loadSaldos(
   });
 }
 
+// ── Locais de armazenagem ────────────────────────────────────
+
+export type LocalArmazenagemRow = {
+  id: string;
+  nome: string;
+  tipo: "AMBIENTE" | "REFRIGERADO" | "CONGELADO";
+};
+
+/** Locais ativos da loja — destinos da alteração de local em massa. */
+export async function loadLocaisArmazenagem(siteId: string | null): Promise<LocalArmazenagemRow[]> {
+  if (!siteId) return [];
+  return db.storageLocation.findMany({
+    where: { siteId, ativo: true },
+    orderBy: { nome: "asc" },
+    select: { id: true, nome: true, tipo: true },
+  });
+}
+
 // ── Validade / lotes ─────────────────────────────────────────
 
 export type LoteRow = {

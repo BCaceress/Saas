@@ -71,6 +71,7 @@ export function toProductRow(p: ProductWithRelations): ProductRow {
     subcategoriaNome: p.subcategory?.nome ?? "",
     subcategoryId: p.subcategoryId ?? "",
     categoriaNome: p.subcategory?.category.nome ?? "",
+    categoryId: p.subcategory?.categoryId ?? "",
     precoVenda: dec(p.precoVenda),
     custo: composto ? custoDerivado : dec(p.custo),
     ativo: p.ativo,

@@ -152,6 +152,7 @@ export default async function EditarProdutoPage({
       subcategoriaNome: p.subcategory?.nome ?? "",
       subcategoryId: p.subcategoryId ?? "",
       categoriaNome: p.subcategory?.category.nome ?? "",
+      categoryId: p.subcategory?.categoryId ?? "",
       precoVenda: dec(p.precoVenda),
       custo: dec(p.custo),
       ativo: p.ativo,

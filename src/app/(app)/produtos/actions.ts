@@ -100,6 +100,20 @@ export async function createBrand(nomeRaw: string) {
   });
 }
 
+export async function updateBrand(input: { id: string; nome: string }) {
+  return tx(async () => {
+    const nome = input.nome.trim();
+    if (nome.length < 2) throw new Error("Informe o nome da marca.");
+    const nomeNormalizado = normalizeBrand(nome);
+    const dup = await db.brand.findFirst({
+      where: { nomeNormalizado, id: { not: input.id } },
+    });
+    if (dup) throw new Error(`Já existe a marca «${dup.nome}».`);
+    await db.brand.update({ where: { id: input.id }, data: { nome, nomeNormalizado } });
+    ok();
+  });
+}
+
 // ── Categorias / subcategorias ─────────────────────────────
 /** Base de 3 chars (A–Z/0–9) para o prefixo de SKU, derivada do nome. */
 function prefixBase(nome: string): string {
@@ -697,6 +711,25 @@ export async function bulkArchiveProducts(ids: string[], ativo: boolean) {
   });
 }
 
+/** Renomeia vários produtos de uma vez (painel de nomes da listagem). */
+export async function bulkRenameProducts(
+  items: { id: string; nome: string }[],
+) {
+  return tx(async () => {
+    const validos = items
+      .map((i) => ({ id: i.id, nome: i.nome.trim() }))
+      .filter((i) => i.nome.length >= 2);
+    if (!validos.length) return 0;
+    await Promise.all(
+      validos.map((i) =>
+        db.product.update({ where: { id: i.id }, data: { nome: i.nome } }),
+      ),
+    );
+    ok();
+    return validos.length;
+  });
+}
+
 // ── Edição em lote (listagem) ──────────────────────────────
 const bulkEditSchema = z.object({
   ids: z.array(z.string().min(1)).min(1, "Selecione ao menos um produto."),
@@ -734,13 +767,16 @@ export async function bulkEditProducts(input: BulkEditInput): Promise<number> {
     // o extension filtra o WHERE, então a lista já volta peneirada.
     const alvos = await db.product.findMany({
       where: { id: { in: ids } },
-      select: { id: true },
+      select: { id: true, tipo: true },
     });
     const alvoIds = alvos.map((a) => a.id);
     if (!alvoIds.length) return 0;
+    // Receita é preparo da casa: marca não se aplica, então fica de fora do lote.
+    const comMarcaIds = alvos.filter((a) => a.tipo !== "PERSONALIZADO").map((a) => a.id);
 
     // ── Campos escalares do produto ──
-    const data: { subcategoryId?: string; brandId?: string | null } = {};
+    const data: { subcategoryId?: string } = {};
+    let novaMarca: string | null | undefined;
 
     if (d.subcategoryId) {
       const sub = await db.subcategory.findFirst({
@@ -752,7 +788,7 @@ export async function bulkEditProducts(input: BulkEditInput): Promise<number> {
     }
 
     if (d.marcaNome?.trim()) {
-      data.brandId = await resolveBrandId(tid, null, d.marcaNome);
+      novaMarca = await resolveBrandId(tid, null, d.marcaNome);
     } else if (d.brandId !== undefined) {
       if (d.brandId) {
         const brand = await db.brand.findFirst({
@@ -761,11 +797,18 @@ export async function bulkEditProducts(input: BulkEditInput): Promise<number> {
         });
         if (!brand) throw new Error("Marca inválida.");
       }
-      data.brandId = d.brandId; // null = limpa
+      novaMarca = d.brandId; // null = limpa
     }
 
     if (Object.keys(data).length) {
       await db.product.updateMany({ where: { id: { in: alvoIds } }, data });
+    }
+
+    if (novaMarca !== undefined && comMarcaIds.length) {
+      await db.product.updateMany({
+        where: { id: { in: comMarcaIds } },
+        data: { brandId: novaMarca },
+      });
     }
 
     // ── Fornecedores ──
@@ -1069,8 +1112,6 @@ const receitaSchema = z.object({
   nome: z.string().min(2, "Informe o nome da receita."),
   ean: z.string().optional(),
   subcategoryId: z.string().min(1, "Escolha a subcategoria."),
-  brandId: z.string().optional().nullable(),
-  marcaNome: z.string().optional(),
   imagemUrl: z.string().optional(),
   precoVenda: z.number().nonnegative().optional().nullable(),
   fiscalProfileId: z.string().optional().nullable(),
@@ -1131,7 +1172,6 @@ export async function createReceita(input: ReceitaInput) {
       d.groups.map((g) => g.items),
     );
     const sku = await generateSku(sub.category.skuPrefix, sub.skuPrefix);
-    const brandId = await resolveBrandId(tid, d.brandId, d.marcaNome);
 
     await assertCabeProduto(tid);
     const product = await db.product.create({
@@ -1142,7 +1182,8 @@ export async function createReceita(input: ReceitaInput) {
         ean: d.ean ? onlyDigits(d.ean) : null,
         sku,
         subcategoryId: d.subcategoryId,
-        brandId,
+        // Receita é preparo da casa, não produto de fabricante: nunca tem marca.
+        brandId: null,
         imagemUrl: d.imagemUrl || null,
         unidadeBase: "UN",
         precoVenda: d.precoVenda ?? null,
@@ -1219,15 +1260,14 @@ export async function updateReceita(id: string, input: ReceitaInput) {
       d.restricaoIdade,
       d.groups.map((g) => g.items),
     );
-    const brandId = await resolveBrandId(tid, d.brandId, d.marcaNome);
-
     await db.product.update({
       where: { id },
       data: {
         nome: d.nome.trim(),
         ean: d.ean ? onlyDigits(d.ean) : null,
         subcategoryId: d.subcategoryId,
-        brandId,
+        // Receita nunca tem marca — limpa herança de cadastros antigos.
+        brandId: null,
         imagemUrl: d.imagemUrl || null,
         precoVenda: d.precoVenda ?? null,
         fiscalProfileId: d.fiscalProfileId ?? null,

@@ -622,11 +622,14 @@ export function SimpleProductForm({
 
   // Estoque
   const [estoqueMinimo, setMin] = useState(
-    product?.estoque.minimo?.toString() ??
-      (defaultEstoqueMinimo ? String(defaultEstoqueMinimo) : ""),
+    product != null
+      ? String(Math.trunc(product.estoque.minimo))
+      : defaultEstoqueMinimo
+        ? String(Math.trunc(defaultEstoqueMinimo))
+        : "",
   );
   const [estoqueIdeal, setIdeal] = useState(
-    product?.estoque.ideal?.toString() ?? "",
+    product != null ? String(Math.trunc(product.estoque.ideal)) : "",
   );
   const [locationId, setLocation] = useState(product?.estoque.locationId ?? "");
   const [querInicial, setQuerInicial] = useState<boolean | null>(null);
@@ -740,7 +743,7 @@ export function SimpleProductForm({
       done: vendaUnidade || usaEmDrinks,
       focus: "uso",
     },
-    { label: "preço", done: custoNum > 0 && precoNum > 0, focus: "custo" },
+    { label: "preço", done: (mode === "edit" || custoNum > 0) && precoNum > 0, focus: "custo" },
   ];
   const doneCnt = etapas.filter((e) => e.done).length;
   const isReady = doneCnt === etapas.length;
@@ -751,13 +754,18 @@ export function SimpleProductForm({
   const faltando = {
     nome: touched.nome && nome.trim().length < 2,
     sub: touched.sub && !subcategoryId,
-    custo: touched.custo && custoNum <= 0,
+    custo: mode === "new" && touched.custo && custoNum <= 0,
     preco: touched.preco && precoNum <= 0,
   };
 
   function n(v: string): number | null {
     const x = Number(String(v).replace(",", "."));
     return Number.isFinite(x) && v !== "" ? x : null;
+  }
+
+  /** Estoque se conta em unidade inteira — descarta vírgula e decimais. */
+  function soInteiro(v: string): string {
+    return v.replace(/\D/g, "");
   }
 
   function skuPreview(subId: string): string {
@@ -899,11 +907,11 @@ export function SimpleProductForm({
     setUnidadeBase(d.unidadeBase ?? "UN");
     setConteudo(d.conteudo ?? "");
     setDosePadrao(d.dosePadrao ?? "");
-    setMin(d.estoqueMinimo ?? "");
-    setIdeal(d.estoqueIdeal ?? "");
+    setMin(soInteiro(d.estoqueMinimo ?? ""));
+    setIdeal(soInteiro(d.estoqueIdeal ?? ""));
     setLocation(d.locationId ?? "");
     setQuerInicial(d.querInicial ?? null);
-    setInicial(d.estoqueInicial ?? "");
+    setInicial(soInteiro(d.estoqueInicial ?? ""));
     setIdade(d.restricaoIdade ?? false);
     setRevealed(true);
     setDraft(null);
@@ -1218,7 +1226,7 @@ export function SimpleProductForm({
       focusField("uso");
       return;
     }
-    if (!parseMoney(custo)) {
+    if (mode === "new" && !parseMoney(custo)) {
       toast.error("Custo obrigatório", "Informe o preço de custo antes de salvar.");
       setError("Informe o preço de custo.");
       focusField("custo");
@@ -1286,9 +1294,10 @@ export function SimpleProductForm({
       fatorConversaoTrib: n(fatorTrib) ?? undefined,
       codigoAnp: codigoAnp.trim() || undefined,
       controlaEstoque: true,
-      estoqueMinimo: n(estoqueMinimo) ?? 0,
-      estoqueIdeal: n(estoqueIdeal) ?? 0,
-      estoqueInicial: querInicial ? (n(estoqueInicial) ?? 0) : 0,
+      // Trunca também aqui: prefill (CSV/EAN) pode trazer decimal.
+      estoqueMinimo: Math.trunc(n(estoqueMinimo) ?? 0),
+      estoqueIdeal: Math.trunc(n(estoqueIdeal) ?? 0),
+      estoqueInicial: querInicial ? Math.trunc(n(estoqueInicial) ?? 0) : 0,
       locationId: locationId || undefined,
       fornecedorPrincipalId: fornecedoresList[0] || undefined,
       fornecedoresIds: fornecedoresList,
@@ -2137,7 +2146,7 @@ export function SimpleProductForm({
                           <Input
                             id="min"
                             value={estoqueMinimo}
-                            onChange={(e) => setMin(e.target.value)}
+                            onChange={(e) => setMin(soInteiro(e.target.value))}
                             placeholder="0"
                             inputMode="numeric"
                             className="font-mono"
@@ -2149,7 +2158,7 @@ export function SimpleProductForm({
                           <Input
                             id="ideal"
                             value={estoqueIdeal}
-                            onChange={(e) => setIdeal(e.target.value)}
+                            onChange={(e) => setIdeal(soInteiro(e.target.value))}
                             placeholder="0"
                             inputMode="numeric"
                             className="font-mono"
@@ -2216,7 +2225,7 @@ export function SimpleProductForm({
                             <Input
                               id="ini"
                               value={estoqueInicial}
-                              onChange={(e) => setInicial(e.target.value)}
+                              onChange={(e) => setInicial(soInteiro(e.target.value))}
                               placeholder="0"
                               inputMode="numeric"
                               className="font-mono"
@@ -2646,7 +2655,7 @@ export function SimpleProductForm({
                   )}
                 </div>
 
-                <Field label="Preço de custo" htmlFor="custo" required>
+                <Field label="Preço de custo" htmlFor="custo" required={mode === "new"}>
                   <div className="relative">
                     <span className="pointer-events-none absolute inset-y-0 left-3 flex select-none items-center text-sm text-muted">
                       R$

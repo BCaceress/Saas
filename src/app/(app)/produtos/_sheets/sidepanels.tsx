@@ -19,10 +19,12 @@ import { Menu, MenuItem } from "@/components/ui/menu";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Field, Badge } from "@/components/ui/misc";
+import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { maskCnpj, maskPhone } from "@/lib/masks";
 import {
   createBrand,
+  updateBrand,
   createCategory,
   createSubcategory,
   updateSubcategory,
@@ -60,6 +62,10 @@ export function BrandSheet({
   const [q, setQ] = useState("");
   const [pending, start] = useTransition();
   const [error, setError] = useState<string>();
+  const [editing, setEditing] = useState<{ id: string; nome: string } | null>(
+    null,
+  );
+  const [editError, setEditError] = useState<string>();
 
   const list = brands.filter((b) =>
     b.nome.toLowerCase().includes(q.toLowerCase()),
@@ -76,6 +82,20 @@ export function BrandSheet({
           setError(`«${r.nome}» já existia — vinculei à existente.`);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Falha ao salvar.");
+      }
+    });
+  }
+
+  function saveEdit() {
+    if (!editing) return;
+    setEditError(undefined);
+    start(async () => {
+      try {
+        await updateBrand({ id: editing.id, nome: editing.nome });
+        setEditing(null);
+        refresh();
+      } catch (e) {
+        setEditError(e instanceof Error ? e.message : "Falha ao salvar.");
       }
     });
   }
@@ -122,11 +142,76 @@ export function BrandSheet({
           </li>
         )}
         {list.map((b) => (
-          <li key={b.id} className="px-3 py-2.5 text-sm text-ink">
-            {b.nome}
+          <li
+            key={b.id}
+            className="flex items-center gap-2 px-3 py-2.5 text-sm text-ink"
+          >
+            <span className="flex-1">{b.nome}</span>
+            <Menu
+              align="end"
+              trigger={
+                <button
+                  type="button"
+                  aria-label="Ações da marca"
+                  className="cursor-pointer rounded-[var(--radius-sm)] p-1.5 text-muted hover:bg-surface-2 hover:text-ink"
+                >
+                  <MoreVertical size={16} />
+                </button>
+              }
+            >
+              <MenuItem
+                icon={<Pencil size={15} />}
+                onClick={() => {
+                  setEditError(undefined);
+                  setEditing({ id: b.id, nome: b.nome });
+                }}
+              >
+                Editar
+              </MenuItem>
+            </Menu>
           </li>
         ))}
       </ul>
+
+      <Modal
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        title="Editar marca"
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => setEditing(null)}
+              disabled={pending}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={saveEdit}
+              disabled={
+                pending || !editing || editing.nome.trim().length < 2
+              }
+            >
+              {pending ? "Salvando…" : "Salvar"}
+            </Button>
+          </div>
+        }
+      >
+        <Field label="Nome" htmlFor="marca-nome">
+          <Input
+            id="marca-nome"
+            autoFocus
+            value={editing?.nome ?? ""}
+            onChange={(e) =>
+              setEditing((cur) =>
+                cur ? { ...cur, nome: e.target.value } : cur,
+              )
+            }
+            onKeyDown={(e) => e.key === "Enter" && saveEdit()}
+          />
+        </Field>
+        {editError && <p className="mt-2 text-xs text-muted">{editError}</p>}
+      </Modal>
     </Sheet>
   );
 }
@@ -152,14 +237,23 @@ export function CategorySheet({
   open,
   onClose,
   tree,
+  onChanged,
 }: {
   open: boolean;
   onClose: () => void;
   tree: CategoryNode[];
+  /** Recarrega a árvore de categorias (fonte fica fora do RSC — `router.refresh()` não alcança). */
+  onChanged: () => void;
 }) {
   const refresh = useRefresh();
-  const [pending, start] = useTransition();
   const [error, setError] = useState<string>();
+
+  // Estados de "salvando" separados por ação. Um `useTransition` compartilhado
+  // segurava o pending até o `router.refresh()` terminar — e o botão do modal
+  // seguinte já nascia desabilitado com "Salvando…".
+  const [savingCat, setSavingCat] = useState(false);
+  const [savingSub, setSavingSub] = useState(false);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
 
   const [catNome, setCatNome] = useState("");
   const [openCat, setOpenCat] = useState<string | null>(null);
@@ -170,53 +264,63 @@ export function CategorySheet({
     setOpenCat((cur) => (cur === id ? null : id));
   }
 
-  function addCat() {
+  async function addCat() {
     setError(undefined);
     if (catNome.trim().length < 2)
       return setError("Informe o nome da categoria.");
-    start(async () => {
-      try {
-        const r = await createCategory(catNome);
-        setCatNome("");
-        refresh();
-        if (r.jaExistia) setError(`«${r.nome}» já existia.`);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Falha ao salvar.");
-      }
-    });
+    setSavingCat(true);
+    try {
+      const r = await createCategory(catNome);
+      setCatNome("");
+      refresh();
+      onChanged();
+      if (r.jaExistia) setError(`«${r.nome}» já existia.`);
+      else toast.success("Categoria criada", `«${r.nome}» adicionada.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha ao salvar.");
+    } finally {
+      setSavingCat(false);
+    }
   }
 
-  function saveSub() {
-    if (!modal) return;
+  async function saveSub() {
+    if (!modal || savingSub) return;
     setModalError(undefined);
-    start(async () => {
-      try {
-        if (modal.mode === "edit") {
-          await updateSubcategory({ id: modal.subId, nome: modal.nome });
-        } else {
-          await createSubcategory({
-            categoryId: modal.categoryId,
-            nome: modal.nome,
-          });
-          setOpenCat(modal.categoryId);
-        }
-        setModal(null);
-        refresh();
-      } catch (e) {
-        setModalError(e instanceof Error ? e.message : "Falha ao salvar.");
+    setSavingSub(true);
+    try {
+      if (modal.mode === "edit") {
+        await updateSubcategory({ id: modal.subId, nome: modal.nome });
+        toast.success("Subcategoria atualizada", `«${modal.nome}» salva.`);
+      } else {
+        await createSubcategory({
+          categoryId: modal.categoryId,
+          nome: modal.nome,
+        });
+        setOpenCat(modal.categoryId);
+        toast.success("Subcategoria criada", `«${modal.nome}» adicionada.`);
       }
-    });
+      setModal(null);
+      refresh();
+      onChanged();
+    } catch (e) {
+      setModalError(e instanceof Error ? e.message : "Falha ao salvar.");
+    } finally {
+      setSavingSub(false);
+    }
   }
 
-  function toggleActive(subId: string, ativo: boolean) {
-    start(async () => {
-      try {
-        await setSubcategoryActive(subId, ativo);
-        refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Falha.");
-      }
-    });
+  async function toggleActive(subId: string, ativo: boolean) {
+    setTogglingId(subId);
+    try {
+      await setSubcategoryActive(subId, ativo);
+      refresh();
+      onChanged();
+      toast.success(ativo ? "Subcategoria reativada" : "Subcategoria inativada");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha.");
+    } finally {
+      setTogglingId(null);
+    }
   }
 
   return (
@@ -235,10 +339,10 @@ export function CategorySheet({
         />
         <Button
           onClick={addCat}
-          disabled={pending || catNome.trim().length < 2}
+          disabled={savingCat || catNome.trim().length < 2}
           className="shrink-0 gap-1"
         >
-          <Plus size={16} /> Adicionar
+          <Plus size={16} /> {savingCat ? "Adicionando…" : "Adicionar"}
         </Button>
       </div>
       {error && <p className="mt-2 text-xs text-muted">{error}</p>}
@@ -362,6 +466,7 @@ export function CategorySheet({
                               )
                             }
                             onClick={() => toggleActive(s.id, !s.ativo)}
+                            disabled={togglingId === s.id}
                           >
                             {s.ativo ? "Inativar" : "Reativar"}
                           </MenuItem>
@@ -388,15 +493,15 @@ export function CategorySheet({
             <Button
               variant="ghost"
               onClick={() => setModal(null)}
-              disabled={pending}
+              disabled={savingSub}
             >
               Cancelar
             </Button>
             <Button
               onClick={saveSub}
-              disabled={pending || !modal || modal.nome.trim().length < 2}
+              disabled={savingSub || !modal || modal.nome.trim().length < 2}
             >
-              {pending ? "Salvando…" : "Salvar"}
+              {savingSub ? "Salvando…" : "Salvar"}
             </Button>
           </div>
         }

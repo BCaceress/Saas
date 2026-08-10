@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input, Select } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
@@ -25,6 +26,8 @@ export type ProdutoLote = {
   id: string;
   nome: string;
   sku: string;
+  /** Receita (PERSONALIZADO) fica de fora do bloco de marca. */
+  tipo?: string;
 };
 
 type ModoFornecedor = "substituir" | "adicionar" | "remover";
@@ -109,6 +112,9 @@ export function LoteSheet({
     () => new Map(suppliers.map((s) => [s.id, s])),
     [suppliers],
   );
+
+  /** Receitas na fila: o servidor não aplica marca nelas — o painel avisa antes. */
+  const receitas = produtos.filter((p) => p.tipo === "PERSONALIZADO").length;
 
   function alternarForn(id: string) {
     setFornSel((prev) =>
@@ -306,6 +312,13 @@ export function LoteSheet({
               Se já existir uma marca com esse nome, ela é reaproveitada.
             </p>
           )}
+          {receitas > 0 && (
+            <p className="mt-2 flex items-start gap-1.5 text-xs text-muted">
+              <Info size={13} className="mt-0.5 shrink-0" />
+              {receitas === 1 ? "1 receita fica" : `${receitas} receitas ficam`} de fora: preparo da
+              casa não tem marca.
+            </p>
+          )}
         </Bloco>
 
         {/* ── Fornecedores ── */}
@@ -389,12 +402,7 @@ export function LoteSheet({
                       marcado && "bg-brand-soft/40",
                     )}
                   >
-                    <input
-                      type="checkbox"
-                      checked={marcado}
-                      onChange={() => alternarForn(s.id)}
-                      className="h-4 w-4 cursor-pointer rounded border-line accent-[var(--color-brand)]"
-                    />
+                    <Checkbox checked={marcado} onChange={() => alternarForn(s.id)} />
                     <span className="min-w-0 flex-1 truncate text-ink">{nomeFornecedor(s)}</span>
                     {s.cnpj && (
                       <span className="shrink-0 font-mono text-[11px] text-faint">{s.cnpj}</span>
@@ -456,12 +464,7 @@ function Bloco({
       )}
     >
       <label className="flex cursor-pointer items-start gap-3 px-4 py-3">
-        <input
-          type="checkbox"
-          checked={ligado}
-          onChange={onToggle}
-          className="mt-0.5 h-4 w-4 cursor-pointer rounded border-line accent-[var(--color-brand)]"
-        />
+        <Checkbox checked={ligado} onChange={onToggle} className="mt-0.5" />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1.5 text-sm font-semibold text-ink">
             <span className="text-faint">{icon}</span>

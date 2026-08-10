@@ -425,6 +425,40 @@ export async function registrarAjusteAction(input: z.input<typeof ajusteSchema>)
   });
 }
 
+// ── Local de armazenagem (ação em lote) ──────────────────────
+
+const localMassaSchema = z.object({
+  siteId: z.string().min(1),
+  productIds: z.array(z.string().min(1)).min(1, "Selecione ao menos um produto."),
+  /** null = tirar o produto de qualquer local ("Sem local"). */
+  locationId: z.string().min(1).nullable(),
+});
+
+/**
+ * Move vários produtos para um local de armazenagem de uma vez. Só mexe no
+ * Stock da loja informada — local é atributo do saldo naquela loja, não do
+ * produto, então não há movimentação de estoque envolvida.
+ */
+export async function alterarLocalEmMassaAction(input: z.input<typeof localMassaSchema>) {
+  const d = localMassaSchema.parse(input);
+  return txp("estoque.ajustar", d.siteId, async () => {
+    if (d.locationId) {
+      const loc = await db.storageLocation.findFirst({
+        where: { id: d.locationId, siteId: d.siteId, ativo: true },
+        select: { id: true },
+      });
+      if (!loc) throw new Error("Local de armazenagem não encontrado nesta loja.");
+    }
+    const { count } = await db.stock.updateMany({
+      where: { productId: { in: d.productIds }, siteId: d.siteId },
+      data: { locationId: d.locationId },
+    });
+    ok();
+    revalidatePath("/produtos", "layout"); // o local também aparece na ficha do produto
+    return { count };
+  });
+}
+
 // ── Devolução ────────────────────────────────────────────────
 
 const devolucaoSchema = z.object({

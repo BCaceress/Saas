@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition, useRef, useEffect, useCallback } from "react";
+import { Fragment, useMemo, useState, useTransition, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -10,11 +10,13 @@ import {
   Barcode, Hash, ChevronLeft, ChevronRight,
   ArrowUp, ArrowDown, ChevronsUpDown, Globe, SlidersHorizontal, Columns3,
   Download, Rows2, LayoutGrid, FilterX, Percent, BottleWine, Printer, ImagePlus,
+  TextCursorInput, Box, Refrigerator, Snowflake,
 } from "lucide-react";
 import { cn, brl, margem } from "@/lib/utils";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuItem } from "@/components/ui/menu";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input, Select } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { PageHeader } from "@/components/app/page-header";
@@ -27,14 +29,15 @@ import { CsvSheet } from "./_sheets/csv-sheet";
 import { EtiquetasSheet } from "./_sheets/etiquetas-sheet";
 import { ImagensSheet, type ProdutoImagem } from "./_sheets/imagens-sheet";
 import { LoteSheet } from "./_sheets/lote-sheet";
+import { NomesSheet } from "./_sheets/nomes-sheet";
 import { archiveProduct, getGerenciarExtras } from "./actions";
 import type {
-  ProductRow, BrandOpt, SubcategoryFilterOpt,
+  ProductRow, BrandOpt, SubcategoryFilterOpt, CategoryFilterOpt,
   ProductPackagingItem,
 } from "./_types";
 import type { GerenciarExtras } from "./_data";
 
-type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv" | "imagens" | "lote";
+type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv" | "imagens" | "lote" | "nomes";
 
 /**
  * Teto de produtos por rodada de busca de imagem. A cota da base de códigos é
@@ -43,6 +46,9 @@ type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv" | 
 const IMAGENS_POR_RODADA = 100;
 
 const POR_PAGINA = [25, 50, 100, 200];
+
+/** Valor sentinela do filtro de marca: produtos sem marca cadastrada. */
+const SEM_MARCA = "__sem";
 
 // ── Ordenação ────────────────────────────────────────────────────────────────
 type SortField = "nome" | "marca" | "tipo" | "categoria" | "preco" | "margem" | "estoque" | "fornecedor";
@@ -68,6 +74,35 @@ function margemColor(m: number | null): string {
 
 function principalFornecedor(p: ProductRow) {
   return p.fornecedores.find((f) => f.isPrincipal) ?? p.fornecedores[0];
+}
+
+/**
+ * Ícone/cor do local seguem o tipo de armazenagem escolhido no Estoque —
+ * mesma tabela usada em /estoque/saldos e em Configurações → Lojas.
+ */
+type StorageTipo = "AMBIENTE" | "REFRIGERADO" | "CONGELADO";
+const STORAGE_TIPO_ICON: Record<StorageTipo, React.ElementType> = {
+  AMBIENTE: Box,
+  REFRIGERADO: Refrigerator,
+  CONGELADO: Snowflake,
+};
+const STORAGE_TIPO_COLOR: Record<StorageTipo, string> = {
+  AMBIENTE: "text-brand",
+  REFRIGERADO: "text-ok",
+  CONGELADO: "text-blue-500",
+};
+
+type LocalEmUso = { nome: string; tipo: StorageTipo | null };
+
+/** Locais de armazenagem em uso (loja/local ativos, sem repetir nome). */
+function locaisEmUso(p: ProductRow): LocalEmUso[] {
+  const porNome = new Map<string, LocalEmUso>();
+  for (const l of p.locais) {
+    if (!l.siteAtivo || l.locationAtivo === false) continue;
+    if (!l.locationNome || porNome.has(l.locationNome)) continue;
+    porNome.set(l.locationNome, { nome: l.locationNome, tipo: l.locationTipo ?? null });
+  }
+  return [...porNome.values()];
 }
 
 /**
@@ -100,14 +135,14 @@ function sortValue(p: ProductRow, field: SortField): number | string {
 }
 
 // ── Colunas configuráveis ────────────────────────────────────────────────────
-type ColKey = "marca" | "tipo" | "categoria" | "margem" | "fornecedor" | "estoque";
-const COL_ORDER: ColKey[] = ["marca", "tipo", "categoria", "margem", "fornecedor", "estoque"];
+type ColKey = "marca" | "tipo" | "categoria" | "local" | "margem" | "fornecedor" | "estoque";
+const COL_ORDER: ColKey[] = ["marca", "tipo", "categoria", "local", "margem", "fornecedor", "estoque"];
 const COL_LABEL: Record<ColKey, string> = {
-  marca: "Marca", tipo: "Tipo", categoria: "Categoria",
+  marca: "Marca", tipo: "Tipo", categoria: "Categoria", local: "Local de estoque",
   margem: "Margem", fornecedor: "Fornecedor", estoque: "Estoque",
 };
 const DEFAULT_COLS: Record<ColKey, boolean> = {
-  marca: false, tipo: true, categoria: true,
+  marca: false, tipo: true, categoria: true, local: false,
   margem: true, fornecedor: true, estoque: true,
 };
 type Density = "cozy" | "compact";
@@ -142,13 +177,14 @@ function readLS<T>(key: string, fallback: T): T {
 export function ProdutosClient(props: {
   rows: ProductRow[];
   subOpts: SubcategoryFilterOpt[];
+  categoryOpts: CategoryFilterOpt[];
   brandOpts: BrandOpt[];
   initialFornecedorId?: string;
   initialFornecedorNome?: string;
   /** Estratégia de estoque — define as colunas do importador de CSV. */
   policy?: EstoquePolicy;
 }) {
-  const { rows, subOpts, brandOpts, initialFornecedorId, initialFornecedorNome, policy = POLICY_PADRAO } = props;
+  const { rows, subOpts, categoryOpts, brandOpts, initialFornecedorId, initialFornecedorNome, policy = POLICY_PADRAO } = props;
   const router = useRouter();
   const searchParams = useSearchParams();
   const [, start] = useTransition();
@@ -219,8 +255,14 @@ export function ProdutosClient(props: {
     return rows.filter((p) => {
       if (term && !`${p.nome} ${p.sku} ${p.ean ?? ""}`.toLowerCase().includes(term)) return false;
       if (fTipo && p.tipo !== fTipo) return false;
-      if (fSub && p.subcategoryId !== fSub) return false;
-      if (fMarca && p.brandId !== fMarca) return false;
+      if (fSub) {
+        if (fSub.startsWith("cat:")) {
+          if (p.categoryId !== fSub.slice(4)) return false;
+        } else if (p.subcategoryId !== fSub) return false;
+      }
+      // "__sem" = produtos sem marca (receitas e combos nunca têm).
+      if (fMarca === SEM_MARCA) { if (p.brandId) return false; }
+      else if (fMarca && p.brandId !== fMarca) return false;
       if (fFornecedorId && !p.fornecedores.some((f) => f.id === fFornecedorId)) return false;
       if (fStatus === "ativos" && !p.ativo) return false;
       if (fStatus === "inativos" && p.ativo) return false;
@@ -321,7 +363,6 @@ export function ProdutosClient(props: {
   }
 
   // ── Imagens por código de barras ──
-  const semImagem = rows.filter((p) => p.ativo && !p.imagemUrl);
   function abrirImagens(lista: ProductRow[]) {
     setImagensAlvo(
       lista.slice(0, IMAGENS_POR_RODADA).map<ProdutoImagem>((p) => ({
@@ -337,11 +378,18 @@ export function ProdutosClient(props: {
 
   // ── Edição em lote (categoria, marca, fornecedores) ──
   /** Fila congelada na abertura do painel — mesma ideia da busca de imagens. */
-  const [loteAlvo, setLoteAlvo] = useState<{ id: string; nome: string; sku: string }[]>([]);
+  const [loteAlvo, setLoteAlvo] = useState<{ id: string; nome: string; sku: string; tipo: string }[]>([]);
   function abrirLote(lista: ProductRow[]) {
-    setLoteAlvo(lista.map((p) => ({ id: p.id, nome: p.nome, sku: p.sku })));
+    setLoteAlvo(lista.map((p) => ({ id: p.id, nome: p.nome, sku: p.sku, tipo: p.tipo })));
     ensureExtras();
     setSheet("lote");
+  }
+
+  // ── Alterar nomes em massa ──
+  const [nomesAlvo, setNomesAlvo] = useState<{ id: string; nome: string; sku: string }[]>([]);
+  function abrirNomes(lista: ProductRow[]) {
+    setNomesAlvo(lista.map((p) => ({ id: p.id, nome: p.nome, sku: p.sku })));
+    setSheet("nomes");
   }
 
   const temProdutos = rows.length > 0;
@@ -364,7 +412,7 @@ export function ProdutosClient(props: {
                 <Button
                   variant="secondary"
                   size="sm"
-                  className="gap-1.5"
+                  className="gap-1.5 border-transparent"
                   onMouseEnter={ensureExtras}
                   onFocus={ensureExtras}
                 >
@@ -379,13 +427,6 @@ export function ProdutosClient(props: {
               <MenuItem icon={<Truck size={15} />} onClick={() => { ensureExtras(); setSheet("supplier"); }}>Fornecedores</MenuItem>
               <div className="my-1 h-px bg-line" role="separator" />
               <MenuItem icon={<Upload size={15} />} onClick={() => setSheet("csv")}>Importar CSV</MenuItem>
-              <MenuItem
-                icon={<ImagePlus size={15} />}
-                onClick={() => abrirImagens(semImagem)}
-                disabled={semImagem.length === 0}
-              >
-                Buscar imagens{semImagem.length > 0 ? ` (${semImagem.length})` : ""}
-              </MenuItem>
             </Menu>
 
             <div className="inline-flex shadow-[var(--shadow-1)] rounded-full">
@@ -441,14 +482,29 @@ export function ProdutosClient(props: {
             )}
             {cols.categoria && (
               <Select value={fSub} onChange={(e) => { setFSub(e.target.value); resetPaging(); }} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
-                <option value="">Toda subcategoria</option>
-                {subOpts.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
+                <option value="">Toda categoria</option>
+                {/* A categoria é a própria opção (filtra tudo dela); as subcategorias
+                    vêm indentadas abaixo. optgroup não serve: rótulo de grupo não
+                    é clicável. */}
+                {categoryOpts.map((c) => (
+                  <Fragment key={c.id}>
+                    <option value={`cat:${c.id}`}>{c.nome}</option>
+                    {subOpts
+                      .filter((s) => s.categoryId === c.id)
+                      .map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {"   "}{s.nome}
+                        </option>
+                      ))}
+                  </Fragment>
+                ))}
               </Select>
             )}
             {cols.marca && (
               <Select value={fMarca} onChange={(e) => { setFMarca(e.target.value); resetPaging(); }} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
                 <option value="">Toda marca</option>
                 {brandOpts.map((b) => <option key={b.id} value={b.id}>{b.nome}</option>)}
+                <option value={SEM_MARCA}>Sem marca</option>
               </Select>
             )}
             <Select value={fStatus} onChange={(e) => { setFStatus(e.target.value); resetPaging(); }} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
@@ -604,7 +660,8 @@ export function ProdutosClient(props: {
                     {cols.tipo && <SortableTh label="Tipo" field="tipo" sort={sort} dir={dir} onSort={toggleSort} className="hidden lg:table-cell" />}
                     {cols.categoria && <SortableTh label="Categoria" field="categoria" sort={sort} dir={dir} onSort={toggleSort} className="hidden lg:table-cell" />}
                     <SortableTh label="Preço" field="preco" sort={sort} dir={dir} onSort={toggleSort} />
-                    {cols.margem && <SortableTh label="Margem" field="margem" sort={sort} dir={dir} onSort={toggleSort} className="hidden sm:table-cell" />}
+                    {cols.local && <th className="hidden px-4 py-2.5 lg:table-cell">Local</th>}
+                    {cols.margem &&<SortableTh label="Margem" field="margem" sort={sort} dir={dir} onSort={toggleSort} className="hidden sm:table-cell" />}
                     {cols.fornecedor && <SortableTh label="Fornecedor" field="fornecedor" sort={sort} dir={dir} onSort={toggleSort} className="hidden md:table-cell" />}
                     {cols.estoque && <SortableTh label="Estoque" field="estoque" sort={sort} dir={dir} onSort={toggleSort} />}
                     <th className="w-10 px-3 py-2.5" />
@@ -691,6 +748,13 @@ export function ProdutosClient(props: {
                         <td className={cn("px-4", cellPad)}>
                           <PriceCell tipo={p.tipo} precoVenda={p.precoVenda} custo={p.custo} />
                         </td>
+
+                        {/* Local de estoque */}
+                        {cols.local && (
+                          <td className={cn("hidden px-4 lg:table-cell", cellPad)}>
+                            <LocalCell locais={locaisEmUso(p)} />
+                          </td>
+                        )}
 
                         {/* Margem */}
                         {cols.margem && (
@@ -830,7 +894,12 @@ export function ProdutosClient(props: {
         {sheet === "brand" && <BrandSheet open onClose={() => setSheet(null)} brands={brandOpts} />}
         {sheet === "category" && (
           extras
-            ? <CategorySheet open onClose={() => setSheet(null)} tree={extras.categoryTree} />
+            ? <CategorySheet
+                open
+                onClose={() => setSheet(null)}
+                tree={extras.categoryTree}
+                onChanged={() => getGerenciarExtras().then(setExtras)}
+              />
             : <LoadingSheet title="Categorias" onClose={() => setSheet(null)} />
         )}
         {sheet === "storage" && (
@@ -865,6 +934,14 @@ export function ProdutosClient(props: {
               />
             : <LoadingSheet title="Editar em lote" onClose={() => setSheet(null)} />
         )}
+        {sheet === "nomes" && (
+          <NomesSheet
+            open
+            onClose={() => setSheet(null)}
+            produtos={nomesAlvo}
+            onAplicado={() => { setSelected(new Set()); router.refresh(); }}
+          />
+        )}
       </div>
 
       {/* ── Barra de ações em lote ──
@@ -875,6 +952,7 @@ export function ProdutosClient(props: {
         <BulkBar
           count={selected.size}
           onEditar={() => abrirLote(rows.filter((p) => selected.has(p.id)))}
+          onNomes={() => abrirNomes(rows.filter((p) => selected.has(p.id)))}
           onEtiquetas={() => setEtiquetasOpen(true)}
           onExportar={exportarSelecionados}
           onImagens={() => abrirImagens(rows.filter((p) => selected.has(p.id)))}
@@ -947,17 +1025,13 @@ function Check({
   onChange: () => void;
   label: string;
 }) {
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (ref.current) ref.current.indeterminate = !!indeterminate; }, [indeterminate]);
   return (
-    <input
-      ref={ref}
-      type="checkbox"
+    <Checkbox
       checked={checked}
+      indeterminate={indeterminate}
       onChange={onChange}
       onClick={(e) => e.stopPropagation()}
       aria-label={label}
-      className="h-4 w-4 cursor-pointer rounded border-line accent-[var(--color-brand)]"
     />
   );
 }
@@ -965,12 +1039,7 @@ function Check({
 function CheckRow({ checked, label, onChange }: { checked: boolean; label: string; onChange: () => void }) {
   return (
     <label className="flex cursor-pointer items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-sm text-ink transition-colors hover:bg-surface-2">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={onChange}
-        className="h-4 w-4 cursor-pointer rounded border-line accent-[var(--color-brand)]"
-      />
+      <Checkbox checked={checked} onChange={onChange} />
       {label}
     </label>
   );
@@ -994,11 +1063,12 @@ function DensityBtn({ active, onClick, icon, children }: { active: boolean; onCl
 // ── Barra de ações em lote (flutuante) ───────────────────────────────────────
 
 function BulkBar({
-  count, onEditar, onEtiquetas, onExportar, onImagens, onLimpar,
+  count, onEditar, onNomes, onEtiquetas, onExportar, onImagens, onLimpar,
 }: {
   count: number;
   /** Categoria/subcategoria, marca e fornecedores dos selecionados. */
   onEditar: () => void;
+  onNomes: () => void;
   onEtiquetas: () => void;
   onExportar: () => void;
   onImagens: () => void;
@@ -1015,6 +1085,9 @@ function BulkBar({
         <div className="h-5 w-px bg-line" />
         <Button size="sm" onClick={onEditar} className="gap-1.5">
           <SlidersHorizontal size={15} /> Editar em lote
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onNomes} className="gap-1.5">
+          <TextCursorInput size={15} /> Alterar nomes
         </Button>
         <Button variant="ghost" size="sm" onClick={onEtiquetas} className="gap-1.5">
           <Printer size={15} /> Imprimir etiquetas
@@ -1071,6 +1144,24 @@ function ProductCard({
   const metaParts: { key: string; node: React.ReactNode }[] = [];
   if (cols.tipo) metaParts.push({ key: "tipo", node: <span className="inline-flex items-center gap-1">{TIPO_ICON[p.tipo]}{TIPO_LABEL[p.tipo]}</span> });
   if (cols.categoria && p.categoriaNome) metaParts.push({ key: "cat", node: p.categoriaNome });
+  if (cols.local) {
+    const locais = locaisEmUso(p);
+    if (locais.length) {
+      const [primeiro] = locais;
+      const Icon = primeiro.tipo ? STORAGE_TIPO_ICON[primeiro.tipo] : Warehouse;
+      const cor = primeiro.tipo ? STORAGE_TIPO_COLOR[primeiro.tipo] : undefined;
+      metaParts.push({
+        key: "local",
+        node: (
+          <span className="inline-flex items-center gap-1">
+            <Icon size={11} className={cor} />
+            {primeiro.nome}
+            {locais.length > 1 ? ` +${locais.length - 1}` : ""}
+          </span>
+        ),
+      });
+    }
+  }
   if (cols.marca && p.marca) metaParts.push({ key: "marca", node: p.marca });
   if (cols.fornecedor && principal) metaParts.push({ key: "forn", node: principal.nome });
 
@@ -1498,6 +1589,27 @@ function PriceCell({ tipo, precoVenda, custo }: { tipo: string; precoVenda: numb
         document.body,
       )}
     </>
+  );
+}
+
+// ── Célula de local de armazenagem ───────────────────────────────────────────
+
+function LocalCell({ locais }: { locais: LocalEmUso[] }) {
+  if (locais.length === 0) return <span className="text-[11px] text-faint">—</span>;
+  const [primeiro] = locais;
+  const Icon = primeiro.tipo ? STORAGE_TIPO_ICON[primeiro.tipo] : Warehouse;
+  const cor = primeiro.tipo ? STORAGE_TIPO_COLOR[primeiro.tipo] : "text-faint";
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[12px] text-ink-2"
+      title={locais.map((l) => l.nome).join(" · ")}
+    >
+      <Icon size={12} className={cn("shrink-0", cor)} />
+      <span className="truncate">{primeiro.nome}</span>
+      {locais.length > 1 && (
+        <span className="text-[11px] text-faint">+{locais.length - 1}</span>
+      )}
+    </span>
   );
 }
 

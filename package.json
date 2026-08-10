@@ -1,6 +1,6 @@
 {
   "name": "nohub-market",
-  "version": "v1.0.0 (08/08/26)",
+  "version": "v1.0.0 (10/08/26)",
   "private": true,
   "main": "electron/main.js",
   "scripts": {

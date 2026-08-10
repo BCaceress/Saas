@@ -61,13 +61,18 @@ import {
 } from "@/lib/estoque-estrategia";
 import { toast } from "@/components/ui/toast";
 import { Sheet } from "@/components/ui/sheet";
-import { Menu } from "@/components/ui/menu";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import { Input, Select } from "@/components/ui/input";
 import { NovaEntradaForm, type Item } from "../entradas/nova/_client";
 import { AdicionarCompraSheet } from "./_comprar";
 import { PEDIDO_STATUS } from "../../compras/_ui";
-import type { SaldoRow } from "../_data";
-import { fetchHistoricoProductAction, registrarAjusteAction, fetchEntradaFormDataAction } from "../actions";
+import type { SaldoRow, LocalArmazenagemRow } from "../_data";
+import {
+  fetchHistoricoProductAction,
+  registrarAjusteAction,
+  fetchEntradaFormDataAction,
+  alterarLocalEmMassaAction,
+} from "../actions";
 
 const fmt = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 const fmt1 = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
@@ -389,6 +394,7 @@ export function SaldosView({
   saldos,
   policy = POLICY_PADRAO,
   siteId,
+  locais = [],
   initialQ = "",
   initialFiltro = "todos",
   initialPage = 1,
@@ -397,6 +403,8 @@ export function SaldosView({
   /** Estratégia de controle da empresa — define metas, filtros e colunas. */
   policy?: EstoquePolicy;
   siteId: string | null;
+  /** Locais de armazenagem ativos da loja — destinos da alteração em massa. */
+  locais?: LocalArmazenagemRow[];
   initialQ?: string;
   initialFiltro?: Filtro;
   initialPage?: number;
@@ -467,7 +475,9 @@ export function SaldosView({
     () => [...new Set(saldos.map((s) => s.fornecedorNome).filter((v): v is string => !!v))].sort(),
     [saldos],
   );
-  const locais = useMemo(
+  // Nomes de local presentes nos dados — opções do filtro (≠ `locais`, que são
+  // os locais cadastrados da loja e servem de destino na alteração em massa).
+  const locaisFiltro = useMemo(
     () => [...new Set(saldos.map((s) => s.locationNome).filter((v): v is string => !!v))].sort(),
     [saldos],
   );
@@ -580,6 +590,36 @@ export function SaldosView({
     }
   }
 
+  // ── Local de armazenagem em massa ─────────────────────────────
+  // Local é atributo do saldo na loja, não movimentação: aplica direto nos
+  // produtos selecionados e limpa a seleção (o refresh traz o novo local).
+  const [localSalvando, setLocalSalvando] = useState(false);
+  async function aplicarLocal(local: LocalArmazenagemRow | null) {
+    if (!siteId || selecionados.size === 0 || localSalvando) return;
+    const ids = [...selecionados];
+    setLocalSalvando(true);
+    try {
+      const { count } = await alterarLocalEmMassaAction({
+        siteId,
+        productIds: ids,
+        locationId: local?.id ?? null,
+      });
+      toast.success(
+        local ? `Movidos para ${local.nome}` : "Local removido",
+        `${count} ${count === 1 ? "produto atualizado" : "produtos atualizados"}.`,
+      );
+      setSelecionados(new Set());
+      router.refresh();
+    } catch (e) {
+      toast.error(
+        "Não foi possível alterar o local",
+        e instanceof Error ? e.message : "Tente novamente.",
+      );
+    } finally {
+      setLocalSalvando(false);
+    }
+  }
+
   // ── Seleção múltipla (checkbox por linha + action bar) ────────
   function toggleSelecionado(productId: string) {
     setSelecionados((cur) => {
@@ -668,10 +708,10 @@ export function SaldosView({
             {fornecedores.map((f) => <option key={f} value={f}>{f}</option>)}
           </Select>
         )}
-        {cols.local && locais.length > 0 && (
+        {cols.local && locaisFiltro.length > 0 && (
           <Select value={avLocal} onChange={(e) => setAvLocal(e.target.value)} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
             <option value="">Todo local</option>
-            {locais.map((l) => <option key={l} value={l}>{l}</option>)}
+            {locaisFiltro.map((l) => <option key={l} value={l}>{l}</option>)}
           </Select>
         )}
 
@@ -949,6 +989,43 @@ export function SaldosView({
               <b className="tabular-nums">{selecionados.size}</b>{" "}
               {selecionados.size === 1 ? "produto selecionado" : "produtos selecionados"}
             </span>
+            {siteId && locais.length > 0 && (
+              <Menu
+                align="start"
+                className="max-h-80 w-64 overflow-y-auto"
+                trigger={
+                  <button
+                    type="button"
+                    disabled={localSalvando}
+                    className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line px-3.5 py-1.5 text-sm font-medium text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50"
+                  >
+                    {localSalvando ? <Loader2 size={14} className="animate-spin" /> : <MapPin size={14} />}
+                    Alterar local
+                    <ChevronDown size={13} className="text-faint" />
+                  </button>
+                }
+              >
+                <p className="px-2.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-faint">
+                  Mover para
+                </p>
+                {locais.map((l) => {
+                  const Icon = STORAGE_TIPO_ICON[l.tipo];
+                  return (
+                    <MenuItem
+                      key={l.id}
+                      icon={<Icon size={14} className={STORAGE_TIPO_COLOR[l.tipo]} />}
+                      onClick={() => aplicarLocal(l)}
+                    >
+                      {l.nome}
+                    </MenuItem>
+                  );
+                })}
+                <div className="my-1 h-px bg-line" />
+                <MenuItem icon={<X size={14} />} onClick={() => aplicarLocal(null)}>
+                  Sem local
+                </MenuItem>
+              </Menu>
+            )}
             <button
               type="button"
               onClick={() => setComprarIds([...selecionados])}

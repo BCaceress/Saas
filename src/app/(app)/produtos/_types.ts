@@ -26,6 +26,7 @@ export type ProductRow = {
   subcategoriaNome: string;
   subcategoryId: string;
   categoriaNome: string;
+  categoryId: string;
   precoVenda: number | null;
   custo: number | null;
   ativo: boolean;
@@ -92,8 +93,10 @@ export type ProductPackagingItem = {
 
 export type BrandOpt = { id: string; nome: string };
 export type CategoryOpt = { id: string; nome: string };
+/** Opção enxuta pro filtro de categoria da listagem. */
+export type CategoryFilterOpt = { id: string; nome: string };
 /** Opção enxuta pro filtro de subcategoria da listagem (não carrega skuPrefix/defaults do form). */
-export type SubcategoryFilterOpt = { id: string; nome: string; categoriaNome: string };
+export type SubcategoryFilterOpt = { id: string; nome: string; categoriaNome: string; categoryId: string };
 export type SubcategoryOpt = {
   id: string;
   nome: string;

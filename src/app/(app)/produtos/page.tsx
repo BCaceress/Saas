@@ -4,7 +4,7 @@ import { db } from "@/lib/prisma";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { PRODUCT_INCLUDE, toProductRow } from "./_data";
 import { ProdutosClient } from "./_client";
-import type { ProductRow, BrandOpt, SubcategoryFilterOpt } from "./_types";
+import type { ProductRow, BrandOpt, SubcategoryFilterOpt, CategoryFilterOpt } from "./_types";
 
 export const metadata = { title: "Produtos — NoHub Market" };
 
@@ -27,6 +27,7 @@ export default async function ProdutosPage({
       db.category.findMany({
         orderBy: { nome: "asc" },
         select: {
+          id: true,
           nome: true,
           subcategories: {
             where: { ativo: true },
@@ -41,12 +42,14 @@ export default async function ProdutosPage({
     const rows: ProductRow[] = products.map((p) => toProductRow(p));
 
     const subOpts: SubcategoryFilterOpt[] = categories.flatMap((c) =>
-      c.subcategories.map((s) => ({ id: s.id, nome: s.nome, categoriaNome: c.nome }))
+      c.subcategories.map((s) => ({ id: s.id, nome: s.nome, categoriaNome: c.nome, categoryId: c.id }))
     );
+
+    const categoryOpts: CategoryFilterOpt[] = categories.map((c) => ({ id: c.id, nome: c.nome }));
 
     const brandOpts: BrandOpt[] = brands;
 
-    return { rows, subOpts, brandOpts };
+    return { rows, subOpts, categoryOpts, brandOpts };
   });
 
   return (
