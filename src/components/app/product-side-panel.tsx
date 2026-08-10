@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   PackageOpen, Wine, Boxes, Sparkles, Building2, Barcode, Pencil,
   Package, AlertTriangle, Store, Box, Refrigerator, Snowflake, ShoppingCart,
+  ChevronUp, ChevronDown,
 } from "lucide-react";
 import { cn, brl, margem } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -73,11 +74,21 @@ function buildAlerts(product: ProductRow, insights: ProductInsights | null): Ale
 
 /** Painel lateral de detalhes do produto — usado em /produtos e na busca global do navbar. */
 export function ProductSidePanel({
-  product, onClose, onEdit,
+  product, onClose, onEdit, navegacao,
 }: {
   product: ProductRow;
   onClose: () => void;
   onEdit: () => void;
+  /**
+   * Pular para o produto anterior/próximo da lista sem fechar o painel.
+   * Conferir dez itens seguidos não pode custar dez fecha-acha-abre.
+   */
+  navegacao?: {
+    posicao: number;
+    total: number;
+    onAnterior?: () => void;
+    onProximo?: () => void;
+  };
 }) {
   const level = stockLevel(product);
   const totalEstoque = product.estoque.fechado + product.estoque.aberto;
@@ -117,7 +128,32 @@ export function ProductSidePanel({
       description={`${TIPO_LABEL[product.tipo]} · ${product.subcategoriaNome}`}
       width="md"
       footer={
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          {navegacao && (
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                onClick={navegacao.onAnterior}
+                disabled={!navegacao.onAnterior}
+                aria-label="Produto anterior"
+                className="grid h-9 w-9 cursor-pointer place-items-center rounded-full border border-line text-ink-2 transition-colors hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-40"
+              >
+                <ChevronUp size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={navegacao.onProximo}
+                disabled={!navegacao.onProximo}
+                aria-label="Próximo produto"
+                className="grid h-9 w-9 cursor-pointer place-items-center rounded-full border border-line text-ink-2 transition-colors hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-40"
+              >
+                <ChevronDown size={16} />
+              </button>
+              <span className="ml-1 hidden font-mono text-[11px] text-faint sm:inline">
+                {navegacao.posicao}/{navegacao.total}
+              </span>
+            </div>
+          )}
           <Button variant="outline" onClick={onClose} className="flex-1">Fechar</Button>
           <Button onClick={onEdit} className="flex-1 gap-1.5"><Pencil size={14} /> Editar</Button>
         </div>

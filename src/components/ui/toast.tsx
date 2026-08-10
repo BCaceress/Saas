@@ -13,11 +13,15 @@ import { cn } from "@/lib/utils";
 
 type ToastTone = "success" | "error" | "info";
 
+/** Ação opcional no próprio toast — o "Desfazer" de operação reversível. */
+export type ToastAcao = { rotulo: string; onClick: () => void | Promise<void> };
+
 type ToastItem = {
   id: number;
   tone: ToastTone;
   title: string;
   description?: string;
+  acao?: ToastAcao;
 };
 
 type Listener = (items: ToastItem[]) => void;
@@ -46,20 +50,23 @@ function dismiss(id: number) {
   emit();
 }
 
-function push(tone: ToastTone, title: string, description?: string) {
+function push(tone: ToastTone, title: string, description?: string, acao?: ToastAcao) {
   const id = ++seq;
-  items = [...items, { id, tone, title, description }];
+  items = [...items, { id, tone, title, description, acao }];
   emit();
-  // some sozinho — erro fica mais tempo na tela
-  const ttl = tone === "error" ? 6000 : 4000;
+  // some sozinho — erro fica mais tempo na tela, e toast com ação também:
+  // 4s não dá tempo de ler, decidir e clicar em "Desfazer".
+  const ttl = tone === "error" ? 6000 : acao ? 8000 : 4000;
   setTimeout(() => dismiss(id), ttl);
   return id;
 }
 
 export const toast = {
-  success: (title: string, description?: string) => push("success", title, description),
+  success: (title: string, description?: string, acao?: ToastAcao) =>
+    push("success", title, description, acao),
   error: (title: string, description?: string) => push("error", title, description),
-  info: (title: string, description?: string) => push("info", title, description),
+  info: (title: string, description?: string, acao?: ToastAcao) =>
+    push("info", title, description, acao),
   dismiss,
 };
 
@@ -107,6 +114,18 @@ export function Toaster() {
               <p className="text-sm font-medium text-ink">{t.title}</p>
               {t.description && (
                 <p className="mt-0.5 text-xs text-muted">{t.description}</p>
+              )}
+              {t.acao && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    dismiss(t.id);
+                    void t.acao?.onClick();
+                  }}
+                  className="mt-1.5 cursor-pointer rounded-full border border-line px-2.5 py-1 text-xs font-medium text-ink-2 transition-colors hover:border-brand/40 hover:bg-brand-soft hover:text-brand-strong"
+                >
+                  {t.acao.rotulo}
+                </button>
               )}
             </div>
             <button

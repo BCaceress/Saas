@@ -91,6 +91,76 @@ export type ProductPackagingItem = {
   fatorConversao: number;
 };
 
+// ── Listagem de /produtos (consulta no servidor) ─────────────────────────────
+
+/** Valor sentinela do filtro de marca: produtos sem marca cadastrada. */
+export const SEM_MARCA = "__sem";
+/** Idem para etiquetas: produtos que não receberam nenhuma. */
+export const SEM_TAG = "__sem";
+
+export type ProdutoSortField =
+  | "nome" | "marca" | "tipo" | "categoria" | "preco"
+  | "margem" | "estoque" | "fornecedor" | "vendas" | "parado";
+export type ProdutoSortDir = "asc" | "desc";
+
+/** Filtros booleanos de higiene/negócio da listagem. */
+export type ProdutoFlags = {
+  semPreco: boolean;
+  semImagem: boolean;
+  semEan: boolean;
+  semFiscal: boolean;
+  online: boolean;
+  maiorIdade: boolean;
+};
+
+export type ProdutoFiltro = {
+  q: string;
+  tipo: string;
+  /** `cat:<id>` = categoria inteira; senão é subcategoryId. */
+  sub: string;
+  /** brandId, `""` = toda marca, `SEM_MARCA` = sem marca. */
+  marca: string;
+  fornecedorId: string;
+  /** Loja (Site) onde o produto tem posição de estoque. */
+  siteId: string;
+  /** tagId, `""` = todas, `SEM_TAG` = produtos sem nenhuma etiqueta. */
+  tag: string;
+  /** "ativos" | "inativos" */
+  status: string;
+  flags: ProdutoFlags;
+};
+
+export type ProdutoConsulta = ProdutoFiltro & {
+  sort: ProdutoSortField;
+  dir: ProdutoSortDir;
+  pagina: number;
+  porPagina: number;
+};
+
+/** Giro de um produto — alimenta as colunas "Vendas 30d" e "Parado há". */
+export type ProdutoGiro = { vendas30d: number; diasSemVenda: number | null };
+
+export type ProdutosPagina = {
+  rows: ProductRow[];
+  giro: Record<string, ProdutoGiro>;
+  /** Quantos produtos batem com o filtro (a página é uma fatia disto). */
+  total: number;
+  /** Quantos produtos o tenant tem no total, sem filtro nenhum. */
+  totalGeral: number;
+};
+
+/** Visão salva da listagem (filtro + colunas + ordenação). */
+export type ProdutoVisao = {
+  id: string;
+  nome: string;
+  params: string;
+  /** false = visão da loja inteira (criada sem dono). */
+  minha: boolean;
+};
+
+export type TagOpt = { id: string; nome: string };
+export type SiteOpt = { id: string; nome: string };
+
 export type BrandOpt = { id: string; nome: string };
 export type CategoryOpt = { id: string; nome: string };
 /** Opção enxuta pro filtro de categoria da listagem. */

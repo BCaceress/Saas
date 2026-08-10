@@ -136,7 +136,7 @@ export function toProductRow(p: ProductWithRelations): ProductRow {
  * (evita 4 queries no carregamento inicial da listagem).
  */
 export async function loadGerenciarExtras() {
-  const [categories, locations, suppliers, sites] = await Promise.all([
+  const [categories, locations, suppliers, sites, fiscalProfiles] = await Promise.all([
     db.category.findMany({
       orderBy: { nome: "asc" },
       include: { subcategories: { orderBy: { nome: "asc" } } },
@@ -152,6 +152,8 @@ export async function loadGerenciarExtras() {
       orderBy: { nome: "asc" },
       select: { id: true, nome: true },
     }),
+    // Alimenta o bloco fiscal da edição em lote.
+    db.fiscalProfile.findMany({ orderBy: { nome: "asc" } }),
   ]);
 
   const categoryTree: CategoryNode[] = categories.map((c) => ({
@@ -200,7 +202,14 @@ export async function loadGerenciarExtras() {
 
   const siteOpts = sites.map((s) => ({ id: s.id, nome: s.nome }));
 
-  return { categoryTree, storageOpts, supplierRows, siteOpts };
+  const fiscalOpts: FiscalOpt[] = fiscalProfiles.map((f) => ({
+    id: f.id,
+    nome: f.nome,
+    ncm: f.ncm,
+    precisaRevisao: f.precisaRevisao,
+  }));
+
+  return { categoryTree, storageOpts, supplierRows, siteOpts, fiscalOpts };
 }
 
 export type GerenciarExtras = Awaited<ReturnType<typeof loadGerenciarExtras>>;

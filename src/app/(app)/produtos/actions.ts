@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
-import { db } from "@/lib/prisma";
+import { db, basePrisma, comTenant } from "@/lib/prisma";
 import { guardAction } from "@/lib/guard";
 import { assertCabeProduto } from "@/lib/limites";
 import { runWithTenant } from "@/lib/tenant-context";
@@ -739,6 +739,25 @@ const bulkEditSchema = z.object({
   brandId: z.string().min(1).nullable().optional(),
   /** Marca nova pelo nome — cria (ou reaproveita a existente) e ganha do brandId. */
   marcaNome: z.string().optional(),
+  /** Reprecificação: % sobre o preço atual, valor somado ou preço fixo. */
+  preco: z
+    .object({
+      modo: z.enum(["percentual", "valor", "fixo"]),
+      valor: z.number().finite(),
+      arredondar: z.enum(["nenhum", "90", "99", "inteiro"]).default("nenhum"),
+    })
+    .optional(),
+  vendeOnline: z.boolean().optional(),
+  /** `null` = tira o perfil fiscal. */
+  fiscalProfileId: z.string().min(1).nullable().optional(),
+  ativo: z.boolean().optional(),
+  /** Etiquetas por NOME — cria a que não existir (é o jeito que o operador pensa). */
+  etiquetas: z
+    .object({
+      modo: z.enum(["adicionar", "remover", "substituir"]),
+      nomes: z.array(z.string()).default([]),
+    })
+    .optional(),
   fornecedores: z
     .object({
       // substituir com lista vazia = deixa o produto sem fornecedor.
@@ -750,6 +769,49 @@ const bulkEditSchema = z.object({
 
 export type BulkEditInput = z.input<typeof bulkEditSchema>;
 
+/** Estado anterior dos campos escalares tocados — combustível do "Desfazer". */
+export type BulkSnapshotItem = {
+  id: string;
+  brandId?: string | null;
+  subcategoryId?: string | null;
+  precoVenda?: number | null;
+  vendeOnline?: boolean;
+  fiscalProfileId?: string | null;
+  ativo?: boolean;
+};
+
+export type BulkEditResult = {
+  alterados: number;
+  /** null = não dá para desfazer (mexeu em fornecedor ou lote grande demais). */
+  desfazer: BulkSnapshotItem[] | null;
+};
+
+/** Teto do snapshot de desfazer — acima disso o custo do undo passa do benefício. */
+const TETO_DESFAZER = 500;
+
+/**
+ * Expressão SQL da reprecificação, montada a partir dos ENUMS validados pelo
+ * Zod — nenhum texto do usuário entra na string; o número vai como bind ($1).
+ *
+ * Sem `Prisma.sql` aninhado de propósito: o bundler do Next pode carregar duas
+ * cópias do runtime do Prisma, e aí o fragmento deixa de ser reconhecido como
+ * SQL e viaja como parâmetro jsonb.
+ */
+function expressaoPreco(p: { modo: string; valor: number; arredondar: string }): string {
+  const base =
+    p.modo === "percentual"
+      ? `("precoVenda" * $1)::numeric`
+      : p.modo === "valor"
+        ? `("precoVenda" + $1)::numeric`
+        : `$1::numeric`;
+
+  // ,90 e ,99 são a psicologia de etiqueta que o operador já usa na prateleira.
+  if (p.arredondar === "inteiro") return `round(${base}, 0)`;
+  if (p.arredondar === "90") return `floor(${base}) + 0.90`;
+  if (p.arredondar === "99") return `floor(${base}) + 0.99`;
+  return `round(${base}, 2)`;
+}
+
 /**
  * Aplica categoria/subcategoria, marca e fornecedores a vários produtos de uma
  * vez (barra de seleção da listagem). Campo ausente não é tocado — o painel
@@ -758,7 +820,7 @@ export type BulkEditInput = z.input<typeof bulkEditSchema>;
  * O SKU **não** é regerado ao trocar a subcategoria: ele é a etiqueta física da
  * prateleira e já está impresso/colado. Devolve quantos produtos foram alterados.
  */
-export async function bulkEditProducts(input: BulkEditInput): Promise<number> {
+export async function bulkEditProducts(input: BulkEditInput): Promise<BulkEditResult> {
   return tx(async (tid) => {
     const d = bulkEditSchema.parse(input);
     const ids = [...new Set(d.ids)];
@@ -767,15 +829,42 @@ export async function bulkEditProducts(input: BulkEditInput): Promise<number> {
     // o extension filtra o WHERE, então a lista já volta peneirada.
     const alvos = await db.product.findMany({
       where: { id: { in: ids } },
-      select: { id: true, tipo: true },
+      select: {
+        id: true,
+        tipo: true,
+        brandId: true,
+        subcategoryId: true,
+        precoVenda: true,
+        vendeOnline: true,
+        fiscalProfileId: true,
+        ativo: true,
+      },
     });
     const alvoIds = alvos.map((a) => a.id);
-    if (!alvoIds.length) return 0;
+    if (!alvoIds.length) return { alterados: 0, desfazer: null };
     // Receita é preparo da casa: marca não se aplica, então fica de fora do lote.
     const comMarcaIds = alvos.filter((a) => a.tipo !== "PERSONALIZADO").map((a) => a.id);
+    // Insumo é uso interno: reprecificação não o alcança.
+    const comPrecoIds = alvos.filter((a) => a.tipo !== "INSUMO").map((a) => a.id);
+
+    // ── Snapshot para o "Desfazer" ──
+    // Fornecedor mexe em tabela de vínculo (com custo negociado por par): não
+    // cabe num snapshot de campos escalares, então esse lote não volta atrás.
+    const desfazer: BulkSnapshotItem[] | null =
+      d.fornecedores || d.etiquetas || alvos.length > TETO_DESFAZER
+        ? null
+        : alvos.map((a) => ({
+            id: a.id,
+            ...(d.subcategoryId ? { subcategoryId: a.subcategoryId } : {}),
+            ...(d.brandId !== undefined || d.marcaNome?.trim() ? { brandId: a.brandId } : {}),
+            ...(d.preco ? { precoVenda: a.precoVenda?.toNumber() ?? null } : {}),
+            ...(d.vendeOnline !== undefined ? { vendeOnline: a.vendeOnline } : {}),
+            ...(d.fiscalProfileId !== undefined ? { fiscalProfileId: a.fiscalProfileId } : {}),
+            ...(d.ativo !== undefined ? { ativo: a.ativo } : {}),
+          }));
 
     // ── Campos escalares do produto ──
-    const data: { subcategoryId?: string } = {};
+    const data: { subcategoryId?: string; vendeOnline?: boolean; ativo?: boolean } = {};
     let novaMarca: string | null | undefined;
 
     if (d.subcategoryId) {
@@ -800,6 +889,9 @@ export async function bulkEditProducts(input: BulkEditInput): Promise<number> {
       novaMarca = d.brandId; // null = limpa
     }
 
+    if (d.vendeOnline !== undefined) data.vendeOnline = d.vendeOnline;
+    if (d.ativo !== undefined) data.ativo = d.ativo;
+
     if (Object.keys(data).length) {
       await db.product.updateMany({ where: { id: { in: alvoIds } }, data });
     }
@@ -809,6 +901,71 @@ export async function bulkEditProducts(input: BulkEditInput): Promise<number> {
         where: { id: { in: comMarcaIds } },
         data: { brandId: novaMarca },
       });
+    }
+
+    if (d.fiscalProfileId !== undefined) {
+      if (d.fiscalProfileId) {
+        const perfil = await db.fiscalProfile.findFirst({
+          where: { id: d.fiscalProfileId },
+          select: { id: true },
+        });
+        if (!perfil) throw new Error("Perfil fiscal inválido.");
+      }
+      await db.product.updateMany({
+        where: { id: { in: alvoIds } },
+        data: { fiscalProfileId: d.fiscalProfileId },
+      });
+    }
+
+    // ── Reprecificação ──
+    // SQL cru porque o novo preço depende do atual (o Prisma só sabe gravar
+    // valor pronto). Preço fixo não exige preço anterior; % e soma, sim.
+    if (d.preco && comPrecoIds.length) {
+      const fator =
+        d.preco.modo === "percentual" ? 1 + d.preco.valor / 100 : d.preco.valor;
+      const sql = `
+        UPDATE "Product"
+           SET "precoVenda" = GREATEST(${expressaoPreco(d.preco)}, 0)
+         WHERE "tenantId" = $2
+           AND id IN (SELECT jsonb_array_elements_text($3::jsonb))
+           ${d.preco.modo === "fixo" ? "" : `AND "precoVenda" IS NOT NULL`}
+      `;
+      await comTenant(
+        tid,
+        basePrisma.$executeRawUnsafe(sql, fator, tid, JSON.stringify(comPrecoIds)),
+      );
+    }
+
+    // ── Etiquetas ──
+    if (d.etiquetas) {
+      const nomes = [...new Set(d.etiquetas.nomes.map((n) => n.trim()).filter(Boolean))];
+      const tagIds: string[] = [];
+      for (const nome of nomes) {
+        let tag = await db.tag.findFirst({ where: { nome }, select: { id: true } });
+        // Etiqueta nova nasce no ato: a alternativa é um cadastro à parte para
+        // digitar uma palavra.
+        if (!tag && d.etiquetas.modo !== "remover") {
+          tag = await db.tag.create({ data: { tenantId: tid, nome }, select: { id: true } });
+        }
+        if (tag) tagIds.push(tag.id);
+      }
+
+      if (d.etiquetas.modo === "substituir") {
+        await db.productTag.deleteMany({ where: { productId: { in: alvoIds } } });
+      } else if (d.etiquetas.modo === "remover" && tagIds.length) {
+        await db.productTag.deleteMany({
+          where: { productId: { in: alvoIds }, tagId: { in: tagIds } },
+        });
+      }
+
+      if (d.etiquetas.modo !== "remover" && tagIds.length) {
+        await db.productTag.createMany({
+          data: alvoIds.flatMap((productId) =>
+            tagIds.map((tagId) => ({ tenantId: tid, productId, tagId })),
+          ),
+          skipDuplicates: true,
+        });
+      }
     }
 
     // ── Fornecedores ──
@@ -909,7 +1066,36 @@ export async function bulkEditProducts(input: BulkEditInput): Promise<number> {
 
     ok();
     revalidatePath("/fornecedores", "layout");
-    return alvoIds.length;
+    return { alterados: alvoIds.length, desfazer };
+  });
+}
+
+/**
+ * Volta um lote ao estado anterior (botão "Desfazer" do toast). Só campos
+ * escalares: é exatamente o que o snapshot guardou.
+ */
+export async function desfazerBulkEdit(snapshot: BulkSnapshotItem[]): Promise<number> {
+  return tx(async () => {
+    if (!snapshot.length || snapshot.length > TETO_DESFAZER) return 0;
+
+    // Agrupa por valor anterior idêntico: cadastro costuma ter muita coluna
+    // igual (null, false), então isso transforma N updates em poucos.
+    const grupos = new Map<string, { data: Record<string, unknown>; ids: string[] }>();
+    for (const item of snapshot) {
+      const { id, ...campos } = item;
+      const chave = JSON.stringify(campos);
+      const g = grupos.get(chave);
+      if (g) g.ids.push(id);
+      else grupos.set(chave, { data: campos as Record<string, unknown>, ids: [id] });
+    }
+
+    for (const g of grupos.values()) {
+      if (!Object.keys(g.data).length) continue;
+      await db.product.updateMany({ where: { id: { in: g.ids } }, data: g.data });
+    }
+
+    ok();
+    return snapshot.length;
   });
 }
 

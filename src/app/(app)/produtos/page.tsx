@@ -1,10 +1,9 @@
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
-import { db } from "@/lib/prisma";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
-import { PRODUCT_INCLUDE, toProductRow } from "./_data";
+import { consultarProdutos, listarVisoes } from "./_query";
+import { lerConsulta } from "./_url";
 import { ProdutosClient } from "./_client";
-import type { ProductRow, BrandOpt, SubcategoryFilterOpt, CategoryFilterOpt } from "./_types";
 
 export const metadata = { title: "Produtos — NoHub Market" };
 
@@ -15,47 +14,19 @@ export default async function ProdutosPage({
 }) {
   const ctx = await requireActiveTenant();
   const sp = await searchParams;
+  const consulta = lerConsulta(sp, sp.fornecedorId);
 
-  const data = await runWithTenant(ctx.tenant.id, async () => {
-    const [products, categories, brands] = await Promise.all([
-      db.product.findMany({
-        orderBy: { nome: "asc" },
-        include: PRODUCT_INCLUDE,
-      }),
-      // Só o necessário pro filtro de subcategoria — árvore completa (com
-      // inativas/skuPrefix) fica no fetch sob demanda de "Gerenciar".
-      db.category.findMany({
-        orderBy: { nome: "asc" },
-        select: {
-          id: true,
-          nome: true,
-          subcategories: {
-            where: { ativo: true },
-            orderBy: { nome: "asc" },
-            select: { id: true, nome: true },
-          },
-        },
-      }),
-      db.brand.findMany({ orderBy: { nome: "asc" }, select: { id: true, nome: true } }),
-    ]);
-
-    const rows: ProductRow[] = products.map((p) => toProductRow(p));
-
-    const subOpts: SubcategoryFilterOpt[] = categories.flatMap((c) =>
-      c.subcategories.map((s) => ({ id: s.id, nome: s.nome, categoriaNome: c.nome, categoryId: c.id }))
-    );
-
-    const categoryOpts: CategoryFilterOpt[] = categories.map((c) => ({ id: c.id, nome: c.nome }));
-
-    const brandOpts: BrandOpt[] = brands;
-
-    return { rows, subOpts, categoryOpts, brandOpts };
+  // Só a listagem em si: as opções dos filtros vêm do layout, que não
+  // re-renderiza quando muda apenas a query string.
+  const [pagina, visoes] = await runWithTenant(ctx.tenant.id, async () => {
+    return Promise.all([consultarProdutos(consulta), listarVisoes(ctx.user.id)]);
   });
 
   return (
     <ProdutosClient
-      {...data}
-      initialFornecedorId={sp.fornecedorId}
+      pagina={pagina}
+      visoesIniciais={visoes}
+      consultaInicial={consulta}
       initialFornecedorNome={sp.fornecedorNome}
       policy={policyDoTenant(ctx.tenant)}
     />

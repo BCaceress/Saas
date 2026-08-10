@@ -190,6 +190,7 @@ model Tenant {
   storageLocations  StorageLocation[]
   suppliers         Supplier[]
   products          Product[]
+  productViews      ProductView[]
   tags              Tag[]
   sites             Site[]
   customers         Customer[]
@@ -930,6 +931,33 @@ model Product {
   @@index([tenantId, ean])
   @@index([brandId])
   @@index([subcategoryId])
+  /// Listagem padrão de /produtos: filtra por tenant+ativo e ordena por nome.
+  /// Com este índice o Postgres entrega a página já ordenada, sem sort.
+  @@index([tenantId, ativo, nome])
+  /// Busca por trecho do nome ("heineken lata") vira ILIKE '%…%', que nenhum
+  /// B-tree serve. GIN de trigramas resolve. Precisa da extensão pg_trgm —
+  /// criada na migration 20260810_produtos_busca_visoes.
+  @@index([nome(ops: raw("gin_trgm_ops"))], type: Gin)
+}
+
+/// Visão salva da listagem de produtos: filtro + colunas + ordenação com nome.
+/// Fica no banco (e não no navegador) porque a visão é do operador, não da
+/// máquina — quem monta "Parados 60d" no balcão quer achar no escritório.
+model ProductView {
+  id        String   @id @default(cuid())
+  tenantId  String
+  /// Dono da visão. Sem userId = visão da loja, visível a todo mundo.
+  userId    String?
+  nome      String
+  /// Query string da tela (filtro + cols + sort), do jeito que vai pra URL.
+  params    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId, nome])
+  @@index([tenantId])
 }
 
 model Stock {
