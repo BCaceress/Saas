@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { PageHeader } from "@/components/app/page-header";
+import { MobilePageHeader } from "@/components/mobile/page-header";
 import { Field, Badge } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
 import type { Acesso } from "@/lib/permissoes";
@@ -111,17 +112,26 @@ export function UsuariosClient({
   sites,
   membros,
   convites,
+  variante = "desktop",
 }: {
   meuUserId: string;
   souAdmin: boolean;
   sites: SiteOpt[];
   membros: Membro[];
   convites: Convite[];
+  /** No `/m` o cabeçalho é o do celular — e o único da tela. */
+  variante?: "desktop" | "mobile";
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [convidando, setConvidando] = useState(false);
   const [editando, setEditando] = useState<Membro | null>(null);
+
+  const botaoConvidar = souAdmin && (
+    <Button onClick={() => setConvidando(true)} size={variante === "mobile" ? "sm" : undefined}>
+      <UserPlus size={16} /> Convidar pessoa
+    </Button>
+  );
 
   function run(fn: () => Promise<void>, aoConcluir?: () => void) {
     start(async () => {
@@ -137,21 +147,27 @@ export function UsuariosClient({
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader
-        title="Usuários"
-        icon={UserCog}
-        description="Quem acessa o sistema, com qual perfil e em quais lojas."
-        backHref="/configuracoes"
-        innerClassName="max-w-none"
-        className="mb-1"
-        actions={
-          souAdmin && (
-            <Button onClick={() => setConvidando(true)}>
-              <UserPlus size={16} /> Convidar pessoa
-            </Button>
-          )
-        }
-      />
+      {variante === "mobile" ? (
+        // Um cabeçalho só, com o botão na linha do título: no celular o
+        // subtítulo empurrava a lista para fora da primeira tela, e quem abre
+        // "Usuários" já sabe o que a tela faz.
+        <MobilePageHeader
+          titulo="Usuários"
+          voltar="/m/configuracoes"
+          acao={botaoConvidar}
+          className="mb-0"
+        />
+      ) : (
+        <PageHeader
+          title="Usuários"
+          icon={UserCog}
+          description="Quem acessa o sistema, com qual perfil e em quais lojas."
+          backHref="/configuracoes"
+          innerClassName="max-w-none"
+          className="mb-1"
+          actions={botaoConvidar}
+        />
+      )}
 
       {/* Equipe */}
       <div className="rounded-[var(--radius-lg)] border border-line bg-surface">
@@ -162,75 +178,73 @@ export function UsuariosClient({
           {membros.map((m) => {
             const souEu = m.userId === meuUserId;
             return (
-              <li key={m.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-5 py-3.5">
-                <span
-                  className={
-                    "grid h-9 w-9 shrink-0 place-items-center rounded-full text-sm font-semibold " +
-                    (m.ativo ? "bg-brand-soft text-brand" : "bg-surface-2 text-faint")
-                  }
-                >
-                  {m.nome.slice(0, 1).toUpperCase()}
-                </span>
-
-                <div className="min-w-[12rem] flex-1">
-                  <p className="flex flex-wrap items-center gap-1.5 text-sm font-semibold text-ink">
-                    {m.nome}
-                    {m.proprietario && (
-                      <Badge tone="accent">
-                        <Crown size={11} /> Dono da conta
-                      </Badge>
-                    )}
-                    {souEu && <Badge tone="brand">você</Badge>}
-                    {!m.ativo && <Badge tone="danger">desativado</Badge>}
-                  </p>
-                  <p className="truncate text-xs text-muted">{m.email}</p>
-                  <p className="mt-0.5 text-xs text-faint">{desdeQuando(m.ultimoAcesso)}</p>
-                </div>
-
-                <div className="flex-1 basis-full sm:basis-auto">
-                  <AcessosChips acessos={m.acessos} sites={sites} />
-                </div>
-
-                {souAdmin && (
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => setEditando(m)}
-                      disabled={pending}
-                      className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-brand-soft hover:text-brand"
-                      aria-label={`Editar acessos de ${m.nome}`}
-                      title="Editar acessos"
-                    >
-                      <SlidersHorizontal size={15} />
-                    </button>
-
-                    {!m.proprietario && !souEu && (
-                      <>
-                        <button
-                          onClick={() => run(() => setMemberAtivo(m.id, !m.ativo))}
-                          disabled={pending}
-                          className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-warn-soft hover:text-warn"
-                          aria-label={`${m.ativo ? "Desativar" : "Reativar"} ${m.nome}`}
-                          title={m.ativo ? "Desativar acesso" : "Reativar acesso"}
-                        >
-                          {m.ativo ? <Ban size={15} /> : <Undo2 size={15} />}
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (window.confirm(`Remover ${m.nome} da equipe?`)) {
-                              run(() => removeMember(m.id));
-                            }
-                          }}
-                          disabled={pending}
-                          className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-danger-soft hover:text-danger"
-                          aria-label={`Remover ${m.nome}`}
-                          title="Remover da equipe"
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </>
-                    )}
+              // Duas faixas por pessoa: em cima quem é (nome, marcas, e-mail) e
+              // as ações; embaixo o que ela alcança e quando esteve aqui. Sem
+              // inicial em círculo — não identifica ninguém numa equipe onde
+              // metade dos nomes começa com a mesma letra, e roubava a margem
+              // que o nome usa para não quebrar linha no celular.
+              <li key={m.id} className="px-4 py-3 sm:px-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="flex flex-wrap items-center gap-1.5 text-sm font-semibold text-ink">
+                      {m.nome}
+                      {m.proprietario && (
+                        <Badge tone="accent">
+                          <Crown size={11} /> Dono da conta
+                        </Badge>
+                      )}
+                      {souEu && <Badge tone="brand">você</Badge>}
+                      {!m.ativo && <Badge tone="danger">desativado</Badge>}
+                    </p>
+                    <p className="truncate text-xs text-muted">{m.email}</p>
                   </div>
-                )}
+
+                  {souAdmin && (
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        onClick={() => setEditando(m)}
+                        disabled={pending}
+                        className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-brand-soft hover:text-brand"
+                        aria-label={`Editar acessos de ${m.nome}`}
+                        title="Editar acessos"
+                      >
+                        <SlidersHorizontal size={15} />
+                      </button>
+
+                      {!m.proprietario && !souEu && (
+                        <>
+                          <button
+                            onClick={() => run(() => setMemberAtivo(m.id, !m.ativo))}
+                            disabled={pending}
+                            className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-warn-soft hover:text-warn"
+                            aria-label={`${m.ativo ? "Desativar" : "Reativar"} ${m.nome}`}
+                            title={m.ativo ? "Desativar acesso" : "Reativar acesso"}
+                          >
+                            {m.ativo ? <Ban size={15} /> : <Undo2 size={15} />}
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`Remover ${m.nome} da equipe?`)) {
+                                run(() => removeMember(m.id));
+                              }
+                            }}
+                            disabled={pending}
+                            className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-danger-soft hover:text-danger"
+                            aria-label={`Remover ${m.nome}`}
+                            title="Remover da equipe"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                  <AcessosChips acessos={m.acessos} sites={sites} />
+                  <span className="text-xs text-faint">{desdeQuando(m.ultimoAcesso)}</span>
+                </div>
               </li>
             );
           })}

@@ -424,6 +424,37 @@ export async function contarVencimentos(
   return { vencidos, vencendo, unidadesVencidas };
 }
 
+/**
+ * Dois níveis de saldo, contados numa ida só — o que a home do celular mostra
+ * lado a lado:
+ *
+ *  · `sem`   — saldo fechado zerado ou negativo. Vale em qualquer estratégia:
+ *              não tem o que vender, ponto.
+ *  · `baixo` — ainda TEM saldo, mas está abaixo do mínimo. Só existe quando a
+ *              estratégia usa mínimo (com ROTATIVIDADE não há meta fixa, e a
+ *              contagem volta zerada).
+ *
+ * As duas são exclusivas de propósito: quem já está zerado não aparece
+ * também como "baixo", senão a mesma urgência seria contada duas vezes.
+ * Produtos sem controle de estoque ficam de fora — não têm meta a violar.
+ */
+export async function contarNiveisEstoque(
+  siteId: string | null,
+  policy: EstoquePolicy = POLICY_PADRAO,
+): Promise<{ sem: number; baixo: number }> {
+  const stocks = await db.stock.findMany({
+    where: { ...(siteId ? { siteId } : {}), product: { is: { controlaEstoque: true } } },
+    select: { estoqueFechado: true, estoqueMinimo: true },
+  });
+  let sem = 0, baixo = 0;
+  for (const s of stocks) {
+    const fechado = n(s.estoqueFechado);
+    if (fechado <= 0) sem += 1;
+    else if (policy.usaMinimo && fechado < n(s.estoqueMinimo)) baixo += 1;
+  }
+  return { sem, baixo };
+}
+
 // ── Movimentações ────────────────────────────────────────────
 
 // Filtros estruturados — resolvidos no banco (não sobre uma janela de N linhas),

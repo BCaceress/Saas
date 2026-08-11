@@ -5,13 +5,21 @@ import { conviteUrl } from "@/lib/convites";
 import { UsuariosClient } from "./_client";
 
 /**
- * Miolo da tela de Usuários — carga e render, sem cabeçalho.
+ * Miolo da tela de Usuários — carga e render.
  *
  * Mora aqui e não no `page.tsx` porque as duas superfícies mostram a MESMA
  * tela: o desktop com `PageHeader`, o `/m` com `MobilePageHeader`. Duplicar a
  * carga em dois lugares é como um dos dois envelhece sozinho.
+ *
+ * O cabeçalho vem junto (é o cliente que escolhe qual): o botão "Convidar
+ * pessoa" precisa abrir a folha, e folha é estado do cliente — deixá-lo fora
+ * obrigaria a página a duplicar o cabeçalho e a tela ficava com dois títulos.
  */
-export async function ConteudoUsuarios() {
+export async function ConteudoUsuarios({
+  variante = "desktop",
+}: {
+  variante?: "desktop" | "mobile";
+} = {}) {
   const ctx = await requireActiveTenant();
 
   // Membership/MembershipAccess/Invite são tabelas de controle (fora do contexto
@@ -43,6 +51,7 @@ export async function ConteudoUsuarios() {
 
   return (
     <UsuariosClient
+      variante={variante}
       meuUserId={ctx.user.id}
       souAdmin={isAdmin(ctx.acessos)}
       sites={sites}

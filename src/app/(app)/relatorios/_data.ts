@@ -94,6 +94,21 @@ export async function resumoVendas(range: Range, siteId: SiteFilter): Promise<Re
   };
 }
 
+/**
+ * Unidades vendidas no período — Σ quantidade dos itens das vendas pagas.
+ *
+ * Não é `rankingProdutos`: aqui não interessa QUAL produto saiu, só quantas
+ * unidades passaram pelo caixa. Um `aggregate` indexado responde isso sem
+ * carregar movimento nenhum.
+ */
+export async function itensVendidos(range: Range, siteId: SiteFilter): Promise<number> {
+  const agg = await db.saleItem.aggregate({
+    where: { sale: { is: saleWhere(range, siteId) } },
+    _sum: { quantidade: true },
+  });
+  return n(agg._sum.quantidade);
+}
+
 // ── Mix de pagamento ────────────────────────────────────────
 
 export type MixPagamento = { metodo: string; valor: number; numVendas: number };

@@ -3,7 +3,9 @@ import {
   AlertTriangle,
   CalendarClock,
   DollarSign,
+  PackageMinus,
   PackageSearch,
+  ShoppingBasket,
   TrendingUp,
   Truck,
   Users,
@@ -15,17 +17,17 @@ import { db } from "@/lib/prisma";
 import { resolvePeriodo, variacao, type Variacao } from "@/lib/periodo";
 import { brl, cn } from "@/lib/utils";
 import {
-  BarraTom,
   Bolha,
   MCard,
   MCardLink,
   Sparkline,
+  TOM_FUNDO,
   TOM_TEXTO,
   type Tom,
 } from "@/components/mobile/ui";
 import { KpiCarousel, KpiSlide } from "@/components/mobile/kpi-carousel";
-import { resumoVendas, ruptura, serieFinanceiraDiaria, type Range } from "@/app/(app)/relatorios/_data";
-import { contarVencimentos } from "@/app/(app)/estoque/_data";
+import { itensVendidos, resumoVendas, serieFinanceiraDiaria, type Range } from "@/app/(app)/relatorios/_data";
+import { contarNiveisEstoque, contarVencimentos } from "@/app/(app)/estoque/_data";
 import { pedidosEmAndamento } from "@/app/(app)/inicio/_data";
 import type { EstoquePolicy } from "@/lib/estoque-estrategia";
 
@@ -66,18 +68,23 @@ export async function KpisSection({ d }: { d: MobileCtx }) {
   const veProdutos = podeEmAlguma(d.ctx.acessos, "produto.ver");
   const veClientes = podeEmAlguma(d.ctx.acessos, "cliente.ver");
 
-  const { resumo, prev, serie, produtos, clientes } = await withTenant(d.ctx, async () => {
-    const [resumo, prev, serie, produtos, clientes] = await Promise.all([
-      resumoVendas(d.range, d.siteId),
-      resumoVendas(d.prevRange, d.siteId),
-      serieFinanceiraDiaria(serie7d, d.siteId),
-      // Contagem, não listagem: os dois são `count` indexado por tenant, na
-      // mesma ida das leituras que a seção já fazia.
-      veProdutos ? db.product.count({ where: { ativo: true } }) : Promise.resolve(0),
-      veClientes ? db.customer.count({ where: { ativo: true } }) : Promise.resolve(0),
-    ]);
-    return { resumo, prev, serie, produtos, clientes };
-  });
+  const { resumo, prev, unidades, unidadesPrev, serie, produtos, clientes } = await withTenant(
+    d.ctx,
+    async () => {
+      const [resumo, prev, unidades, unidadesPrev, serie, produtos, clientes] = await Promise.all([
+        resumoVendas(d.range, d.siteId),
+        resumoVendas(d.prevRange, d.siteId),
+        itensVendidos(d.range, d.siteId),
+        itensVendidos(d.prevRange, d.siteId),
+        serieFinanceiraDiaria(serie7d, d.siteId),
+        // Contagem, não listagem: os dois são `count` indexado por tenant, na
+        // mesma ida das leituras que a seção já fazia.
+        veProdutos ? db.product.count({ where: { ativo: true } }) : Promise.resolve(0),
+        veClientes ? db.customer.count({ where: { ativo: true } }) : Promise.resolve(0),
+      ]);
+      return { resumo, prev, unidades, unidadesPrev, serie, produtos, clientes };
+    },
+  );
 
   return (
     // Carrossel de largura cheia, não duas colunas: o número do dia é a
@@ -104,6 +111,20 @@ export async function KpisSection({ d }: { d: MobileCtx }) {
           icone={TrendingUp}
           tom="ok"
           serie={serie.map((p) => p.lucro)}
+        />
+      </KpiSlide>
+      {/* Quantas unidades saíram da prateleira. Fecha o trio do dia (dinheiro
+          que entrou → dinheiro que sobrou → mercadoria que saiu) e é o número
+          que o operador confere contra o que viu no salão. Sem tendência: a
+          série diária é de receita e lucro, não de unidade. */}
+      <KpiSlide largura="cheia">
+        <Tile
+          label="Itens vendidos"
+          valor={unidades.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}
+          delta={variacao(unidades, unidadesPrev)}
+          nota="unidades · vs. ontem"
+          icone={ShoppingBasket}
+          tom="info"
         />
       </KpiSlide>
       {/* Os dois de cadastro fecham o carrossel: são retrato, não movimento —
@@ -234,33 +255,60 @@ function Tile({
 /* ── Faixa de operação ──────────────────────────────────────── */
 
 export async function OperacaoSection({ d }: { d: MobileCtx }) {
-  const { rupturaRows, vencimentos, pedidos } = await withTenant(d.ctx, async () => {
-    const [rupturaRows, vencimentos, pedidos] = await Promise.all([
-      ruptura(d.siteId, d.policy),
+  const { niveis, vencimentos, pedidos } = await withTenant(d.ctx, async () => {
+    const [niveis, vencimentos, pedidos] = await Promise.all([
+      // `contarNiveisEstoque` no lugar de `ruptura`: a faixa só precisa de dois
+      // números, e não da lista de produtos com déficit calculado.
+      contarNiveisEstoque(d.siteId, d.policy),
       contarVencimentos(d.siteId, d.validadeAlertaDias),
       pedidosEmAndamento(d.siteId),
     ]);
-    return { rupturaRows, vencimentos, pedidos };
+    return { niveis, vencimentos, pedidos };
   });
 
   const chegamHoje = pedidos.filter((p) => p.previsaoHoje).length;
 
-  const linhas = [
+  type Linha = {
+    href: string;
+    icone: LucideIcon;
+    label: string;
+    valor: number;
+    tom: Tom;
+    nota: string;
+  };
+
+  const linhas: Linha[] = [
     {
-      href: d.policy.usaGiro ? "/m/estoque?filtro=sem" : "/m/estoque?filtro=minimo",
+      href: "/m/estoque?filtro=sem",
       icone: AlertTriangle,
-      label: d.policy.usaGiro ? "Sem estoque" : "Abaixo do mínimo",
-      valor: rupturaRows.length,
-      tom: rupturaRows.length > 0 ? ("danger" as const) : ("ok" as const),
-      nota: rupturaRows.length > 0 ? rupturaRows[0].nome : "nada em falta",
+      label: "Sem estoque",
+      valor: niveis.sem,
+      tom: "danger",
+      // Sem nome de produto: um só entre dezenas mente sobre o resto, e a
+      // lista inteira está a um toque daqui.
+      nota: niveis.sem > 0 ? "repor hoje" : "nada em falta",
     },
+    // Só onde existe piso: com ROTATIVIDADE não há mínimo a violar, e um card
+    // eternamente zerado ocuparia lugar de pendência de verdade.
+    ...(d.policy.usaMinimo
+      ? [
+          {
+            href: "/m/estoque?filtro=minimo",
+            icone: PackageMinus,
+            label: "Estoque baixo",
+            valor: niveis.baixo,
+            tom: "warn" as const,
+            nota: niveis.baixo > 0 ? "abaixo do mínimo" : "todos no nível",
+          },
+        ]
+      : []),
     {
       // Validade continua no desktop: `/m/estoque` mostra saldo, não lote.
       href: "/estoque/validade",
       icone: CalendarClock,
       label: "Validade",
       valor: vencimentos.vencidos + vencimentos.vencendo,
-      tom: vencimentos.vencidos > 0 ? ("danger" as const) : vencimentos.vencendo > 0 ? ("warn" as const) : ("ok" as const),
+      tom: vencimentos.vencidos > 0 ? "danger" : "warn",
       nota:
         vencimentos.vencidos > 0
           ? `${vencimentos.vencidos} já ${vencimentos.vencidos === 1 ? "vencido" : "vencidos"}`
@@ -273,48 +321,70 @@ export async function OperacaoSection({ d }: { d: MobileCtx }) {
       icone: Truck,
       label: "Pedidos a receber",
       valor: pedidos.length,
-      tom: "info" as const,
+      tom: "info",
       nota: chegamHoje > 0 ? `${chegamHoje} ${chegamHoje === 1 ? "chega" : "chegam"} hoje` : "nenhum previsto hoje",
     },
   ];
 
   return (
-    // Três cards lado a lado, não uma lista dividida: cada pendência respira
-    // sozinha e o número grande (a informação que importa de relance) fica
-    // livre pra usar a cor do tom, sem disputar linha com ícone e texto.
-    // Tudo centrado na coluna — a 118px de largura não há margem esquerda que
-    // valha o alinhamento, e a pilha ícone→texto→número lê de cima a baixo.
-    <div className="grid grid-cols-3 gap-2">
-      {linhas.map((l) => (
-        <Link
-          key={l.label}
-          href={l.href}
-          className="tap fade-in-m flex min-h-36 flex-col items-center gap-2 rounded-[var(--radius-m)] border border-line bg-surface p-3 text-center shadow-[var(--shadow-m)] hover:border-line-strong active:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-        >
-          <Bolha icone={l.icone} tom={l.tom} tamanho="md" />
+    // Duas colunas, não três: com quatro pendências a coluna de 118px virava
+    // texto truncado. O card agora lê na horizontal — ícone e número na linha
+    // de cima, rótulo e nota embaixo — e a COR carrega o estado: quem tem
+    // número acende no próprio tom, quem está zerado fica branco e quieto.
+    // É o oposto do desenho anterior, onde os quatro brilhavam igual e o
+    // "nada em falta" verde competia com o "3 vencidos" vermelho.
+    <div className="grid grid-cols-2 gap-2">
+      {linhas.map((l, i) => {
+        const ativo = l.valor > 0;
+        const ultimoSozinho = i === linhas.length - 1 && linhas.length % 2 === 1;
+        return (
+          <Link
+            key={l.label}
+            href={l.href}
+            className={cn(
+              "tap fade-in-m flex min-h-24 flex-col justify-between gap-3 rounded-[var(--radius-m)] border p-3.5",
+              "focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
+              ativo
+                ? cn(TOM_FUNDO[l.tom], "border-transparent active:brightness-95")
+                : "border-line bg-surface shadow-[var(--shadow-m)] hover:border-line-strong active:bg-surface-2",
+              ultimoSozinho && "col-span-2",
+            )}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <Bolha
+                icone={l.icone}
+                tom={ativo ? l.tom : "neutro"}
+                tamanho="sm"
+                claro={ativo}
+              />
+              <span
+                className={cn(
+                  "font-display text-[26px] leading-none font-semibold tabular-nums",
+                  ativo ? TOM_TEXTO[l.tom] : "text-faint",
+                )}
+              >
+                {l.valor}
+              </span>
+            </div>
 
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-[12px] leading-tight font-medium text-ink">{l.label}</p>
-            <p className="mt-0.5 truncate text-[11px] leading-tight text-muted">{l.nota}</p>
-          </div>
-
-          <p className={cn("font-display text-2xl leading-none font-semibold tabular-nums", TOM_TEXTO[l.tom])}>
-            {l.valor}
-          </p>
-
-          <BarraTom tom={l.tom} ativo={l.valor > 0} />
-        </Link>
-      ))}
+            <div className="min-w-0">
+              <p className="truncate text-[13px] leading-tight font-medium text-ink">{l.label}</p>
+              <p className="mt-0.5 truncate text-[11px] leading-tight text-muted">{l.nota}</p>
+            </div>
+          </Link>
+        );
+      })}
     </div>
   );
 }
 
 export function OperacaoFallback() {
   return (
-    <div className="grid grid-cols-3 gap-2">
-      <MCard className="h-36 animate-pulse bg-surface-2" />
-      <MCard className="h-36 animate-pulse bg-surface-2" />
-      <MCard className="h-36 animate-pulse bg-surface-2" />
+    <div className="grid grid-cols-2 gap-2">
+      <MCard className="h-24 animate-pulse bg-surface-2" />
+      <MCard className="h-24 animate-pulse bg-surface-2" />
+      <MCard className="h-24 animate-pulse bg-surface-2" />
+      <MCard className="h-24 animate-pulse bg-surface-2" />
     </div>
   );
 }

@@ -1,8 +1,8 @@
 import { Suspense } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
-  ChevronRight,
   ClipboardList,
   PackageSearch,
   ScanLine,
@@ -82,19 +82,62 @@ export default async function MobileHome() {
           direita, onde antes ficava o sino — pendências já têm aba própria e o
           bloco "Precisa de você" logo abaixo, então o sino era terceira via
           para a mesma coisa. */}
-      <header className="fade-up flex items-center justify-between gap-3 px-1">
-        <h1 className="min-w-0 truncate font-display text-[22px] leading-tight font-semibold text-ink">
-          {saudacao()}
-          {nomeUsuario ? `, ${nomeUsuario}` : ""}
-        </h1>
+      <header className="fade-up space-y-3">
+        {/* Barra de identidade: de um lado de quem é o app, do outro de quem é
+            a loja. Nenhum dos dois é navegação — o que leva a algum lugar é o
+            bloco da direita, que abre "Mais" (empresa, plano, sair). */}
+        <div className="flex items-center justify-between gap-3 px-1">
+          <span className="block h-8 w-36 shrink-0 overflow-hidden rounded-[10px]">
+            {/* O arquivo é um mockup 1536×1024 com o desenho numa faixa
+                central: `object-cover` numa caixa 4,5:1 corta a sobra em cima
+                e embaixo, senão o wordmark encolhe até sumir. */}
+            <Image
+              src="/images/logoTextoVertical.png"
+              alt="NoHub Market"
+              width={1536}
+              height={1024}
+              priority
+              className="h-full w-full object-cover"
+            />
+          </span>
 
-        <Link
-          href="/m/mais"
-          className="tap flex max-w-[45%] shrink-0 items-center gap-0.5 rounded-full px-1 py-0.5 text-[13px] font-medium text-muted hover:text-ink-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-        >
-          <span className="truncate">{ctx.tenant.nome}</span>
-          <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
-        </Link>
+          <Link
+            href="/m/mais"
+            className="tap flex min-w-0 items-center gap-2 rounded-full py-0.5 pl-1 text-right focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          >
+            <span className="min-w-0 truncate text-[13px] font-medium text-ink-2">
+              {ctx.tenant.nome}
+            </span>
+            {ctx.tenant.logoUrl ? (
+              // <img> e não next/image: a logo da empresa é data URL gravada no
+              // cadastro (ver Configurações → Empresa), não um host remoto.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={ctx.tenant.logoUrl}
+                alt=""
+                className="h-8 w-8 shrink-0 rounded-full border border-line bg-surface object-contain"
+              />
+            ) : (
+              <span
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-soft font-display text-sm font-semibold text-brand"
+                aria-hidden
+              >
+                {ctx.tenant.nome.trim().charAt(0).toUpperCase()}
+              </span>
+            )}
+          </Link>
+        </div>
+
+        {/* A manchete da tela: quem está de plantão e o que ela vai ler. */}
+        <div className="px-1">
+          <h1 className="font-display text-[22px] leading-tight font-semibold text-ink">
+            {saudacao()}
+            {nomeUsuario ? `, ${nomeUsuario}` : ""}
+          </h1>
+          <p className="mt-0.5 text-[12px] leading-snug text-muted">
+            Aqui está o que aconteceu na sua loja hoje.
+          </p>
+        </div>
       </header>
 
       <div className="fade-up" style={{ animationDelay: "60ms" }}>
