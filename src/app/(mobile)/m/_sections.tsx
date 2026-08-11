@@ -271,10 +271,12 @@ export async function OperacaoSection({ d }: { d: MobileCtx }) {
   type Linha = {
     href: string;
     icone: LucideIcon;
+    /** Curto de propósito: numa coluna de ~83px, rótulo longo vira reticência. */
     label: string;
+    /** O que o card diz por extenso — vai para o leitor de tela. */
+    descricao: string;
     valor: number;
     tom: Tom;
-    nota: string;
   };
 
   const linhas: Linha[] = [
@@ -282,11 +284,11 @@ export async function OperacaoSection({ d }: { d: MobileCtx }) {
       href: "/m/estoque?filtro=sem",
       icone: AlertTriangle,
       label: "Sem estoque",
-      valor: niveis.sem,
-      tom: "danger",
       // Sem nome de produto: um só entre dezenas mente sobre o resto, e a
       // lista inteira está a um toque daqui.
-      nota: niveis.sem > 0 ? "repor hoje" : "nada em falta",
+      descricao: `${niveis.sem} sem estoque`,
+      valor: niveis.sem,
+      tom: "danger",
     },
     // Só onde existe piso: com ROTATIVIDADE não há mínimo a violar, e um card
     // eternamente zerado ocuparia lugar de pendência de verdade.
@@ -296,9 +298,9 @@ export async function OperacaoSection({ d }: { d: MobileCtx }) {
             href: "/m/estoque?filtro=minimo",
             icone: PackageMinus,
             label: "Estoque baixo",
+            descricao: `${niveis.baixo} abaixo do mínimo`,
             valor: niveis.baixo,
             tom: "warn" as const,
-            nota: niveis.baixo > 0 ? "abaixo do mínimo" : "todos no nível",
           },
         ]
       : []),
@@ -307,70 +309,64 @@ export async function OperacaoSection({ d }: { d: MobileCtx }) {
       href: "/estoque/validade",
       icone: CalendarClock,
       label: "Validade",
+      descricao: `${vencimentos.vencidos + vencimentos.vencendo} lotes vencidos ou vencendo`,
       valor: vencimentos.vencidos + vencimentos.vencendo,
       tom: vencimentos.vencidos > 0 ? "danger" : "warn",
-      nota:
-        vencimentos.vencidos > 0
-          ? `${vencimentos.vencidos} já ${vencimentos.vencidos === 1 ? "vencido" : "vencidos"}`
-          : vencimentos.vencendo > 0
-            ? "vencendo em breve"
-            : "nada vencendo",
     },
     {
       href: "/m/receber",
       icone: Truck,
-      label: "Pedidos a receber",
+      label: "A receber",
+      descricao:
+        chegamHoje > 0
+          ? `${pedidos.length} pedidos a receber, ${chegamHoje} previstos para hoje`
+          : `${pedidos.length} pedidos a receber`,
       valor: pedidos.length,
       tom: "info",
-      nota: chegamHoje > 0 ? `${chegamHoje} ${chegamHoje === 1 ? "chega" : "chegam"} hoje` : "nenhum previsto hoje",
     },
   ];
 
   return (
-    // Duas colunas, não três: com quatro pendências a coluna de 118px virava
-    // texto truncado. O card agora lê na horizontal — ícone e número na linha
-    // de cima, rótulo e nota embaixo — e a COR carrega o estado: quem tem
-    // número acende no próprio tom, quem está zerado fica branco e quieto.
-    // É o oposto do desenho anterior, onde os quatro brilhavam igual e o
-    // "nada em falta" verde competia com o "3 vencidos" vermelho.
-    <div className="grid grid-cols-2 gap-2">
-      {linhas.map((l, i) => {
+    // Uma faixa só, os quatro lado a lado: a pergunta aqui é "tem fogo em
+    // algum canto?", e isso se responde varrendo a linha com o olho — duas
+    // fileiras faziam a vista voltar. Por caber em ~83px, o card perdeu a nota
+    // e ficou com o essencial (ícone, número, rótulo curto): o detalhe está na
+    // tela para onde cada um leva.
+    // A COR é que carrega o estado: quem tem número acende no próprio tom,
+    // quem está zerado fica branco e quieto — assim o vermelho de verdade não
+    // disputa atenção com um "nada em falta".
+    <div className={cn("grid gap-2", linhas.length === 4 ? "grid-cols-4" : "grid-cols-3")}>
+      {linhas.map((l) => {
         const ativo = l.valor > 0;
-        const ultimoSozinho = i === linhas.length - 1 && linhas.length % 2 === 1;
         return (
           <Link
             key={l.label}
             href={l.href}
+            aria-label={l.descricao}
             className={cn(
-              "tap fade-in-m flex min-h-24 flex-col justify-between gap-3 rounded-[var(--radius-m)] border p-3.5",
+              "tap fade-in-m flex min-h-26 flex-col items-center gap-1.5 rounded-[var(--radius-m)] border p-2 pt-2.5 text-center",
               "focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
               ativo
                 ? cn(TOM_FUNDO[l.tom], "border-transparent active:brightness-95")
                 : "border-line bg-surface shadow-[var(--shadow-m)] hover:border-line-strong active:bg-surface-2",
-              ultimoSozinho && "col-span-2",
             )}
           >
-            <div className="flex items-center justify-between gap-2">
-              <Bolha
-                icone={l.icone}
-                tom={ativo ? l.tom : "neutro"}
-                tamanho="sm"
-                claro={ativo}
-              />
-              <span
-                className={cn(
-                  "font-display text-[26px] leading-none font-semibold tabular-nums",
-                  ativo ? TOM_TEXTO[l.tom] : "text-faint",
-                )}
-              >
-                {l.valor}
-              </span>
-            </div>
+            <Bolha icone={l.icone} tom={ativo ? l.tom : "neutro"} tamanho="sm" claro={ativo} />
 
-            <div className="min-w-0">
-              <p className="truncate text-[13px] leading-tight font-medium text-ink">{l.label}</p>
-              <p className="mt-0.5 truncate text-[11px] leading-tight text-muted">{l.nota}</p>
-            </div>
+            <span
+              className={cn(
+                "font-display text-[22px] leading-none font-semibold tabular-nums",
+                ativo ? TOM_TEXTO[l.tom] : "text-faint",
+              )}
+            >
+              {l.valor}
+            </span>
+
+            {/* Sem `truncate`: em coluna estreita o rótulo quebra em duas
+                linhas — "Estoque baixo" cortado ao meio não diz nada. */}
+            <span className="text-[11px] leading-tight font-medium text-balance text-ink">
+              {l.label}
+            </span>
           </Link>
         );
       })}
@@ -380,11 +376,11 @@ export async function OperacaoSection({ d }: { d: MobileCtx }) {
 
 export function OperacaoFallback() {
   return (
-    <div className="grid grid-cols-2 gap-2">
-      <MCard className="h-24 animate-pulse bg-surface-2" />
-      <MCard className="h-24 animate-pulse bg-surface-2" />
-      <MCard className="h-24 animate-pulse bg-surface-2" />
-      <MCard className="h-24 animate-pulse bg-surface-2" />
+    <div className="grid grid-cols-4 gap-2">
+      <MCard className="h-26 animate-pulse bg-surface-2" />
+      <MCard className="h-26 animate-pulse bg-surface-2" />
+      <MCard className="h-26 animate-pulse bg-surface-2" />
+      <MCard className="h-26 animate-pulse bg-surface-2" />
     </div>
   );
 }

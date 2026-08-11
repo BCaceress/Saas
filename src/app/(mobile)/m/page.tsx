@@ -1,5 +1,4 @@
 import { Suspense } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
@@ -78,58 +77,12 @@ export default async function MobileHome() {
     // fora da escala de 8 — é o que tira a sensação de caixas empilhadas.
     <div className="space-y-6">
       {/* A home não usa a barra do topo (ver `MobileShell`): quem cumprimenta é
-          a própria tela. Saudação com o nome é a manchete; a empresa ocupa a
-          direita, onde antes ficava o sino — pendências já têm aba própria e o
-          bloco "Precisa de você" logo abaixo, então o sino era terceira via
-          para a mesma coisa. */}
-      <header className="fade-up space-y-3">
-        {/* Barra de identidade: de um lado de quem é o app, do outro de quem é
-            a loja. Nenhum dos dois é navegação — o que leva a algum lugar é o
-            bloco da direita, que abre "Mais" (empresa, plano, sair). */}
-        <div className="flex items-center justify-between gap-3 px-1">
-          <span className="block h-8 w-36 shrink-0 overflow-hidden rounded-[10px]">
-            {/* O arquivo é um mockup 1536×1024 com o desenho numa faixa
-                central: `object-cover` numa caixa 4,5:1 corta a sobra em cima
-                e embaixo, senão o wordmark encolhe até sumir. */}
-            <Image
-              src="/images/logoTextoVertical.png"
-              alt="NoHub Market"
-              width={1536}
-              height={1024}
-              priority
-              className="h-full w-full object-cover"
-            />
-          </span>
-
-          <Link
-            href="/m/mais"
-            className="tap flex min-w-0 items-center gap-2 rounded-full py-0.5 pl-1 text-right focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-          >
-            <span className="min-w-0 truncate text-[13px] font-medium text-ink-2">
-              {ctx.tenant.nome}
-            </span>
-            {ctx.tenant.logoUrl ? (
-              // <img> e não next/image: a logo da empresa é data URL gravada no
-              // cadastro (ver Configurações → Empresa), não um host remoto.
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={ctx.tenant.logoUrl}
-                alt=""
-                className="h-8 w-8 shrink-0 rounded-full border border-line bg-surface object-contain"
-              />
-            ) : (
-              <span
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-soft font-display text-sm font-semibold text-brand"
-                aria-hidden
-              >
-                {ctx.tenant.nome.trim().charAt(0).toUpperCase()}
-              </span>
-            )}
-          </Link>
-        </div>
-
-        {/* A manchete da tela: quem está de plantão e o que ela vai ler. */}
-        <div className="px-1">
+          a própria tela. Saudação com o nome é a manchete e ocupa a primeira
+          linha — sem marca do app na frente, que quem abriu já sabe qual é. A
+          empresa fica à direita, onde antes ficava o sino: pendências já têm
+          aba própria e o bloco "Precisa de você" logo abaixo. */}
+      <header className="fade-up flex items-start justify-between gap-3 px-1">
+        <div className="min-w-0">
           <h1 className="font-display text-[22px] leading-tight font-semibold text-ink">
             {saudacao()}
             {nomeUsuario ? `, ${nomeUsuario}` : ""}
@@ -138,6 +91,32 @@ export default async function MobileHome() {
             Aqui está o que aconteceu na sua loja hoje.
           </p>
         </div>
+
+        <Link
+          href="/m/mais"
+          className="tap flex min-w-0 shrink-0 items-center gap-2 rounded-full py-0.5 pl-1 text-right focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+        >
+          <span className="min-w-0 max-w-[8rem] truncate text-[13px] font-medium text-ink-2">
+            {ctx.tenant.nome}
+          </span>
+          {ctx.tenant.logoUrl ? (
+            // <img> e não next/image: a logo da empresa é data URL gravada no
+            // cadastro (ver Configurações → Empresa), não um host remoto.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={ctx.tenant.logoUrl}
+              alt=""
+              className="h-8 w-8 shrink-0 rounded-full border border-line bg-surface object-contain"
+            />
+          ) : (
+            <span
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-soft font-display text-sm font-semibold text-brand"
+              aria-hidden
+            >
+              {ctx.tenant.nome.trim().charAt(0).toUpperCase()}
+            </span>
+          )}
+        </Link>
       </header>
 
       <div className="fade-up" style={{ animationDelay: "60ms" }}>
@@ -148,36 +127,29 @@ export default async function MobileHome() {
 
       <PrecisaDeVoce />
 
+      {/* Sem "Ver todas": cada card JÁ leva à lista da sua pendência, e um
+          quinto link para `/m/alertas` só repetia o que a aba de alertas faz. */}
       <section className="fade-up space-y-2" style={{ animationDelay: "120ms" }}>
-        <SecaoTitulo
-          acao={
-            <Link
-              href="/m/alertas"
-              className="shrink-0 text-[13px] font-medium text-accent hover:underline"
-            >
-              Ver todas
-            </Link>
-          }
-        >
-          Operação
-        </SecaoTitulo>
+        <SecaoTitulo>Operação</SecaoTitulo>
         <Suspense fallback={<OperacaoFallback />}>
           <OperacaoSection d={d} />
         </Suspense>
       </section>
 
+      <div className="fade-up" style={{ animationDelay: "150ms" }}>
+        <Atalhos acessos={ctx.acessos} />
+      </div>
+
+      {/* Último bloco da home, e de propósito: o extrato é consulta, não
+          pendência — quem rolou até aqui já viu o que precisava agir. */}
       {podeEmAlguma(ctx.acessos, "estoque.ver") && (
-        <section className="fade-up space-y-2" style={{ animationDelay: "150ms" }}>
+        <section className="fade-up space-y-2" style={{ animationDelay: "180ms" }}>
           <SecaoTitulo acao={<VerExtrato />}>Últimas movimentações</SecaoTitulo>
           <Suspense fallback={<UltimasFallback />}>
             <UltimasSection d={d} />
           </Suspense>
         </section>
       )}
-
-      <div className="fade-up" style={{ animationDelay: "180ms" }}>
-        <Atalhos acessos={ctx.acessos} />
-      </div>
 
       <InstalarApp />
     </div>
