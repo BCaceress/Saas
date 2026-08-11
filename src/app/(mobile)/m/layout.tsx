@@ -40,7 +40,6 @@ export default async function MobileLayout({
     <MobileShell
       acessos={ctx.acessos}
       toggles={toggles}
-      tenantNome={ctx.tenant.nome}
       multiSite={totalSites > 1}
       podeCopiloto={featureAtiva(ctx.tenant, "ia.copiloto") && admin}
     >

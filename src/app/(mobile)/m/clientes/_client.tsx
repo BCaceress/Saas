@@ -120,17 +120,20 @@ export function ClientesMobileClient({
       </div>
 
       <div className="scrollbar-none -mx-4 flex gap-2 overflow-x-auto px-4">
+        {/* Sem contador no chip: o número não muda a decisão de tocar no filtro
+            e, empilhado três vezes, virava ruído. Quem precisa saber quantos
+            são lê a linha do cabeçalho ou a própria lista. */}
         <Chip ativo={filtro === "todos"} onClick={() => setFiltro("todos")}>
-          Todos {rows.length}
+          Todos
         </Chip>
         <Chip
           ativo={filtro === "oportunidades"}
           onClick={() => setFiltro("oportunidades")}
         >
-          Oportunidades {pendentes.length}
+          Oportunidades
         </Chip>
         <Chip ativo={filtro === "inativos"} onClick={() => setFiltro("inativos")}>
-          Inativos {inativos.length}
+          Inativos
         </Chip>
       </div>
 

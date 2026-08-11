@@ -6,7 +6,6 @@ import {
   ClipboardList,
   Image as ImageIcon,
   LogOut,
-  Monitor,
   MonitorSmartphone,
   Receipt,
   Settings,
@@ -43,8 +42,6 @@ export default async function MaisPage() {
     icone: LucideIcon;
     permissao?: Permissao;
     mostrar?: (t: NavToggles) => boolean;
-    /** Abre na versão de computador — avisado na lista. */
-    desktop?: boolean;
   }> = [
     { href: "/m/vendas", label: "Vendas", icone: Receipt, permissao: "relatorio.ver" },
     // Sem Caixa: abrir/fechar caixa mora no PDV, na máquina com gaveta e
@@ -111,18 +108,10 @@ export default async function MaisPage() {
               >
                 <m.icone className="h-5 w-5 shrink-0 text-ink-2" aria-hidden />
                 <span className="flex-1 text-sm font-medium text-ink">{m.label}</span>
-                {/* Dizer antes evita a surpresa de cair numa tela de mesa. */}
-                {m.desktop && (
-                  <Monitor className="h-3.5 w-3.5 shrink-0 text-faint" aria-label="Abre na versão de computador" />
-                )}
                 <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
               </Link>
             ))}
           </Card>
-          <p className="flex items-center gap-1.5 px-1 text-xs text-muted">
-            <Monitor className="h-3 w-3" aria-hidden />
-            abre na versão de computador
-          </p>
         </section>
       )}
 

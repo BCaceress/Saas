@@ -7,6 +7,7 @@ import {
   ArchiveRestore,
   Cake,
   CalendarCheck,
+  Loader2,
   MessageCircle,
   Pencil,
   Phone,
@@ -164,7 +165,18 @@ export function DetalheCliente({
       open
       onClose={onFechar}
       titulo={cliente.nome}
-      descricao={`Cliente desde ${fmtData(cliente.createdAt)}`}
+      // O painel abre com o que a lista já sabia e busca o resto. Sem dizer
+      // isso, quem toca num cliente vê números parados e acha que são finais.
+      descricao={
+        carregando ? (
+          <span className="flex items-center gap-1.5">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" aria-hidden />
+            Carregando ficha…
+          </span>
+        ) : (
+          `Cliente desde ${fmtData(cliente.createdAt)}`
+        )
+      }
       rodape={
         podeEditar && (
           <div className="flex gap-2">
@@ -276,13 +288,10 @@ export function DetalheCliente({
             <Indicador
               icone={<CalendarCheck className="h-3.5 w-3.5" aria-hidden />}
               rotulo="Última compra"
-              valor={
-                carregando
-                  ? "…"
-                  : fmtDiasAtras(insights?.ultimaCompra ?? cliente.ultimaCompra)
-              }
+              carregando={carregando}
+              valor={fmtDiasAtras(insights?.ultimaCompra ?? cliente.ultimaCompra)}
               sub={
-                !carregando && insights?.valorUltimaCompra != null
+                insights?.valorUltimaCompra != null
                   ? brl(insights.valorUltimaCompra)
                   : undefined
               }
@@ -290,10 +299,11 @@ export function DetalheCliente({
             <Indicador
               icone={<Wallet className="h-3.5 w-3.5" aria-hidden />}
               rotulo="Gasto este mês"
-              valor={carregando ? "…" : brl(insights?.gastoMes ?? 0)}
+              carregando={carregando}
+              valor={brl(insights?.gastoMes ?? 0)}
               mono
               sub={
-                !carregando && insights
+                insights
                   ? `${insights.visitasMes} ${insights.visitasMes === 1 ? "visita" : "visitas"}`
                   : undefined
               }
@@ -303,10 +313,11 @@ export function DetalheCliente({
             <Indicador
               icone={<Wallet className="h-3.5 w-3.5" aria-hidden />}
               rotulo="Total gasto"
-              valor={carregando ? "…" : brl(totalGasto)}
+              carregando={carregando}
+              valor={brl(totalGasto)}
               mono
               sub={
-                !carregando && insights
+                insights
                   ? `${insights.visitas} ${insights.visitas === 1 ? "compra" : "compras"}`
                   : undefined
               }
@@ -314,9 +325,10 @@ export function DetalheCliente({
             <Indicador
               icone={<Repeat className="h-3.5 w-3.5" aria-hidden />}
               rotulo="Frequência"
-              valor={carregando ? "…" : freqLabel}
+              carregando={carregando}
+              valor={freqLabel}
               sub={
-                !carregando && insights && insights.ticketMedio > 0
+                insights && insights.ticketMedio > 0
                   ? `ticket ${brl(insights.ticketMedio)}`
                   : undefined
               }
@@ -330,7 +342,23 @@ export function DetalheCliente({
             Comprados recentemente
           </h3>
           {carregando ? (
-            <p className="text-[13px] text-muted">Carregando histórico…</p>
+            // Esqueleto com a altura de três linhas de item: quando o histórico
+            // chega, o painel não pula sob o dedo de quem já está lendo.
+            <div
+              className="animate-pulse space-y-2 border-t border-line pt-2.5"
+              aria-busy="true"
+              aria-label="Carregando histórico do cliente"
+            >
+              {[3, 4, 5].map((n) => (
+                <div key={n} className="flex items-center justify-between gap-3">
+                  <span
+                    className="h-3.5 rounded-md bg-surface-2"
+                    style={{ width: `${n * 12}%` }}
+                  />
+                  <span className="h-3.5 w-8 shrink-0 rounded-full bg-surface-2" />
+                </div>
+              ))}
+            </div>
           ) : insights && insights.comprasRecentes.length > 0 ? (
             <div className="divide-y divide-line border-t border-line">
               {insights.comprasRecentes.map((grupo) => (
@@ -374,22 +402,36 @@ function Indicador({
   valor,
   sub,
   mono,
+  carregando,
 }: {
   icone: React.ReactNode;
   rotulo: string;
   valor: string;
   sub?: string;
   mono?: boolean;
+  /** Barras no lugar do valor — reticências não se leem como "carregando". */
+  carregando?: boolean;
 }) {
   return (
     <div className="p-3">
       <div className="flex items-center gap-1.5 text-[11px] font-medium text-faint">
         {icone} {rotulo}
       </div>
-      <div className={cn("mt-1 text-[15px] font-semibold text-ink", mono && "font-mono tnum")}>
-        {valor}
-      </div>
-      {sub && <div className="mt-0.5 text-[12px] text-muted">{sub}</div>}
+      {carregando ? (
+        <div className="animate-pulse" aria-hidden>
+          <div className="mt-1.5 h-4 w-20 rounded-md bg-surface-2" />
+          <div className="mt-1.5 h-3 w-12 rounded-md bg-surface-2" />
+        </div>
+      ) : (
+        <>
+          <div
+            className={cn("mt-1 text-[15px] font-semibold text-ink", mono && "font-mono tnum")}
+          >
+            {valor}
+          </div>
+          {sub && <div className="mt-0.5 text-[12px] text-muted">{sub}</div>}
+        </>
+      )}
     </div>
   );
 }

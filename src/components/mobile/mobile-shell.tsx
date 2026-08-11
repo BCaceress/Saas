@@ -1,13 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AlertsProvider } from "@/components/app/alerts-provider";
 import { MobileTabBar } from "@/components/mobile/tab-bar";
 import { CopilotoLauncher } from "@/components/app/copiloto/copiloto-launcher";
-import { SinoAlertas } from "@/components/mobile/sino";
 import type { NavToggles } from "@/components/app/nav-config";
 import type { Acesso } from "@/lib/permissoes";
 
@@ -26,24 +23,23 @@ import type { Acesso } from "@/lib/permissoes";
 export function MobileShell({
   acessos,
   toggles,
-  tenantNome,
   multiSite,
   podeCopiloto,
   children,
 }: {
   acessos: Acesso[];
   toggles: NavToggles;
-  tenantNome: string;
   /** A empresa tem mais de um local ativo (esconde transferência na folha). */
   multiSite: boolean;
   /** Plano com o add-on de IA ativo + perfil que pode usar (igual ao desktop). */
   podeCopiloto: boolean;
   children: React.ReactNode;
 }) {
-  // Na home a barra do topo sairia repetindo o que a própria tela já diz —
-  // empresa, sino — em corpo menor. Lá o cabeçalho é o conteúdo (saudação,
-  // empresa, sino), então a barra fica de fora e o `<main>` assume a área
-  // segura do aparelho.
+  // Não há barra de topo em tela nenhuma: empresa e sino são conteúdo da home,
+  // e repeti-los em corpo menor no topo das outras telas só comia altura útil
+  // (14px de barra + área segura) sem dizer nada que a tela já não diga. Quem
+  // quer alertas fora da home vai pela aba. O `home` sobrevive só para o
+  // respiro: lá o cabeçalho é a manchete e pede mais ar.
   const home = usePathname() === "/m";
 
   return (
@@ -56,17 +52,18 @@ export function MobileShell({
       </a>
 
       <div className="flex min-h-dvh flex-col bg-canvas">
-        {!home && <Cabecalho tenantNome={tenantNome} />}
-
         {/* pb-32 reserva a barra flutuante (64px + respiro + área segura): sem
             isso o último card fica embaixo dela. O px-4 é a margem de conteúdo
             da superfície inteira — quem sangra até a borda cancela com
-            `-mx-4 px-4`. */}
+            `-mx-4 px-4`. Sem barra de topo, o `<main>` é quem responde pela
+            área segura em TODAS as telas: sem isso o título fica sob o notch. */}
         <main
           id="conteudo"
           className={cn(
             "flex-1 px-4 pb-32",
-            home ? "pt-[calc(env(safe-area-inset-top)+1.5rem)]" : "pt-4",
+            home
+              ? "pt-[calc(env(safe-area-inset-top)+1.5rem)]"
+              : "pt-[calc(env(safe-area-inset-top)+1rem)]",
           )}
         >
           {children}
@@ -82,28 +79,5 @@ export function MobileShell({
         />
       </div>
     </AlertsProvider>
-  );
-}
-
-function Cabecalho({ tenantNome }: { tenantNome: string }) {
-  return (
-    // Fundo do canvas, não do card: a barra é contexto, não conteúdo. A borda
-    // só aparece quando a página rolou por baixo dela.
-    <header className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b border-line/70 bg-canvas/90 px-4 pt-[env(safe-area-inset-top)] backdrop-blur">
-      {/* Empresa é rótulo de onde você está, não a manchete da tela — texto
-          pequeno e em tinta secundária. O destaque é o nome de quem abriu o
-          app, e esse mora no cabeçalho da home. */}
-      <Link
-        href="/m"
-        className="tap flex min-w-0 flex-1 items-center gap-1 rounded-[var(--radius-m)] py-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-      >
-        <span className="truncate text-[13px] font-medium tracking-wide text-ink-2">
-          {tenantNome}
-        </span>
-        <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
-      </Link>
-
-      <SinoAlertas className="-mr-1" />
-    </header>
   );
 }

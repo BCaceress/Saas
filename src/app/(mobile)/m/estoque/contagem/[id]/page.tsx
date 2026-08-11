@@ -4,6 +4,7 @@ import { withTenant } from "@/lib/current-tenant";
 import { loadInventario } from "@/app/(app)/estoque/_data";
 import { MobilePageHeader } from "@/components/mobile/page-header";
 import { ContagemClient } from "./_client";
+import { IniciarContagem } from "./_iniciar";
 
 export default async function ContagemPage({
   params,
@@ -39,7 +40,18 @@ export default async function ContagemPage({
         descricao={`${inventario.siteNome}${inventario.modoCego ? " · contagem cega" : ""}`}
         voltar="/m/estoque/contagem"
       />
-      <ContagemClient inventario={inventario} />
+      {/* PROGRAMADO ainda não tem InventoryItem nenhum: o escopo só é resolvido
+          (e o saldo fotografado) ao iniciar. Cair direto na contagem mostraria
+          uma lista vazia que não salva nada. */}
+      {inventario.status === "PROGRAMADO" ? (
+        <IniciarContagem
+          inventoryId={inventario.id}
+          qtdProdutos={inventario.qtdProdutos}
+          modoCego={inventario.modoCego}
+        />
+      ) : (
+        <ContagemClient inventario={inventario} />
+      )}
     </>
   );
 }

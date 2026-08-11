@@ -1956,7 +1956,8 @@ function StockCell({ p, level }: { p: ProductRow; level: "ok" | "warn" | "danger
   }
 
   if (semControle) {
-    return <span className="text-[12px] text-muted">Sem controle</span>;
+    // Mesma voz do preço de insumo ("uso interno"): informação de rodapé, não dado.
+    return <span className="text-[11px] text-faint">Sem controle</span>;
   }
 
   return (

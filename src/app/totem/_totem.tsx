@@ -44,7 +44,7 @@ function CatIcon({ nome, size, className }: { nome: string | null | undefined; s
 
 export function TotemVenda({
   siteId, produtos, metodosAtivos, tenantNome, tenantLogoUrl, controleIdade, maisVendidos,
-  totemDeviceId, terminalNome, caixaAberto,
+  totemDeviceId, terminalNome, caixaAberto, onEtapa,
 }: {
   siteId: string | null;
   produtos: ProdutoVenda[];
@@ -56,6 +56,12 @@ export function TotemVenda({
   totemDeviceId: string | null;
   terminalNome: string | null;
   caixaAberto: boolean;
+  /**
+   * Avisa a casca em que etapa a venda está. Quem desenha a saída do quiosque
+   * é o `TotemKiosk`, e ele só pode mostrá-la entre atendimentos — com o
+   * cliente no meio da compra, um cadeado na tela é convite para mexer.
+   */
+  onEtapa?: (etapa: Etapa) => void;
 }) {
   const router = useRouter();
   const [etapa, setEtapa] = useState<Etapa>("boas-vindas");
@@ -69,6 +75,12 @@ export function TotemVenda({
   const [resultado, setResultado] = useState<ResultadoTotem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+
+  // A casca passa um setter de estado (identidade estável), então o efeito só
+  // roda quando a etapa muda de verdade — nada de laço de render.
+  useEffect(() => {
+    onEtapa?.(etapa);
+  }, [etapa, onEtapa]);
 
   // Só produtos com estoque (esgotado não aparece no totem).
   const disponiveis = useMemo(

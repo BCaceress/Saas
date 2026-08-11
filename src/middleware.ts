@@ -70,7 +70,9 @@ export const config = {
   // `wasm/` é o leitor de código de barras (biblioteca aberta, zero dado de
   // tenant). Ficando dentro do gate, o binário viraria um redirect para o
   // login e o scanner do iOS não carregaria.
+  // `totem/manifest.webmanifest` é o manifest do quiosque (app instalável
+  // separado, em tela cheia) e segue a mesma regra do manifest principal.
   matcher: [
-    "/((?!_next|favicon.ico|manifest.webmanifest|sw.js|offline.html|icons/|wasm/|apple-touch-icon.png|api/auth).*)",
+    "/((?!_next|favicon.ico|manifest.webmanifest|totem/manifest.webmanifest|sw.js|offline.html|icons/|wasm/|apple-touch-icon.png|api/auth).*)",
   ],
 };

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Lock, X, Delete, Loader2, MonitorSmartphone } from "lucide-react";
+import { Lock, X, Delete, Loader2, Maximize, MonitorSmartphone } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { PaymentMethod } from "@/generated/prisma";
 import type { ProdutoVenda } from "@/app/(app)/vendas/_data";
@@ -54,6 +54,9 @@ export function TotemKiosk({
   const [iniciado, setIniciado] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [terminal, setTerminal] = useState<TerminalStatus | null>(null);
+  // Onde a venda está. Só entre atendimentos (a tela que oferece CPF, cadastro
+  // ou "comprar sem cadastro") a saída do quiosque fica visível.
+  const [etapa, setEtapa] = useState("boas-vindas");
 
   // Registro + heartbeat do terminal (identifica o aparelho na fila do PDV e
   // informa se há caixa aberto — sem caixa, novas vendas ficam bloqueadas).
@@ -80,12 +83,13 @@ export function TotemKiosk({
   }, [siteId]);
 
   function iniciar() {
-    // Instalado como app já abre em tela cheia — pedir de novo só gera exceção
-    // silenciosa. Fora disso é best-effort: iPhone Safari não tem a API, e o
-    // container fixed cobre a tela de qualquer jeito.
-    if (!emStandalone()) {
-      document.documentElement.requestFullscreen?.().catch(() => {});
-    }
+    // Best-effort e SEMPRE, inclusive instalado: no Android, um app em
+    // `standalone` ainda mostra a barra de status, e a Fullscreen API é o que
+    // a esconde. Instalado pelo manifest do quiosque (`display: fullscreen`)
+    // isso já vem de fábrica e a chamada só devolve uma promessa rejeitada,
+    // engolida aqui. No iPhone a API não existe (`?.`) e quem cobre a tela é o
+    // container `fixed` do modo quiosque.
+    document.documentElement.requestFullscreen?.().catch(() => {});
     setIniciado(true);
   }
 
@@ -130,6 +134,9 @@ export function TotemKiosk({
   if (!iniciado) {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center gap-6 p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] text-center sm:gap-8 sm:p-6">
+        {/* Mesma saída da tela de boas-vindas, no mesmo canto: quem opera
+            aprende UM gesto para sair, e ele não muda de lugar. */}
+        <BotaoSair onClick={() => (temPin ? setPinOpen(true) : sair())} />
         {tenantLogoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={tenantLogoUrl} alt={tenantNome}
@@ -149,12 +156,10 @@ export function TotemKiosk({
         >
           Toque para começar
         </button>
-        <button
-          onClick={() => router.push(painelHref)}
-          className="text-sm text-faint underline-offset-4 hover:text-muted hover:underline"
-        >
-          Voltar ao painel
-        </button>
+
+        <InstalarTotem />
+
+        {pinOpen && <PinDialog onClose={() => setPinOpen(false)} onSuccess={sair} />}
       </div>
     );
   }
@@ -175,19 +180,89 @@ export function TotemKiosk({
         totemDeviceId={terminal?.id ?? null}
         terminalNome={terminal?.nome ?? null}
         caixaAberto={terminal?.caixaAberto ?? true}
+        onEtapa={setEtapa}
       />
-      {/* Saída discreta do quiosque */}
-      <button
-        onClick={() => (temPin ? setPinOpen(true) : sair())}
-        aria-label="Sair do modo quiosque"
-        // O notch come o canto superior direito quando o app roda em tela
-        // cheia; sem a área segura, o botão de sair fica embaixo dele.
-        className="fixed right-3 top-[max(0.75rem,env(safe-area-inset-top))] z-[60] grid h-9 w-9 place-items-center rounded-full border border-line bg-surface/80 text-faint backdrop-blur transition-colors hover:text-ink"
-      >
-        <Lock size={15} />
-      </button>
+      {/* Saída discreta — só entre atendimentos. Durante a compra, o cadeado
+          some: ele fica ao alcance do cliente, e um toque curioso no meio do
+          carrinho é ou uma tela de PIN na cara dele, ou o ERP aberto no balcão. */}
+      {etapa === "boas-vindas" && (
+        <BotaoSair onClick={() => (temPin ? setPinOpen(true) : sair())} />
+      )}
       {pinOpen && <PinDialog onClose={() => setPinOpen(false)} onSuccess={sair} />}
     </div>
+  );
+}
+
+/**
+ * Saída do quiosque. Canto superior direito, discreta de propósito: o cliente
+ * não deve achá-la à toa, e o operador sabe onde está.
+ */
+function BotaoSair({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label="Sair do modo quiosque"
+      // O notch come o canto superior direito quando o app roda em tela cheia;
+      // sem a área segura, o botão de sair fica embaixo dele.
+      className="fixed right-3 top-[max(0.75rem,env(safe-area-inset-top))] z-[60] grid h-9 w-9 place-items-center rounded-full border border-line bg-surface/80 text-faint backdrop-blur transition-colors hover:text-ink"
+    >
+      <Lock size={15} />
+    </button>
+  );
+}
+
+/** Evento do Chrome/Edge que oferece a instalação — não existe no lib.dom. */
+type PromptInstalacao = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+};
+
+/**
+ * Instala o quiosque como app à parte (ver `manifest.webmanifest/route.ts`).
+ *
+ * É o único caminho para tela cheia DE VERDADE num tablet Android: a Fullscreen
+ * API cai assim que o aparelho troca de aba ou desliga a tela, enquanto o app
+ * instalado com `display: fullscreen` volta cheio toda vez.
+ *
+ * Store próprio, sem o `InstalarApp` do `/m`: aquele guarda o "dispensar" num
+ * localStorage compartilhado, então quem já tinha recusado instalar o ERP nunca
+ * mais veria o convite do totem — que é outra decisão, em outro aparelho.
+ */
+function InstalarTotem() {
+  const [prompt, setPrompt] = useState<PromptInstalacao | null>(null);
+
+  useEffect(() => {
+    // Já instalado (ou já em tela cheia): não há o que oferecer.
+    if (emStandalone()) return;
+    const aoOferecer = (e: Event) => {
+      // Sem isto o Chrome mostra a própria barra dele, fora do fluxo da tela.
+      e.preventDefault();
+      setPrompt(e as PromptInstalacao);
+    };
+    const aoInstalar = () => setPrompt(null);
+    window.addEventListener("beforeinstallprompt", aoOferecer);
+    window.addEventListener("appinstalled", aoInstalar);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", aoOferecer);
+      window.removeEventListener("appinstalled", aoInstalar);
+    };
+  }, []);
+
+  if (!prompt) return null;
+
+  return (
+    <button
+      onClick={async () => {
+        const atual = prompt;
+        setPrompt(null); // o prompt é de uso único
+        await atual.prompt();
+        await atual.userChoice;
+      }}
+      className="flex items-center gap-2 rounded-full border border-line bg-surface px-4 py-2.5 text-sm font-medium text-ink-2 transition-colors hover:text-ink"
+    >
+      <Maximize size={15} aria-hidden />
+      Instalar em tela cheia
+    </button>
   );
 }
 

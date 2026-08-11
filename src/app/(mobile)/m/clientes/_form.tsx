@@ -3,7 +3,6 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Monitor } from "lucide-react";
-import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { maskCpf, maskDate, maskPhone } from "@/lib/masks";
 import { fmtDataUTC } from "@/lib/customers";
@@ -107,9 +106,10 @@ export function FormCliente({
       }
     >
       <div className="space-y-3 pb-2">
-        <Campo label="Nome" htmlFor="mc-nome">
+        <Campo label="Nome" htmlFor="mc-nome" obrigatorio>
           <input
             id="mc-nome"
+            required
             value={nome}
             onChange={(e) => setNome(e.target.value)}
             placeholder="João Silva"
@@ -191,14 +191,14 @@ export function FormCliente({
           />
         </Campo>
 
+        {/* Aviso, não atalho: o link levava para a tela de mesa e, tocado no
+            celular, jogava a pessoa para fora do cadastro que ela estava
+            preenchendo — perdendo o que já tinha digitado. */}
         <p className="flex items-start gap-1.5 px-1 text-xs text-muted">
           <Monitor className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
           <span>
-            CNPJ, inscrição estadual e endereço para NF-e ficam em{" "}
-            <Link href="/clientes" className="font-medium text-brand">
-              Clientes na versão de computador
-            </Link>
-            .
+            CNPJ, inscrição estadual e endereço para NF-e ficam em Clientes, na
+            versão de computador.
           </span>
         </p>
 
@@ -214,16 +214,26 @@ const ENTRADA =
 function Campo({
   label,
   htmlFor,
+  obrigatorio,
   children,
 }: {
   label: string;
   htmlFor: string;
+  /** Marca o rótulo com o asterisco vermelho da convenção de formulário. */
+  obrigatorio?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div>
       <label htmlFor={htmlFor} className="mb-1.5 block text-[13px] font-medium text-ink-2">
         {label}
+        {obrigatorio && (
+          // `aria-hidden` + texto na label: o asterisco é sinal visual, e o
+          // leitor de tela já anuncia "obrigatório" pelo `required` do campo.
+          <span className="ml-0.5 text-danger" aria-hidden>
+            *
+          </span>
+        )}
       </label>
       {children}
     </div>
