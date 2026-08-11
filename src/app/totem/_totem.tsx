@@ -749,98 +749,107 @@ function Loja({
   // O corte é 600px e não o `sm` (640px) de propósito: tablet Android de 10" em
   // pé reporta 600px de largura CSS, e no `sm` ele caía do lado do celular —
   // menu deitado no topo justamente onde há altura de sobra para a coluna.
+  // A barra do pedido saiu de dentro da coluna principal e virou a última
+  // linha da tela inteira: ela é o resumo da compra, não um rodapé da grade —
+  // alinhada só com os produtos, deixava um vão morto embaixo do rail e o total
+  // "torto" em relação à moldura.
   return (
-    <div className="flex h-[calc(100dvh-1rem)] flex-col gap-2 min-[600px]:h-[calc(100dvh-2rem)] min-[600px]:flex-row min-[600px]:gap-3 lg:h-[calc(100dvh-3rem)] lg:gap-4">
-      {/* ── Menu de categorias: faixa no celular, coluna no tablet ── */}
-      <nav aria-label="Categorias"
-        className="scrollbar-none flex w-full shrink-0 flex-row gap-1 overflow-x-auto rounded-2xl border border-line bg-surface p-1.5 min-[600px]:w-28 min-[600px]:flex-col min-[600px]:overflow-x-visible min-[600px]:overflow-y-auto min-[600px]:rounded-3xl lg:w-32 lg:gap-1.5 lg:p-2 xl:w-40">
-        <RailItem ativo={catAtiva == null} onClick={() => setCatAtiva(null)}
-          icone={temDestaques ? <Star size={24} /> : <ShoppingCart size={24} />}
-          label={temDestaques ? (cliente ? "Para você" : "Destaques") : "Todos"} />
-        {categorias.map((c) => (
-          <RailItem key={c.nome} ativo={catAtiva === c.nome}
-            onClick={() => setCatAtiva(c.nome)}
-            icone={<CatIcon nome={c.nome} size={24} />} label={c.nome} />
-        ))}
-      </nav>
+    <div className="flex h-[calc(100dvh-1rem)] flex-col gap-2 min-[600px]:h-[calc(100dvh-2rem)] min-[600px]:gap-3 lg:h-[calc(100dvh-3rem)] lg:gap-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 min-[600px]:flex-row min-[600px]:gap-3 lg:gap-4">
+        {/* ── Menu de categorias: faixa no celular, coluna no tablet ──
+            A coluna é estreita e encostada na moldura (margem negativa que come
+            parte do respiro do quiosque): cada pixel que ela devolve vira
+            largura de card na grade, que é onde o cliente decide. */}
+        <nav aria-label="Categorias"
+          className="scrollbar-none flex w-full shrink-0 flex-row gap-1 overflow-x-auto rounded-2xl border border-line bg-surface p-1.5 min-[600px]:-ml-2 min-[600px]:w-24 min-[600px]:flex-col min-[600px]:overflow-x-visible min-[600px]:overflow-y-auto min-[600px]:rounded-3xl lg:-ml-4 lg:w-28 lg:gap-1.5 lg:p-2 xl:w-32">
+          <RailItem ativo={catAtiva == null} onClick={() => setCatAtiva(null)}
+            icone={temDestaques ? <Star size={24} /> : <ShoppingCart size={24} />}
+            label={temDestaques ? (cliente ? "Para você" : "Destaques") : "Todos"} />
+          {categorias.map((c) => (
+            <RailItem key={c.nome} ativo={catAtiva === c.nome}
+              onClick={() => setCatAtiva(c.nome)}
+              icone={<CatIcon nome={c.nome} size={24} />} label={c.nome} />
+          ))}
+        </nav>
 
-      {/* ── Coluna principal ── */}
-      <div className="flex min-w-0 flex-1 flex-col gap-3 lg:gap-4">
-        {/* Cabeçalho: saudação + pontos + cancelar */}
-        <div className="flex items-center justify-between gap-3">
-          <span className="truncate font-display text-lg font-bold text-ink lg:text-2xl">
-            {cliente ? `Olá, ${cliente.primeiroNome} 👋` : "Escolha seus produtos"}
-          </span>
-          <div className="flex shrink-0 items-center gap-2">
-            {cliente && (
-              <span className="flex items-center gap-1.5 rounded-full bg-brand-soft px-4 py-2 text-sm font-bold text-brand lg:px-5 lg:py-3 lg:text-base">
-                <Award size={16} /> {cliente.pontos} pts
-              </span>
+        {/* ── Coluna principal ── */}
+        <div className="flex min-w-0 flex-1 flex-col gap-3 lg:gap-4">
+          {/* Cabeçalho: saudação + pontos + cancelar */}
+          <div className="flex items-center justify-between gap-3">
+            <span className="truncate font-display text-lg font-bold text-ink lg:text-2xl">
+              {cliente ? `Olá, ${cliente.primeiroNome} 👋` : "Escolha seus produtos"}
+            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              {cliente && (
+                <span className="flex items-center gap-1.5 rounded-full bg-brand-soft px-4 py-2 text-sm font-bold text-brand lg:px-5 lg:py-3 lg:text-base">
+                  <Award size={16} /> {cliente.pontos} pts
+                </span>
+              )}
+              <button onClick={() => setCancelando(true)}
+                className="flex min-h-11 items-center gap-1.5 rounded-full border border-line px-4 py-2 text-sm font-medium text-muted transition-colors hover:bg-danger-soft hover:text-danger lg:px-5 lg:py-3 lg:text-base">
+                <X size={16} /> Cancelar compra
+              </button>
+            </div>
+          </div>
+
+          {/* Conteúdo rolável — vertical apenas; horizontal é por fileira */}
+          <div className="scrollbar-none min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-1">
+            {catAtiva ? (
+              <>
+                <h2 className="mb-3 flex items-center gap-2 font-display text-xl font-bold text-ink lg:mb-4 lg:text-2xl">
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand lg:h-11 lg:w-11"><CatIcon nome={catAtiva} size={18} /></span>
+                  {catAtiva}
+                </h2>
+                {daCategoria.length ? <Grade produtos={daCategoria} onPick={pick} qtd={qtdNoCarrinho} />
+                  : <Vazio texto="Sem produtos nesta categoria." />}
+              </>
+            ) : temDestaques ? (
+              <div className="flex flex-col gap-6">
+                {destaques.map((s) => (
+                  <section key={s.titulo}>
+                    <h2 className="mb-3 flex items-center gap-2 font-display text-xl font-bold text-ink lg:mb-4 lg:text-2xl">
+                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand lg:h-11 lg:w-11">{s.icone}</span>
+                      {s.titulo}
+                    </h2>
+                    <Fileira produtos={s.itens} onPick={pick} qtd={qtdNoCarrinho} />
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <Grade produtos={produtos} onPick={pick} qtd={qtdNoCarrinho} />
             )}
-            <button onClick={() => setCancelando(true)}
-              className="flex min-h-11 items-center gap-1.5 rounded-full border border-line px-4 py-2 text-sm font-medium text-muted transition-colors hover:bg-danger-soft hover:text-danger lg:px-5 lg:py-3 lg:text-base">
-              <X size={16} /> Cancelar compra
-            </button>
           </div>
         </div>
+      </div>
 
-        {/* Conteúdo rolável — vertical apenas; horizontal é por fileira */}
-        <div className="scrollbar-none min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-1">
-          {catAtiva ? (
-            <>
-              <h2 className="mb-3 flex items-center gap-2 font-display text-xl font-bold text-ink lg:mb-4 lg:text-2xl">
-                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand lg:h-11 lg:w-11"><CatIcon nome={catAtiva} size={18} /></span>
-                {catAtiva}
-              </h2>
-              {daCategoria.length ? <Grade produtos={daCategoria} onPick={pick} qtd={qtdNoCarrinho} />
-                : <Vazio texto="Sem produtos nesta categoria." />}
-            </>
-          ) : temDestaques ? (
-            <div className="flex flex-col gap-6">
-              {destaques.map((s) => (
-                <section key={s.titulo}>
-                  <h2 className="mb-3 flex items-center gap-2 font-display text-xl font-bold text-ink lg:mb-4 lg:text-2xl">
-                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand lg:h-11 lg:w-11">{s.icone}</span>
-                    {s.titulo}
-                  </h2>
-                  <Fileira produtos={s.itens} onPick={pick} qtd={qtdNoCarrinho} />
-                </section>
-              ))}
-            </div>
-          ) : (
-            <Grade produtos={produtos} onPick={pick} qtd={qtdNoCarrinho} />
-          )}
-        </div>
+      {error && <Erro>{error}</Erro>}
 
-        {error && <Erro>{error}</Erro>}
-
-        {/* ── Barra do pedido ── */}
-        <div className="flex items-center gap-2 rounded-3xl border border-line bg-surface p-2 sm:gap-3 sm:p-3 lg:p-4">
-          <button onClick={() => numItens > 0 && setCarrinhoAberto(true)} disabled={numItens === 0}
-            aria-label="Ver carrinho"
-            className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl px-2 py-1.5 text-left transition-colors hover:bg-surface-2 disabled:pointer-events-none lg:gap-4">
-            <span className="relative grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-surface-2 text-ink lg:h-16 lg:w-16">
-              <ShoppingCart size={24} />
-              {numItens > 0 && (
-                <span className="absolute -right-1.5 -top-1.5 grid h-6 min-w-6 place-items-center rounded-full bg-brand px-1 text-xs font-bold text-on-brand">{numItens}</span>
-              )}
+      {/* ── Barra do pedido — largura total, embaixo do rail e da grade ── */}
+      <div className="flex shrink-0 items-center gap-2 rounded-3xl border border-line bg-surface p-2 sm:gap-3 sm:p-3 lg:p-4">
+        <button onClick={() => numItens > 0 && setCarrinhoAberto(true)} disabled={numItens === 0}
+          aria-label="Ver carrinho"
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl px-2 py-1.5 text-left transition-colors hover:bg-surface-2 disabled:pointer-events-none lg:gap-4">
+          <span className="relative grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-surface-2 text-ink lg:h-16 lg:w-16">
+            <ShoppingCart size={24} />
+            {numItens > 0 && (
+              <span className="absolute -right-1.5 -top-1.5 grid h-6 min-w-6 place-items-center rounded-full bg-brand px-1 text-xs font-bold text-on-brand">{numItens}</span>
+            )}
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-sm text-muted lg:text-base">
+              {numItens === 0 ? "Toque nos produtos para adicionar" : `${numItens} ${numItens === 1 ? "item" : "itens"} · ver carrinho`}
             </span>
-            <span className="min-w-0">
-              <span className="block truncate text-sm text-muted lg:text-base">
-                {numItens === 0 ? "Toque nos produtos para adicionar" : `${numItens} ${numItens === 1 ? "item" : "itens"} · ver carrinho`}
-              </span>
-              <span className="block font-display text-2xl font-bold tabular-nums leading-tight text-ink lg:text-4xl">{brl(total)}</span>
-            </span>
-          </button>
-          <BotaoGrande disabled={numItens === 0 || pending} onClick={onConcluir}
-            className="w-auto shrink-0 px-5 py-3 text-base sm:px-8 sm:py-4 sm:text-lg lg:px-10 lg:py-6 lg:text-xl">
-            {/* O rótulo encolhe junto: "Concluir pedido" + seta empurrava o
-                total do carrinho para fora em 360px. */}
-            <span className="sm:hidden">Concluir</span>
-            <span className="hidden sm:inline">Concluir pedido</span>
-            <ArrowRight size={20} />
-          </BotaoGrande>
-        </div>
+            <span className="block font-display text-2xl font-bold tabular-nums leading-tight text-ink lg:text-4xl">{brl(total)}</span>
+          </span>
+        </button>
+        <BotaoGrande disabled={numItens === 0 || pending} onClick={onConcluir}
+          className="w-auto shrink-0 px-5 py-3 text-base sm:px-8 sm:py-4 sm:text-lg lg:px-10 lg:py-6 lg:text-xl">
+          {/* O rótulo encolhe junto: "Concluir pedido" + seta empurrava o
+              total do carrinho para fora em 360px. */}
+          <span className="sm:hidden">Concluir</span>
+          <span className="hidden sm:inline">Concluir pedido</span>
+          <ArrowRight size={20} />
+        </BotaoGrande>
       </div>
 
       {/* ── Carrinho (drawer) ── */}
@@ -1255,29 +1264,30 @@ function RailItem({ ativo, onClick, icone, label }: {
 
 /* ═══════════════════ CARD / GRADE ═══════════════════ */
 /**
- * Largura única do card em TODAS as telas (grade e fileiras).
+ * Largura do card na FILEIRA (rolagem lateral dos destaques).
  *
- * No celular, metade da largura menos 12px. A conta serve aos dois usos: na
- * `Grade` (flex-wrap, gap de 12px) cabem exatamente duas colunas; na `Fileira`
- * (rolagem lateral) sobram 12px do terceiro card à direita — a fresta é o que
- * avisa que dá para arrastar. Em `w-40` fixo, um aparelho de 390px mostrava
- * 1,5 card e um vão morto.
+ * 30% da fileira: entram três cards inteiros e sobra a fresta de um quarto à
+ * direita — é a fresta que avisa que dá para arrastar. A grade não usa esta
+ * medida: lá quem manda no número de colunas é o `grid` (ver `Grade`), e uma
+ * largura fixa faria a última fileira da grade ficar com colunas de tamanhos
+ * diferentes da primeira.
  */
-/*
- * A partir de `sm` o `max-w-44` sai de cena: num monitor touch de 1080px em pé
- * ele prenderia o card em 176px e a tela viraria seis colunas de letra miúda,
- * lida a um metro de distância. O card cresce por degrau em vez de multiplicar
- * colunas.
- */
-const CARD_W = "w-[calc(50%-0.75rem)] max-w-44 sm:w-40 sm:max-w-none lg:w-52 xl:w-60";
+const CARD_W = "w-[30%] min-w-24 sm:w-32 md:w-36 lg:w-40 xl:w-48";
 
+/**
+ * Grade de produtos — MÍNIMO de três por linha, em qualquer tela.
+ *
+ * Era `flex-wrap` com card de 50% da largura, o que dava duas colunas no
+ * celular: dois produtos por tela num quiosque é rolagem demais para escolher
+ * uma bebida. Com `grid` o número de colunas é declarado (nunca derivado de uma
+ * largura que pode não fechar a conta) e todas as células saem do mesmo
+ * tamanho, inclusive a última linha.
+ */
 function Grade({ produtos, onPick, qtd }: { produtos: ProdutoVenda[]; onPick: (p: ProdutoVenda) => void; qtd: (id: string) => number }) {
   return (
-    <div className="flex flex-wrap gap-3 lg:gap-4">
+    <div className="grid grid-cols-3 gap-2 min-[600px]:gap-3 md:grid-cols-4 lg:grid-cols-5 lg:gap-4 xl:grid-cols-6">
       {produtos.map((p) => (
-        <div key={p.id} className={cn("shrink-0", CARD_W)}>
-          <Card p={p} onPick={onPick} noCarrinho={qtd(p.id)} />
-        </div>
+        <Card key={p.id} p={p} onPick={onPick} noCarrinho={qtd(p.id)} />
       ))}
     </div>
   );
@@ -1310,7 +1320,7 @@ function Card({ p, onPick, noCarrinho }: { p: ProdutoVenda; onPick: (p: ProdutoV
         {p.imagemUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={p.imagemUrl} alt={p.nome}
-            className="absolute inset-0 h-full w-full object-contain p-3" loading="lazy" />
+            className="absolute inset-0 h-full w-full object-contain p-2 lg:p-3" loading="lazy" />
         ) : (
           <span className="absolute inset-0 grid place-items-center text-faint"><CatIcon nome={p.categoria} size={44} /></span>
         )}
@@ -1333,12 +1343,15 @@ function Card({ p, onPick, noCarrinho }: { p: ProdutoVenda; onPick: (p: ProdutoV
       </div>
       {/* Info — alturas fixas para grade uniforme. Tipografia e alvo do "+"
           sobem no monitor grande: o card cresce, a letra tem de crescer junto. */}
-      <div className="flex w-full flex-col gap-0.5 p-2.5 lg:p-3.5">
-        <span className="line-clamp-2 min-h-9 text-sm font-semibold leading-tight text-ink lg:min-h-11 lg:text-base">{p.nome}</span>
-        <span className="min-h-4 font-mono text-xs text-muted lg:text-sm">{vol}</span>
-        <div className="flex items-center justify-between pt-1">
-          <span className="font-display text-lg font-bold tabular-nums text-ink lg:text-xl">{brl(precoBase(p))}</span>
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand text-on-brand transition-transform motion-safe:group-hover:scale-110 group-active:scale-95 lg:h-11 lg:w-11">
+      {/* Info — alturas fixas para a grade sair uniforme. Com três colunas num
+          aparelho de 390px a célula fica em ~120px, então a tipografia começa
+          um degrau abaixo e volta ao tamanho antigo a partir de `sm`. */}
+      <div className="flex w-full flex-col gap-0.5 p-2 sm:p-2.5 lg:p-3.5">
+        <span className="line-clamp-2 min-h-8 text-[13px] font-semibold leading-tight text-ink sm:min-h-9 sm:text-sm lg:min-h-11 lg:text-base">{p.nome}</span>
+        <span className="min-h-4 font-mono text-[11px] text-muted sm:text-xs lg:text-sm">{vol}</span>
+        <div className="flex items-center justify-between gap-1 pt-1">
+          <span className="min-w-0 truncate font-display text-base font-bold tabular-nums text-ink sm:text-lg lg:text-xl">{brl(precoBase(p))}</span>
+          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-brand text-on-brand transition-transform motion-safe:group-hover:scale-110 group-active:scale-95 sm:h-8 sm:w-8 lg:h-11 lg:w-11">
             <Plus size={18} strokeWidth={2.5} />
           </span>
         </div>

@@ -1,19 +1,9 @@
 import Link from "next/link";
-import {
-  ArrowLeftRight,
-  Boxes,
-  PackageMinus,
-  PackagePlus,
-  ShoppingCart,
-  SlidersHorizontal,
-  TriangleAlert,
-  Undo2,
-  type LucideIcon,
-} from "lucide-react";
 import { withTenant } from "@/lib/current-tenant";
 import { db } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
-import { Bolha, MCard, MCardLink, type Tom } from "@/components/mobile/ui";
+import { Bolha, MCard, MCardLink } from "@/components/mobile/ui";
+import { rotuloMovimento } from "@/components/mobile/movimento-tipo";
 import type { MobileCtx } from "./_sections";
 
 /**
@@ -28,23 +18,6 @@ import type { MobileCtx } from "./_sections";
  * Três linhas, nunca mais: isto é sinal de vida ("o que acabou de acontecer na
  * loja"), não o extrato — esse mora na tela de movimentações.
  */
-
-const TIPO: Record<
-  string,
-  { label: string; icone: LucideIcon; tom: Tom }
-> = {
-  ENTRADA: { label: "Entrada", icone: PackagePlus, tom: "ok" },
-  SAIDA: { label: "Saída", icone: PackageMinus, tom: "info" },
-  AJUSTE: { label: "Ajuste", icone: SlidersHorizontal, tom: "warn" },
-  TRANSFERENCIA: { label: "Transferência", icone: ArrowLeftRight, tom: "brand" },
-  ABERTURA: { label: "Abertura de unidade", icone: Boxes, tom: "accent" },
-  PRODUCAO: { label: "Produção", icone: Boxes, tom: "violeta" },
-  PERDA: { label: "Perda", icone: TriangleAlert, tom: "danger" },
-  DEVOLUCAO_CLIENTE: { label: "Devolução do cliente", icone: Undo2, tom: "ok" },
-  DEVOLUCAO_FORNECEDOR: { label: "Devolução ao fornecedor", icone: Undo2, tom: "warn" },
-};
-
-const PADRAO = { label: "Movimentação", icone: Boxes, tom: "neutro" as Tom };
 
 export async function UltimasSection({ d }: { d: MobileCtx }) {
   const linhas = await withTenant(d.ctx, async () => {
@@ -110,14 +83,7 @@ export async function UltimasSection({ d }: { d: MobileCtx }) {
   return (
     <ul className="space-y-2">
       {linhas.map((l) => {
-        const base = TIPO[l.tipo] ?? PADRAO;
-        const rotulo = l.venda
-          ? { ...base, label: "Venda", icone: ShoppingCart, tom: "accent" as Tom }
-          : l.compra && l.tipo === "ENTRADA"
-            ? { ...base, label: "Entrada de compra" }
-            : l.transferencia
-              ? { ...base, label: "Transferência", icone: ArrowLeftRight, tom: "brand" as Tom }
-              : base;
+        const rotulo = rotuloMovimento(l);
 
         return (
           <li key={l.id}>
@@ -183,7 +149,7 @@ function quando(data: Date): string {
 export function VerExtrato() {
   return (
     <Link
-      href="/estoque/movimentacoes"
+      href="/m/movimentacoes"
       className="shrink-0 text-[13px] font-medium text-accent hover:underline"
     >
       Ver todas

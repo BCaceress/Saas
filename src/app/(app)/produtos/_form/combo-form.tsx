@@ -4,7 +4,6 @@ import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
-  Boxes,
   CheckCircle2,
   CornerDownLeft,
   ImageOff,
@@ -25,6 +24,7 @@ import { toast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app/page-header";
 import { SkuTag } from "@/components/sku-tag";
 import { SectionCard, Linha, Thumb } from "./parts";
+import { TipoIcone } from "@/components/app/produto-tipo";
 import {
   OnlineChannels,
   initChannels,
@@ -296,7 +296,7 @@ export function ComboForm({
               {items.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 rounded-[var(--radius)] border border-dashed border-line-strong px-6 py-10 text-center">
                   <span className="grid h-11 w-11 place-items-center rounded-full bg-brand-soft text-brand-strong">
-                    <Boxes size={20} />
+                    <TipoIcone tipo="COMBO" size={20} />
                   </span>
                   <p className="text-sm text-muted">
                     Adicione o primeiro item do kit pela busca acima.

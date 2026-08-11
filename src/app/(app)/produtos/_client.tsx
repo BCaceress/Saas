@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Plus, Tag, FolderTree, Warehouse, Truck, Upload, Search, Settings2,
-  Pencil, PackageOpen, Wine, ChevronDown, Boxes,
+  Pencil, ChevronDown,
   MoreVertical, EyeOff, Eye, X,
   Barcode, Hash, ChevronLeft, ChevronRight,
   ArrowUp, ArrowDown, ChevronsUpDown, Globe, SlidersHorizontal, Columns3,
@@ -26,6 +26,7 @@ import { navIcon } from "@/components/app/nav-config";
 import {
   ProductSidePanel, stockLevel, TIPO_LABEL, TIPO_ICON, STOCK_COLOR, STOCK_TITLE, STOCK_TEXT,
 } from "@/components/app/product-side-panel";
+import { TipoIcone } from "@/components/app/produto-tipo";
 import { BrandSheet, CategorySheet, StorageSheet, SupplierSheet } from "./_sheets/sidepanels";
 import { CsvSheet } from "./_sheets/csv-sheet";
 import { EtiquetasSheet } from "./_sheets/etiquetas-sheet";
@@ -688,9 +689,9 @@ export function ProdutosClient(props: {
                   </Button>
                 }
               >
-                <MenuItem icon={<Wine size={15} />} onClick={() => novo("simples")}>Produto simples</MenuItem>
-                <MenuItem icon={<Boxes size={15} />} onClick={() => novo("combo")}>Kit / combo</MenuItem>
-                <MenuItem icon={<PackageOpen size={15} />} onClick={() => novo("insumo")}>Insumo</MenuItem>
+                <MenuItem icon={<TipoIcone tipo="SIMPLES" size={15} />} onClick={() => novo("simples")}>Produto simples</MenuItem>
+                <MenuItem icon={<TipoIcone tipo="COMBO" size={15} />} onClick={() => novo("combo")}>Kit / combo</MenuItem>
+                <MenuItem icon={<TipoIcone tipo="INSUMO" size={15} />} onClick={() => novo("insumo")}>Insumo</MenuItem>
               </Menu>
             </div>
           </>
@@ -1792,7 +1793,7 @@ function Thumb({
   }
   return (
     <span className={cn("grid shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line bg-surface-2 text-faint", size)}>
-      {tipo === "INSUMO" ? <PackageOpen size={big ? 18 : 15} /> : <Wine size={big ? 18 : 15} />}
+      <TipoIcone tipo={tipo} size={big ? 18 : 15} />
     </span>
   );
 }
@@ -2246,7 +2247,7 @@ function EmptyState({ onNew, onCsv }: { onNew: () => void; onCsv: () => void }) 
   return (
     <div className="mt-10 flex flex-col items-center gap-4 rounded-[var(--radius-lg)] border border-dashed border-line-strong bg-surface px-6 py-16 text-center">
       <span className="grid h-14 w-14 place-items-center rounded-full bg-brand-soft text-brand-strong">
-        <Wine size={26} />
+        <TipoIcone tipo="SIMPLES" size={26} />
       </span>
       <div>
         <h2 className="font-display text-lg font-semibold text-ink">Comece pela sua prateleira</h2>

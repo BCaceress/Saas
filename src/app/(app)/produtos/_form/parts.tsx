@@ -1,5 +1,5 @@
-import { PackageOpen, Wine } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { TipoIcone } from "@/components/app/produto-tipo";
 
 /** Cartão de seção do formulário — cabeçalho mono + corpo em coluna. */
 export function SectionCard({
@@ -83,7 +83,7 @@ export function Thumb({
         "grid shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line bg-surface-2 text-faint",
       )}
     >
-      {tipo === "INSUMO" ? <PackageOpen size={15} /> : <Wine size={15} />}
+      <TipoIcone tipo={tipo} size={15} />
     </span>
   );
 }

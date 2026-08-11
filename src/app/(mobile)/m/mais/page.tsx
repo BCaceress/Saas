@@ -1,5 +1,6 @@
 import Link from "next/link";
 import {
+  ArrowLeftRight,
   BarChart3,
   ChevronRight,
   ClipboardCheck,
@@ -57,6 +58,7 @@ export default async function MaisPage() {
     // impressora. Um botão aqui só serviria para abrir caixa longe dele.
     { href: "/m/receber", label: "Receber pedidos", icone: Truck, permissao: "compras.receber" },
     { href: "/m/estoque/contagem", label: "Contagem", icone: ClipboardList, permissao: "estoque.inventario" },
+    { href: "/m/movimentacoes", label: "Movimentações", icone: ArrowLeftRight, permissao: "estoque.ver" },
     { href: "/m/pedido", label: "Pedido de compra", icone: ShoppingCart, permissao: "compras.pedir" },
     { href: "/m/aprovacoes", label: "Aprovações", icone: ClipboardCheck, permissao: "compras.pedir" },
     { href: "/m/etiquetas", label: "Etiquetas", icone: Tag, permissao: "produto.preco" },

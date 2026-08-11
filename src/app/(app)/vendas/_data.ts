@@ -202,9 +202,21 @@ export type VendaRow = {
   itens: ItemVenda[];
 };
 
-export async function loadVendasRecentes(siteId: string | null, limit = 30): Promise<VendaRow[]> {
+export async function loadVendasRecentes(
+  siteId: string | null,
+  limit = 30,
+  /**
+   * Janela opcional, por `createdAt` e não por `paidAt`: esta lista mostra
+   * também a venda aberta e a cancelada (que não têm pagamento), e quem filtra
+   * por período quer "as vendas daquele dia", registradas ou não.
+   */
+  range?: { inicio: Date; fim: Date },
+): Promise<VendaRow[]> {
   const sales = await db.sale.findMany({
-    where: { ...(siteId ? { siteId } : {}) },
+    where: {
+      ...(siteId ? { siteId } : {}),
+      ...(range ? { createdAt: { gte: range.inicio, lt: range.fim } } : {}),
+    },
     orderBy: { createdAt: "desc" },
     take: limit,
     select: {

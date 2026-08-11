@@ -7,13 +7,13 @@ import {
   UserPlus,
   Truck,
   ShoppingCart,
-  Package,
   Store,
   Search,
   Loader2,
 } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
+import { TipoIcone } from "@/components/app/produto-tipo";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
@@ -67,7 +67,7 @@ export function QuickCreate({ empresa }: { empresa: string }) {
         <p className="px-2.5 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
           Atalhos
         </p>
-        <MenuItem icon={<Package size={15} />} onClick={() => router.push("/produtos/novo/simples")}>
+        <MenuItem icon={<TipoIcone tipo="SIMPLES" size={15} />} onClick={() => router.push("/produtos/novo/simples")}>
           Novo produto
         </MenuItem>
         <MenuItem icon={<Store size={15} />} onClick={() => router.push("/vendas")}>

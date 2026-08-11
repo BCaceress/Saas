@@ -137,6 +137,7 @@ const EQUIVALENTE: Array<[prefixo: string, destino: string]> = [
   // Validade fica de fora: o `/m/estoque` lista saldo, não lote — mandar para
   // lá um alerta de vencimento trocaria a informação certa por outra.
   ["/estoque/inventarios", "/m/estoque/contagem"],
+  ["/estoque/movimentacoes", "/m/movimentacoes"],
   ["/estoque/recebimentos", "/m/receber"],
   ["/compras/pedidos", "/m/aprovacoes"],
   ["/compras/cotacoes", "/m/aprovacoes"],

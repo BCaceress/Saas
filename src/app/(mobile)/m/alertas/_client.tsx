@@ -25,7 +25,7 @@ import {
  * alerta que ainda importa não pode usar o botão de limpar nada.
  */
 export function AlertasClient() {
-  const { alerts, loaded, loading, refresh, ocultar, ocultarTodos } = useAlerts();
+  const { alerts, loaded, loading, refresh, ocultar } = useAlerts();
   const [filtro, setFiltro] = React.useState<AlertCategory | null>(null);
   // `null` = fora do modo de seleção. Set vazio já é "selecionando, nada marcado".
   const [selecao, setSelecao] = React.useState<Set<string> | null>(null);
@@ -57,6 +57,13 @@ export function AlertasClient() {
   const visiveis = filtroEfetivo
     ? alerts.filter((a) => a.category === filtroEfetivo)
     : alerts;
+
+  // "Ler todos" lê o que está NA TELA, não o feed inteiro: com um filtro de
+  // categoria aceso, limpar em silêncio os alertas de outra categoria some com
+  // o que a pessoa não chegou a ver.
+  function marcarVisiveis() {
+    for (const a of visiveis) ocultar(a.id);
+  }
 
   if (!loaded) {
     return (
@@ -110,21 +117,11 @@ export function AlertasClient() {
         </div>
       )}
 
-      <div className="space-y-2">
-        {visiveis.map((a) => (
-          <AlertaCard
-            key={a.id}
-            alerta={a}
-            onResolver={ocultar}
-            selecionavel={selecao !== null}
-            selecionado={selecao?.has(a.id) ?? false}
-            onSelecionar={alternar}
-          />
-        ))}
-      </div>
-
+      {/* Ações ACIMA do feed: com dez alertas na tela, "atualizar" e "ler
+          todos" no pé viravam scroll — e são justamente o que se quer tocar
+          antes de ler linha por linha. */}
       {selecao === null ? (
-        <div className="flex items-center gap-2 pt-1">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={refresh}
@@ -150,7 +147,7 @@ export function AlertasClient() {
 
           <button
             type="button"
-            onClick={ocultarTodos}
+            onClick={marcarVisiveis}
             className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full text-sm font-medium text-muted hover:bg-surface-2 hover:text-ink"
           >
             <CheckCheck className="h-4 w-4" aria-hidden />
@@ -158,7 +155,7 @@ export function AlertasClient() {
           </button>
         </div>
       ) : (
-        <div className="flex items-center gap-2 pt-1">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setSelecao(null)}
@@ -181,6 +178,19 @@ export function AlertasClient() {
           </button>
         </div>
       )}
+
+      <div className="space-y-2">
+        {visiveis.map((a) => (
+          <AlertaCard
+            key={a.id}
+            alerta={a}
+            onResolver={ocultar}
+            selecionavel={selecao !== null}
+            selecionado={selecao?.has(a.id) ?? false}
+            onSelecionar={alternar}
+          />
+        ))}
+      </div>
     </div>
   );
 }

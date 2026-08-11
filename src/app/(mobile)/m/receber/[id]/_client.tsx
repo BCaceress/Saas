@@ -2,7 +2,15 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Check, CheckCheck, Loader2, PackageOpen, ScanLine, Search, X } from "lucide-react";
+import {
+  Check,
+  CheckCheck,
+  Loader2,
+  PackageOpen,
+  ScanLine,
+  Search,
+  X,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge, Card } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
@@ -15,7 +23,10 @@ import {
   paraNumero,
 } from "@/components/mobile/teclado-numerico";
 import { receberPedidoCompraAction } from "@/app/(app)/estoque/actions";
-import type { PedidoCompraView, PedidoCompraItemView } from "@/app/(app)/estoque/_data";
+import type {
+  PedidoCompraView,
+  PedidoCompraItemView,
+} from "@/app/(app)/estoque/_data";
 
 /**
  * Conferência de pedido na porta.
@@ -82,19 +93,16 @@ export function ReceberClient({
     setAlvo(null);
   }
 
-  /**
-   * "Veio tudo": carimba cada item com a quantidade PEDIDA e dá todos por
-   * conferidos. É o caso comum de quem já conferiu com a nota na porta — sem
-   * isto, um pedido de 40 linhas exige 40 aberturas de teclado para digitar
-   * exatamente o número que já está na tela.
-   *
-   * Fica atrás de confirmação porque apaga o que foi conferido item a item.
-   */
   function receberTudoConformePedido() {
-    setRecebido(Object.fromEntries(pedido.items.map((i) => [i.id, i.qtdPedida])));
+    setRecebido(
+      Object.fromEntries(pedido.items.map((i) => [i.id, i.qtdPedida])),
+    );
     setOrdem(pedido.items.map((i) => i.id));
     setConfirmarTudo(false);
-    toast.success("Tudo conferido conforme o pedido.", "Revise antes de dar entrada.");
+    toast.success(
+      "Tudo conferido conforme o pedido.",
+      "Revise antes de dar entrada.",
+    );
   }
 
   async function finalizar() {
@@ -147,7 +155,7 @@ export function ReceberClient({
   }, [pedido.items, ordem, busca, codigos]);
 
   return (
-    <div className="space-y-3 pb-16">
+    <div className="space-y-3 pb-20">
       {camera && (
         <Scanner
           onCodigo={aoLerCodigo}
@@ -196,7 +204,7 @@ export function ReceberClient({
         className="w-full"
       >
         <CheckCheck className="h-4 w-4" aria-hidden />
-        Veio tudo conforme o pedido
+        Recebi tudo conforme o pedido
       </Button>
 
       <ul className="space-y-1.5">
@@ -207,11 +215,18 @@ export function ReceberClient({
           const unidade = i.packagingNome ?? "un";
           return (
             <li key={i.id}>
-              <button type="button" onClick={() => setAlvo(i)} className="w-full text-left">
+              <button
+                type="button"
+                onClick={() => setAlvo(i)}
+                className="w-full text-left"
+              >
                 <Card
                   className={cn(
                     "flex items-center gap-3 p-3",
-                    conferido && (diverge ? "border-warn/40 bg-warn-soft/30" : "border-ok/40 bg-ok-soft/30"),
+                    conferido &&
+                      (diverge
+                        ? "border-warn/40 bg-warn-soft/30"
+                        : "border-ok/40 bg-ok-soft/30"),
                   )}
                 >
                   {/* Foto no lugar do ícone de estado: na porta quem confere
@@ -242,12 +257,18 @@ export function ReceberClient({
                       )}
                       aria-hidden
                     >
-                      {conferido ? <Check className="h-3 w-3" /> : <ScanLine className="h-3 w-3" />}
+                      {conferido ? (
+                        <Check className="h-3 w-3" />
+                      ) : (
+                        <ScanLine className="h-3 w-3" />
+                      )}
                     </span>
                   </span>
 
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-ink">{i.nome}</span>
+                    <span className="block truncate text-sm font-medium text-ink">
+                      {i.nome}
+                    </span>
                     <span className="block truncate font-mono text-[11px] text-muted">
                       {i.sku}
                     </span>
@@ -263,7 +284,10 @@ export function ReceberClient({
                       {q.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}
                     </span>
                     <span className="text-[11px] text-muted">
-                      de {i.qtdPedida.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}{" "}
+                      de{" "}
+                      {i.qtdPedida.toLocaleString("pt-BR", {
+                        maximumFractionDigits: 3,
+                      })}{" "}
                       {unidade.toLowerCase()}
                     </span>
                   </span>
@@ -280,8 +304,12 @@ export function ReceberClient({
         </Card>
       )}
 
-      <div className="fixed inset-x-0 bottom-16 z-30 border-t border-line bg-surface px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-        <div className="flex items-center gap-2">
+      {/* Barra de fecho, flutuante como a de abas e ACIMA dela: a de abas ocupa
+          64px + 12px de respiro, então 5.5rem é onde esta encosta sem cobrir
+          nem ser coberta. Cantos redondos nos quatro lados — aqui ela é um
+          bloco solto sobre o conteúdo, não uma faixa grudada no rodapé. */}
+      <div className="fixed inset-x-3 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-30">
+        <div className="flex items-center gap-2 rounded-[var(--radius-m)] border border-line bg-surface/95 px-4 py-2.5 shadow-[var(--shadow-2)] backdrop-blur">
           <div className="min-w-0 flex-1">
             <p className="text-[13px] font-medium text-ink">
               {conferidos} de {pedido.items.length} conferidos
@@ -323,8 +351,15 @@ export function ReceberClient({
               >
                 Voltar
               </Button>
-              <Button onClick={finalizar} disabled={enviando} className="flex-1" size="lg">
-                {enviando && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+              <Button
+                onClick={finalizar}
+                disabled={enviando}
+                className="flex-1"
+                size="lg"
+              >
+                {enviando && (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                )}
                 Confirmar
               </Button>
             </div>
@@ -333,8 +368,9 @@ export function ReceberClient({
           <div className="space-y-3 pb-2">
             {divergentes > 0 && (
               <p className="rounded-lg bg-warn-soft p-3 text-[13px] text-warn">
-                {divergentes} {divergentes > 1 ? "itens estão" : "item está"} com quantidade
-                diferente da pedida. O pedido fica como recebido parcial.
+                {divergentes} {divergentes > 1 ? "itens estão" : "item está"}{" "}
+                com quantidade diferente da pedida. O pedido fica como recebido
+                parcial.
               </p>
             )}
             <label className="block">
@@ -357,7 +393,7 @@ export function ReceberClient({
         <BottomSheet
           open
           onClose={() => setConfirmarTudo(false)}
-          titulo="Veio tudo conforme o pedido?"
+          titulo="Recebi tudo conforme o pedido?"
           descricao="Cada item fica com a quantidade que foi pedida."
           rodape={
             <div className="flex gap-2">
@@ -369,7 +405,11 @@ export function ReceberClient({
               >
                 Voltar
               </Button>
-              <Button onClick={receberTudoConformePedido} className="flex-1" size="lg">
+              <Button
+                onClick={receberTudoConformePedido}
+                className="flex-1"
+                size="lg"
+              >
                 <CheckCheck className="h-4 w-4" aria-hidden />
                 Confirmar tudo
               </Button>
@@ -378,9 +418,11 @@ export function ReceberClient({
         >
           <div className="space-y-3 pb-2">
             <p className="text-[13px] text-ink-2">
-              {pedido.items.length} {pedido.items.length > 1 ? "itens ficam" : "item fica"}{" "}
-              conferido{pedido.items.length > 1 ? "s" : ""} com a quantidade pedida. Nada
-              entra no estoque ainda — a entrada continua sendo no botão “Dar entrada”.
+              {pedido.items.length}{" "}
+              {pedido.items.length > 1 ? "itens ficam" : "item fica"} conferido
+              {pedido.items.length > 1 ? "s" : ""} com a quantidade pedida. Nada
+              entra no estoque ainda — a entrada continua sendo no botão “Dar
+              entrada”.
             </p>
             {conferidos > 0 && (
               <p className="rounded-lg bg-warn-soft p-3 text-[13px] text-warn">
@@ -405,7 +447,9 @@ function SheetItem({
   onFechar: () => void;
   onConfirmar: (q: number) => void;
 }) {
-  const [valor, setValor] = React.useState(atual ? String(atual).replace(".", ",") : "");
+  const [valor, setValor] = React.useState(
+    atual ? String(atual).replace(".", ",") : "",
+  );
   const unidade = item.packagingNome ?? "unidade";
 
   return (
@@ -415,10 +459,14 @@ function SheetItem({
       titulo={item.nome}
       descricao={
         <>
-          Pedido: {item.qtdPedida.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}{" "}
+          Pedido:{" "}
+          {item.qtdPedida.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}{" "}
           {unidade.toLowerCase()}
           {item.fatorConversao > 1 && (
-            <> · 1 {unidade.toLowerCase()} = {item.fatorConversao} un</>
+            <>
+              {" "}
+              · 1 {unidade.toLowerCase()} = {item.fatorConversao} un
+            </>
           )}
         </>
       }
@@ -430,7 +478,7 @@ function SheetItem({
             className="flex-1"
             size="lg"
           >
-            Veio tudo
+            Recebi tudo
           </Button>
           <Button
             onClick={() => onConfirmar(paraNumero(valor))}
@@ -453,7 +501,7 @@ function SheetItem({
           className="flex min-h-11 w-full cursor-pointer items-center justify-center gap-1.5 rounded-full text-[13px] font-medium text-danger hover:bg-danger-soft"
         >
           <X className="h-4 w-4" aria-hidden />
-          Não veio nada deste item
+          Não recebi este item
         </button>
       </div>
     </BottomSheet>

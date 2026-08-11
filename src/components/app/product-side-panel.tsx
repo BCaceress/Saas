@@ -2,28 +2,22 @@
 
 import { useEffect, useState } from "react";
 import {
-  PackageOpen, Wine, Boxes, Sparkles, Building2, Barcode, Pencil,
+  Building2, Barcode, Pencil,
   Package, AlertTriangle, Store, Box, Refrigerator, Snowflake, ShoppingCart,
   ChevronUp, ChevronDown,
 } from "lucide-react";
 import { cn, brl, margem } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
+import { TIPO_LABEL, TipoIcone } from "@/components/app/produto-tipo";
 import { getProductInsights } from "@/app/(app)/produtos/actions";
 import type { ProductInsights } from "@/app/(app)/produtos/_data";
 import type { ProductRow } from "@/app/(app)/produtos/_types";
 import type { StorageType } from "@/generated/prisma";
 
-export const TIPO_LABEL: Record<string, string> = {
-  SIMPLES: "Simples", INSUMO: "Insumo", COMBO: "Combo", PERSONALIZADO: "Receita",
-};
-
-export const TIPO_ICON: Record<string, React.ReactNode> = {
-  SIMPLES: <Wine size={13} />,
-  INSUMO: <PackageOpen size={13} />,
-  COMBO: <Boxes size={13} />,
-  PERSONALIZADO: <Sparkles size={13} />,
-};
+// Rótulo e ícone do tipo moram em `produto-tipo` — fonte única das duas
+// superfícies. O re-export existe porque meia dúzia de telas já importavam daqui.
+export { TIPO_LABEL, TIPO_ICON } from "@/components/app/produto-tipo";
 
 export function stockLevel(p: ProductRow): "ok" | "warn" | "danger" {
   if (p.disponibilidadeDerivada !== null) {
@@ -171,7 +165,7 @@ export function ProductSidePanel({
             />
           ) : (
             <span className="grid h-16 w-16 shrink-0 place-items-center rounded-[var(--radius)] border border-line bg-surface-2 text-faint">
-              {product.tipo === "INSUMO" ? <PackageOpen size={22} /> : <Wine size={22} />}
+              <TipoIcone tipo={product.tipo} size={22} />
             </span>
           )}
           <div className="min-w-0 flex-1">

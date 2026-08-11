@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, Loader2, Receipt, Users } from "lucide-react";
+import { CalendarRange, Check, ChevronDown, Loader2, Receipt, Users } from "lucide-react";
 import { brl, cn } from "@/lib/utils";
 import { Badge, Card } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import {
 } from "@/app/(app)/vendas/actions";
 import type { ResumoVendas, MixPagamento, PontoTempo } from "@/app/(app)/relatorios/_data";
 import type { VendaRow } from "@/app/(app)/vendas/_data";
+import { MAX_DIAS, PRESETS, paraInput, type PresetVendas } from "./_periodo";
 
 /** De quanto em quanto tempo a fila do autoatendimento é reconsultada. */
 const POLL_MS = 8_000;
@@ -22,7 +23,10 @@ const POLL_MS = 8_000;
 export function VendasClient({
   resumo,
   mix,
-  porHora,
+  serie,
+  granularidade,
+  periodoLabel,
+  incluiHoje,
   recentes,
   siteId,
   autoatendimento,
@@ -30,7 +34,11 @@ export function VendasClient({
 }: {
   resumo: ResumoVendas;
   mix: MixPagamento[];
-  porHora: PontoTempo[];
+  serie: PontoTempo[];
+  granularidade: "hora" | "dia";
+  periodoLabel: string;
+  /** O período alcança o dia corrente — só aí a "hora de agora" existe. */
+  incluiHoje: boolean;
   recentes: VendaRow[];
   siteId: string | null;
   autoatendimento: boolean;
@@ -45,13 +53,164 @@ export function VendasClient({
         <Tile label="Vendas" valor={String(resumo.numVendas)} nota={`ticket ${brl(resumo.ticket)}`} />
       </Card>
 
-      <CurvaPorHora pontos={porHora} />
+      <CurvaMovimento
+        pontos={serie}
+        granularidade={granularidade}
+        periodoLabel={periodoLabel}
+        incluiHoje={incluiHoje}
+      />
 
       {mix.length > 0 && <Mix mix={mix} total={resumo.faturamento} />}
 
       {autoatendimento && podeRegistrar && siteId && <FilaTotem siteId={siteId} />}
 
-      <Recentes vendas={recentes} />
+      <Recentes vendas={recentes} periodoLabel={periodoLabel} />
+    </div>
+  );
+}
+
+/* ── Seletor de período ───────────────────────────────────────── */
+
+/**
+ * Fica à direita do título e abre as opções PARA BAIXO — o polegar já está em
+ * cima do cabeçalho quando a pergunta muda de "hoje" para "ontem", e uma folha
+ * de baixo para cima cobriria justamente os números que se quer comparar.
+ *
+ * O intervalo próprio é o último item, não o primeiro: quatro em cada cinco
+ * consultas são um dos presets. O teto de 30 dias aparece como limite dos
+ * campos de data (o servidor apara de novo — a URL é editável).
+ */
+export function SeletorPeriodo({
+  preset,
+  label,
+  de,
+  ate,
+}: {
+  preset: PresetVendas;
+  label: string;
+  /** Início e fim do período atual, em YYYY-MM-DD — semente dos campos. */
+  de: string;
+  ate: string;
+}) {
+  const router = useRouter();
+  const [aberto, setAberto] = React.useState(false);
+  const [datas, setDatas] = React.useState(preset === "custom");
+  const [inicio, setInicio] = React.useState(de);
+  const [fim, setFim] = React.useState(ate);
+  const caixa = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!aberto) return;
+    function fora(e: PointerEvent) {
+      if (!caixa.current?.contains(e.target as Node)) setAberto(false);
+    }
+    function esc(e: KeyboardEvent) {
+      if (e.key === "Escape") setAberto(false);
+    }
+    document.addEventListener("pointerdown", fora);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("pointerdown", fora);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [aberto]);
+
+  function ir(busca: string) {
+    setAberto(false);
+    router.push(`/m/vendas?${busca}`);
+  }
+
+  const hoje = paraInput(new Date());
+  // Mínimo do "de" é 29 dias antes do "até" escolhido: o campo não deixa pedir
+  // uma janela que o servidor iria aparar em silêncio.
+  const minInicio = paraInput(
+    new Date(new Date(`${fim || hoje}T00:00:00`).getTime() - (MAX_DIAS - 1) * 86_400_000),
+  );
+
+  return (
+    <div ref={caixa} className="relative">
+      <button
+        type="button"
+        onClick={() => setAberto((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={aberto}
+        className="tap inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-full border border-line-button bg-surface px-3.5 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+      >
+        {label}
+        <ChevronDown
+          className={cn("h-4 w-4 text-muted transition-transform", aberto && "rotate-180")}
+          aria-hidden
+        />
+      </button>
+
+      {aberto && (
+        <div
+          role="menu"
+          className="absolute top-full right-0 z-50 mt-2 w-64 overflow-hidden rounded-[var(--radius-m)] border border-line bg-surface shadow-[var(--shadow-2)]"
+        >
+          {PRESETS.map((p) => (
+            <button
+              key={p.valor}
+              type="button"
+              role="menuitem"
+              onClick={() => ir(`p=${p.valor}`)}
+              className="flex min-h-11 w-full cursor-pointer items-center gap-2 px-4 text-left text-sm text-ink hover:bg-surface-2"
+            >
+              <span className="flex-1">{p.label}</span>
+              {preset === p.valor && <Check className="h-4 w-4 text-brand" aria-hidden />}
+            </button>
+          ))}
+
+          <div className="border-t border-line">
+            <button
+              type="button"
+              onClick={() => setDatas((v) => !v)}
+              aria-expanded={datas}
+              className="flex min-h-11 w-full cursor-pointer items-center gap-2 px-4 text-left text-sm text-ink hover:bg-surface-2"
+            >
+              <CalendarRange className="h-4 w-4 text-muted" aria-hidden />
+              <span className="flex-1">Escolher datas</span>
+              {preset === "custom" && <Check className="h-4 w-4 text-brand" aria-hidden />}
+            </button>
+
+            {datas && (
+              <div className="space-y-2 border-t border-line bg-surface-2 p-3">
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium text-muted">De</span>
+                  <input
+                    type="date"
+                    value={inicio}
+                    min={minInicio}
+                    max={fim || hoje}
+                    onChange={(e) => setInicio(e.target.value)}
+                    className="min-h-10 w-full rounded-full border border-line-button bg-surface px-3 text-[13px] text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium text-muted">Até</span>
+                  <input
+                    type="date"
+                    value={fim}
+                    min={inicio}
+                    max={hoje}
+                    onChange={(e) => setFim(e.target.value)}
+                    className="min-h-10 w-full rounded-full border border-line-button bg-surface px-3 text-[13px] text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  />
+                </label>
+                <p className="text-[11px] text-muted">Máximo de {MAX_DIAS} dias.</p>
+                <Button
+                  size="sm"
+                  className="w-full"
+                  disabled={!inicio}
+                  onClick={() => ir(`p=custom&de=${inicio}&ate=${fim || hoje}`)}
+                >
+                  Aplicar
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -67,42 +226,71 @@ function Tile({ label, valor, nota }: { label: string; valor: string; nota?: str
 }
 
 /**
- * Curva por hora em barras puras de CSS. Não usa a biblioteca de gráficos do
- * desktop de propósito: aqui a leitura é "o movimento já veio?", que 24 barras
+ * Curva do movimento em barras puras de CSS. Não usa a biblioteca de gráficos
+ * do desktop de propósito: aqui a leitura é "o movimento já veio?", que barras
  * de 6px resolvem — e sem carregar o pacote de gráficos no 4G.
+ *
+ * Duas granularidades, mesma forma: um dia se lê hora a hora, vários dias se
+ * leem dia a dia. Quem decide é a página, pelo tamanho do período.
+ *
+ * Os rótulos vêm PRONTOS do servidor — `vendasPorHora` devolve "08h" e
+ * `vendasPorDia` devolve "2026-08-11". A barra em destaque (a hora corrente, o
+ * último dia) sai da posição no vetor, não de reinterpretar esse texto: era
+ * daí que vinham o "08hh" no rótulo e o destaque que nunca acendia.
  */
-function CurvaPorHora({ pontos }: { pontos: PontoTempo[] }) {
+function CurvaMovimento({
+  pontos,
+  granularidade,
+  periodoLabel,
+  incluiHoje,
+}: {
+  pontos: PontoTempo[];
+  granularidade: "hora" | "dia";
+  periodoLabel: string;
+  incluiHoje: boolean;
+}) {
+  const titulo = granularidade === "hora" ? "Movimento por hora" : "Movimento por dia";
   const max = Math.max(...pontos.map((p) => p.valor), 0);
+
   if (max <= 0) {
     return (
       <Card className="p-4">
-        <p className="text-sm font-medium text-ink">Movimento por hora</p>
-        <p className="mt-1 text-[13px] text-muted">Nenhuma venda registrada hoje ainda.</p>
+        <p className="text-sm font-medium text-ink">{titulo}</p>
+        <p className="mt-1 text-[13px] text-muted">
+          Nenhuma venda registrada em {periodoLabel.toLowerCase()}.
+        </p>
       </Card>
     );
   }
 
-  const agora = new Date().getHours();
+  // Na curva por hora, o "agora" só faz sentido quando o período inclui o dia
+  // de hoje — e aí ele é o índice da hora corrente. Na curva por dia, o
+  // destaque é sempre o último ponto (o dia mais recente do período).
+  const destaque =
+    granularidade === "hora"
+      ? incluiHoje
+        ? pontos.findIndex((p) => p.data === `${String(new Date().getHours()).padStart(2, "0")}h`)
+        : -1
+      : pontos.length - 1;
+
+  const rotulo = (p: PontoTempo) =>
+    granularidade === "hora" ? p.data : diaCurto(p.data);
 
   return (
     <Card className="p-4">
-      <p className="text-sm font-medium text-ink">Movimento por hora</p>
+      <p className="text-sm font-medium text-ink">{titulo}</p>
       <div className="mt-3 flex h-20 items-end gap-[3px]">
-        {pontos.map((p) => {
-          const hora = Number(p.data);
+        {pontos.map((p, i) => {
           const altura = Math.max(2, (p.valor / max) * 100);
           return (
             <div
               key={p.data}
               className="flex-1"
-              title={`${p.data}h · ${brl(p.valor)}`}
-              aria-label={`${p.data} horas: ${brl(p.valor)}`}
+              title={`${rotulo(p)} · ${brl(p.valor)}`}
+              aria-label={`${rotulo(p)}: ${brl(p.valor)}`}
             >
               <div
-                className={cn(
-                  "w-full rounded-t-sm",
-                  hora === agora ? "bg-brand" : "bg-brand/35",
-                )}
+                className={cn("w-full rounded-t-sm", i === destaque ? "bg-brand" : "bg-brand/35")}
                 style={{ height: `${altura}%` }}
               />
             </div>
@@ -110,11 +298,19 @@ function CurvaPorHora({ pontos }: { pontos: PontoTempo[] }) {
         })}
       </div>
       <div className="mt-1 flex justify-between text-[10px] text-faint">
-        <span>{pontos[0]?.data ?? "0"}h</span>
-        <span>{pontos[pontos.length - 1]?.data ?? "23"}h</span>
+        <span>{pontos[0] ? rotulo(pontos[0]) : ""}</span>
+        <span>{pontos.length > 1 ? rotulo(pontos[pontos.length - 1]!) : ""}</span>
       </div>
     </Card>
   );
+}
+
+/** "2026-08-11" → "11/08". A chave de `vendasPorDia` já é local, então corta
+ *  direto o texto: `new Date("2026-08-11")` seria lido como UTC e voltaria um
+ *  dia em quem está a oeste de Greenwich. */
+function diaCurto(chave: string): string {
+  const [, mes, dia] = chave.split("-");
+  return mes && dia ? `${dia}/${mes}` : chave;
 }
 
 function Mix({ mix, total }: { mix: MixPagamento[]; total: number }) {
@@ -229,14 +425,16 @@ function FilaTotem({ siteId }: { siteId: string }) {
  * vendido — que é a pergunta real de quem confere ("essa de R$ 40 foi o quê?").
  * O cancelamento continua no PDV, onde a gaveta está.
  */
-function Recentes({ vendas }: { vendas: VendaRow[] }) {
+function Recentes({ vendas, periodoLabel }: { vendas: VendaRow[]; periodoLabel: string }) {
   const [aberta, setAberta] = React.useState<string | null>(null);
 
   if (vendas.length === 0) {
     return (
       <Card className="flex flex-col items-center gap-2 p-6 text-center">
         <Receipt className="h-7 w-7 text-muted" aria-hidden />
-        <p className="text-sm text-ink-2">Nenhuma venda registrada hoje.</p>
+        <p className="text-sm text-ink-2">
+          Nenhuma venda registrada em {periodoLabel.toLowerCase()}.
+        </p>
       </Card>
     );
   }

@@ -50,7 +50,8 @@
       "Bash(rm -f /tmp/lintout.txt)",
       "Bash(node -e ' *)",
       "Bash(grep -A3 \"inventario._client.tsx$\")",
-      "Bash(grep -A3 \"_header.tsx$\\\\|entradas.nova._client.tsx$\")"
+      "Bash(grep -A3 \"_header.tsx$\\\\|entradas.nova._client.tsx$\")",
+      "Bash(npx vitest *)"
     ],
     "additionalDirectories": [
       "\\tmp"
