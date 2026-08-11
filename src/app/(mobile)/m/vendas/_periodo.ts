@@ -30,6 +30,13 @@ export type PeriodoVendas = {
   /** Exclusivo — meia-noite do dia seguinte ao último dia do período. */
   fim: Date;
   label: string;
+  /**
+   * O mesmo período por extenso, com ano — "11/08/2026", "05/08/2026 –
+   * 11/08/2026". Vai na linha abaixo do título: o botão diz o atalho ("Hoje"),
+   * a descrição diz exatamente que dias estão na tela. Sem o ano, quem abre a
+   * tela no dia 2 de janeiro não sabe se olha dezembro ou janeiro.
+   */
+  labelLongo: string;
   /** Dias inteiros cobertos. 1 = a curva é por hora. */
   dias: number;
   /** O período alcança o dia corrente — só aí existe "a hora de agora". */
@@ -55,6 +62,20 @@ function doInput(v: string | undefined): Date | null {
 
 const fmt = (d: Date) => d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 
+const fmtLongo = (d: Date) =>
+  d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+
+/**
+ * Descrição do período com ano. Recebe o fim EXCLUSIVO (meia-noite do dia
+ * seguinte) e volta um dia para nomear o último dia realmente coberto.
+ */
+function porExtenso(inicio: Date, fim: Date): string {
+  const ultimo = new Date(fim.getTime() - DIA);
+  return inicio.getTime() === ultimo.getTime()
+    ? fmtLongo(inicio)
+    : `${fmtLongo(inicio)} – ${fmtLongo(ultimo)}`;
+}
+
 /**
  * Resolve o período a partir da URL (`?p=&de=&ate=`). Sem parâmetro nenhum, é
  * HOJE — a tela abre no movimento do dia, que é a pergunta de quem está no
@@ -72,15 +93,25 @@ export function resolvePeriodoVendas(params: {
 
   if (preset === "ontem") {
     const inicio = new Date(hoje.getTime() - DIA);
-    return { preset, inicio, fim: hoje, label: "Ontem", dias: 1, incluiHoje: false };
+    return {
+      preset,
+      inicio,
+      fim: hoje,
+      label: "Ontem",
+      labelLongo: porExtenso(inicio, hoje),
+      dias: 1,
+      incluiHoje: false,
+    };
   }
 
   if (preset === "semana") {
+    const inicio = new Date(hoje.getTime() - 6 * DIA);
     return {
       preset,
-      inicio: new Date(hoje.getTime() - 6 * DIA),
+      inicio,
       fim: amanha,
       label: "Últimos 7 dias",
+      labelLongo: porExtenso(inicio, amanha),
       dias: 7,
       incluiHoje: true,
     };
@@ -97,6 +128,7 @@ export function resolvePeriodoVendas(params: {
       inicio,
       fim: amanha,
       label: "Este mês",
+      labelLongo: porExtenso(inicio, amanha),
       dias: Math.round((amanha.getTime() - inicio.getTime()) / DIA),
       incluiHoje: true,
     };
@@ -118,6 +150,7 @@ export function resolvePeriodoVendas(params: {
         inicio,
         fim,
         label: dias === 1 ? fmt(inicio) : `${fmt(inicio)} – ${fmt(ate)}`,
+        labelLongo: porExtenso(inicio, fim),
         dias,
         incluiHoje: ate.getTime() === hoje.getTime(),
       };
@@ -129,6 +162,7 @@ export function resolvePeriodoVendas(params: {
     inicio: hoje,
     fim: amanha,
     label: "Hoje",
+    labelLongo: porExtenso(hoje, amanha),
     dias: 1,
     incluiHoje: true,
   };

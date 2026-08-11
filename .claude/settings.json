@@ -51,7 +51,8 @@
       "Bash(node -e ' *)",
       "Bash(grep -A3 \"inventario._client.tsx$\")",
       "Bash(grep -A3 \"_header.tsx$\\\\|entradas.nova._client.tsx$\")",
-      "Bash(npx vitest *)"
+      "Bash(npx vitest *)",
+      "Bash(node -e \"console.log\\(require\\('d:/Saas/node_modules/next/package.json'\\).version\\)\")"
     ],
     "additionalDirectories": [
       "\\tmp"

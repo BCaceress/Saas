@@ -98,6 +98,10 @@ export function SeletorPeriodo({
   const [inicio, setInicio] = React.useState(de);
   const [fim, setFim] = React.useState(ate);
   const caixa = React.useRef<HTMLDivElement>(null);
+  // Trocar o período é uma viagem ao servidor (varre venda a venda, no 4G da
+  // loja). Sem estado de espera, o toque some e a pessoa toca de novo.
+  const [pendente, iniciar] = React.useTransition();
+  const [emCurso, setEmCurso] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!aberto) return;
@@ -115,9 +119,15 @@ export function SeletorPeriodo({
     };
   }, [aberto]);
 
+  // O menu NÃO fecha no toque: fechar já devolveria a tela antiga por um
+  // segundo, que se lê como "não funcionou". Ele fica aberto mostrando a
+  // rodinha e some sozinho quando os números novos chegam — a página monta o
+  // seletor com `key` da busca, então a chegada remonta o componente.
   function ir(busca: string) {
-    setAberto(false);
-    router.push(`/m/vendas?${busca}`);
+    setEmCurso(busca);
+    iniciar(() => {
+      router.push(`/m/vendas?${busca}`);
+    });
   }
 
   const hoje = paraInput(new Date());
@@ -137,10 +147,14 @@ export function SeletorPeriodo({
         className="tap inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-full border border-line-button bg-surface px-3.5 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
       >
         {label}
-        <ChevronDown
-          className={cn("h-4 w-4 text-muted transition-transform", aberto && "rotate-180")}
-          aria-hidden
-        />
+        {pendente ? (
+          <Loader2 className="h-4 w-4 animate-spin text-brand" aria-hidden />
+        ) : (
+          <ChevronDown
+            className={cn("h-4 w-4 text-muted transition-transform", aberto && "rotate-180")}
+            aria-hidden
+          />
+        )}
       </button>
 
       {aberto && (
@@ -154,10 +168,15 @@ export function SeletorPeriodo({
               type="button"
               role="menuitem"
               onClick={() => ir(`p=${p.valor}`)}
-              className="flex min-h-11 w-full cursor-pointer items-center gap-2 px-4 text-left text-sm text-ink hover:bg-surface-2"
+              disabled={pendente}
+              className="flex min-h-11 w-full cursor-pointer items-center gap-2 px-4 text-left text-sm text-ink hover:bg-surface-2 disabled:cursor-default disabled:opacity-60"
             >
               <span className="flex-1">{p.label}</span>
-              {preset === p.valor && <Check className="h-4 w-4 text-brand" aria-hidden />}
+              {emCurso === `p=${p.valor}` ? (
+                <Loader2 className="h-4 w-4 animate-spin text-brand" aria-hidden />
+              ) : (
+                preset === p.valor && <Check className="h-4 w-4 text-brand" aria-hidden />
+              )}
             </button>
           ))}
 
@@ -201,10 +220,11 @@ export function SeletorPeriodo({
                 <Button
                   size="sm"
                   className="w-full"
-                  disabled={!inicio}
+                  disabled={!inicio || pendente}
                   onClick={() => ir(`p=custom&de=${inicio}&ate=${fim || hoje}`)}
                 >
-                  Aplicar
+                  {pendente && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+                  {pendente ? "Carregando…" : "Aplicar"}
                 </Button>
               </div>
             )}
@@ -279,13 +299,17 @@ function CurvaMovimento({
   return (
     <Card className="p-4">
       <p className="text-sm font-medium text-ink">{titulo}</p>
-      <div className="mt-3 flex h-20 items-end gap-[3px]">
+      {/* Cada coluna precisa OCUPAR a altura da faixa: a barra tem altura em
+          porcentagem, e porcentagem sobre pai de altura automática vira zero —
+          era por isso que o gráfico saía em branco. Daí `items-stretch`
+          (herdado) + `flex-col justify-end` para a barra crescer do chão. */}
+      <div className="mt-3 flex h-20 gap-[3px]">
         {pontos.map((p, i) => {
           const altura = Math.max(2, (p.valor / max) * 100);
           return (
             <div
               key={p.data}
-              className="flex-1"
+              className="flex flex-1 flex-col justify-end"
               title={`${rotulo(p)} · ${brl(p.valor)}`}
               aria-label={`${rotulo(p)}: ${brl(p.valor)}`}
             >

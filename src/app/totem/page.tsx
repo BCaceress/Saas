@@ -11,6 +11,9 @@ import { TotemKiosk } from "./_kiosk";
 
 export const metadata = { title: "Autoatendimento — NoHub Market" };
 
+/** Janela dos "mais vendidos": recente o bastante para refletir a estação. */
+const DIAS_RECOMENDACAO = 60;
+
 export default async function TotemPage() {
   const ctx = await requireActiveTenant();
   // Fora do grupo (app): os guards do shell não valem aqui.
@@ -29,10 +32,19 @@ export default async function TotemPage() {
       siteId
         ? db.site.findFirst({ where: { id: siteId }, select: { controleIdade: true } })
         : Promise.resolve(null),
-      // Mais vendidos (global, vendas pagas) — para "Recomendados"/anônimo.
+      // Mais vendidos — para "Recomendados"/anônimo. Recortado nos últimos 60
+      // dias e na loja do totem: sem esse recorte a consulta varria TODA a
+      // história de vendas do tenant a cada abertura do quiosque (e só ficava
+      // mais lenta com o tempo), além de recomendar o que vende na outra loja.
       db.saleItem.groupBy({
         by: ["productId"],
-        where: { sale: { status: "PAGA" } },
+        where: {
+          sale: {
+            status: "PAGA",
+            paidAt: { gte: new Date(Date.now() - DIAS_RECOMENDACAO * 86_400_000) },
+            ...(siteId ? { siteId } : {}),
+          },
+        },
         _sum: { quantidade: true },
         orderBy: { _sum: { quantidade: "desc" } },
         take: 12,

@@ -55,9 +55,13 @@ export default async function VendasMobilePage({
     <>
       <MobilePageHeader
         titulo="Vendas"
-        descricao={periodo.label}
+        descricao={<span className="tabular-nums">{periodo.labelLongo}</span>}
         acao={
           <SeletorPeriodo
+            // Remonta a cada troca de período: é o que fecha o menu (e apaga a
+            // rodinha) no instante em que os números novos chegam, sem efeito
+            // sincronizando estado de fora.
+            key={`${sp.p ?? ""}|${sp.de ?? ""}|${sp.ate ?? ""}`}
             preset={periodo.preset}
             label={periodo.label}
             de={paraInput(periodo.inicio)}

@@ -1,8 +1,6 @@
-import Link from "next/link";
 import {
   ArrowLeftRight,
   BarChart3,
-  ChevronRight,
   ClipboardCheck,
   ClipboardList,
   LogOut,
@@ -24,6 +22,7 @@ import { podeEmAlguma, type Permissao } from "@/lib/permissoes";
 import type { NavToggles } from "@/components/app/nav-config";
 import { MobilePageHeader } from "@/components/mobile/page-header";
 import { InstalarApp } from "@/components/mobile/instalar-app";
+import { LinhaLink } from "@/components/mobile/linha-link";
 import { AtivarNotificacoes } from "@/components/mobile/ativar-notificacoes";
 import { Card } from "@/components/ui/misc";
 import { signOutAction } from "@/app/(app)/actions";
@@ -111,15 +110,10 @@ export default async function MaisPage() {
           <h2 className="font-display text-base font-semibold text-ink">Ir para</h2>
           <Card className="divide-y divide-line overflow-hidden">
             {visiveis.map((m) => (
-              <Link
-                key={m.href}
-                href={m.href}
-                className="flex min-h-14 items-center gap-3 px-4 py-3 transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-              >
+              <LinhaLink key={m.href} href={m.href}>
                 <m.icone className="h-5 w-5 shrink-0 text-ink-2" aria-hidden />
                 <span className="flex-1 text-sm font-medium text-ink">{m.label}</span>
-                <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
-              </Link>
+              </LinhaLink>
             ))}
           </Card>
         </section>
@@ -129,14 +123,10 @@ export default async function MaisPage() {
         <h2 className="font-display text-base font-semibold text-ink">Conta</h2>
         <Card className="divide-y divide-line overflow-hidden">
           {admin && (
-            <Link
-              href="/configuracoes"
-              className="flex min-h-14 items-center gap-3 px-4 py-3 transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-            >
+            <LinhaLink href="/configuracoes">
               <Settings className="h-5 w-5 shrink-0 text-ink-2" aria-hidden />
               <span className="flex-1 text-sm font-medium text-ink">Configurações</span>
-              <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
-            </Link>
+            </LinhaLink>
           )}
 
           {/* Sem "usar a versão completa": no aparelho de mão o app é este.
