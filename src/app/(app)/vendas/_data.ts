@@ -1,6 +1,7 @@
 import "server-only";
 import { db } from "@/lib/prisma";
 import { resolvePreco } from "@/lib/vendas";
+import { precosPromocionais } from "@/lib/promocoes";
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 
@@ -114,6 +115,10 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
     orderBy: { nome: "asc" },
   });
 
+  // Promoção agendada vigente troca o preço na hora da venda, sem tocar no
+  // cadastro (ver `lib/promocoes`): passada a data, o preço volta sozinho.
+  const promos = await precosPromocionais(siteId);
+
   // Componente com saldo: qualquer unidade fechada ou aberta no site.
   const temSaldo = (stocks: { estoqueFechado: unknown; estoqueAberto: unknown }[]) =>
     stocks.some((s) => num(s.estoqueFechado) > 0 || num(s.estoqueAberto) > 0);
@@ -137,7 +142,7 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
       sku: p.sku,
       ean: p.ean,
       tipo: p.tipo,
-      preco: num(p.precoVenda),
+      preco: promos.get(p.id) ?? num(p.precoVenda),
       restricaoIdade: p.restricaoIdade,
       unidadeBase: p.unidadeBase,
       disponivel,

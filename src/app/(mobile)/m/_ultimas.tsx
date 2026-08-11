@@ -121,7 +121,7 @@ export async function UltimasSection({ d }: { d: MobileCtx }) {
 
         return (
           <li key={l.id}>
-            <MCardLink href={`/m/produto/${l.productId}`} className="flex items-center gap-3 p-3">
+            <MCardLink href={`/m/produto/${l.productId}?de=/m`} className="flex items-center gap-3 p-3">
               <Bolha icone={rotulo.icone} tom={rotulo.tom} tamanho="md" />
 
               <div className="min-w-0 flex-1">

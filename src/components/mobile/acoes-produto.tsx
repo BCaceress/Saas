@@ -1,11 +1,10 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import dynamic from "next/dynamic";
 import {
   ArrowLeftRight,
-  Monitor,
+  Percent,
   Scale,
   ShoppingCart,
   Tag,
@@ -50,16 +49,20 @@ const AcaoEstoqueSheet = dynamic(
 );
 const PrecoSheet = dynamic(() => import("@/components/mobile/sheet-preco"), { ssr: false });
 const PedirSheet = dynamic(() => import("@/components/mobile/sheet-pedir"), { ssr: false });
+const PromocaoSheet = dynamic(() => import("@/components/mobile/sheet-promocao"), { ssr: false });
 
 type Ferramenta = {
-  chave: "preco" | "perda" | "ajuste" | "transferencia" | "etiqueta" | "pedir";
+  chave: "preco" | "promocao" | "perda" | "ajuste" | "transferencia" | "etiqueta" | "pedir";
   label: string;
   icone: LucideIcon;
   visivel: (c: ContextoAcoes, f: FichaProduto) => boolean;
+  /** Aparece apagada e não abre nada — recurso ainda não liberado. */
+  desabilitada?: boolean;
 };
 
 const FERRAMENTAS: Ferramenta[] = [
   { chave: "preco", label: "Preço", icone: Tag, visivel: (c) => c.podePreco },
+  { chave: "promocao", label: "Promoção", icone: Percent, visivel: (c) => c.podePreco },
   {
     chave: "perda",
     label: "Perda",
@@ -79,7 +82,15 @@ const FERRAMENTAS: Ferramenta[] = [
     // Uma loja só: não há para onde transferir, e o botão seria um beco.
     visivel: (c, f) => c.podeTransferir && f.controlaEstoque && c.sites.length > 1,
   },
-  { chave: "etiqueta", label: "Etiqueta", icone: Tag, visivel: (c) => c.podePreco },
+  {
+    chave: "etiqueta",
+    label: "Etiqueta",
+    icone: Tag,
+    visivel: (c) => c.podePreco,
+    // Fora do ar por ora, a pedido: fica visível e apagada porque sumir daria a
+    // entender que a impressão de etiqueta deixou de existir.
+    desabilitada: true,
+  },
   { chave: "pedir", label: "Pedir", icone: ShoppingCart, visivel: (c) => c.podePedir },
 ];
 
@@ -139,8 +150,8 @@ export function AcoesProduto({
   return (
     <div className="space-y-2">
       {/* A altura da grade é reservada antes de o contexto chegar: sem isso, o
-          botão "Abrir cadastro completo" nasce colado na ficha e desce quando as
-          ações aparecem — o dedo já estava a caminho. */}
+          que vem depois nasce colado na ficha e desce quando as ações aparecem —
+          o dedo já estava a caminho. */}
       {ctx === null ? (
         <div className="grid grid-cols-3 gap-2" aria-hidden>
           {Array.from({ length: 6 }).map((_, i) => (
@@ -156,6 +167,7 @@ export function AcoesProduto({
               <button
                 key={f.chave}
                 type="button"
+                disabled={f.desabilitada}
                 onClick={() => {
                   if (f.chave === "etiqueta") {
                     const total = fila.adicionar({
@@ -175,6 +187,7 @@ export function AcoesProduto({
                   "flex min-h-16 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl",
                   "border border-line-button bg-surface text-[13px] font-medium text-ink",
                   "active:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
+                  f.desabilitada && "cursor-not-allowed opacity-40 active:bg-surface",
                 )}
               >
                 <f.icone className="h-5 w-5 text-ink-2" aria-hidden />
@@ -185,13 +198,9 @@ export function AcoesProduto({
         )
       )}
 
-      <Link
-        href={`/produtos/${ficha.id}/editar`}
-        className="flex min-h-12 items-center justify-center gap-2 rounded-full border border-line-button bg-surface text-sm font-medium text-ink"
-      >
-        Abrir cadastro completo
-        <Monitor className="h-3.5 w-3.5 text-faint" aria-label="Abre na versão de computador" />
-      </Link>
+      {/* Sem "abrir cadastro completo": o destino é uma tela de computador, e
+          quem está na gôndola com o telefone na mão não vai editar fiscal e
+          embalagens ali. As ações acima são o que o aparelho resolve. */}
 
       {ctx && (aberta === "perda" || aberta === "ajuste" || aberta === "transferencia") && (
         <AcaoEstoqueSheet
@@ -210,6 +219,16 @@ export function AcoesProduto({
         <PrecoSheet
           ficha={ficha}
           valorInicial={doVoz?.preco}
+          onFechar={() => setAberta(null)}
+          onConcluir={concluir}
+        />
+      )}
+
+      {ctx && aberta === "promocao" && (
+        <PromocaoSheet
+          ficha={ficha}
+          sites={ctx.sites}
+          siteAtivo={ctx.siteAtivo}
           onFechar={() => setAberta(null)}
           onConcluir={concluir}
         />

@@ -8,6 +8,7 @@ import { podeEmAlguma } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { criarPedidoCompra } from "@/lib/estoque";
+import { promocoesDoProduto, type PromocaoRow } from "@/lib/promocoes";
 import { semAcento } from "@/lib/normalize";
 import { completeJson, completeJsonComArquivo, llmConfigured } from "@/lib/llm";
 
@@ -114,6 +115,96 @@ export async function alterarPrecoAction(
       preco: d.preco,
       margemPct: custo > 0 && d.preco > 0 ? ((d.preco - custo) / d.preco) * 100 : null,
     };
+  });
+}
+
+// ── Promoção agendada ───────────────────────────────────────
+
+const promocaoSchema = z
+  .object({
+    productId: z.string().min(1),
+    /** null = todas as lojas. */
+    siteId: z.string().min(1).nullable().default(null),
+    preco: z.number().positive("Informe o preço da promoção.").max(9_999_999),
+    /** `YYYY-MM-DD` — a promoção pega o dia inteiro, das 00h às 23h59. */
+    inicio: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Data de início inválida."),
+    fim: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Data de fim inválida."),
+    nome: z.string().trim().max(60).nullable().default(null),
+  })
+  .refine((d) => d.fim >= d.inicio, {
+    message: "O fim da promoção não pode ser antes do começo.",
+    path: ["fim"],
+  });
+
+/**
+ * Agenda uma promoção para o produto.
+ *
+ * Data e não "ligar/desligar promoção": quem baixa preço no sábado precisa que
+ * ele volte sozinho na segunda — depender de alguém lembrar de desligar é como
+ * o preço promocional vira preço definitivo por engano.
+ *
+ * `produto.preco` é a permissão, a mesma de trocar preço: quem pode marcar
+ * R$ 4,99 para sempre pode marcar R$ 4,99 até domingo.
+ */
+export async function agendarPromocaoAction(
+  input: z.input<typeof promocaoSchema>,
+): Promise<{ id: string }> {
+  const d = promocaoSchema.parse(input);
+  const ctx = await guardAction("produto.preco", d.siteId ?? undefined);
+
+  return runWithTenant(ctx.tenant.id, async () => {
+    if (d.siteId) assertSite(ctx, "produto.preco", d.siteId);
+
+    const produto = await db.product.findFirst({
+      where: { id: d.productId },
+      select: { id: true },
+    });
+    if (!produto) throw new Error("Produto não encontrado.");
+
+    // Dia inteiro nas duas pontas: quem escolhe "hoje até domingo" espera que
+    // domingo valha até fechar a loja, não até a meia-noite que já passou.
+    const criada = await db.productPromotion.create({
+      data: {
+        tenantId: ctx.tenant.id,
+        productId: produto.id,
+        siteId: d.siteId,
+        preco: d.preco,
+        inicio: new Date(`${d.inicio}T00:00:00`),
+        fim: new Date(`${d.fim}T23:59:59`),
+        nome: d.nome || null,
+        createdBy: ctx.user.id ?? null,
+      },
+      select: { id: true },
+    });
+
+    revalidatePath("/vendas", "layout");
+    ok();
+    return { id: criada.id };
+  });
+}
+
+/** Lista a agenda do produto — vigentes, futuras e as que já passaram. */
+export async function promocoesDoProdutoAction(productId: string): Promise<PromocaoRow[]> {
+  const ctx = await guardAction("produto.ver", null, { mesmoSuspenso: true });
+  return runWithTenant(ctx.tenant.id, () => promocoesDoProduto(productId));
+}
+
+/**
+ * Encerra uma promoção. Marca `ativo = false` em vez de apagar: o preço que o
+ * caixa cobrou na semana passada precisa continuar explicável.
+ */
+export async function cancelarPromocaoAction(id: string): Promise<void> {
+  const ctx = await guardAction("produto.preco");
+
+  await runWithTenant(ctx.tenant.id, async () => {
+    const promo = await db.productPromotion.findFirst({
+      where: { id },
+      select: { id: true },
+    });
+    if (!promo) throw new Error("Promoção não encontrada.");
+    await db.productPromotion.update({ where: { id: promo.id }, data: { ativo: false } });
+    revalidatePath("/vendas", "layout");
+    ok();
   });
 }
 

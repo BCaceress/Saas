@@ -261,7 +261,7 @@ function Lista({ produtos }: { produtos: ProdutoResumo[] }) {
       {produtos.map((p) => (
         <li key={p.id}>
           <Link
-            href={`/m/produto/${p.id}`}
+            href={`/m/produto/${p.id}?de=/m/scan`}
             className="flex min-h-12 items-center gap-2 px-3 py-2 text-[13px] hover:bg-surface-2"
           >
             <span className="min-w-0 flex-1">

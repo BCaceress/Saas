@@ -187,11 +187,10 @@ export function AcaoEstoqueSheet({
           </div>
         )}
 
-        <VisorQuantidade
-          valor={quantidade}
-          unidade={alvo.unidadeBase.toLowerCase()}
-          atual={alvo.estoqueFechado}
-        />
+        {/* Sempre "un": perda, ajuste e transferência mexem em `deltaFechado`,
+            que conta EMBALAGENS. Para uma garrafa de 1000 ml, `unidadeBase` é
+            ML e o visor dizia "3 ml" quando a pessoa ia baixar 3 garrafas. */}
+        <VisorQuantidade valor={quantidade} unidade="un" atual={alvo.estoqueFechado} />
 
         <TecladoNumerico valor={quantidade} onChange={setQuantidade} decimais={3} />
 

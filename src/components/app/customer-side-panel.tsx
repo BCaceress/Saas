@@ -11,6 +11,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { toast } from "@/components/ui/toast";
 import { maskPhone } from "@/lib/masks";
 import { tierFromGasto, statusCliente, fmtData, fmtDataUTC, fmtDiasAtras, SEXO_LABEL } from "@/lib/customers";
+import { diasDeCalendario } from "@/lib/datas";
 import type { TierThresholds } from "@/lib/customers";
 import { getCustomerInsights, sendCoupon } from "@/app/(app)/clientes/actions";
 import type { CustomerRow, CustomerInsights, CouponReasonUI } from "@/app/(app)/clientes/_types";
@@ -33,7 +34,9 @@ function aniversarioProximo(iso: string | null): "hoje" | "amanha" | null {
 
 /** "Hoje" / "Ontem" / "dd/mm" para os agrupamentos de compras recentes. */
 function fmtGrupoData(iso: string): string {
-  const dias = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  // Dias de calendário no fuso da loja (ver `lib/datas`) — por horas
+  // decorridas, a compra das 20h de ontem aparecia sob "Hoje".
+  const dias = diasDeCalendario(iso) ?? 0;
   if (dias <= 0) return "Hoje";
   if (dias === 1) return "Ontem";
   return fmtData(iso).slice(0, 5);

@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { carregarShell } from "@/lib/shell-context";
+import { VERSAO_APP } from "@/lib/versao";
 import { podeEmAlguma, type Permissao } from "@/lib/permissoes";
 import type { NavToggles } from "@/components/app/nav-config";
 import { MobilePageHeader } from "@/components/mobile/page-header";
@@ -141,6 +142,11 @@ export default async function MaisPage() {
             </button>
           </form>
         </Card>
+        {/* Versão discreta: só serve quando alguém relata um problema — daí o
+            tamanho de nota de rodapé, e não de linha da lista. */}
+        <p className="px-1 text-center font-mono text-[11px] text-faint">
+          {VERSAO_APP}
+        </p>
       </section>
     </div>
   );

@@ -1,5 +1,6 @@
 import "server-only";
 import { db } from "@/lib/prisma";
+import { diaDaLoja, diasDeCalendario } from "@/lib/datas";
 import type { Customer } from "@/generated/prisma";
 import type { CustomerRow, CustomerInsights, CouponCandidate, ComprasPorDia } from "./_types";
 
@@ -105,9 +106,9 @@ export async function computeInsights(customerId: string): Promise<CustomerInsig
     ? vendasMesAnterior.reduce((s, v) => s + num(v.total), 0)
     : null;
 
-  const diasSemComprar = ultimaCompra
-    ? Math.floor((Date.now() - ultimaCompra.getTime()) / DIA)
-    : null;
+  // Dias de CALENDÁRIO no fuso da loja (ver `lib/datas`): comprou às 20h de
+  // ontem, hoje de manhã são 1 dia, não 0.
+  const diasSemComprar = diasDeCalendario(ultimaCompra);
 
   const datasOrdenadas = sales
     .map((s) => s.paidAt)
@@ -134,7 +135,9 @@ export async function computeInsights(customerId: string): Promise<CustomerInsig
   const porDia = new Map<string, ComprasPorDia>();
   for (const s of recentSales) {
     if (!s.paidAt) continue;
-    const chave = s.paidAt.toISOString().slice(0, 10);
+    // Dia da LOJA, não dia UTC: uma venda das 21h caía no dia seguinte e o
+    // grupo aparecia como "Hoje".
+    const chave = diaDaLoja(s.paidAt);
     const grupo = porDia.get(chave) ?? { data: s.paidAt.toISOString(), itens: [] };
     for (const item of s.items) {
       const nome = nomeById.get(item.productId) ?? "Produto";
@@ -225,7 +228,7 @@ export async function loadCouponCandidates(diasRisco: number): Promise<CouponCan
     // Risco: já comprou alguma vez e a última compra passou do limite.
     const stats = ultimaById.get(c.id);
     if (stats?.ultima && stats.compras > 0) {
-      const dias = Math.floor((Date.now() - stats.ultima.getTime()) / DIA);
+      const dias = diasDeCalendario(stats.ultima) ?? 0;
       if (dias >= diasRisco) {
         candidates.push({
           customerId: c.id,

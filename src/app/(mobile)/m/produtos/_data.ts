@@ -29,8 +29,14 @@ export type ProdutoLista = {
   restricaoIdade: boolean;
   /** null quando a pessoa não tem `produto.preco` — nem desce no payload. */
   precoVenda: number | null;
-  /** Saldo fechado no site ativo; null quando o produto não controla estoque. */
+  /** Saldo fechado (em UNIDADES) no site ativo; null se não controla estoque. */
   saldo: number | null;
+  /**
+   * Sobra da embalagem em uso (ml/g) — só interessa como "tem uma aberta", que
+   * é como o desktop mostra. Nunca soma com o fechado: são grandezas
+   * diferentes.
+   */
+  aberto: number;
 };
 
 export async function loadProdutosLista(
@@ -55,7 +61,7 @@ export async function loadProdutosLista(
       // Sem site ativo (tenant recém-criado) o saldo é a soma do que existir.
       stocks: {
         where: siteId ? { siteId } : {},
-        select: { estoqueFechado: true },
+        select: { estoqueFechado: true, estoqueAberto: true },
       },
     },
   });
@@ -74,5 +80,6 @@ export async function loadProdutosLista(
     restricaoIdade: p.restricaoIdade,
     precoVenda: podeVerPreco ? (p.precoVenda == null ? null : Number(p.precoVenda)) : null,
     saldo: p.controlaEstoque ? p.stocks.reduce((s, e) => s + n(e.estoqueFechado), 0) : null,
+    aberto: p.controlaEstoque ? p.stocks.reduce((s, e) => s + n(e.estoqueAberto), 0) : 0,
   }));
 }

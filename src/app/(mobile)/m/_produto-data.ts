@@ -27,13 +27,20 @@ import {
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 const DIA_MS = 86_400_000;
 
+export type TipoLocal = "AMBIENTE" | "REFRIGERADO" | "CONGELADO";
+
 export type SaldoSite = {
   siteId: string | null;
   siteNome: string;
+  /** Unidades fechadas — sempre em UN, mesmo com `unidadeBase` em ML/G. */
   fechado: number;
+  /** Sobra (ml/g) da embalagem em uso; só existe uma aberta por vez. */
   aberto: number;
   minimo: number;
   ideal: number;
+  /** Onde o produto fica guardado nesta loja (câmara fria, depósito…). */
+  localNome: string | null;
+  localTipo: TipoLocal | null;
 };
 
 export type LoteFicha = {
@@ -66,6 +73,8 @@ export type FichaProduto = {
 
   /** null quando a pessoa não tem `produto.preco`. */
   precoVenda: number | null;
+  /** Preço de custo do cadastro. null sem `produto.custo`. */
+  custo: number | null;
   /** null quando a pessoa não tem `produto.custo`. */
   custoMedio: number | null;
   /** Margem sobre o preço, em %. Precisa das DUAS permissões. */
@@ -74,6 +83,15 @@ export type FichaProduto = {
   saldos: SaldoSite[];
   totalFechado: number;
   totalAberto: number;
+
+  /** Como ESTA empresa decide reposição — muda o que a ficha mostra por loja. */
+  estrategia: {
+    tipo: EstoquePolicy["tipo"];
+    usaMinimo: boolean;
+    usaIdeal: boolean;
+    usaGiro: boolean;
+    diasCobertura: number;
+  };
 
   cobertura: {
     mediaDia: number;
@@ -111,6 +129,7 @@ const SELECT_FICHA = {
   ativo: true,
   controlaEstoque: true,
   precoVenda: true,
+  custo: true,
   custoMedio: true,
   brand: { select: { nome: true } },
   subcategory: { select: { nome: true } },
@@ -126,6 +145,7 @@ const SELECT_FICHA = {
       estoqueMinimo: true,
       estoqueIdeal: true,
       site: { select: { nome: true } },
+      location: { select: { nome: true, tipo: true } },
     },
   },
 } as const;
@@ -140,6 +160,7 @@ type ProdutoCru = {
   ativo: boolean;
   controlaEstoque: boolean;
   precoVenda: unknown;
+  custo: unknown;
   custoMedio: unknown;
   brand: { nome: string } | null;
   subcategory: { nome: string } | null;
@@ -151,6 +172,7 @@ type ProdutoCru = {
     estoqueMinimo: unknown;
     estoqueIdeal: unknown;
     site: { nome: string } | null;
+    location: { nome: string; tipo: string } | null;
   }>;
 };
 
@@ -189,6 +211,8 @@ export async function montarFicha(
     aberto: n(s.estoqueAberto),
     minimo: n(s.estoqueMinimo),
     ideal: n(s.estoqueIdeal),
+    localNome: s.location?.nome ?? null,
+    localTipo: (s.location?.tipo as TipoLocal | undefined) ?? null,
   }));
 
   const totalFechado = saldos.reduce((a, s) => a + s.fechado, 0);
@@ -273,6 +297,10 @@ export async function montarFicha(
 
   const precoVenda = vePreco ? n(produto.precoVenda) || null : null;
   const custoMedio = veCusto ? n(produto.custoMedio) || null : null;
+  const custo = veCusto ? n(produto.custo) || null : null;
+  // Margem contra o que a empresa realmente paga hoje: custo médio quando há
+  // entradas, senão o custo do cadastro.
+  const baseCusto = custoMedio ?? custo;
 
   return {
     id: produto.id,
@@ -287,15 +315,23 @@ export async function montarFicha(
     controlaEstoque: produto.controlaEstoque,
 
     precoVenda,
+    custo,
     custoMedio,
     margemPct:
-      precoVenda && custoMedio && precoVenda > 0
-        ? ((precoVenda - custoMedio) / precoVenda) * 100
+      precoVenda && baseCusto && precoVenda > 0
+        ? ((precoVenda - baseCusto) / precoVenda) * 100
         : null,
 
     saldos,
     totalFechado,
     totalAberto,
+    estrategia: {
+      tipo: policy.tipo,
+      usaMinimo: policy.usaMinimo,
+      usaIdeal: policy.usaIdeal,
+      usaGiro: policy.usaGiro,
+      diasCobertura: policy.diasCobertura,
+    },
     cobertura,
     lotes,
     embalagens: produto.packagings.map((p) => ({

@@ -95,9 +95,9 @@ export default function PedirSheet({
         <div className="rounded-xl border border-line bg-surface-2 px-4 py-3 text-center">
           <p className="font-display text-3xl leading-none font-semibold text-ink tabular-nums">
             {valor === "" ? "0" : valor}
-            <span className="ml-1 text-base font-normal text-muted">
-              {ficha.unidadeBase.toLowerCase()}
-            </span>
+            {/* Pedido é em unidades — `unidadeBase` descreve o conteúdo da
+                embalagem (ml/g), não o que se pede ao fornecedor. */}
+            <span className="ml-1 text-base font-normal text-muted">un</span>
           </p>
           <p className="mt-1 text-xs text-muted">
             em estoque: {ficha.totalFechado.toLocaleString("pt-BR")}

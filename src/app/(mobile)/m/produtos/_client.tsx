@@ -5,6 +5,7 @@ import Link from "next/link";
 import { PackageOpen, Search } from "lucide-react";
 import { brl, cn } from "@/lib/utils";
 import { Card } from "@/components/ui/misc";
+import { SaldoUn } from "@/components/mobile/saldo-unidades";
 import type { ProdutoLista } from "./_data";
 
 type Filtro = "ativos" | "todos" | "sem-estoque" | "sem-preco";
@@ -156,14 +157,14 @@ function LinhaProduto({ p }: { p: ProdutoLista }) {
               </p>
             )}
             {p.saldo != null ? (
-              <p
-                className={cn(
-                  "mt-1 text-xs tabular-nums",
-                  p.saldo <= 0 ? "font-medium text-danger" : "text-muted",
-                )}
-              >
-                {p.saldo.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}{" "}
-                {p.unidadeBase.toLowerCase()}
+              // Sempre em unidades — para a garrafa fracionada, `unidadeBase` é
+              // ML e o saldo fechado continua sendo garrafa (ver SaldoUn).
+              <p className="mt-1 text-xs">
+                <SaldoUn
+                  fechado={p.saldo}
+                  aberto={p.aberto}
+                  tom={p.saldo <= 0 ? "text-danger" : "text-ink-2"}
+                />
               </p>
             ) : (
               <p className="mt-1 text-xs text-faint">sem controle</p>

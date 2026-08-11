@@ -3,7 +3,6 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
-  Archive,
   ArchiveRestore,
   Cake,
   CalendarCheck,
@@ -28,6 +27,7 @@ import {
   SEXO_LABEL,
 } from "@/lib/customers";
 import type { TierThresholds } from "@/lib/customers";
+import { diasDeCalendario } from "@/lib/datas";
 import { BottomSheet } from "@/components/mobile/bottom-sheet";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
@@ -65,7 +65,9 @@ function aniversarioProximo(iso: string | null): "hoje" | "amanha" | null {
 
 /** "Hoje" / "Ontem" / "dd/mm" para os agrupamentos de compras. */
 function fmtGrupoData(iso: string): string {
-  const dias = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  // Dias de calendário (ver `lib/datas`) — por horas decorridas, a compra das
+  // 20h de ontem aparecia sob "Hoje".
+  const dias = diasDeCalendario(iso) ?? 0;
   if (dias <= 0) return "Hoje";
   if (dias === 1) return "Ontem";
   return fmtData(iso).slice(0, 5);
@@ -179,21 +181,22 @@ export function DetalheCliente({
       }
       rodape={
         podeEditar && (
+          // Sem "Inativar": no celular a ficha se abre com o dedo em movimento e
+          // arquivar cliente por engano é caro. Reativar continua aqui — é o que
+          // tira alguém do filtro "Inativos", e errar nele não custa nada.
           <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              onClick={alternarAtivo}
-              disabled={alternando}
-              className="shrink-0 gap-1.5"
-              size="lg"
-            >
-              {cliente.ativo ? (
-                <Archive className="h-4 w-4" aria-hidden />
-              ) : (
+            {!cliente.ativo && (
+              <Button
+                variant="secondary"
+                onClick={alternarAtivo}
+                disabled={alternando}
+                className="shrink-0 gap-1.5"
+                size="lg"
+              >
                 <ArchiveRestore className="h-4 w-4" aria-hidden />
-              )}
-              {cliente.ativo ? "Inativar" : "Reativar"}
-            </Button>
+                Reativar
+              </Button>
+            )}
             <Button onClick={onEditar} className="flex-1 gap-1.5" size="lg">
               <Pencil className="h-4 w-4" aria-hidden /> Editar
             </Button>

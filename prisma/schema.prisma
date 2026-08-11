@@ -205,6 +205,7 @@ model Tenant {
   reportSchedules   ReportSchedule[]
   reportPresets     ReportPreset[]
   pushSubscriptions PushSubscription[]
+  promotions        ProductPromotion[]
 
   @@index([status])
 }
@@ -921,6 +922,8 @@ model Product {
   salesChannels   ProductSalesChannel[]
   suppliers       ProductSupplier[]
 
+  promotions ProductPromotion[]
+
   catalogItems    SupplierCatalogItem[]
   catalogVinculos SupplierCatalogItemProduct[]
   priceHistory    SupplierPriceHistory[]
@@ -958,6 +961,43 @@ model ProductView {
 
   @@unique([tenantId, userId, nome])
   @@index([tenantId])
+}
+
+/// Agenda de promoção de um produto: preço promocional com começo e fim.
+///
+/// Agenda e não campo no Product de propósito: "de sexta a domingo por R$ 4,99"
+/// é a forma como o operador pensa a promoção, e um `precoPromocional` solto
+/// exigiria alguém lembrar de desligá-lo na segunda. Fora da janela, o preço
+/// que vale é o `Product.precoVenda` — a promoção nunca sobrescreve o cadastro.
+///
+/// `siteId` nulo = todas as lojas. Sobreposição é permitida (encarte por cima
+/// de campanha longa); quem resolve o empate é `lib/promocoes`, que aplica a
+/// promoção mais barata vigente.
+model ProductPromotion {
+  id        String  @id @default(cuid())
+  tenantId  String
+  productId String
+  siteId    String?
+
+  preco  Decimal  @db.Decimal(10, 2)
+  inicio DateTime
+  fim    DateTime
+  ativo  Boolean  @default(true)
+  /// Motivo/rótulo do encarte ("Fim de semana", "Queima de validade").
+  nome   String?
+
+  createdAt DateTime @default(now())
+  createdBy String?
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  site    Site?   @relation(fields: [siteId], references: [id])
+
+  @@index([tenantId])
+  @@index([productId])
+  @@index([siteId])
+  /// Consulta do PDV/totem: promoções vigentes do tenant numa data.
+  @@index([tenantId, ativo, inicio, fim])
 }
 
 model Stock {
@@ -1153,6 +1193,7 @@ model Site {
   fiscalDocuments    FiscalDocument[]
   fiscalInbounds     FiscalInbound[]
   quotations         Quotation[]
+  promotions         ProductPromotion[]
 
   @@unique([tenantId, nome])
   @@index([tenantId])

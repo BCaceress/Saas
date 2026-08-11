@@ -9,6 +9,17 @@ import { FichaProdutoView, AcoesFicha } from "@/components/mobile/ficha-produto"
 import { montarFicha, SELECT_FICHA, type ProdutoCru } from "../../_produto-data";
 
 /**
+ * Para onde o "voltar" leva. O padrão é a LISTA DE PRODUTOS — é de lá que quase
+ * toda visita chega, e antes o botão devolvia todo mundo ao scanner, inclusive
+ * quem nunca abriu a câmera. Quem vem de outro lugar passa `?de=`; só caminhos
+ * do próprio `/m` são aceitos, para o parâmetro não virar redirecionamento
+ * aberto.
+ */
+function voltarPara(de: string | undefined): string {
+  return de && /^\/m(\/|$)/.test(de) ? de : "/m/produtos";
+}
+
+/**
  * Ficha do produto por link direto — vem da busca por nome, de um alerta ou de
  * um atalho salvo. O mesmo conteúdo do resultado do scanner, só que renderizado
  * no servidor: aqui não há câmera envolvida, então não há motivo para o
@@ -16,10 +27,13 @@ import { montarFicha, SELECT_FICHA, type ProdutoCru } from "../../_produto-data"
  */
 export default async function ProdutoMobilePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ de?: string }>;
 }) {
   const { id } = await params;
+  const { de } = await searchParams;
   const ctx = await requirePermissaoMobile("produto.ver");
   const policy = policyDoTenant(ctx.tenant);
 
@@ -46,7 +60,7 @@ export default async function ProdutoMobilePage({
 
   return (
     <>
-      <MobilePageHeader titulo="Produto" voltar="/m/scan" />
+      <MobilePageHeader titulo="Produto" voltar={voltarPara(de)} />
       <div className="space-y-3">
         <FichaProdutoView ficha={ficha} />
         <AcoesFicha ficha={ficha} />

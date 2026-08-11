@@ -210,7 +210,7 @@ function LinhaProduto({
     <li>
       <Card className="overflow-hidden">
         <Link
-          href={`/m/produto/${row.productId}`}
+          href={`/m/produto/${row.productId}?de=/m/estoque`}
           className="flex items-center gap-3 p-3 hover:bg-surface-2"
         >
           <div className="min-w-0 flex-1">

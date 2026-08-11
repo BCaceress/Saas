@@ -3,6 +3,8 @@
  * Tier do cliente derivado do total gasto; formatação de datas pt-BR.
  */
 
+import { diasDeCalendario } from "./datas";
+
 export type TierKey = "cobre" | "bronze" | "prata" | "ouro" | "diamante";
 
 export type Tier = {
@@ -78,12 +80,17 @@ export function fmtDataUTC(iso: string | null | undefined): string {
   return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" });
 }
 
-/** "hoje", "ontem", "há 3 dias", "há 2 meses". "—" se nulo. */
+/**
+ * "hoje", "ontem", "há 3 dias", "há 2 meses". "—" se nulo.
+ *
+ * Conta DIAS DE CALENDÁRIO no fuso da loja (ver `lib/datas`): uma compra das
+ * 20h de ontem, consultada às 10h de hoje, é "ontem" — não "hoje", que era o
+ * que a conta por horas decorridas devolvia.
+ */
 export function fmtDiasAtras(iso: string | null | undefined): string {
   if (!iso) return "—";
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "—";
-  const dias = Math.floor((Date.now() - then) / 86_400_000);
+  const dias = diasDeCalendario(iso);
+  if (dias == null) return "—";
   if (dias <= 0) return "hoje";
   if (dias === 1) return "ontem";
   if (dias < 30) return `há ${dias} dias`;

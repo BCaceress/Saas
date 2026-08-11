@@ -168,7 +168,9 @@ export function TotemKiosk({
   return (
     // O respiro cresce com a tela: num monitor touch em pé, 16px de margem
     // deixam o conteúdo colado na moldura.
-    <div className="scrollbar-none fixed inset-0 z-50 overflow-y-auto bg-bg p-2 sm:p-4 lg:p-6">
+    // O respiro sobe em 600px, no mesmo ponto em que o menu de categorias vira
+    // coluna (`_totem`): a altura do conteúdo é calculada a partir deste padding.
+    <div className="scrollbar-none fixed inset-0 z-50 overflow-y-auto bg-bg p-2 min-[600px]:p-4 lg:p-6">
       <TotemVenda
         siteId={siteId}
         produtos={produtos}

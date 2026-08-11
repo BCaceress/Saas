@@ -745,11 +745,15 @@ function Loja({
   // Em celular a coluna de categorias vira faixa horizontal no topo: 96px de
   // rail num aparelho de 390px deixariam 280px para a grade de produtos. O
   // padding do quiosque também muda (p-2 em vez de p-4), daí a altura.
+  //
+  // O corte é 600px e não o `sm` (640px) de propósito: tablet Android de 10" em
+  // pé reporta 600px de largura CSS, e no `sm` ele caía do lado do celular —
+  // menu deitado no topo justamente onde há altura de sobra para a coluna.
   return (
-    <div className="flex h-[calc(100dvh-1rem)] flex-col gap-2 sm:h-[calc(100dvh-2rem)] sm:flex-row sm:gap-3 lg:h-[calc(100dvh-3rem)] lg:gap-4">
+    <div className="flex h-[calc(100dvh-1rem)] flex-col gap-2 min-[600px]:h-[calc(100dvh-2rem)] min-[600px]:flex-row min-[600px]:gap-3 lg:h-[calc(100dvh-3rem)] lg:gap-4">
       {/* ── Menu de categorias: faixa no celular, coluna no tablet ── */}
       <nav aria-label="Categorias"
-        className="scrollbar-none flex w-full shrink-0 flex-row gap-1 overflow-x-auto rounded-2xl border border-line bg-surface p-1.5 sm:w-28 sm:flex-col sm:overflow-x-visible sm:overflow-y-auto sm:rounded-3xl lg:w-32 lg:gap-1.5 lg:p-2 xl:w-40">
+        className="scrollbar-none flex w-full shrink-0 flex-row gap-1 overflow-x-auto rounded-2xl border border-line bg-surface p-1.5 min-[600px]:w-28 min-[600px]:flex-col min-[600px]:overflow-x-visible min-[600px]:overflow-y-auto min-[600px]:rounded-3xl lg:w-32 lg:gap-1.5 lg:p-2 xl:w-40">
         <RailItem ativo={catAtiva == null} onClick={() => setCatAtiva(null)}
           icone={temDestaques ? <Star size={24} /> : <ShoppingCart size={24} />}
           label={temDestaques ? (cliente ? "Para você" : "Destaques") : "Todos"} />

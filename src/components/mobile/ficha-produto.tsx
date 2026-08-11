@@ -1,15 +1,20 @@
 import {
+  Box,
   Boxes,
   CalendarClock,
   PackageOpen,
+  Refrigerator,
+  Snowflake,
   Store,
   TriangleAlert,
+  Warehouse,
 } from "lucide-react";
 import { brl, cn } from "@/lib/utils";
 import { AcoesProduto, type AcaoInicial } from "@/components/mobile/acoes-produto";
+import { AbertaBadge, SaldoUn } from "@/components/mobile/saldo-unidades";
 import { Badge, Card } from "@/components/ui/misc";
 import { NIVEL_COBERTURA_LABEL, type NivelCobertura } from "@/lib/estoque-estrategia";
-import type { FichaProduto, LoteFicha } from "@/app/(mobile)/m/_produto-data";
+import type { FichaProduto, LoteFicha, TipoLocal } from "@/app/(mobile)/m/_produto-data";
 
 /**
  * Ficha do produto no celular — a tela mais aberta da superfície mobile.
@@ -27,6 +32,18 @@ const NIVEL_TOM: Record<NivelCobertura, { badge: "danger" | "warn" | "ok" | "neu
   "sem-giro": { badge: "neutral", barra: "bg-muted" },
 };
 
+/** Mesmos ícones e cores dos locais de armazenagem na tela de computador. */
+const LOCAL_ICONE: Record<TipoLocal, typeof Box> = {
+  AMBIENTE: Box,
+  REFRIGERADO: Refrigerator,
+  CONGELADO: Snowflake,
+};
+const LOCAL_COR: Record<TipoLocal, string> = {
+  AMBIENTE: "text-brand",
+  REFRIGERADO: "text-ok",
+  CONGELADO: "text-blue-500",
+};
+
 const STATUS_LOTE: Record<LoteFicha["status"], { tom: "danger" | "warn" | "ok" | "neutral"; label: string }> = {
   vencido: { tom: "danger", label: "Vencido" },
   vencendo: { tom: "warn", label: "Vencendo" },
@@ -42,7 +59,7 @@ export function FichaProdutoView({ ficha }: { ficha: FichaProduto }) {
       <PrecoECusto ficha={ficha} />
       {ficha.controlaEstoque ? <Estoque ficha={ficha} /> : <SemControle />}
       {ficha.lotes.length > 0 && <Lotes lotes={ficha.lotes} />}
-      {ficha.embalagens.length > 0 && <Embalagens ficha={ficha} />}
+      <Embalagens ficha={ficha} />
     </div>
   );
 }
@@ -99,8 +116,7 @@ function AvisoEmbalagem({ ficha }: { ficha: FichaProduto }) {
             {" "}
             1 {e.nome.toLowerCase()} ={" "}
             <strong className="font-semibold">
-              {e.fator.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}{" "}
-              {ficha.unidadeBase.toLowerCase()}
+              {e.fator.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} un
             </strong>
             .
           </>
@@ -111,10 +127,19 @@ function AvisoEmbalagem({ ficha }: { ficha: FichaProduto }) {
   );
 }
 
+/**
+ * Venda · custo · margem, lado a lado.
+ *
+ * Os três juntos porque a pergunta na gôndola é sempre a mesma — "dá para
+ * baixar esse preço?" — e ela não se responde com dois dos três. O custo
+ * exibido é o médio quando existe (o que a empresa pagou de fato); sem
+ * entradas, o do cadastro.
+ */
 function PrecoECusto({ ficha }: { ficha: FichaProduto }) {
+  const custo = ficha.custoMedio ?? ficha.custo;
   // Sem nenhuma das duas permissões o cartão inteiro sai — melhor que três
   // traços alinhados sem explicação.
-  if (ficha.precoVenda == null && ficha.custoMedio == null) return null;
+  if (ficha.precoVenda == null && custo == null) return null;
 
   return (
     <Card className="flex divide-x divide-line">
@@ -126,21 +151,27 @@ function PrecoECusto({ ficha }: { ficha: FichaProduto }) {
           </p>
         </div>
       )}
-      {ficha.custoMedio != null && (
+      {custo != null && (
         <div className="flex-1 p-4">
-          <p className="text-xs text-ink-2">Custo médio</p>
-          <p className="font-display text-xl font-semibold text-ink">
-            {brl(ficha.custoMedio)}
+          <p className="text-xs text-ink-2">
+            {ficha.custoMedio != null ? "Custo médio" : "Preço de custo"}
           </p>
-          {ficha.margemPct != null && (
-            <p
-              className={cn(
-                "mt-0.5 text-xs font-medium",
-                ficha.margemPct < 0 ? "text-danger" : "text-ok",
-              )}
-            >
-              margem {ficha.margemPct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%
-            </p>
+          <p className="font-display text-xl font-semibold text-ink">{brl(custo)}</p>
+        </div>
+      )}
+      {ficha.margemPct != null && (
+        <div className="flex-1 p-4">
+          <p className="text-xs text-ink-2">Margem</p>
+          <p
+            className={cn(
+              "font-display text-xl font-semibold",
+              ficha.margemPct < 0 ? "text-danger" : "text-ok",
+            )}
+          >
+            {ficha.margemPct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%
+          </p>
+          {ficha.precoVenda != null && custo != null && (
+            <p className="mt-0.5 text-xs text-muted">{brl(ficha.precoVenda - custo)} por un</p>
           )}
         </div>
       )}
@@ -157,9 +188,21 @@ function SemControle() {
   );
 }
 
+/**
+ * Saldo em UNIDADES — nunca em ml/g.
+ *
+ * `unidadeBase` descreve o conteúdo da embalagem (uma garrafa de 1000 ml), não
+ * a contagem: `estoqueFechado` é sempre "quantas embalagens". A sobra da que
+ * está aberta entra como sinal (`SaldoUn`), não como número somável.
+ *
+ * A linha por loja mostra a meta que a empresa DE FATO usa: mínimo, mínimo +
+ * ideal ou giro (ver `lib/estoque-estrategia`). Mostrar "ideal" para quem
+ * trabalha só com piso é inventar meta que ninguém definiu.
+ */
 function Estoque({ ficha }: { ficha: FichaProduto }) {
   const c = ficha.cobertura;
   const tom = c ? NIVEL_TOM[c.nivel] : null;
+  const e = ficha.estrategia;
 
   return (
     <Card className="overflow-hidden">
@@ -167,19 +210,15 @@ function Estoque({ ficha }: { ficha: FichaProduto }) {
         <div>
           <p className="text-xs text-ink-2">Em estoque</p>
           <p className="font-display text-3xl leading-none font-semibold text-ink tabular-nums">
-            {ficha.totalFechado.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}
+            {ficha.totalFechado.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
+            <span className="ml-1 text-base font-normal text-muted">un</span>
           </p>
-          <p className="mt-1 text-xs text-muted">{ficha.unidadeBase.toLowerCase()} fechadas</p>
-        </div>
-
-        {ficha.totalAberto > 0 && (
-          <div>
-            <p className="text-xs text-ink-2">Aberto</p>
-            <p className="font-display text-xl leading-none font-semibold text-accent tabular-nums">
-              {ficha.totalAberto.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}
+          {ficha.totalAberto > 0 && (
+            <p className="mt-1.5">
+              <AbertaBadge />
             </p>
-          </div>
-        )}
+          )}
+        </div>
 
         {c && tom && (
           <div className="ml-auto text-right">
@@ -193,35 +232,70 @@ function Estoque({ ficha }: { ficha: FichaProduto }) {
         <p className="border-t border-line bg-surface-2 px-4 py-2 text-[13px] text-ink-2">
           Sugestão de compra:{" "}
           <strong className="font-semibold text-ink">
-            {c.sugestao.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}{" "}
-            {ficha.unidadeBase.toLowerCase()}
+            {c.sugestao.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} un
           </strong>
         </p>
       )}
 
-      {/* Por loja só quando há mais de uma: numa loja só, repetiria o total. */}
-      {ficha.saldos.length > 1 && (
-        <div className="divide-y divide-line border-t border-line">
-          {ficha.saldos.map((s) => (
-            <div
-              key={s.siteId ?? "global"}
-              className="flex items-center gap-2 px-4 py-2 text-[13px]"
-            >
+      {/* Uma linha por loja, mesmo com loja única: é onde moram o local de
+          guarda e a meta de reposição — que o total não tem como mostrar. */}
+      <div className="divide-y divide-line border-t border-line">
+        {ficha.saldos.map((s) => (
+          <div key={s.siteId ?? "global"} className="px-4 py-2.5 text-[13px]">
+            <div className="flex items-center gap-2">
               <Store className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden />
               <span className="min-w-0 flex-1 truncate text-ink-2">{s.siteNome}</span>
-              <span className="font-medium text-ink tabular-nums">
-                {s.fechado.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}
-              </span>
-              {s.aberto > 0 && (
-                <span className="text-accent tabular-nums">
-                  +{s.aberto.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}
+              <SaldoUn fechado={s.fechado} aberto={s.aberto} tom="text-ink" />
+            </div>
+
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 pl-5.5 text-xs text-muted">
+              <Local nome={s.localNome} tipo={s.localTipo} />
+
+              {e.usaGiro ? (
+                <span>
+                  por giro · cobre {e.diasCobertura}{" "}
+                  {e.diasCobertura === 1 ? "dia" : "dias"}
                 </span>
+              ) : (
+                <>
+                  {e.usaMinimo && (
+                    <span>
+                      mínimo{" "}
+                      <strong className="font-medium text-ink-2 tabular-nums">
+                        {s.minimo.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} un
+                      </strong>
+                    </span>
+                  )}
+                  {e.usaIdeal && (
+                    <span>
+                      ideal{" "}
+                      <strong className="font-medium text-ink-2 tabular-nums">
+                        {s.ideal.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} un
+                      </strong>
+                    </span>
+                  )}
+                </>
               )}
             </div>
-          ))}
-        </div>
-      )}
+          </div>
+        ))}
+      </div>
     </Card>
+  );
+}
+
+/** Onde o produto fica guardado — ícone do tipo, como em /estoque no computador. */
+function Local({ nome, tipo }: { nome: string | null; tipo: TipoLocal | null }) {
+  if (!nome) return <span className="text-faint">sem local definido</span>;
+  const Icone = tipo ? LOCAL_ICONE[tipo] : Warehouse;
+  return (
+    <span className="flex items-center gap-1">
+      <Icone
+        className={cn("h-3.5 w-3.5 shrink-0", tipo ? LOCAL_COR[tipo] : "text-faint")}
+        aria-hidden
+      />
+      {nome}
+    </span>
   );
 }
 
@@ -266,7 +340,23 @@ function Lotes({ lotes }: { lotes: LoteFicha[] }) {
   );
 }
 
+/**
+ * Embalagens em que este produto entra e sai, da unidade para cima.
+ *
+ * A unidade abre a lista com o código de barras dela: é o que se bipa na
+ * gôndola, e sem ele a tabela começa no fardo — que ninguém lê primeiro. Cada
+ * linha diz quantas UNIDADES a embalagem contém (`fatorConversao`).
+ *
+ * Some inteira quando não há nada além da unidade: uma tabela de conversão de
+ * uma linha só ("1 unidade = 1 unidade") não informa nada.
+ */
 function Embalagens({ ficha }: { ficha: FichaProduto }) {
+  const linhas = [
+    { id: "unidade", nome: "Unidade", ean: ficha.ean, fator: 1 },
+    ...ficha.embalagens.filter((e) => e.fator > 1),
+  ];
+  if (linhas.length < 2) return null;
+
   return (
     <section className="space-y-2">
       <h2 className="flex items-center gap-1.5 font-display text-base font-semibold text-ink">
@@ -274,15 +364,14 @@ function Embalagens({ ficha }: { ficha: FichaProduto }) {
         Embalagens
       </h2>
       <Card className="divide-y divide-line overflow-hidden">
-        {ficha.embalagens.map((e) => (
+        {linhas.map((e) => (
           <div key={e.id} className="flex items-center gap-2 px-4 py-2.5 text-[13px]">
             <div className="min-w-0 flex-1">
               <p className="font-medium text-ink">{e.nome}</p>
-              {e.ean && <p className="font-mono text-xs text-muted">{e.ean}</p>}
+              <p className="font-mono text-xs text-muted">{e.ean ?? "sem código de barras"}</p>
             </div>
             <span className="text-ink-2 tabular-nums">
-              {e.fator.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}{" "}
-              {ficha.unidadeBase.toLowerCase()}
+              {e.fator.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} un
             </span>
           </div>
         ))}
