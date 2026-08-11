@@ -1,6 +1,6 @@
 import { db } from "@/lib/prisma";
 import { basePrisma } from "@/lib/prisma";
-import type { Prisma } from "@/generated/prisma";
+import type { Prisma, StorageType } from "@/generated/prisma";
 import { Decimal } from "@/generated/prisma/runtime/library";
 import type { TipoItemPedido, MotivoBonificacao } from "@/lib/estoque";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
@@ -1337,6 +1337,7 @@ export type InventarioItemView = {
   ean: string | null;
   imagemUrl: string | null;
   locationNome: string | null;
+  locationTipo: StorageType | null;
   qtdSistema: number;
   qtdContada: number | null;
 };
@@ -1427,7 +1428,7 @@ async function hidratarInventarios(invs: InventarioRaw[]): Promise<InventarioVie
     productIds.length > 0
       ? db.stock.findMany({
           where: { productId: { in: productIds }, siteId: { in: siteIds } },
-          select: { productId: true, siteId: true, location: { select: { nome: true } } },
+          select: { productId: true, siteId: true, location: { select: { nome: true, tipo: true } } },
         })
       : Promise.resolve([]),
     categoriaIds.length > 0
@@ -1449,6 +1450,7 @@ async function hidratarInventarios(invs: InventarioRaw[]): Promise<InventarioVie
       : Promise.resolve([]),
   ]);
   const locationMap = new Map(stocks.map((s) => [`${s.productId}:${s.siteId}`, s.location?.nome ?? null]));
+  const locationTipoMap = new Map(stocks.map((s) => [`${s.productId}:${s.siteId}`, s.location?.tipo ?? null]));
   const fechadoPorMap = new Map(fechadoPorUsers.map((u) => [u.id, u.name ?? u.email ?? null]));
 
   const qtdPorCategoria = new Map<string, number>();
@@ -1502,6 +1504,7 @@ async function hidratarInventarios(invs: InventarioRaw[]): Promise<InventarioVie
         ean: prodMap.get(it.productId)?.ean ?? null,
         imagemUrl: prodMap.get(it.productId)?.imagemUrl ?? null,
         locationNome: locationMap.get(`${it.productId}:${inv.siteId}`) ?? null,
+        locationTipo: locationTipoMap.get(`${it.productId}:${inv.siteId}`) ?? null,
         // Contagem cega em andamento: o saldo do sistema não pode chegar ao
         // browser (nem via devtools) — só é revelado após o fechamento.
         qtdSistema: inv.modoCego && inv.status === "ABERTO" ? 0 : n(it.qtdSistema),

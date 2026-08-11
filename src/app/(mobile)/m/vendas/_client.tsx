@@ -1,14 +1,12 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronDown, Loader2, Monitor, Receipt, Users } from "lucide-react";
+import { ChevronDown, Loader2, Receipt, Users } from "lucide-react";
 import { brl, cn } from "@/lib/utils";
 import { Badge, Card } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
-import { KpiCarousel, KpiSlide } from "@/components/mobile/kpi-carousel";
 import { metodoLabel, origemLabel } from "@/lib/pagamento-labels";
 import {
   pollAutoatendimentoAction,
@@ -40,21 +38,12 @@ export function VendasClient({
 }) {
   return (
     <div className="space-y-5">
-      <KpiCarousel>
-        <KpiSlide>
-          <Tile label="Receita" valor={brl(resumo.faturamento)} />
-        </KpiSlide>
-        <KpiSlide>
-          <Tile label="Vendas" valor={String(resumo.numVendas)} nota={`ticket ${brl(resumo.ticket)}`} />
-        </KpiSlide>
-        <KpiSlide>
-          <Tile
-            label="Lucro bruto"
-            valor={brl(resumo.margemBruta)}
-            nota={`${Math.round(resumo.margemPct)}% da receita`}
-          />
-        </KpiSlide>
-      </KpiCarousel>
+      {/* Bloco único com divisor: as duas medidas se leem juntas ("quanto
+          entrou" × "de quantas vendas"), não como cartões soltos. */}
+      <Card className="grid grid-cols-2 divide-x divide-line">
+        <Tile label="Receita" valor={brl(resumo.faturamento)} />
+        <Tile label="Vendas" valor={String(resumo.numVendas)} nota={`ticket ${brl(resumo.ticket)}`} />
+      </Card>
 
       <CurvaPorHora pontos={porHora} />
 
@@ -63,29 +52,17 @@ export function VendasClient({
       {autoatendimento && podeRegistrar && siteId && <FilaTotem siteId={siteId} />}
 
       <Recentes vendas={recentes} />
-
-      {/* O PDV não vem para o celular por decisão de escopo — dizer isso é
-          melhor do que deixar a pessoa procurando o botão. */}
-      {podeRegistrar && (
-        <Link
-          href="/vendas"
-          className="flex min-h-12 items-center justify-center gap-2 rounded-full border border-line-button bg-surface text-sm font-medium text-ink"
-        >
-          <Monitor className="h-4 w-4" aria-hidden />
-          Abrir o PDV no computador
-        </Link>
-      )}
     </div>
   );
 }
 
 function Tile({ label, valor, nota }: { label: string; valor: string; nota?: string }) {
   return (
-    <Card className="h-full p-4">
+    <div className="p-4">
       <p className="text-xs text-ink-2">{label}</p>
       <p className="mt-1 font-display text-2xl leading-none font-semibold text-ink">{valor}</p>
       {nota && <p className="mt-1 text-[11px] text-muted">{nota}</p>}
-    </Card>
+    </div>
   );
 }
 

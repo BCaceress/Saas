@@ -2,8 +2,20 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Check, CloudOff, Loader2, ScanLine, Search, X } from "lucide-react";
+import {
+  Box,
+  Check,
+  CloudOff,
+  Loader2,
+  PackageOpen,
+  Refrigerator,
+  ScanLine,
+  Search,
+  Snowflake,
+  X,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { StorageType } from "@/generated/prisma";
 import { Badge, Card } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
@@ -52,7 +64,9 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
   const [ordem, setOrdem] = React.useState<string[]>([]);
   const [alvo, setAlvo] = React.useState<InventarioItemView | null>(null);
   const [busca, setBusca] = React.useState("");
-  const [camera, setCamera] = React.useState(true);
+  // A câmera nasce desligada: quem abre a contagem muitas vezes vem conferir a
+  // lista, e vídeo ligado no fundo come bateria e assusta quem não pediu.
+  const [camera, setCamera] = React.useState(false);
   const [naoSalvos, setNaoSalvos] = React.useState(0);
   const [salvando, setSalvando] = React.useState(false);
   const [falhouSalvar, setFalhouSalvar] = React.useState(false);
@@ -182,7 +196,9 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
     const pos = new Map(ordem.map((id, i) => [id, i]));
     const termo = busca.trim().toLowerCase();
     return [...inventario.items]
-      .filter((i) => !termo || `${i.nome} ${i.sku}`.toLowerCase().includes(termo))
+      .filter(
+        (i) => !termo || `${i.nome} ${i.sku} ${i.ean ?? ""}`.toLowerCase().includes(termo),
+      )
       .sort((a, b) => {
         const pa = pos.get(a.productId);
         const pb = pos.get(b.productId);
@@ -196,28 +212,42 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
   }, [inventario.items, ordem, contagens, busca]);
 
   return (
-    <div className="space-y-3 pb-16">
-      {camera ? (
+    <div className="space-y-3 pb-24">
+      {camera && (
         <Scanner onCodigo={aoLerCodigo} continuo ocupado={alvo !== null} onFechar={() => setCamera(false)} />
-      ) : (
-        <Button variant="secondary" onClick={() => setCamera(true)} className="w-full">
-          <ScanLine className="h-4 w-4" aria-hidden />
-          Ligar a câmera
-        </Button>
       )}
 
-      <div className="relative">
-        <Search
-          className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-faint"
-          aria-hidden
-        />
-        <input
-          value={busca}
-          onChange={(e) => setBusca(e.target.value)}
-          placeholder="Achar produto pelo nome"
-          aria-label="Buscar produto no inventário"
-          className="min-h-11 w-full rounded-full border border-line-button bg-surface pr-4 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-        />
+      {/* Buscar pelo nome e bipar são a mesma pergunta ("qual produto agora?"),
+          então moram na mesma linha — o leitor é o botão à direita. */}
+      <div className="flex items-center gap-2">
+        <div className="relative min-w-0 flex-1">
+          <Search
+            className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-faint"
+            aria-hidden
+          />
+          <input
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Achar produto pelo nome"
+            aria-label="Buscar produto no inventário"
+            className="min-h-11 w-full rounded-full border border-line-button bg-surface pr-4 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          />
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setCamera((v) => !v)}
+          aria-pressed={camera}
+          aria-label={camera ? "Fechar o leitor" : "Ler código de barras"}
+          className={cn(
+            "tap grid h-11 w-11 shrink-0 place-items-center rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
+            camera
+              ? "border-brand bg-brand text-on-brand"
+              : "border-line-button bg-surface text-ink",
+          )}
+        >
+          <ScanLine className="h-5 w-5" aria-hidden />
+        </button>
       </div>
 
       <ul className="space-y-1.5">
@@ -237,22 +267,48 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
                     c != null && "border-ok/40 bg-ok-soft/30",
                   )}
                 >
-                  <span
-                    className={cn(
-                      "grid h-8 w-8 shrink-0 place-items-center rounded-full",
-                      c != null ? "bg-ok text-white" : "bg-surface-2 text-muted",
+                  {/* Foto no lugar do ícone de estado: na gôndola quem identifica
+                      o produto é a embalagem, não o nome. O visto de "já contei"
+                      vira selo no canto da miniatura. */}
+                  <span className="relative shrink-0">
+                    {i.imagemUrl ? (
+                      /* <img> cru como no resto do app: a URL é arbitrária
+                         (Cosmos ou upload do tenant) e next/image exigiria
+                         allowlist por host. */
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={i.imagemUrl}
+                        alt=""
+                        className="h-12 w-12 rounded-lg border border-line bg-surface object-contain"
+                      />
+                    ) : (
+                      <span className="grid h-12 w-12 place-items-center rounded-lg border border-line bg-surface-2 text-muted">
+                        <PackageOpen className="h-5 w-5" aria-hidden />
+                      </span>
                     )}
-                    aria-hidden
-                  >
-                    {c != null ? <Check className="h-4 w-4" /> : <ScanLine className="h-4 w-4" />}
+                    {c != null && (
+                      <span
+                        className="absolute -right-1 -bottom-1 grid h-5 w-5 place-items-center rounded-full bg-ok text-white ring-2 ring-surface"
+                        aria-hidden
+                      >
+                        <Check className="h-3 w-3" />
+                      </span>
+                    )}
                   </span>
 
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium text-ink">{i.nome}</span>
+                    {/* O código da UNIDADE é o que a pessoa bipa e o que confere
+                        com a etiqueta da prateleira — vem antes do SKU. */}
                     <span className="block truncate font-mono text-[11px] text-muted">
-                      {i.sku}
-                      {i.locationNome ? ` · ${i.locationNome}` : ""}
+                      {i.ean ?? i.sku}
                     </span>
+                    {i.locationNome && (
+                      <span className="mt-0.5 flex items-center gap-1 text-[11px] text-ink-2">
+                        <IconeLocal tipo={i.locationTipo} />
+                        <span className="truncate">{i.locationNome}</span>
+                      </span>
+                    )}
                   </span>
 
                   <span className="shrink-0 text-right">
@@ -269,8 +325,17 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
                           </span>
                         )}
                       </>
-                    ) : (
+                    ) : inventario.modoCego ? (
                       <span className="text-[11px] text-faint">a contar</span>
+                    ) : (
+                      /* Contagem aberta: o saldo do sistema já aparece antes de
+                         contar — é o número que a pessoa vai conferir. */
+                      <>
+                        <span className="block font-display text-lg leading-none font-semibold text-ink-2 tabular-nums">
+                          {i.qtdSistema.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}
+                        </span>
+                        <span className="text-[11px] text-faint">no sistema</span>
+                      </>
                     )}
                   </span>
                 </Card>
@@ -280,8 +345,10 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
         })}
       </ul>
 
-      {/* Barra fixa acima da barra de abas do shell. */}
-      <div className="fixed inset-x-0 bottom-16 z-30 border-t border-line bg-surface px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+      {/* Barra fixa acima da barra de abas do shell: a barra flutuante ocupa
+          ~4rem + respiro + área segura, então 5.5rem é o piso desta (mesmo
+          cálculo do lançador do copiloto). */}
+      <div className="fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-30 rounded-t-[var(--radius-lg)] border-t border-line bg-surface px-4 py-2 shadow-[var(--shadow-2)]">
         <div className="flex items-center gap-2">
           <div className="min-w-0 flex-1">
             <p className="text-[13px] font-medium text-ink">
@@ -333,6 +400,32 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Cor do local de estoque. A cor É a informação: numa contagem de gôndola, o
+ * que muda o percurso é "isso está no refrigerado?", não o nome da prateleira.
+ * Mesmo par ícone/cor do cadastro de armazenagem no desktop.
+ */
+const LOCAL_ICONE: Record<StorageType, React.ElementType> = {
+  AMBIENTE: Box,
+  REFRIGERADO: Refrigerator,
+  CONGELADO: Snowflake,
+};
+const LOCAL_COR: Record<StorageType, string> = {
+  AMBIENTE: "text-brand",
+  REFRIGERADO: "text-ok",
+  CONGELADO: "text-blue-500",
+};
+
+function IconeLocal({ tipo }: { tipo: StorageType | null }) {
+  const Icone = tipo ? LOCAL_ICONE[tipo] : Box;
+  return (
+    <Icone
+      className={cn("h-3.5 w-3.5 shrink-0", tipo ? LOCAL_COR[tipo] : "text-faint")}
+      aria-hidden
+    />
   );
 }
 
