@@ -257,6 +257,16 @@ function Tile({ label, valor, nota }: { label: string; valor: string; nota?: str
  * `vendasPorDia` devolve "2026-08-11". A barra em destaque (a hora corrente, o
  * último dia) sai da posição no vetor, não de reinterpretar esse texto: era
  * daí que vinham o "08hh" no rótulo e o destaque que nunca acendia.
+ *
+ * Duas coisas que barra de celular precisa e não tinha:
+ *
+ * 1. LEITURA — `title` é gesto de cursor; no toque ninguém descobre quanto
+ *    vendeu às 15h. Agora cada barra é botão e a linha ACIMA do gráfico diz por
+ *    extenso a que hora/dia se refere e quanto foi. Abre já apontando para o
+ *    destaque, então a resposta mais provável está na tela sem nenhum toque.
+ * 2. ENTRADA — as barras sobem do chão ao montar, escalonadas. Não é enfeite:
+ *    o movimento diz onde o gráfico começa e termina antes de a pessoa ler os
+ *    números. Sob `prefers-reduced-motion` já nasce na altura final.
  */
 function CurvaMovimento({
   pontos,
@@ -272,6 +282,25 @@ function CurvaMovimento({
   const titulo = granularidade === "hora" ? "Movimento por hora" : "Movimento por dia";
   const max = Math.max(...pontos.map((p) => p.valor), 0);
 
+  // Na curva por hora, o "agora" só faz sentido quando o período inclui o dia
+  // de hoje — e aí ele é o índice da hora corrente. Na curva por dia, o
+  // destaque é sempre o último ponto (o dia mais recente do período).
+  const destaque =
+    granularidade === "hora"
+      ? incluiHoje
+        ? pontos.findIndex((p) => p.data === `${String(new Date().getHours()).padStart(2, "0")}h`)
+        : -1
+      : pontos.length - 1;
+
+  const [escolhido, setEscolhido] = React.useState<number | null>(null);
+  // Sobe as barras só depois da primeira pintura — subir de 0 exige que o
+  // navegador tenha desenhado o 0 antes.
+  const [subiu, setSubiu] = React.useState(false);
+  React.useEffect(() => {
+    const t = requestAnimationFrame(() => setSubiu(true));
+    return () => cancelAnimationFrame(t);
+  }, []);
+
   if (max <= 0) {
     return (
       <Card className="p-4">
@@ -283,46 +312,84 @@ function CurvaMovimento({
     );
   }
 
-  // Na curva por hora, o "agora" só faz sentido quando o período inclui o dia
-  // de hoje — e aí ele é o índice da hora corrente. Na curva por dia, o
-  // destaque é sempre o último ponto (o dia mais recente do período).
-  const destaque =
-    granularidade === "hora"
-      ? incluiHoje
-        ? pontos.findIndex((p) => p.data === `${String(new Date().getHours()).padStart(2, "0")}h`)
-        : -1
-      : pontos.length - 1;
+  const rotulo = (p: PontoTempo) => (granularidade === "hora" ? p.data : diaCurto(p.data));
 
-  const rotulo = (p: PontoTempo) =>
-    granularidade === "hora" ? p.data : diaCurto(p.data);
+  const emFoco = escolhido ?? (destaque >= 0 ? destaque : pontos.length - 1);
+  const ponto = pontos[emFoco];
+  const total = pontos.reduce((s, p) => s + p.valor, 0);
 
   return (
     <Card className="p-4">
-      <p className="text-sm font-medium text-ink">{titulo}</p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-ink">{titulo}</p>
+          {/* A linha viva: diz de QUE hora/dia é o número que está grande. */}
+          <p className="mt-0.5 truncate text-[11px] text-muted">
+            {ponto ? momentoPorExtenso(ponto.data, granularidade) : periodoLabel}
+            {escolhido === null && emFoco === destaque && (
+              <span className="text-faint">
+                {granularidade === "hora" ? " · agora" : " · último dia"}
+              </span>
+            )}
+          </p>
+        </div>
+        <p className="shrink-0 font-display text-lg leading-none font-semibold text-ink tabular-nums">
+          {brl(ponto?.valor ?? 0)}
+        </p>
+      </div>
+
       {/* Cada coluna precisa OCUPAR a altura da faixa: a barra tem altura em
           porcentagem, e porcentagem sobre pai de altura automática vira zero —
           era por isso que o gráfico saía em branco. Daí `items-stretch`
           (herdado) + `flex-col justify-end` para a barra crescer do chão. */}
-      <div className="mt-3 flex h-20 gap-[3px]">
+      <div className="mt-3 flex h-24 gap-[3px]">
         {pontos.map((p, i) => {
           const altura = Math.max(2, (p.valor / max) * 100);
+          const ativo = i === emFoco;
           return (
-            <div
+            <button
               key={p.data}
-              className="flex flex-1 flex-col justify-end"
+              type="button"
+              onClick={() => setEscolhido(i === escolhido ? null : i)}
+              aria-pressed={ativo}
+              aria-label={`${momentoPorExtenso(p.data, granularidade)}: ${brl(p.valor)}`}
               title={`${rotulo(p)} · ${brl(p.valor)}`}
-              aria-label={`${rotulo(p)}: ${brl(p.valor)}`}
+              className="group flex flex-1 cursor-pointer flex-col justify-end rounded-sm focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
             >
-              <div
-                className={cn("w-full rounded-t-sm", i === destaque ? "bg-brand" : "bg-brand/35")}
-                style={{ height: `${altura}%` }}
+              <span
+                className={cn(
+                  "w-full rounded-t-sm transition-[height,background-color] duration-500 ease-out motion-reduce:transition-none",
+                  ativo
+                    ? "bg-brand"
+                    : i === destaque
+                      ? "bg-brand/60"
+                      : "bg-brand/25 group-hover:bg-brand/45",
+                )}
+                style={{
+                  height: subiu ? `${altura}%` : "0%",
+                  // Escalonado, mas com teto: em 30 dias uma cascata de 30×18ms
+                  // já seria meio segundo de espera pela última barra.
+                  transitionDelay: `${Math.min(i * 18, 260)}ms`,
+                }}
               />
-            </div>
+            </button>
           );
         })}
       </div>
-      <div className="mt-1 flex justify-between text-[10px] text-faint">
+
+      <div className="mt-1.5 flex items-center justify-between text-[10px] text-faint">
         <span>{pontos[0] ? rotulo(pontos[0]) : ""}</span>
+        {escolhido !== null ? (
+          <button
+            type="button"
+            onClick={() => setEscolhido(null)}
+            className="cursor-pointer text-[11px] font-medium text-brand"
+          >
+            Ver o período
+          </button>
+        ) : (
+          <span className="text-muted tabular-nums">{brl(total)} no período</span>
+        )}
         <span>{pontos.length > 1 ? rotulo(pontos[pontos.length - 1]!) : ""}</span>
       </div>
     </Card>
@@ -337,13 +404,42 @@ function diaCurto(chave: string): string {
   return mes && dia ? `${dia}/${mes}` : chave;
 }
 
+/**
+ * A chave do ponto por extenso — "seg, 11/08" ou "das 14h às 15h". É o que
+ * responde "esse pico foi quando?", que "11/08" sozinho responde pela metade e
+ * "08h" não responde de jeito nenhum.
+ */
+function momentoPorExtenso(chave: string, granularidade: "hora" | "dia"): string {
+  if (granularidade === "hora") {
+    const h = Number.parseInt(chave, 10);
+    return Number.isNaN(h) ? chave : `das ${chave} às ${String((h + 1) % 24).padStart(2, "0")}h`;
+  }
+  const [ano, mes, dia] = chave.split("-").map(Number);
+  if (!ano || !mes || !dia) return chave;
+  const d = new Date(ano, mes - 1, dia);
+  const semana = d.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "");
+  return `${semana}, ${String(dia).padStart(2, "0")}/${String(mes).padStart(2, "0")}`;
+}
+
+/**
+ * Mix de pagamento. As barras se enchem da esquerda ao montar, uma logo depois
+ * da outra: a ordem em que crescem é a própria ordenação por valor, então o
+ * "quem manda aqui é o Pix" chega antes da leitura dos números. Sem movimento
+ * sob `prefers-reduced-motion` — nasce cheia.
+ */
 function Mix({ mix, total }: { mix: MixPagamento[]; total: number }) {
   const ordenado = [...mix].sort((a, b) => b.valor - a.valor);
+  const [encheu, setEncheu] = React.useState(false);
+  React.useEffect(() => {
+    const t = requestAnimationFrame(() => setEncheu(true));
+    return () => cancelAnimationFrame(t);
+  }, []);
+
   return (
     <Card className="p-4">
       <p className="text-sm font-medium text-ink">Como pagaram</p>
       <div className="mt-3 space-y-2">
-        {ordenado.map((m) => {
+        {ordenado.map((m, i) => {
           const pct = total > 0 ? (m.valor / total) * 100 : 0;
           return (
             <div key={m.metodo}>
@@ -352,7 +448,13 @@ function Mix({ mix, total }: { mix: MixPagamento[]; total: number }) {
                 <span className="font-medium text-ink tabular-nums">{brl(m.valor)}</span>
               </div>
               <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-2">
-                <div className="h-full rounded-full bg-brand" style={{ width: `${pct}%` }} />
+                <div
+                  className="h-full rounded-full bg-brand transition-[width] duration-500 ease-out motion-reduce:transition-none"
+                  style={{
+                    width: encheu ? `${pct}%` : "0%",
+                    transitionDelay: `${Math.min(i * 60, 240)}ms`,
+                  }}
+                />
               </div>
             </div>
           );

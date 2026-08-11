@@ -976,6 +976,7 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
 
   const pendentes = groups.filter((g) => g.obrigatoria && (sel[g.id] ?? []).length === 0);
   const valido = pendentes.length === 0;
+  const concluidos = groups.filter((g) => (sel[g.id] ?? []).length > 0).length;
 
   // Imagem principal acompanha a montagem quando o produto não tem foto própria.
   const imgPrincipal = p.imagemUrl ?? [...escolhidos].reverse().find((i) => i.imagemUrl)?.imagemUrl ?? null;
@@ -1044,6 +1045,31 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
               </div>
               <p className="mt-0.5 text-xs text-faint">Valor inicial — adicionais entram no total.</p>
             </div>
+
+            {/* Sua montagem: a coluna do produto ficava vazia depois da segunda
+                etapa, e quem está no passo 4 já não lembra o que escolheu no 1.
+                Só aparece depois da primeira escolha — antes disso não há o que
+                resumir. */}
+            {escolhidos.length > 0 && (
+              <div className="rounded-2xl border border-line bg-bg p-4 motion-safe:animate-in motion-safe:fade-in">
+                <p className="font-display text-sm font-bold uppercase tracking-wide text-muted">Sua montagem</p>
+                <div className="mt-2.5 flex flex-col gap-2">
+                  {groups.map((g) => {
+                    const itens = escolhidosDe(g);
+                    if (itens.length === 0) return null;
+                    return (
+                      <button key={g.id} onClick={() => irPara(g.id)}
+                        className="flex items-baseline justify-between gap-3 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-surface-2">
+                        <span className="shrink-0 text-xs text-muted">{g.nome}</span>
+                        <span className="min-w-0 truncate text-right text-sm font-semibold text-ink">
+                          {itens.map((i) => i.nome).join(", ")}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </aside>
 
           {/* ── Montagem: acordeão de etapas ── */}
@@ -1054,6 +1080,46 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
             </button>
 
             <div className="mx-auto flex max-w-3xl flex-col gap-3 p-4 pb-8 sm:p-6 lg:pr-20">
+              {/* Trilha do progresso, grudada no topo da rolagem: com quatro
+                  etapas abaixo da dobra, "em que passo eu estou e quanto
+                  falta?" era pergunta sem resposta na tela. Os números também
+                  são atalho para voltar e trocar. */}
+              {groups.length > 1 && (
+                <div className="sticky top-0 z-10 -mx-4 mb-1 border-b border-line bg-bg/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="font-display text-sm font-bold text-ink">
+                      {concluidos === groups.length
+                        ? "Montagem completa"
+                        : `Passo ${Math.min(concluidos + 1, groups.length)} de ${groups.length}`}
+                    </p>
+                    <div className="flex shrink-0 gap-1.5">
+                      {groups.map((g, i) => {
+                        const feito = (sel[g.id] ?? []).length > 0;
+                        const aqui = aberto === g.id;
+                        return (
+                          <button key={g.id} onClick={() => irPara(g.id)}
+                            aria-label={`Ir para ${g.nome}`} aria-current={aqui || undefined}
+                            className={cn(
+                              "grid h-8 w-8 place-items-center rounded-full font-display text-sm font-bold transition-colors",
+                              aqui ? "bg-brand text-on-brand"
+                                : feito ? "bg-brand-soft text-brand"
+                                  : "border border-line text-muted hover:bg-surface-2",
+                            )}>
+                            {feito && !aqui ? <Check size={15} strokeWidth={3} /> : i + 1}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-surface-2">
+                    <div
+                      className="h-full rounded-full bg-brand transition-[width] duration-300 ease-out motion-reduce:transition-none"
+                      style={{ width: `${(concluidos / groups.length) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
               {groups.map((g, gi) => {
                 const atual = sel[g.id] ?? [];
                 const feito = atual.length > 0;
@@ -1083,6 +1149,22 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
                           {feito ? nomes : subtitulo(g)}
                         </span>
                       </span>
+                      {/* Miniatura do que foi escolhido: na etapa fechada o
+                          nome ("Tônica") diz menos que o rótulo da garrafa, que
+                          é como se reconhece o produto na prateleira. */}
+                      {feito && (
+                        <span className="hidden shrink-0 items-center gap-1 sm:flex">
+                          {escolhidosDe(g).slice(0, 3).map((i) => (
+                            <span key={i.componentProductId}
+                              className="grid h-9 w-9 place-items-center overflow-hidden rounded-full border border-line bg-surface-2">
+                              {i.imagemUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={i.imagemUrl} alt="" className="h-full w-full object-contain p-0.5" loading="lazy" />
+                              ) : <CatIcon nome={p.categoria} size={16} className="text-faint" />}
+                            </span>
+                          ))}
+                        </span>
+                      )}
                       <span className="shrink-0 text-sm font-bold text-brand">{feito ? "Alterar" : "Escolher"}</span>
                     </button>
                   );
@@ -1223,19 +1305,29 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
               {brl(totalUnit)}
             </p>
           </div>
-          <button disabled={!valido}
-            onClick={() => onConfirmar(escolhidos.map((i) => i.componentProductId), precoExtra, detalhe)}
-            className={cn(
-              "flex h-14 w-full shrink-0 items-center justify-center gap-3 rounded-2xl px-6 font-display text-lg font-bold transition-all sm:ml-auto sm:h-16 sm:w-auto sm:px-10 sm:text-xl",
+          {/* Faltando escolha, o botão LEVA à etapa pendente em vez de só ficar
+              apagado: quem toca no botão grande está dizendo "quero terminar", e
+              um botão morto deixava a pessoa procurando o que faltava. */}
+          <button
+            onClick={() =>
               valido
-                ? "bg-brand text-on-brand shadow-[var(--shadow-2)] hover:bg-brand-strong active:scale-[0.98]"
-                : "cursor-not-allowed bg-surface-2 text-muted",
+                ? onConfirmar(escolhidos.map((i) => i.componentProductId), precoExtra, detalhe)
+                : irPara(pendentes[0]!.id)
+            }
+            className={cn(
+              "flex h-14 w-full shrink-0 items-center justify-center gap-3 rounded-2xl px-6 font-display text-lg font-bold transition-all active:scale-[0.98] sm:ml-auto sm:h-16 sm:w-auto sm:px-10 sm:text-xl",
+              valido
+                ? "bg-brand text-on-brand shadow-[var(--shadow-2)] hover:bg-brand-strong"
+                : "bg-surface-2 text-ink-2 hover:bg-line",
             )}>
             {valido ? (
               <><Plus size={24} strokeWidth={2.5} /> Adicionar ao carrinho
                 <span className="rounded-xl bg-on-brand/15 px-3 py-1 tabular-nums">{brl(totalUnit)}</span></>
             ) : (
-              <>{pendentes.length === 1 ? `Escolha: ${pendentes[0].nome}` : `Faltam ${pendentes.length} escolhas`}</>
+              <>
+                {pendentes.length === 1 ? `Escolha: ${pendentes[0]!.nome}` : `Faltam ${pendentes.length} escolhas`}
+                <ArrowRight size={20} />
+              </>
             )}
           </button>
         </div>

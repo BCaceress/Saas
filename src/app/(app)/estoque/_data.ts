@@ -432,6 +432,9 @@ export type MovimentacoesFiltro = {
   q?: string;
   chip?: string; // todos | entradas | vendas | saidas | transferencias | producao | ajustes
   dias?: number | null; // null = todo período; 0 = hoje
+  /** Janela explícita — ganha de `dias` quando informada. `ate` é EXCLUSIVO. */
+  de?: Date;
+  ate?: Date;
   origem?: string; // id de ORIGEM (venda_totem, ajuste_inventario, …)
   responsavel?: string; // userId · "__sistema" = sem responsável
   pagina?: number;
@@ -509,7 +512,16 @@ export async function loadMovimentacoes(
   const chipWhere = filtro.chip ? CHIP_WHERE[filtro.chip] : undefined;
   if (chipWhere) and.push(chipWhere);
 
-  if (filtro.dias != null) {
+  // Janela explícita tem precedência: "ontem" e o intervalo escolhido à mão têm
+  // FIM, coisa que "últimos N dias" não sabe expressar.
+  if (filtro.de || filtro.ate) {
+    and.push({
+      createdAt: {
+        ...(filtro.de ? { gte: filtro.de } : {}),
+        ...(filtro.ate ? { lt: filtro.ate } : {}),
+      },
+    });
+  } else if (filtro.dias != null) {
     const limite = new Date();
     if (filtro.dias === 0) limite.setHours(0, 0, 0, 0);
     else limite.setDate(limite.getDate() - filtro.dias);

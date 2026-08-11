@@ -5,6 +5,7 @@ import { CheckCheck, CheckCircle2, ListChecks, Loader2, RotateCw, X } from "luci
 import { cn } from "@/lib/utils";
 import { useAlerts } from "@/components/app/alerts-provider";
 import { AlertaCard } from "@/components/mobile/alerta-card";
+import { BottomSheet } from "@/components/mobile/bottom-sheet";
 import { Card } from "@/components/ui/misc";
 import {
   CATEGORY_LABEL,
@@ -29,6 +30,9 @@ export function AlertasClient() {
   const [filtro, setFiltro] = React.useState<AlertCategory | null>(null);
   // `null` = fora do modo de seleção. Set vazio já é "selecionando, nada marcado".
   const [selecao, setSelecao] = React.useState<Set<string> | null>(null);
+  // Ler todos é irreversível na prática: o alerta some do sino e do feed, e
+  // quem tocou sem querer não tem como listar o que apagou.
+  const [confirmarTodos, setConfirmarTodos] = React.useState(false);
 
   function alternar(id: string) {
     setSelecao((prev) => {
@@ -63,6 +67,7 @@ export function AlertasClient() {
   // o que a pessoa não chegou a ver.
   function marcarVisiveis() {
     for (const a of visiveis) ocultar(a.id);
+    setConfirmarTodos(false);
   }
 
   if (!loaded) {
@@ -145,10 +150,13 @@ export function AlertasClient() {
             Escolher
           </button>
 
+          {/* Mesmo desenho dos vizinhos: um botão sem contorno no meio de dois
+              contornados se lia como "desligado", justo o que apaga a tela
+              inteira. */}
           <button
             type="button"
-            onClick={marcarVisiveis}
-            className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full text-sm font-medium text-muted hover:bg-surface-2 hover:text-ink"
+            onClick={() => setConfirmarTodos(true)}
+            className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line-button bg-surface text-sm font-medium text-ink"
           >
             <CheckCheck className="h-4 w-4" aria-hidden />
             Ler todos
@@ -191,6 +199,54 @@ export function AlertasClient() {
           />
         ))}
       </div>
+
+      <BottomSheet
+        open={confirmarTodos}
+        onClose={() => setConfirmarTodos(false)}
+        titulo={
+          visiveis.length === 1
+            ? "Marcar 1 alerta como lido?"
+            : `Marcar ${visiveis.length} alertas como lidos?`
+        }
+        descricao={
+          filtroEfetivo
+            ? `Vale só para ${CATEGORY_LABEL[filtroEfetivo].toLowerCase()} — o resto do feed continua aceso.`
+            : "Some do feed e do sino. O que ainda estiver pendente volta a aparecer na próxima verificação."
+        }
+        rodape={
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmarTodos(false)}
+              className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line-button bg-surface text-sm font-medium text-ink"
+            >
+              <X className="h-4 w-4" aria-hidden />
+              Voltar
+            </button>
+            <button
+              type="button"
+              onClick={marcarVisiveis}
+              className="inline-flex min-h-11 flex-[1.4] cursor-pointer items-center justify-center gap-1.5 rounded-full bg-brand text-sm font-medium text-on-brand"
+            >
+              <CheckCheck className="h-4 w-4" aria-hidden />
+              Ler todos
+            </button>
+          </div>
+        }
+      >
+        <ul className="space-y-1 pb-1">
+          {visiveis.slice(0, 4).map((a) => (
+            <li key={a.id} className="truncate text-[13px] text-ink-2">
+              · {a.titulo}
+            </li>
+          ))}
+          {visiveis.length > 4 && (
+            <li className="text-[13px] text-muted">
+              e mais {visiveis.length - 4}…
+            </li>
+          )}
+        </ul>
+      </BottomSheet>
     </div>
   );
 }

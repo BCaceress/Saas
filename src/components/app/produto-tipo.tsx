@@ -1,4 +1,4 @@
-import { Blocks, ChefHat, Package, Wheat, type LucideIcon } from "lucide-react";
+import { Box, FlaskConical, Layers2, Martini, type LucideIcon } from "lucide-react";
 
 /**
  * Tipo de produto — rótulo e ícone, fonte ÚNICA para as duas superfícies.
@@ -9,9 +9,12 @@ import { Blocks, ChefHat, Package, Wheat, type LucideIcon } from "lucide-react";
  *
  * A escolha dos quatro é semântica, não decorativa:
  * - SIMPLES        caixa fechada — item de prateleira, vendido como veio
- * - INSUMO         espiga — matéria-prima, entra em outra coisa
- * - COMBO          blocos — peças montadas num item só
- * - PERSONALIZADO  chapéu de chef — receita, algo que se prepara
+ * - INSUMO         dose — matéria-prima medida, entra em outra coisa
+ * - COMBO          camadas — itens empilhados e vendidos como um só
+ * - PERSONALIZADO  taça — receita montada na hora (o drink do balcão)
+ *
+ * Nenhum deles repete ícone de outra função da tela: o de código de barras é do
+ * EAN, o de etiqueta é de preço. Tipo de produto tem família própria.
  *
  * Sem `"use client"`: são só constantes e um componente de forma, então serve
  * server component e client component sem duplicar o mapa.
@@ -25,15 +28,15 @@ export const TIPO_LABEL: Record<string, string> = {
 };
 
 export const TIPO_ICONE: Record<string, LucideIcon> = {
-  SIMPLES: Package,
-  INSUMO: Wheat,
-  COMBO: Blocks,
-  PERSONALIZADO: ChefHat,
+  SIMPLES: Box,
+  INSUMO: FlaskConical,
+  COMBO: Layers2,
+  PERSONALIZADO: Martini,
 };
 
-/** O componente de ícone do tipo; cai em `Package` para tipo desconhecido. */
+/** O componente de ícone do tipo; cai em `Box` para tipo desconhecido. */
 export function iconeTipo(tipo: string): LucideIcon {
-  return TIPO_ICONE[tipo] ?? Package;
+  return TIPO_ICONE[tipo] ?? Box;
 }
 
 /** Ícone já renderizado — para quando o chamador só quer pôr no meio do texto. */
@@ -49,7 +52,7 @@ export function TipoIcone({
   // Índice direto no mapa, e não `iconeTipo(tipo)`: uma CHAMADA que devolve
   // componente durante o render é lida pelo compilador do React como
   // "componente criado no render" (e remontaria a cada passada).
-  const Icone = TIPO_ICONE[tipo] ?? Package;
+  const Icone = TIPO_ICONE[tipo] ?? Box;
   return <Icone size={size} className={className} aria-hidden />;
 }
 

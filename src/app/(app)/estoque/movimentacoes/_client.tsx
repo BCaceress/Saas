@@ -7,18 +7,10 @@ import {
   Search,
   Download,
   SlidersHorizontal,
-  ArrowDownLeft,
-  ArrowUpRight,
   ArrowLeftRight,
   ChevronLeft,
   ChevronRight,
-  Pencil,
   ClipboardList,
-  PackageMinus,
-  Undo2,
-  BottleWine,
-  Martini,
-  ShoppingCart,
   X,
   Calendar,
   History,
@@ -28,29 +20,34 @@ import {
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/app/page-header";
 import { Sheet } from "@/components/ui/sheet";
+import { TOM_BARRA, TOM_FUNDO, TOM_TEXTO } from "@/components/mobile/ui";
+import {
+  MOV_PADRAO,
+  MOV_TIPO,
+  MOV_VENDA,
+  type RotuloMovimento,
+} from "@/components/mobile/movimento-tipo";
 import type { MovimentacaoRow } from "../_data";
 
 // ── Config por tipo ────────────────────────────────────────────
+// Rótulo, ícone e tom vêm de `movimento-tipo` — o MESMO mapa que o extrato do
+// celular usa. Aqui só se traduz o tom para as classes desta tela (selo cheio +
+// pontinho na timeline).
 
 type TipoConfig = { label: string; icon: LucideIcon; badge: string; dot: string };
 
-const TIPO: Record<string, TipoConfig> = {
-  ENTRADA: { label: "Entrada", icon: ArrowDownLeft, badge: "bg-ok-soft text-ok", dot: "bg-ok" },
-  ABERTURA: { label: "Abertura", icon: BottleWine, badge: "bg-surface-2 text-muted", dot: "bg-muted" },
-  SAIDA: { label: "Saída", icon: ArrowUpRight, badge: "bg-danger-soft text-danger", dot: "bg-danger" },
-  TRANSFERENCIA: { label: "Transferência", icon: ArrowLeftRight, badge: "bg-brand-soft text-brand", dot: "bg-brand" },
-  PRODUCAO: { label: "Produção", icon: Martini, badge: "bg-violet-soft text-violet", dot: "bg-violet" },
-  AJUSTE: { label: "Ajuste", icon: Pencil, badge: "bg-info-soft text-info", dot: "bg-info" },
-  PERDA: { label: "Perda", icon: PackageMinus, badge: "bg-danger-soft text-danger", dot: "bg-danger" },
-  DEVOLUCAO_CLIENTE: { label: "Devolução", icon: Undo2, badge: "bg-ok-soft text-ok", dot: "bg-ok" },
-  DEVOLUCAO_FORNECEDOR: { label: "Devolução", icon: Undo2, badge: "bg-danger-soft text-danger", dot: "bg-danger" },
-};
+const doRotulo = (r: RotuloMovimento): TipoConfig => ({
+  label: r.label,
+  icon: r.icone,
+  badge: cn(TOM_FUNDO[r.tom], TOM_TEXTO[r.tom]),
+  dot: TOM_BARRA[r.tom],
+});
 
 const tipoOf = (t: string): TipoConfig =>
-  TIPO[t] ?? { label: t, icon: Pencil, badge: "bg-surface-2 text-muted", dot: "bg-muted" };
+  MOV_TIPO[t] ? doRotulo(MOV_TIPO[t]!) : { ...doRotulo(MOV_PADRAO), label: t };
 
 // Saída originada de venda ganha badge próprio — "Saída" fica só para a manual.
-const VENDA_CFG: TipoConfig = { label: "Venda", icon: ShoppingCart, badge: "bg-accent-soft text-accent", dot: "bg-accent" };
+const VENDA_CFG: TipoConfig = doRotulo(MOV_VENDA);
 
 const tipoDe = (r: MovimentacaoRow): TipoConfig =>
   r.tipo === "SAIDA" && r.origem.startsWith("Venda") ? VENDA_CFG : tipoOf(r.tipo);

@@ -4,7 +4,7 @@ import { getActiveSiteId } from "@/lib/sites";
 import { loadMovimentacoes } from "@/app/(app)/estoque/_data";
 import { MobilePageHeader } from "@/components/mobile/page-header";
 import { MovimentacoesClient } from "./_client";
-import { CHIPS, PERIODOS, diasDoPeriodo } from "./_filtros";
+import { CHIPS, resolvePeriodo } from "./_filtros";
 
 /**
  * Extrato do estoque no celular — "o que mexeu, quando e por quê".
@@ -22,13 +22,19 @@ import { CHIPS, PERIODOS, diasDoPeriodo } from "./_filtros";
 export default async function MovimentacoesMobilePage({
   searchParams,
 }: {
-  searchParams: Promise<{ tipo?: string; periodo?: string; n?: string }>;
+  searchParams: Promise<{
+    tipo?: string;
+    periodo?: string;
+    de?: string;
+    ate?: string;
+    n?: string;
+  }>;
 }) {
   const ctx = await requirePermissaoMobile("estoque.ver");
   const sp = await searchParams;
 
   const chip = CHIPS.some((c) => c.valor === sp.tipo) ? sp.tipo! : "todos";
-  const periodo = PERIODOS.some((p) => p.valor === sp.periodo) ? sp.periodo! : "7";
+  const periodo = resolvePeriodo(sp);
   // Página crescente em vez de rolagem infinita: o "Ver mais" vira URL, então
   // quem volta para a tela cai onde estava. Teto de 300 — acima disso a
   // pergunta é de relatório, não de extrato de bolso.
@@ -38,7 +44,8 @@ export default async function MovimentacoesMobilePage({
     const siteId = await getActiveSiteId();
     return loadMovimentacoes(siteId, {
       chip: chip === "todos" ? undefined : chip,
-      dias: diasDoPeriodo(periodo),
+      de: periodo.de,
+      ate: periodo.ate,
       pagina: 1,
       porPagina,
     });
@@ -69,7 +76,10 @@ export default async function MovimentacoesMobilePage({
         total={dados.total}
         mostrando={dados.rows.length}
         chip={chip}
-        periodo={periodo}
+        periodo={periodo.valor}
+        periodoLabel={periodo.label}
+        de={periodo.deInput}
+        ate={periodo.ateInput}
         porPagina={porPagina}
       />
     </>

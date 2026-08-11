@@ -82,21 +82,27 @@ export function AlertaCard({
             </Link>
           )}
 
-          {!selecionavel && onResolver && (
-            <button
-              type="button"
-              onClick={() => onResolver(alerta.id)}
-              className="tap inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-full px-4 text-[13px] font-medium text-muted hover:bg-surface-2 hover:text-ink active:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-            >
-              <Check className="h-4 w-4" aria-hidden />
-              Lido
-            </button>
-          )}
-
+          {/* Ler fica na PONTA direita, e a hora recua para antes dele: a ação
+              que se repete cartão a cartão precisa cair sempre no mesmo ponto
+              do polegar, e não flutuar com o tamanho do rótulo de "abrir". */}
           {alerta.at && (
             <span className="ml-auto shrink-0 text-[11px] text-faint">
               {tempoRelativo(alerta.at)}
             </span>
+          )}
+
+          {!selecionavel && onResolver && (
+            <button
+              type="button"
+              onClick={() => onResolver(alerta.id)}
+              className={cn(
+                "tap inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-1 rounded-full px-4 text-[13px] font-medium text-muted hover:bg-surface-2 hover:text-ink active:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
+                !alerta.at && "ml-auto",
+              )}
+            >
+              <Check className="h-4 w-4" aria-hidden />
+              Lido
+            </button>
           )}
         </div>
       </div>

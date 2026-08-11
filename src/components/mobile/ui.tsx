@@ -107,8 +107,8 @@ export const TOM_TEXTO: Record<Tom, string> = {
   neutro: "text-ink-2",
 };
 
-/** Preenchimento sólido no tom — só a barra de rodapé dos cards usa. */
-const TOM_BARRA: Record<Tom, string> = {
+/** Preenchimento sólido no tom — barra de rodapé dos cards e pontos de status. */
+export const TOM_BARRA: Record<Tom, string> = {
   brand: "bg-brand",
   accent: "bg-accent",
   ok: "bg-ok",

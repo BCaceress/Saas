@@ -1,11 +1,12 @@
 import {
+  ArrowDownLeft,
   ArrowLeftRight,
-  Boxes,
+  ArrowUpRight,
+  BottleWine,
+  Martini,
   PackageMinus,
-  PackagePlus,
+  Pencil,
   ShoppingCart,
-  SlidersHorizontal,
-  TriangleAlert,
   Undo2,
   type LucideIcon,
 } from "lucide-react";
@@ -13,28 +14,41 @@ import type { Tom } from "@/components/mobile/ui";
 
 /**
  * Rótulo, ícone e tom de cada tipo de `StockMovement` — fonte única do resumo
- * da home (`_ultimas`) e do extrato (`/m/movimentacoes`). Sem import de banco,
- * então serve server e client component.
+ * da home (`_ultimas`), do extrato do celular (`/m/movimentacoes`) E da tela de
+ * `/estoque/movimentacoes` do computador. Sem import de banco, então serve
+ * server e client component.
+ *
+ * Uma entrada tem de ter a MESMA cor e o MESMO desenho nas duas superfícies:
+ * quem confere no balcão pelo celular e depois audita no computador está lendo
+ * o mesmo extrato — dois desenhos para "produção" viram dois conceitos na
+ * cabeça de quem lê.
  */
 
 export type RotuloMovimento = { label: string; icone: LucideIcon; tom: Tom };
 
 export const MOV_TIPO: Record<string, RotuloMovimento> = {
-  ENTRADA: { label: "Entrada", icone: PackagePlus, tom: "ok" },
-  SAIDA: { label: "Saída", icone: PackageMinus, tom: "info" },
-  AJUSTE: { label: "Ajuste", icone: SlidersHorizontal, tom: "warn" },
+  ENTRADA: { label: "Entrada", icone: ArrowDownLeft, tom: "ok" },
+  SAIDA: { label: "Saída", icone: ArrowUpRight, tom: "danger" },
+  AJUSTE: { label: "Ajuste", icone: Pencil, tom: "info" },
   TRANSFERENCIA: { label: "Transferência", icone: ArrowLeftRight, tom: "brand" },
-  ABERTURA: { label: "Abertura de unidade", icone: Boxes, tom: "accent" },
-  PRODUCAO: { label: "Produção", icone: Boxes, tom: "violeta" },
-  PERDA: { label: "Perda", icone: TriangleAlert, tom: "danger" },
-  DEVOLUCAO_CLIENTE: { label: "Devolução do cliente", icone: Undo2, tom: "ok" },
-  DEVOLUCAO_FORNECEDOR: { label: "Devolução ao fornecedor", icone: Undo2, tom: "warn" },
+  ABERTURA: { label: "Abertura", icone: BottleWine, tom: "neutro" },
+  PRODUCAO: { label: "Produção", icone: Martini, tom: "violeta" },
+  PERDA: { label: "Perda", icone: PackageMinus, tom: "danger" },
+  DEVOLUCAO_CLIENTE: { label: "Devolução", icone: Undo2, tom: "ok" },
+  DEVOLUCAO_FORNECEDOR: { label: "Devolução", icone: Undo2, tom: "danger" },
 };
 
 export const MOV_PADRAO: RotuloMovimento = {
   label: "Movimentação",
-  icone: Boxes,
+  icone: Pencil,
   tom: "neutro",
+};
+
+/** Selo de venda — saída que veio de `Sale`, e não da mão de alguém. */
+export const MOV_VENDA: RotuloMovimento = {
+  label: "Venda",
+  icone: ShoppingCart,
+  tom: "accent",
 };
 
 /**
@@ -51,8 +65,8 @@ export function rotuloMovimento(m: {
   transferencia?: boolean;
 }): RotuloMovimento {
   const base = MOV_TIPO[m.tipo] ?? MOV_PADRAO;
-  if (m.venda) return { label: "Venda", icone: ShoppingCart, tom: "accent" };
+  if (m.venda) return MOV_VENDA;
   if (m.compra && m.tipo === "ENTRADA") return { ...base, label: "Entrada de compra" };
-  if (m.transferencia) return { label: "Transferência", icone: ArrowLeftRight, tom: "brand" };
+  if (m.transferencia) return MOV_TIPO.TRANSFERENCIA!;
   return base;
 }
