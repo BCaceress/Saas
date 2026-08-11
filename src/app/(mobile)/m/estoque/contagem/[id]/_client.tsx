@@ -153,7 +153,9 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
     const proximoNaoSalvos = naoSalvos + 1;
 
     setContagens(proximoMapa);
-    setOrdem((prev) => [productId, ...prev.filter((p) => p !== productId)]);
+    // Empurra para o FIM da fila de contados: quem conta uma gôndola quer o que
+    // ainda falta no alto da tela, não o que acabou de sair da mão.
+    setOrdem((prev) => [...prev.filter((p) => p !== productId), productId]);
     setAlvo(null);
     setNaoSalvos(proximoNaoSalvos);
 
@@ -191,7 +193,8 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
     return c != null && c !== i.qtdSistema;
   }).length;
 
-  // Contados primeiro (mais recente no topo), depois os que faltam.
+  // O que falta contar primeiro; o que já foi contado desce para o fim, na
+  // ordem em que foi contado (o último bipado é o último da lista).
   const lista = React.useMemo(() => {
     const pos = new Map(ordem.map((id, i) => [id, i]));
     const termo = busca.trim().toLowerCase();
@@ -200,14 +203,15 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
         (i) => !termo || `${i.nome} ${i.sku} ${i.ean ?? ""}`.toLowerCase().includes(termo),
       )
       .sort((a, b) => {
-        const pa = pos.get(a.productId);
-        const pb = pos.get(b.productId);
-        if (pa != null && pb != null) return pa - pb;
-        if (pa != null) return -1;
-        if (pb != null) return 1;
-        const ca = contagens[a.productId] != null ? 1 : 0;
-        const cb = contagens[b.productId] != null ? 1 : 0;
-        return ca - cb || a.nome.localeCompare(b.nome, "pt-BR");
+        const ca = contagens[a.productId] != null;
+        const cb = contagens[b.productId] != null;
+        if (ca !== cb) return ca ? 1 : -1;
+        if (ca && cb) {
+          // Contado em sessão anterior não está em `ordem`: vai antes dos desta
+          // sessão, que é a ordem cronológica real.
+          return (pos.get(a.productId) ?? -1) - (pos.get(b.productId) ?? -1);
+        }
+        return a.nome.localeCompare(b.nome, "pt-BR");
       });
   }, [inventario.items, ordem, contagens, busca]);
 
@@ -298,10 +302,19 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
 
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium text-ink">{i.nome}</span>
-                    {/* O código da UNIDADE é o que a pessoa bipa e o que confere
-                        com a etiqueta da prateleira — vem antes do SKU. */}
-                    <span className="block truncate font-mono text-[11px] text-muted">
-                      {i.ean ?? i.sku}
+                    {/* SKU e código de barras na MESMA linha: o SKU é o que
+                        está na etiqueta da prateleira, o EAN é o que a pessoa
+                        bipa — conferir os dois é o gesto da contagem. */}
+                    <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted">
+                      <span className="truncate">{i.sku}</span>
+                      {i.ean && (
+                        <>
+                          <span className="shrink-0 text-faint" aria-hidden>
+                            ·
+                          </span>
+                          <span className="truncate">{i.ean}</span>
+                        </>
+                      )}
                     </span>
                     {i.locationNome && (
                       <span className="mt-0.5 flex items-center gap-1 text-[11px] text-ink-2">
@@ -345,10 +358,11 @@ export function ContagemClient({ inventario }: { inventario: InventarioView }) {
         })}
       </ul>
 
-      {/* Barra fixa acima da barra de abas do shell: a barra flutuante ocupa
-          ~4rem + respiro + área segura, então 5.5rem é o piso desta (mesmo
-          cálculo do lançador do copiloto). */}
-      <div className="fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-30 rounded-t-[var(--radius-lg)] border-t border-line bg-surface px-4 py-2 shadow-[var(--shadow-2)]">
+      {/* Barra flutuante acima da barra de abas do shell: a de abas ocupa
+          ~4rem + respiro + área segura, então 5.5rem é o piso desta. Solta das
+          laterais e com as quatro bordas arredondadas — é um cartão sobre a
+          lista, não um rodapé colado na tela. */}
+      <div className="fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-30 rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-2 shadow-[var(--shadow-2)]">
         <div className="flex items-center gap-2">
           <div className="min-w-0 flex-1">
             <p className="text-[13px] font-medium text-ink">

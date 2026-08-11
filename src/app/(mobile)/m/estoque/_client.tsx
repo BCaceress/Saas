@@ -76,7 +76,12 @@ export function EstoqueClient({
   const linhas = React.useMemo(() => {
     const termo = busca.trim().toLowerCase();
     return saldos.filter((s) => {
-      if (termo && !`${s.nome} ${s.sku} ${s.ean ?? ""}`.toLowerCase().includes(termo)) {
+      if (
+        termo &&
+        !`${s.nome} ${s.sku} ${s.ean ?? ""} ${s.subcategoria ?? ""}`
+          .toLowerCase()
+          .includes(termo)
+      ) {
         return false;
       }
       switch (filtro) {
@@ -213,15 +218,39 @@ function LinhaProduto({
           href={`/m/produto/${row.productId}?de=/m/estoque`}
           className="flex items-center gap-3 p-3 hover:bg-surface-2"
         >
+          {/* Foto: numa lista de saldos quem reconhece o produto é a
+              embalagem. <img> cru como no resto do app — a URL é arbitrária
+              (Cosmos ou upload do tenant) e next/image exigiria allowlist. */}
+          {row.imagemUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={row.imagemUrl}
+              alt=""
+              className="h-12 w-12 shrink-0 rounded-lg border border-line bg-surface object-contain"
+            />
+          ) : (
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-lg border border-line bg-surface-2 text-muted">
+              <PackageOpen className="h-5 w-5" aria-hidden />
+            </span>
+          )}
+
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-ink">{row.nome}</p>
-            <p className="truncate font-mono text-[11px] text-muted">{row.sku}</p>
-            {row.controlaEstoque && (
-              <p className={cn("mt-0.5 text-xs font-medium", NIVEL_COR[nivel])}>
-                {nivel === "sem-giro"
-                  ? NIVEL_COBERTURA_LABEL["sem-giro"]
-                  : `dura ${fmtCobertura(dias)}`}
-              </p>
+            {/* SKU (etiqueta de prateleira) e código da unidade (o que se bipa)
+                na mesma linha: são as duas formas de achar o mesmo produto. */}
+            <p className="flex items-center gap-1.5 font-mono text-[11px] text-muted">
+              <span className="truncate">{row.sku}</span>
+              {row.ean && (
+                <>
+                  <span className="shrink-0 text-faint" aria-hidden>
+                    ·
+                  </span>
+                  <span className="truncate">{row.ean}</span>
+                </>
+              )}
+            </p>
+            {row.subcategoria && (
+              <p className="mt-0.5 truncate text-[11px] text-ink-2">{row.subcategoria}</p>
             )}
           </div>
 
@@ -237,6 +266,15 @@ function LinhaProduto({
             {row.estoqueAberto > 0 && (
               <p className="text-xs text-accent tabular-nums">
                 +{row.estoqueAberto.toLocaleString("pt-BR", { maximumFractionDigits: 3 })} aberto
+              </p>
+            )}
+            {/* Cobertura embaixo do número: "dura 3 dias" só quer dizer algo
+                junto do saldo que vai durar isso. */}
+            {row.controlaEstoque && (
+              <p className={cn("mt-0.5 text-xs font-medium", NIVEL_COR[nivel])}>
+                {nivel === "sem-giro"
+                  ? NIVEL_COBERTURA_LABEL["sem-giro"]
+                  : `dura ${fmtCobertura(dias)}`}
               </p>
             )}
           </div>

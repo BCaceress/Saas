@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, ScanLine, X } from "lucide-react";
+import { Check, CheckCheck, Loader2, PackageOpen, ScanLine, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge, Card } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
@@ -46,10 +46,14 @@ export function ReceberClient({
   );
   const [ordem, setOrdem] = React.useState<string[]>([]);
   const [alvo, setAlvo] = React.useState<PedidoCompraItemView | null>(null);
-  const [camera, setCamera] = React.useState(true);
+  // A câmera nasce desligada: conferir pela lista (com busca por texto) é o
+  // caminho de quem já tem a nota na mão; vídeo ligado sem pedir come bateria.
+  const [camera, setCamera] = React.useState(false);
+  const [busca, setBusca] = React.useState("");
   const [nota, setNota] = React.useState("");
   const [enviando, setEnviando] = React.useState(false);
   const [confirmar, setConfirmar] = React.useState(false);
+  const [confirmarTudo, setConfirmarTudo] = React.useState(false);
 
   const porCodigo = React.useMemo(() => {
     const m = new Map<string, PedidoCompraItemView>();
@@ -76,6 +80,21 @@ export function ReceberClient({
     setRecebido((prev) => ({ ...prev, [itemId]: qtd }));
     setOrdem((prev) => [itemId, ...prev.filter((p) => p !== itemId)]);
     setAlvo(null);
+  }
+
+  /**
+   * "Veio tudo": carimba cada item com a quantidade PEDIDA e dá todos por
+   * conferidos. É o caso comum de quem já conferiu com a nota na porta — sem
+   * isto, um pedido de 40 linhas exige 40 aberturas de teclado para digitar
+   * exatamente o número que já está na tela.
+   *
+   * Fica atrás de confirmação porque apaga o que foi conferido item a item.
+   */
+  function receberTudoConformePedido() {
+    setRecebido(Object.fromEntries(pedido.items.map((i) => [i.id, i.qtdPedida])));
+    setOrdem(pedido.items.map((i) => i.id));
+    setConfirmarTudo(false);
+    toast.success("Tudo conferido conforme o pedido.", "Revise antes de dar entrada.");
   }
 
   async function finalizar() {
@@ -110,31 +129,75 @@ export function ReceberClient({
 
   const lista = React.useMemo(() => {
     const pos = new Map(ordem.map((id, i) => [id, i]));
-    return [...pedido.items].sort((a, b) => {
-      const pa = pos.get(a.id);
-      const pb = pos.get(b.id);
-      if (pa != null && pb != null) return pa - pb;
-      if (pa != null) return -1;
-      if (pb != null) return 1;
-      return a.nome.localeCompare(b.nome, "pt-BR");
-    });
-  }, [pedido.items, ordem]);
+    const termo = busca.trim().toLowerCase();
+    return [...pedido.items]
+      .filter((i) => {
+        if (!termo) return true;
+        const cods = (codigos[i.productId] ?? []).join(" ");
+        return `${i.nome} ${i.sku} ${cods}`.toLowerCase().includes(termo);
+      })
+      .sort((a, b) => {
+        const pa = pos.get(a.id);
+        const pb = pos.get(b.id);
+        if (pa != null && pb != null) return pa - pb;
+        if (pa != null) return -1;
+        if (pb != null) return 1;
+        return a.nome.localeCompare(b.nome, "pt-BR");
+      });
+  }, [pedido.items, ordem, busca, codigos]);
 
   return (
     <div className="space-y-3 pb-16">
-      {camera ? (
+      {camera && (
         <Scanner
           onCodigo={aoLerCodigo}
           continuo
           ocupado={alvo !== null}
           onFechar={() => setCamera(false)}
         />
-      ) : (
-        <Button variant="secondary" onClick={() => setCamera(true)} className="w-full">
-          <ScanLine className="h-4 w-4" aria-hidden />
-          Ligar a câmera
-        </Button>
       )}
+
+      {/* Achar o item pelo nome/código e bipar são a mesma pergunta ("qual item
+          agora?"), então dividem a linha — o leitor é o botão à direita. */}
+      <div className="flex items-center gap-2">
+        <div className="relative min-w-0 flex-1">
+          <Search
+            className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-faint"
+            aria-hidden
+          />
+          <input
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Achar por nome ou código"
+            aria-label="Buscar item do pedido"
+            className="min-h-11 w-full rounded-full border border-line-button bg-surface pr-4 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          />
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setCamera((v) => !v)}
+          aria-pressed={camera}
+          aria-label={camera ? "Fechar o leitor" : "Ler código de barras"}
+          className={cn(
+            "tap grid h-11 w-11 shrink-0 place-items-center rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
+            camera
+              ? "border-brand bg-brand text-on-brand"
+              : "border-line-button bg-surface text-ink",
+          )}
+        >
+          <ScanLine className="h-5 w-5" aria-hidden />
+        </button>
+      </div>
+
+      <Button
+        variant="secondary"
+        onClick={() => setConfirmarTudo(true)}
+        className="w-full"
+      >
+        <CheckCheck className="h-4 w-4" aria-hidden />
+        Veio tudo conforme o pedido
+      </Button>
 
       <ul className="space-y-1.5">
         {lista.map((i) => {
@@ -151,18 +214,36 @@ export function ReceberClient({
                     conferido && (diverge ? "border-warn/40 bg-warn-soft/30" : "border-ok/40 bg-ok-soft/30"),
                   )}
                 >
-                  <span
-                    className={cn(
-                      "grid h-8 w-8 shrink-0 place-items-center rounded-full",
-                      conferido
-                        ? diverge
-                          ? "bg-warn text-white"
-                          : "bg-ok text-white"
-                        : "bg-surface-2 text-muted",
+                  {/* Foto no lugar do ícone de estado: na porta quem confere
+                      olha a embalagem, não o nome. O estado vira selo no canto.
+                      <img> cru como no resto do app — a URL é arbitrária e
+                      next/image exigiria allowlist por host. */}
+                  <span className="relative shrink-0">
+                    {i.imagemUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={i.imagemUrl}
+                        alt=""
+                        className="h-12 w-12 rounded-lg border border-line bg-surface object-contain"
+                      />
+                    ) : (
+                      <span className="grid h-12 w-12 place-items-center rounded-lg border border-line bg-surface-2 text-muted">
+                        <PackageOpen className="h-5 w-5" aria-hidden />
+                      </span>
                     )}
-                    aria-hidden
-                  >
-                    {conferido ? <Check className="h-4 w-4" /> : <ScanLine className="h-4 w-4" />}
+                    <span
+                      className={cn(
+                        "absolute -right-1 -bottom-1 grid h-5 w-5 place-items-center rounded-full ring-2 ring-surface",
+                        conferido
+                          ? diverge
+                            ? "bg-warn text-white"
+                            : "bg-ok text-white"
+                          : "bg-surface-2 text-muted",
+                      )}
+                      aria-hidden
+                    >
+                      {conferido ? <Check className="h-3 w-3" /> : <ScanLine className="h-3 w-3" />}
+                    </span>
                   </span>
 
                   <span className="min-w-0 flex-1">
@@ -192,6 +273,12 @@ export function ReceberClient({
           );
         })}
       </ul>
+
+      {lista.length === 0 && (
+        <Card className="p-6 text-center text-sm text-ink-2">
+          Nenhum item do pedido com “{busca.trim()}”.
+        </Card>
+      )}
 
       <div className="fixed inset-x-0 bottom-16 z-30 border-t border-line bg-surface px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <div className="flex items-center gap-2">
@@ -262,6 +349,44 @@ export function ReceberClient({
                 className="min-h-11 w-full rounded-full border border-line-button bg-surface px-4 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
               />
             </label>
+          </div>
+        </BottomSheet>
+      )}
+
+      {confirmarTudo && (
+        <BottomSheet
+          open
+          onClose={() => setConfirmarTudo(false)}
+          titulo="Veio tudo conforme o pedido?"
+          descricao="Cada item fica com a quantidade que foi pedida."
+          rodape={
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => setConfirmarTudo(false)}
+                className="flex-1"
+                size="lg"
+              >
+                Voltar
+              </Button>
+              <Button onClick={receberTudoConformePedido} className="flex-1" size="lg">
+                <CheckCheck className="h-4 w-4" aria-hidden />
+                Confirmar tudo
+              </Button>
+            </div>
+          }
+        >
+          <div className="space-y-3 pb-2">
+            <p className="text-[13px] text-ink-2">
+              {pedido.items.length} {pedido.items.length > 1 ? "itens ficam" : "item fica"}{" "}
+              conferido{pedido.items.length > 1 ? "s" : ""} com a quantidade pedida. Nada
+              entra no estoque ainda — a entrada continua sendo no botão “Dar entrada”.
+            </p>
+            {conferidos > 0 && (
+              <p className="rounded-lg bg-warn-soft p-3 text-[13px] text-warn">
+                Isto substitui o que já foi conferido item a item.
+              </p>
+            )}
           </div>
         </BottomSheet>
       )}

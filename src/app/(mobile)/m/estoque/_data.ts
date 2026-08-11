@@ -12,10 +12,10 @@ import type { EstoquePolicy } from "@/lib/estoque-estrategia";
 // até 5.000 movimentos e todos os itens de pedido em aberto — e hidrata objetos
 // aninhados que descem inteiros no payload do RSC.
 //
-// A lista do celular usa DOZE campos (ver `_client.tsx`): nome, SKU, EAN,
-// saldo fechado, saldo aberto, unidade, se controla estoque, se está abaixo do
-// mínimo, e o consumo das duas janelas que alimentam a cobertura. Nada mais
-// cabe num cartão de 390px.
+// A lista do celular usa um punhado de campos (ver `_client.tsx`): nome, SKU,
+// EAN, foto, subcategoria, saldo fechado, saldo aberto, unidade, se controla
+// estoque, se está abaixo do mínimo, e o consumo das duas janelas que alimentam
+// a cobertura. Nada mais cabe num cartão de 390px.
 //
 // Então aqui são DUAS consultas: os saldos, e as saídas da maior janela (que
 // serve às duas de uma vez). Ficaram de fora a varredura de histórico, a data
@@ -34,6 +34,9 @@ export type SaldoMobile = {
   nome: string;
   sku: string;
   ean: string | null;
+  /** Foto do produto — na gôndola quem identifica é a embalagem, não o nome. */
+  imagemUrl: string | null;
+  subcategoria: string | null;
   unidadeBase: string;
   estoqueFechado: number;
   estoqueAberto: number;
@@ -70,8 +73,12 @@ export async function loadSaldosMobile(
             nome: true,
             sku: true,
             ean: true,
+            imagemUrl: true,
             unidadeBase: true,
             controlaEstoque: true,
+            // Uma coluna e um join leve: a subcategoria é o que separa "cerveja"
+            // de "refrigerante" numa lista de 400 saldos.
+            subcategory: { select: { nome: true } },
           },
         },
       },
@@ -116,6 +123,8 @@ export async function loadSaldosMobile(
       nome: s.product.nome,
       sku: s.product.sku,
       ean: s.product.ean,
+      imagemUrl: s.product.imagemUrl,
+      subcategoria: s.product.subcategory?.nome ?? null,
       unidadeBase: s.product.unidadeBase,
       estoqueFechado: fechado,
       estoqueAberto: n(s.estoqueAberto),

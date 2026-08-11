@@ -9,6 +9,7 @@ import {
   Receipt,
   Settings,
   ShoppingCart,
+  Sparkles,
   Store,
   Tag,
   Truck,
@@ -16,6 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { carregarShell } from "@/lib/shell-context";
+import { featureAtiva } from "@/lib/planos";
 import { VERSAO_APP } from "@/lib/versao";
 import { podeEmAlguma, type Permissao } from "@/lib/permissoes";
 import type { NavToggles } from "@/components/app/nav-config";
@@ -43,6 +45,13 @@ export default async function MaisPage() {
     permissao?: Permissao;
     mostrar?: (t: NavToggles) => boolean;
   }> = [
+    // A IA vem primeiro porque perdeu o botão flutuante: no celular ele cobria
+    // o canto onde as telas de operação põem suas ações. O portão é o mesmo do
+    // desktop (add-on no plano + administrador), e não cabe em `permissao`
+    // nem em `mostrar`, que só olham perfil e toggles.
+    ...(featureAtiva(ctx.tenant, "ia.copiloto") && admin
+      ? [{ href: "/m/ia", label: "NoHub IA", icone: Sparkles }]
+      : []),
     { href: "/m/vendas", label: "Vendas", icone: Receipt, permissao: "relatorio.ver" },
     // Sem Caixa: abrir/fechar caixa mora no PDV, na máquina com gaveta e
     // impressora. Um botão aqui só serviria para abrir caixa longe dele.

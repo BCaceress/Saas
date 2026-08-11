@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { CheckCheck, CheckCircle2, Loader2, RotateCw } from "lucide-react";
+import { CheckCheck, CheckCircle2, ListChecks, Loader2, RotateCw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAlerts } from "@/components/app/alerts-provider";
 import { AlertaCard } from "@/components/mobile/alerta-card";
@@ -17,12 +17,32 @@ import {
  *
  * Consome o `AlertsProvider` — a mesma lista do sino do desktop, já ordenada,
  * já filtrada por permissão e pelas categorias que o tenant desligou em
- * `/configuracoes/notificacoes`. Resolver aqui apaga lá também: a chave de
- * ocultos é a mesma (`nohub:alerts:dismissed`).
+ * `/configuracoes/notificacoes`. Marcar como lido aqui apaga lá também: a chave
+ * de ocultos é a mesma (`nohub:alerts:dismissed`).
+ *
+ * Ler é DOIS gestos, não um: "ler todos" para quem só quer limpar a tela, e a
+ * seleção para quem quer manter dois ou três acesos. Sem a seleção, quem tem um
+ * alerta que ainda importa não pode usar o botão de limpar nada.
  */
 export function AlertasClient() {
   const { alerts, loaded, loading, refresh, ocultar, ocultarTodos } = useAlerts();
   const [filtro, setFiltro] = React.useState<AlertCategory | null>(null);
+  // `null` = fora do modo de seleção. Set vazio já é "selecionando, nada marcado".
+  const [selecao, setSelecao] = React.useState<Set<string> | null>(null);
+
+  function alternar(id: string) {
+    setSelecao((prev) => {
+      const next = new Set(prev ?? []);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function marcarSelecionados() {
+    for (const id of selecao ?? []) ocultar(id);
+    setSelecao(null);
+  }
 
   const categorias = React.useMemo(() => {
     const presentes = new Set(alerts.map((a) => a.category));
@@ -92,34 +112,75 @@ export function AlertasClient() {
 
       <div className="space-y-2">
         {visiveis.map((a) => (
-          <AlertaCard key={a.id} alerta={a} onResolver={ocultar} />
+          <AlertaCard
+            key={a.id}
+            alerta={a}
+            onResolver={ocultar}
+            selecionavel={selecao !== null}
+            selecionado={selecao?.has(a.id) ?? false}
+            onSelecionar={alternar}
+          />
         ))}
       </div>
 
-      <div className="flex items-center gap-2 pt-1">
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={loading}
-          className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line-button bg-surface text-sm font-medium text-ink disabled:opacity-50"
-        >
-          {loading ? (
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-          ) : (
-            <RotateCw className="h-4 w-4" aria-hidden />
-          )}
-          Atualizar
-        </button>
+      {selecao === null ? (
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={loading}
+            className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line-button bg-surface text-sm font-medium text-ink disabled:opacity-50"
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+              <RotateCw className="h-4 w-4" aria-hidden />
+            )}
+            Atualizar
+          </button>
 
-        <button
-          type="button"
-          onClick={ocultarTodos}
-          className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full text-sm font-medium text-muted hover:bg-surface-2 hover:text-ink"
-        >
-          <CheckCheck className="h-4 w-4" aria-hidden />
-          Resolver todos
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={() => setSelecao(new Set())}
+            className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line-button bg-surface text-sm font-medium text-ink"
+          >
+            <ListChecks className="h-4 w-4" aria-hidden />
+            Escolher
+          </button>
+
+          <button
+            type="button"
+            onClick={ocultarTodos}
+            className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full text-sm font-medium text-muted hover:bg-surface-2 hover:text-ink"
+          >
+            <CheckCheck className="h-4 w-4" aria-hidden />
+            Ler todos
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => setSelecao(null)}
+            className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line-button bg-surface text-sm font-medium text-ink"
+          >
+            <X className="h-4 w-4" aria-hidden />
+            Cancelar
+          </button>
+
+          <button
+            type="button"
+            onClick={marcarSelecionados}
+            disabled={selecao.size === 0}
+            className="inline-flex min-h-11 flex-[1.4] cursor-pointer items-center justify-center gap-1.5 rounded-full bg-brand text-sm font-medium text-on-brand disabled:opacity-40"
+          >
+            <CheckCheck className="h-4 w-4" aria-hidden />
+            {selecao.size === 0
+              ? "Marcar como lido"
+              : `Marcar ${selecao.size} como lido${selecao.size > 1 ? "s" : ""}`}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

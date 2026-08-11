@@ -4,7 +4,6 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { AlertsProvider } from "@/components/app/alerts-provider";
 import { MobileTabBar } from "@/components/mobile/tab-bar";
-import { CopilotoLauncher } from "@/components/app/copiloto/copiloto-launcher";
 import type { NavToggles } from "@/components/app/nav-config";
 import type { Acesso } from "@/lib/permissoes";
 
@@ -24,15 +23,12 @@ export function MobileShell({
   acessos,
   toggles,
   multiSite,
-  podeCopiloto,
   children,
 }: {
   acessos: Acesso[];
   toggles: NavToggles;
   /** A empresa tem mais de um local ativo (esconde transferência na folha). */
   multiSite: boolean;
-  /** Plano com o add-on de IA ativo + perfil que pode usar (igual ao desktop). */
-  podeCopiloto: boolean;
   children: React.ReactNode;
 }) {
   // Não há barra de topo em tela nenhuma: empresa e sino são conteúdo da home,
@@ -69,14 +65,10 @@ export function MobileShell({
           {children}
         </main>
 
+        {/* Sem botão flutuante do copiloto: no celular ele disputava o polegar
+            com a barra de abas e cobria o canto onde as telas de operação põem
+            suas ações. A IA tem tela própria em `/m/ia`, alcançada por "Mais". */}
         <MobileTabBar acessos={acessos} toggles={toggles} multiSite={multiSite} />
-
-        {/* Mesmo copiloto do desktop, só que acima da barra flutuante — em
-            qualquer largura, porque no `/m` a barra existe no tablet também. */}
-        <CopilotoLauncher
-          podeVer={podeCopiloto}
-          posicao="bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] right-4"
-        />
       </div>
     </AlertsProvider>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Check, ChevronRight } from "lucide-react";
+import { Check, ChevronRight, Square, SquareCheckBig } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ALERT_ICON } from "@/components/app/alert-icons";
 import { hrefMobile } from "@/components/mobile/nav";
@@ -13,31 +13,54 @@ import { PRIORITY_STYLE, tempoRelativo, type AlertItem } from "@/lib/alerts-type
  * então tem de ter a mesma cara nos dois lugares.
  *
  * Mais alto que a linha do sino de propósito: aqui o alvo é polegar, não
- * cursor. Resolver e abrir são dois botões separados, nunca o mesmo toque.
+ * cursor. Marcar como lido e abrir são dois botões separados, nunca o mesmo
+ * toque.
+ *
+ * No modo de seleção o cartão inteiro vira alvo: o ícone de prioridade dá lugar
+ * à caixa de marcação e o toque em qualquer lugar alterna a escolha — ninguém
+ * acerta uma caixinha de 20px em pé na frente da gôndola.
  */
 export function AlertaCard({
   alerta,
   onResolver,
+  selecionavel = false,
+  selecionado = false,
+  onSelecionar,
 }: {
   alerta: AlertItem;
-  /** Sem isto, o botão de resolver não aparece (home mostra só leitura). */
+  /** Sem isto, o botão de marcar como lido não aparece (home mostra só leitura). */
   onResolver?: (id: string) => void;
+  /** Modo de seleção ligado: o cartão vira alvo único, sem ações internas. */
+  selecionavel?: boolean;
+  selecionado?: boolean;
+  onSelecionar?: (id: string) => void;
 }) {
   const style = PRIORITY_STYLE[alerta.priority];
   const Icone = ALERT_ICON[alerta.icon];
   const destino = alerta.href ? hrefMobile(alerta.href) : null;
 
-  return (
-    <div className="flex items-start gap-4 rounded-[var(--radius-m)] border border-line bg-surface p-4 shadow-[var(--shadow-m)]">
+  const corpo = (
+    <>
       <span
         className={cn(
           "grid h-10 w-10 shrink-0 place-items-center rounded-full",
-          style.soft,
-          style.text,
+          selecionavel
+            ? selecionado
+              ? "bg-brand text-on-brand"
+              : "bg-surface-2 text-muted"
+            : cn(style.soft, style.text),
         )}
         aria-hidden
       >
-        <Icone size={20} />
+        {selecionavel ? (
+          selecionado ? (
+            <SquareCheckBig size={20} />
+          ) : (
+            <Square size={20} />
+          )
+        ) : (
+          <Icone size={20} />
+        )}
       </span>
 
       <div className="min-w-0 flex-1">
@@ -49,7 +72,7 @@ export function AlertaCard({
         <p className="mt-1 text-[13px] leading-snug text-ink-2">{alerta.descricao}</p>
 
         <div className="mt-2 flex items-center gap-2">
-          {destino && (
+          {!selecionavel && destino && (
             <Link
               href={destino}
               className="tap inline-flex min-h-11 items-center gap-1 rounded-full bg-surface-2 px-4 text-[13px] font-medium text-ink hover:bg-brand-soft hover:text-brand-strong active:bg-brand-soft focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
@@ -59,14 +82,14 @@ export function AlertaCard({
             </Link>
           )}
 
-          {onResolver && (
+          {!selecionavel && onResolver && (
             <button
               type="button"
               onClick={() => onResolver(alerta.id)}
               className="tap inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-full px-4 text-[13px] font-medium text-muted hover:bg-surface-2 hover:text-ink active:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
             >
               <Check className="h-4 w-4" aria-hidden />
-              Resolver
+              Lido
             </button>
           )}
 
@@ -77,6 +100,26 @@ export function AlertaCard({
           )}
         </div>
       </div>
-    </div>
+    </>
   );
+
+  const classe = cn(
+    "flex w-full items-start gap-4 rounded-[var(--radius-m)] border bg-surface p-4 text-left shadow-[var(--shadow-m)]",
+    selecionavel && selecionado ? "border-brand" : "border-line",
+  );
+
+  if (selecionavel) {
+    return (
+      <button
+        type="button"
+        onClick={() => onSelecionar?.(alerta.id)}
+        aria-pressed={selecionado}
+        className={cn(classe, "cursor-pointer focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none")}
+      >
+        {corpo}
+      </button>
+    );
+  }
+
+  return <div className={classe}>{corpo}</div>;
 }
