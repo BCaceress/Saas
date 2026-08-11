@@ -15,7 +15,7 @@ export const metadata: Metadata = {
 // Quiosque: sem AppShell (sidebar/navbar) — o dispositivo fica dedicado ao totem.
 export default function TotemLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-dvh bg-bg">
+    <div className="min-h-dvh bg-canvas">
       {children}
       <Toaster />
     </div>

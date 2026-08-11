@@ -1,7 +1,6 @@
 import {
   ArrowLeftRight,
   BarChart3,
-  ClipboardCheck,
   ClipboardList,
   LogOut,
   MonitorSmartphone,
@@ -59,7 +58,6 @@ export default async function MaisPage() {
     { href: "/m/estoque/contagem", label: "Contagem", icone: ClipboardList, permissao: "estoque.inventario" },
     { href: "/m/movimentacoes", label: "Movimentações", icone: ArrowLeftRight, permissao: "estoque.ver" },
     { href: "/m/pedido", label: "Pedido de compra", icone: ShoppingCart, permissao: "compras.pedir" },
-    { href: "/m/aprovacoes", label: "Aprovações", icone: ClipboardCheck, permissao: "compras.pedir" },
     { href: "/m/etiquetas", label: "Etiquetas", icone: Tag, permissao: "produto.preco" },
     { href: "/m/relatorios", label: "Relatórios", icone: BarChart3, permissao: "relatorio.ver" },
     { href: "/m/produtos", label: "Produtos", icone: Store, permissao: "produto.ver" },
@@ -123,7 +121,7 @@ export default async function MaisPage() {
         <h2 className="font-display text-base font-semibold text-ink">Conta</h2>
         <Card className="divide-y divide-line overflow-hidden">
           {admin && (
-            <LinhaLink href="/configuracoes">
+            <LinhaLink href="/m/configuracoes">
               <Settings className="h-5 w-5 shrink-0 text-ink-2" aria-hidden />
               <span className="flex-1 text-sm font-medium text-ink">Configurações</span>
             </LinhaLink>

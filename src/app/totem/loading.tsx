@@ -11,7 +11,7 @@ import { Loader2, MonitorSmartphone } from "lucide-react";
 export default function TotemLoading() {
   return (
     <div
-      className="grid min-h-dvh place-items-center bg-bg px-6"
+      className="grid min-h-dvh place-items-center bg-canvas px-6"
       role="status"
       aria-busy="true"
       aria-label="Abrindo o autoatendimento"

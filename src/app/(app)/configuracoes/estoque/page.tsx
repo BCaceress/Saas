@@ -1,13 +1,10 @@
 import { Warehouse } from "lucide-react";
-import { requireActiveTenant } from "@/lib/current-tenant";
-import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { PageHeader } from "@/components/app/page-header";
-import { EstoqueConfigClient } from "./_client";
+import { ConteudoEstoque } from "./_conteudo";
 
 export const metadata = { title: "Estoque e alertas — NoHub Market" };
 
-export default async function EstoqueConfigPage() {
-  const { tenant } = await requireActiveTenant();
+export default function EstoqueConfigPage() {
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
@@ -17,18 +14,7 @@ export default async function EstoqueConfigPage() {
         backHref="/configuracoes"
         innerClassName="max-w-none"
       />
-      <EstoqueConfigClient
-        initial={{
-          tipoControleEstoque: policyDoTenant(tenant).tipo,
-          periodoMediaDias: policyDoTenant(tenant).periodoMediaDias,
-          diasCobertura: policyDoTenant(tenant).diasCobertura,
-          estoqueMinimoPadrao: tenant.estoqueMinimoPadrao,
-          produtoParadoDias: tenant.produtoParadoDias,
-          validadeAlertaDias: tenant.validadeAlertaDias,
-          recebimentoExigeContagem: tenant.recebimentoExigeContagem,
-        }}
-        multiPonto={(tenant.numPontos ?? 1) > 1}
-      />
+      <ConteudoEstoque />
     </div>
   );
 }

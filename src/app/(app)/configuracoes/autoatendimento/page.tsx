@@ -1,13 +1,10 @@
 import { MonitorSmartphone } from "lucide-react";
-import { requireActiveTenant } from "@/lib/current-tenant";
-import { featureAtiva } from "@/lib/planos";
 import { PageHeader } from "@/components/app/page-header";
-import { AutoatendimentoConfigClient } from "./_client";
+import { ConteudoAutoatendimento } from "./_conteudo";
 
 export const metadata = { title: "Autoatendimento — NoHub Market" };
 
-export default async function AutoatendimentoConfigPage() {
-  const { tenant } = await requireActiveTenant();
+export default function AutoatendimentoConfigPage() {
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
@@ -17,10 +14,7 @@ export default async function AutoatendimentoConfigPage() {
         backHref="/configuracoes"
         innerClassName="max-w-none"
       />
-      <AutoatendimentoConfigClient
-        temPin={!!tenant.totemPinHash}
-        moduloAtivo={featureAtiva(tenant, "autoatendimento")}
-      />
+      <ConteudoAutoatendimento />
     </div>
   );
 }

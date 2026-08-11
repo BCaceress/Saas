@@ -39,7 +39,7 @@ export type PedidoAReceber = {
 /**
  * Pedidos esperando mercadoria na porta.
  *
- * Cada cartão traz as MESMAS ações de `/m/aprovacoes` — mover o status e
+ * Cada cartão traz as ações de acompanhamento — mover o status e
  * cancelar —, porque a pergunta do fornecedor ("saiu para entrega?") chega
  * enquanto se está justamente nesta tela, e mandar a pessoa trocar de tela para
  * responder é o que fazia o status envelhecer.

@@ -222,7 +222,14 @@ export function MovimentacoesClient({
 }
 
 function Linha({ linha }: { linha: LinhaMovimento }) {
-  const rotulo = rotuloMovimento({ tipo: linha.tipo });
+  // Venda é uma SAIDA como outra no banco; quem a distingue é o vínculo com
+  // `Sale`, que aqui chega já resolvido no rótulo de origem ("Venda no PDV",
+  // "Venda no autoatendimento", "Venda pelo app"). Mesmo critério da tela de
+  // computador — as duas superfícies mostram o carrinho âmbar para o mesmo fato.
+  const rotulo = rotuloMovimento({
+    tipo: linha.tipo,
+    venda: linha.origem.startsWith("Venda"),
+  });
   const hora = new Date(linha.em).toLocaleTimeString("pt-BR", {
     hour: "2-digit",
     minute: "2-digit",

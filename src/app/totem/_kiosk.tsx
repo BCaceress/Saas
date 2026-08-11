@@ -170,7 +170,7 @@ export function TotemKiosk({
     // deixam o conteúdo colado na moldura.
     // O respiro sobe em 600px, no mesmo ponto em que o menu de categorias vira
     // coluna (`_totem`): a altura do conteúdo é calculada a partir deste padding.
-    <div className="scrollbar-none fixed inset-0 z-50 overflow-y-auto bg-bg p-2 min-[600px]:p-4 lg:p-6">
+    <div className="scrollbar-none fixed inset-0 z-50 overflow-y-auto bg-canvas p-2 min-[600px]:p-4 lg:p-6">
       <TotemVenda
         siteId={siteId}
         produtos={produtos}

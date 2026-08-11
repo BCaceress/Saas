@@ -1,12 +1,10 @@
 import { Bell } from "lucide-react";
-import { requireActiveTenant } from "@/lib/current-tenant";
 import { PageHeader } from "@/components/app/page-header";
-import { NotificacoesClient } from "./_client";
+import { ConteudoNotificacoes } from "./_conteudo";
 
 export const metadata = { title: "Notificações — NoHub Market" };
 
-export default async function NotificacoesPage() {
-  const { tenant } = await requireActiveTenant();
+export default function NotificacoesPage() {
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
@@ -16,7 +14,7 @@ export default async function NotificacoesPage() {
         backHref="/configuracoes"
         innerClassName="max-w-none"
       />
-      <NotificacoesClient desativados={tenant.alertasDesativados} />
+      <ConteudoNotificacoes />
     </div>
   );
 }

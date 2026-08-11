@@ -855,7 +855,7 @@ function Loja({
       {/* ── Carrinho (drawer) ── */}
       {carrinhoAberto && (
         <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/40" onClick={() => setCarrinhoAberto(false)}>
-          <div className="mx-auto flex max-h-[85dvh] w-full max-w-2xl flex-col rounded-t-3xl bg-bg p-4 lg:max-w-3xl lg:p-6" onClick={(e) => e.stopPropagation()}>
+          <div className="mx-auto flex max-h-[85dvh] w-full max-w-2xl flex-col rounded-t-3xl bg-surface p-4 shadow-[var(--shadow-2)] lg:max-w-3xl lg:p-6" onClick={(e) => e.stopPropagation()}>
             <div className="mb-2 flex items-center justify-between">
               <span className="font-display text-xl font-bold text-ink">Seu pedido</span>
               <button onClick={() => setCarrinhoAberto(false)} aria-label="Fechar"
@@ -929,8 +929,31 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
   const groups = p.groups ?? [];
   const [sel, setSel] = useState<Record<string, string[]>>({});
   const [aberto, setAberto] = useState<string | null>(groups[0]?.id ?? null);
+  /** Grupo que acabou de recusar um toque por limite — pisca o contador. */
+  const [recusou, setRecusou] = useState<string | null>(null);
   const groupRefs = useRef<Map<string, HTMLElement>>(new Map());
   const resumoRef = useRef<HTMLDivElement | null>(null);
+
+  // Esc fecha e a página de trás para de rolar: no tablet, arrastar dentro do
+  // modal levava a grade de produtos junto, e ao fechar o quiosque estava em
+  // outro ponto da lista.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onFechar(); };
+    const antes = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = antes;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onFechar]);
+
+  // O aviso de limite se apaga sozinho — é feedback do toque, não estado.
+  useEffect(() => {
+    if (!recusou) return;
+    const t = setTimeout(() => setRecusou(null), 900);
+    return () => clearTimeout(t);
+  }, [recusou]);
 
   /** Abre uma etapa (ou o resumo, se null) e rola até ela. */
   function irPara(id: string | null) {
@@ -955,7 +978,12 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
     let novo: Record<string, string[]>;
     if (g.tipoSelecao === "UNICA") novo = { ...sel, [g.id]: cur[0] === id ? [] : [id] };
     else if (cur.includes(id)) novo = { ...sel, [g.id]: cur.filter((x) => x !== id) };
-    else if (g.maxSelecoes != null && cur.length >= g.maxSelecoes) return; // limite atingido
+    else if (g.maxSelecoes != null && cur.length >= g.maxSelecoes) {
+      // Limite atingido: o toque não pode virar silêncio — quem tocou acha que
+      // o quiosque travou. Pisca o contador e diz o que fazer.
+      setRecusou(g.id);
+      return;
+    }
     else novo = { ...sel, [g.id]: [...cur, id] };
     setSel(novo);
 
@@ -990,14 +1018,14 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
         : `${g.obrigatoria ? "Escolha" : "Opcional — escolha"} quantas quiser`;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-2 backdrop-blur-sm sm:p-4 lg:p-8"
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-2 backdrop-blur-sm sm:p-4 lg:p-8"
       role="dialog" aria-modal="true" aria-label={`Montar ${p.nome}`} onClick={onFechar}>
       <div
-        className="flex h-[94dvh] max-h-[94dvh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl bg-bg shadow-[var(--shadow-2)] motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95"
+        className="flex h-[94dvh] max-h-[94dvh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl border border-line bg-canvas shadow-[var(--shadow-2)] motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95"
         onClick={(e) => e.stopPropagation()}>
 
         {/* Cabeçalho compacto — só quando a coluna do produto não cabe */}
-        <div className="flex items-center gap-3 border-b border-line p-3 lg:hidden">
+        <div className="flex items-center gap-3 border-b border-line bg-surface p-3 lg:hidden">
           <span className="grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-2xl bg-surface-2">
             {imgPrincipal ? (
               // eslint-disable-next-line @next/next/no-img-element
@@ -1051,17 +1079,18 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
                 Só aparece depois da primeira escolha — antes disso não há o que
                 resumir. */}
             {escolhidos.length > 0 && (
-              <div className="rounded-2xl border border-line bg-bg p-4 motion-safe:animate-in motion-safe:fade-in">
+              <div className="rounded-2xl border border-line bg-canvas p-4 motion-safe:animate-in motion-safe:fade-in">
                 <p className="font-display text-sm font-bold uppercase tracking-wide text-muted">Sua montagem</p>
-                <div className="mt-2.5 flex flex-col gap-2">
+                <div className="mt-2.5 flex flex-col gap-1">
                   {groups.map((g) => {
                     const itens = escolhidosDe(g);
                     if (itens.length === 0) return null;
                     return (
                       <button key={g.id} onClick={() => irPara(g.id)}
-                        className="flex items-baseline justify-between gap-3 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-surface-2">
+                        aria-label={`Alterar ${g.nome}`}
+                        className="group flex items-baseline justify-between gap-3 rounded-lg px-2 py-1 text-left transition-colors hover:bg-surface focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none">
                         <span className="shrink-0 text-xs text-muted">{g.nome}</span>
-                        <span className="min-w-0 truncate text-right text-sm font-semibold text-ink">
+                        <span className="min-w-0 truncate text-right text-sm font-semibold text-ink group-hover:text-brand">
                           {itens.map((i) => i.nome).join(", ")}
                         </span>
                       </button>
@@ -1075,7 +1104,7 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
           {/* ── Montagem: acordeão de etapas ── */}
           <div className="scrollbar-none relative min-w-0 flex-1 overflow-y-auto">
             <button onClick={onFechar} aria-label="Fechar"
-              className="absolute right-4 top-4 z-10 hidden h-12 w-12 shrink-0 place-items-center rounded-full border border-line bg-bg text-muted transition-colors hover:bg-surface-2 active:scale-95 lg:grid">
+              className="absolute right-4 top-4 z-20 hidden h-12 w-12 shrink-0 place-items-center rounded-full border border-line bg-surface text-muted shadow-[var(--shadow-1)] transition-colors hover:border-danger/40 hover:bg-danger-soft hover:text-danger active:scale-95 lg:grid">
               <X size={24} />
             </button>
 
@@ -1085,7 +1114,7 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
                   falta?" era pergunta sem resposta na tela. Os números também
                   são atalho para voltar e trocar. */}
               {groups.length > 1 && (
-                <div className="sticky top-0 z-10 -mx-4 mb-1 border-b border-line bg-bg/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
+                <div className="sticky top-0 z-10 -mx-4 mb-1 border-b border-line bg-canvas/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
                   <div className="flex items-center justify-between gap-3">
                     <p className="font-display text-sm font-bold text-ink">
                       {concluidos === groups.length
@@ -1135,11 +1164,12 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
                       className={cn(
                         "flex w-full scroll-mt-4 items-center gap-3.5 rounded-2xl border bg-surface p-4 text-left transition-all",
                         "hover:border-brand/50 hover:shadow-[var(--shadow-1)] active:scale-[0.99]",
-                        feito ? "border-line" : "border-line opacity-70",
+                        "focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none",
+                        feito ? "border-line" : "border-dashed border-line-strong",
                       )}>
                       <span className={cn(
                         "grid h-11 w-11 shrink-0 place-items-center rounded-full font-display text-lg font-bold",
-                        feito ? "bg-brand text-on-brand" : "border-2 border-line-strong bg-bg text-muted",
+                        feito ? "bg-brand text-on-brand" : "border-2 border-line-strong bg-canvas text-muted",
                       )}>
                         {feito ? <Check size={22} strokeWidth={3} className="motion-safe:animate-in motion-safe:zoom-in" /> : gi + 1}
                       </span>
@@ -1173,19 +1203,43 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
                 // ── Etapa aberta: título + cards ──
                 return (
                   <section key={g.id} ref={(el) => { if (el) groupRefs.current.set(g.id, el); }}
-                    className="scroll-mt-4 rounded-3xl border-2 border-brand/30 bg-surface p-4 shadow-[var(--shadow-float)] sm:p-5 motion-safe:animate-in motion-safe:fade-in">
+                    aria-labelledby={`etapa-${g.id}`}
+                    className="scroll-mt-4 rounded-3xl border-2 border-brand/40 bg-surface p-4 shadow-[var(--shadow-float)] sm:p-5 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2">
                     <div className="mb-4 flex items-center gap-3.5">
                       <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-brand font-display text-lg font-bold text-on-brand">
                         {gi + 1}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <h4 className="font-display text-xl font-bold text-ink sm:text-2xl">{g.nome}</h4>
-                        <p className="text-sm font-medium text-muted">
-                          {noLimite ? "Limite atingido — toque em uma opção marcada para trocar" : subtitulo(g)}
+                        <h4 id={`etapa-${g.id}`} className="font-display text-xl font-bold text-ink sm:text-2xl">{g.nome}</h4>
+                        {/* Uma linha só, e ela muda de tom quando o toque é
+                            recusado: o aviso precisa aparecer onde o olho já
+                            está, não num canto do card. */}
+                        <p aria-live="polite" className={cn(
+                          "text-sm font-medium transition-colors",
+                          recusou === g.id ? "text-danger" : "text-muted",
+                        )}>
+                          {recusou === g.id
+                            ? `Você já escolheu ${g.maxSelecoes}. Desmarque uma para trocar.`
+                            : noLimite
+                              ? "Limite atingido — toque em uma opção marcada para trocar"
+                              : subtitulo(g)}
                         </p>
                       </div>
+                      {/* Desmarcar tudo de uma vez: sem isto, trocar de ideia
+                          num grupo de cinco marcados é cinco toques. */}
+                      {atual.length > 0 && g.tipoSelecao === "MULTIPLA" && (
+                        <button onClick={() => setSel({ ...sel, [g.id]: [] })}
+                          className="shrink-0 rounded-full px-3 py-1.5 text-sm font-semibold text-muted transition-colors hover:bg-surface-2 hover:text-danger focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none">
+                          Limpar
+                        </button>
+                      )}
                       {g.tipoSelecao === "MULTIPLA" && g.maxSelecoes != null && (
-                        <span className="shrink-0 rounded-full bg-surface-2 px-3 py-1 font-mono text-sm font-bold tabular-nums text-ink">
+                        <span className={cn(
+                          "shrink-0 rounded-full px-3 py-1 font-mono text-sm font-bold tabular-nums transition-colors",
+                          recusou === g.id
+                            ? "bg-danger-soft text-danger motion-safe:animate-in motion-safe:zoom-in"
+                            : atual.length >= g.maxSelecoes ? "bg-brand-soft text-brand" : "bg-surface-2 text-ink",
+                        )}>
                           {atual.length}/{g.maxSelecoes}
                         </span>
                       )}
@@ -1194,20 +1248,30 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
                     {/* Uma coluna nos aparelhos estreitos: em 360px, dois
                         cards de 44px de altura mínima com foto viram dois
                         selos ilegíveis. */}
-                    <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 sm:grid-cols-3 2xl:grid-cols-4">
+                    <div role={g.tipoSelecao === "UNICA" ? "radiogroup" : "group"}
+                      aria-labelledby={`etapa-${g.id}`}
+                      className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 sm:grid-cols-3 2xl:grid-cols-4">
                       {g.items.map((item) => {
                         const marcado = atual.includes(item.componentProductId);
                         const bloqueado = !item.disponivel;
                         const extra = item.acrescimoPreco != null && item.acrescimoPreco > 0;
+                        // Cheio: nenhuma marcada a mais entra. O card não fica
+                        // `disabled` (o toque ainda explica o porquê), mas
+                        // recua no visual para não competir com as marcadas.
+                        const cheio = noLimite && !marcado;
                         return (
                           <button key={item.componentProductId} disabled={bloqueado}
                             onClick={() => toggle(g, item.componentProductId)}
-                            aria-pressed={marcado}
+                            role={g.tipoSelecao === "UNICA" ? "radio" : "checkbox"}
+                            aria-checked={marcado}
+                            aria-label={`${item.nome}${extra ? `, mais ${brl(item.acrescimoPreco!)}` : ""}`}
                             className={cn(
-                              "group relative flex min-h-44 flex-col overflow-hidden rounded-2xl border-2 bg-bg text-left transition-all",
+                              "group relative flex min-h-44 flex-col overflow-hidden rounded-2xl border-2 text-left transition-all duration-150",
+                              "focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-surface focus-visible:outline-none",
                               marcado
-                                ? "border-brand bg-brand-soft/50 shadow-[var(--shadow-1)]"
-                                : "border-line motion-safe:hover:-translate-y-0.5 hover:shadow-[var(--shadow-float)]",
+                                ? "border-brand bg-brand-soft shadow-[var(--shadow-1)] motion-safe:-translate-y-0.5"
+                                : "border-line bg-canvas hover:border-brand/50 hover:bg-surface motion-safe:hover:-translate-y-0.5 hover:shadow-[var(--shadow-float)]",
+                              cheio && "opacity-55",
                               "active:scale-[0.97] disabled:pointer-events-none",
                             )}>
                             {/* Foto grande */}
@@ -1215,24 +1279,37 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
                               {item.imagemUrl ? (
                                 // eslint-disable-next-line @next/next/no-img-element
                                 <img src={item.imagemUrl} alt=""
-                                  className={cn("absolute inset-0 h-full w-full object-contain p-2.5", bloqueado && "grayscale opacity-40")}
+                                  className={cn(
+                                    "absolute inset-0 h-full w-full object-contain p-2.5 transition-transform duration-200",
+                                    bloqueado ? "grayscale opacity-40" : "motion-safe:group-hover:scale-105",
+                                    marcado && "motion-safe:scale-105",
+                                  )}
                                   loading="lazy" />
                               ) : (
                                 <span className={cn("absolute inset-0 grid place-items-center text-faint", bloqueado && "opacity-40")}>
                                   <CatIcon nome={p.categoria} size={40} />
                                 </span>
                               )}
-                              {marcado && (
-                                <span className="absolute right-2.5 top-2.5 grid h-7 w-7 place-items-center rounded-full bg-brand text-on-brand motion-safe:animate-in motion-safe:zoom-in">
+                              {/* O selo ocupa o mesmo canto marcado ou não: o
+                                  círculo vazio antecipa que o card é escolhível
+                                  e o preenchido confirma a escolha, sem o
+                                  conteúdo pular de lugar. */}
+                              {!bloqueado && (
+                                <span className={cn(
+                                  "absolute right-2.5 top-2.5 grid h-7 w-7 place-items-center rounded-full border-2 transition-all",
+                                  marcado
+                                    ? "border-brand bg-brand text-on-brand motion-safe:animate-in motion-safe:zoom-in"
+                                    : "border-line-strong bg-surface/80 text-transparent group-hover:border-brand",
+                                )}>
                                   <Check size={16} strokeWidth={3} />
                                 </span>
                               )}
                               {bloqueado ? (
-                                <span className="absolute left-2.5 top-2.5 rounded-md border border-line bg-bg/90 px-2 py-0.5 text-[11px] font-semibold text-muted">
+                                <span className="absolute left-2.5 top-2.5 rounded-md border border-line bg-surface/90 px-2 py-0.5 text-[11px] font-semibold text-muted">
                                   Indisponível
                                 </span>
                               ) : item.isDefault && !marcado ? (
-                                <span className="absolute left-2.5 top-2.5 flex items-center gap-1 rounded-md border border-line bg-bg/90 px-2 py-0.5 text-[11px] font-semibold text-ink-2">
+                                <span className="absolute left-2.5 top-2.5 flex items-center gap-1 rounded-md border border-line bg-surface/90 px-2 py-0.5 text-[11px] font-semibold text-ink-2">
                                   <Star size={11} className="fill-accent text-accent" /> Popular
                                 </span>
                               ) : null}
@@ -1251,10 +1328,18 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
                       })}
                     </div>
 
-                    {/* Etapas sem fechamento automático ganham saída explícita */}
-                    {(g.tipoSelecao === "MULTIPLA" && !noLimite && atual.length > 0) || (!g.obrigatoria && atual.length === 0) ? (
+                    {/* Etapas sem fechamento automático ganham saída explícita.
+                        Com escolha feita o botão é sólido: parar aqui é o
+                        engano mais comum de quem monta um drink de cinco itens. */}
+                    {(g.tipoSelecao === "MULTIPLA" && atual.length > 0) || (!g.obrigatoria && atual.length === 0) ? (
                       <button onClick={() => avancarDe(g.id, sel)}
-                        className="mt-4 flex h-12 items-center gap-2 rounded-full border border-line px-6 text-base font-semibold text-ink transition-colors hover:border-brand hover:text-brand active:scale-95">
+                        className={cn(
+                          "mt-4 flex h-12 items-center gap-2 rounded-full px-6 text-base font-semibold transition-colors active:scale-95",
+                          "focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none",
+                          atual.length > 0
+                            ? "bg-brand text-on-brand hover:bg-brand-strong"
+                            : "border border-line text-muted hover:border-brand hover:text-brand",
+                        )}>
                         {atual.length > 0 ? "Continuar" : "Pular esta etapa"} <ArrowRight size={18} />
                       </button>
                     ) : null}

@@ -138,9 +138,9 @@ const EQUIVALENTE: Array<[prefixo: string, destino: string]> = [
   // lá um alerta de vencimento trocaria a informação certa por outra.
   ["/estoque/inventarios", "/m/estoque/contagem"],
   ["/estoque/movimentacoes", "/m/movimentacoes"],
-  ["/estoque/recebimentos", "/m/receber"],
-  ["/compras/pedidos", "/m/aprovacoes"],
-  ["/compras/cotacoes", "/m/aprovacoes"],
+  // Pedido de compra cai em `/m/receber`: sem a tela de aprovações, é lá que o
+  // mobile move status e cancela. Cotação não tem equivalente — abre a de mesa.
+  ["/compras/pedidos", "/m/receber"],
   ["/estoque", "/m/estoque"],
   ["/produtos", "/m/produtos"],
   // Caixa não tem equivalente mobile de propósito: abrir/fechar caixa é

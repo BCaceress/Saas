@@ -1,12 +1,10 @@
 import { Building2 } from "lucide-react";
-import { requireActiveTenant } from "@/lib/current-tenant";
 import { PageHeader } from "@/components/app/page-header";
-import { EmpresaClient } from "./_client";
+import { ConteudoEmpresa } from "./_conteudo";
 
 export const metadata = { title: "Empresa — NoHub Market" };
 
-export default async function EmpresaPage() {
-  const { tenant } = await requireActiveTenant();
+export default function EmpresaPage() {
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
@@ -16,22 +14,7 @@ export default async function EmpresaPage() {
         backHref="/configuracoes"
         innerClassName="max-w-none"
       />
-      <EmpresaClient
-        subdomain={tenant.subdomain}
-        initial={{
-          nome: tenant.nome,
-          logoUrl: tenant.logoUrl ?? "",
-          razaoSocial: tenant.razaoSocial ?? "",
-          cnpj: tenant.cnpj ?? "",
-          telefone: tenant.telefone ?? "",
-          emailContato: tenant.emailContato ?? "",
-          cep: tenant.cep ?? "",
-          rua: tenant.rua ?? "",
-          numero: tenant.numero ?? "",
-          cidade: tenant.cidade ?? "",
-          estado: tenant.estado ?? "",
-        }}
-      />
+      <ConteudoEmpresa />
     </div>
   );
 }

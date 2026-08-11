@@ -1,0 +1,199 @@
+import { Check, Lock } from "lucide-react";
+import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
+import { assinaturaDoTenant, precoMensal } from "@/lib/assinatura";
+import { basePrisma, db } from "@/lib/prisma";
+import { BotaoAddon, BotaoPlano, PainelAssinatura } from "./_assinatura";
+import { Badge } from "@/components/ui/misc";
+import { brl, cn } from "@/lib/utils";
+import {
+  PLANOS,
+  PLANOS_ORDEM,
+  ADDONS,
+  ADDONS_SLUGS,
+  limitesDe,
+  planoAtendeOuSuperior,
+  ehAddonSlug,
+  FEATURE_LABEL,
+  FEATURES_ORDEM,
+  type Limites,
+} from "@/lib/planos";
+
+function limiteTexto(v: number | null, sufixo: string): string {
+  return v === null ? `${sufixo} ilimitados` : `${v} ${sufixo}`;
+}
+
+/** Uso × teto. Passar do teto é possível em downgrade — mostrar em âmbar. */
+function Uso({ label, usados, limite }: { label: string; usados: number; limite: number | null }) {
+  const estourou = limite !== null && usados > limite;
+  return (
+    <div className="flex flex-col gap-1 px-5 py-4">
+      <span className="text-xs tracking-wide text-muted uppercase">{label}</span>
+      <span className={cn("font-mono text-lg", estourou ? "text-warn" : "text-ink")}>
+        {usados}
+        <span className="text-muted"> / {limite === null ? "∞" : limite}</span>
+      </span>
+    </div>
+  );
+}
+
+/** Miolo de "Plano e add-ons" — compartilhado pelo desktop e pelo `/m`. */
+export async function ConteudoPlano() {
+  const ctx = await requireActiveTenant();
+  const { tenant } = ctx;
+  const atual = tenant.plano;
+  const limites = limitesDe(tenant);
+
+  const [sites, produtos, usuarios, totens, assinatura] = await Promise.all([
+    // `await` DENTRO do withTenant de propósito: PrismaPromise é lazy — sem o
+    // await aqui a query só executaria depois que o contexto async já fechou.
+    withTenant(ctx, async () => await db.site.count()),
+    withTenant(ctx, async () => await db.product.count({ where: { ativo: true } })),
+    basePrisma.membership.count({ where: { tenantId: tenant.id, ativo: true } }),
+    withTenant(ctx, async () => await db.totemDevice.count()),
+    assinaturaDoTenant(tenant.id),
+  ]);
+
+  // O preço mostrado é o MESMO que vai ao gateway (lib/assinatura), com
+  // add-ons e lojas extras já somados — o lojista não pode ser surpreendido.
+  const preco = precoMensal({
+    plano: tenant.plano,
+    addons: tenant.addons,
+    lojasExtras: tenant.lojasExtras,
+    totens,
+  });
+
+  return (
+    <>
+      <PainelAssinatura
+        assinatura={
+          assinatura
+            ? {
+                status: assinatura.status,
+                valorMensal: assinatura.valorMensal ? Number(assinatura.valorMensal) : null,
+                proximaCobranca: assinatura.proximaCobranca?.toISOString() ?? null,
+                ultimaCobranca: assinatura.ultimaCobranca?.toISOString() ?? null,
+                checkoutUrl: assinatura.checkoutUrl,
+              }
+            : null
+        }
+        preco={preco}
+        statusTenant={tenant.status}
+        trialAte={tenant.trialEndsAt?.toISOString() ?? null}
+      />
+
+      {/* Uso contra os limites — num grid único com divisores, não em cards soltos. */}
+      <div className="grid grid-cols-1 divide-y divide-line rounded-[var(--radius-lg)] border border-line bg-surface sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+        <Uso label="Lojas" usados={sites} limite={limites.sites} />
+        <Uso label="Usuários" usados={usuarios} limite={limites.usuarios} />
+        <Uso label="Produtos ativos" usados={produtos} limite={limites.produtos} />
+      </div>
+
+      {/* Planos */}
+      <div className="grid gap-3 lg:grid-cols-3">
+        {PLANOS_ORDEM.map((p) => {
+          const def = PLANOS[p];
+          const ehAtual = p === atual;
+          const lim: Limites = def.limites;
+          return (
+            <div
+              key={p}
+              className={cn(
+                "flex flex-col gap-4 rounded-[var(--radius-lg)] border bg-surface p-5",
+                ehAtual ? "border-brand ring-1 ring-brand" : "border-line",
+              )}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-display text-lg font-semibold text-ink">{def.nome}</p>
+                  <p className="mt-0.5 text-sm text-muted">{def.descricao}</p>
+                </div>
+                {ehAtual && <Badge tone="brand">Plano atual</Badge>}
+              </div>
+
+              <p className="font-mono text-2xl text-ink">
+                {brl(def.preco)}
+                <span className="text-sm text-muted"> /mês</span>
+              </p>
+
+              <ul className="flex flex-col gap-1.5 text-sm text-muted">
+                <li className="text-ink">{limiteTexto(lim.sites, "lojas")}</li>
+                <li className="text-ink">{limiteTexto(lim.usuarios, "usuários")}</li>
+                <li className="text-ink">{limiteTexto(lim.produtos, "produtos")}</li>
+                {FEATURES_ORDEM.filter((f) => def.features.includes(f)).map((f) => (
+                  <li key={f} className="flex items-start gap-2">
+                    <Check size={15} className="mt-0.5 shrink-0 text-ok" />
+                    {FEATURE_LABEL[f]}
+                  </li>
+                ))}
+              </ul>
+
+              {!ehAtual && (
+                <BotaoPlano
+                  plano={p}
+                  variant={planoAtendeOuSuperior(atual, p) ? "secondary" : "primary"}
+                  rotulo={planoAtendeOuSuperior(atual, p) ? "Mudar para este" : `Subir para ${def.nome}`}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Add-ons — o que se cobra por fora porque custa por uso ou por unidade. */}
+      <div className="flex flex-col gap-3">
+        <h2 className="font-display text-base font-semibold text-ink">Add-ons</h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {ADDONS_SLUGS.map((slug) => {
+            const a = ADDONS[slug];
+            const contratado = tenant.addons.some((s) => ehAddonSlug(s) && s === slug);
+            const podeContratar = planoAtendeOuSuperior(atual, a.requerPlano);
+            return (
+              <div
+                key={slug}
+                className={cn(
+                  "flex flex-col gap-2 rounded-[var(--radius-lg)] border bg-surface p-5",
+                  contratado ? "border-brand" : "border-line",
+                )}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <p className="font-semibold text-ink">{a.nome}</p>
+                  {contratado && <Badge tone="ok">Ativo</Badge>}
+                </div>
+                <p className="text-sm text-muted">{a.descricao}</p>
+                <p className="font-mono text-ink">
+                  {brl(a.preco)}
+                  <span className="text-sm text-muted">
+                    {a.porUnidade ? " /unidade por mês" : " /mês"}
+                  </span>
+                </p>
+                {!contratado && !podeContratar && (
+                  <p className="mt-auto flex items-center gap-1.5 text-sm text-accent">
+                    <Lock size={13} />
+                    Requer o plano {PLANOS[a.requerPlano].nome}.
+                  </p>
+                )}
+                <BotaoAddon
+                  slug={slug}
+                  contratado={contratado}
+                  quantidade={slug === "loja-extra" ? tenant.lojasExtras : undefined}
+                  bloqueado={!contratado && !podeContratar}
+                />
+                {slug === "autoatendimento" && contratado && totens > 0 && (
+                  <p className="text-xs text-muted">
+                    {totens} {totens === 1 ? "totem ativo" : "totens ativos"} — cobrança por
+                    dispositivo.
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <p className="text-xs text-muted">
+        A cobrança é mensal, no cartão ou Pix cadastrado no Mercado Pago. Mudanças de plano e
+        add-on entram no próximo ciclo — cancele quando quiser, sem multa.
+      </p>
+    </>
+  );
+}
