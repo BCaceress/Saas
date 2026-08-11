@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { redirect } from "next/navigation";
 import { requireActiveTenant, touchUltimoAcesso, type ActiveTenant } from "./current-tenant";
 import { estadoAcesso, type EstadoAcesso } from "./assinatura";
@@ -63,16 +64,24 @@ export type ShellData = {
   metodosCaixa: PaymentMethod[];
 };
 
-export async function carregarShell(
-  opcoes: { comCaixa?: boolean } = {},
+/**
+ * Memoizado por requisição (e por `comCaixa`, que é o que muda o resultado):
+ * o layout de `/m` chama isto e a página chama de novo — `/m/mais` fazia o
+ * trabalho inteiro duas vezes. `cache()` do React resolve sem que nenhuma das
+ * duas precise passar contexto pela árvore.
+ */
+const carregarShellMemo = cache(async function carregarShellMemo(
+  comCaixa: boolean,
 ): Promise<ShellData> {
+  const opcoes = { comCaixa };
   const ctx = await requireActiveTenant();
   const { tenant, user, acessos } = ctx;
 
   // Sem onboarding concluído, manda concluir antes de entrar no app.
   if (!tenant.onboardingDone) redirect("/onboarding");
 
-  await touchUltimoAcesso(ctx.membershipId);
+  // Fora do caminho crítico: agenda a escrita para depois da resposta.
+  touchUltimoAcesso(ctx.membershipId);
 
   // Cobrança: lê só o que já está no Tenant — nada de consultar gateway no
   // caminho de cada página.
@@ -116,4 +125,8 @@ export async function carregarShell(
     caixaInfo,
     metodosCaixa,
   };
+});
+
+export function carregarShell(opcoes: { comCaixa?: boolean } = {}): Promise<ShellData> {
+  return carregarShellMemo(opcoes.comCaixa ?? false);
 }

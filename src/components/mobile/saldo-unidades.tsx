@@ -1,4 +1,3 @@
-import { BottleWine } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -36,15 +35,15 @@ export function SaldoUn({
   );
 }
 
-/** "+ 1 aberta" — mesmo sinal e mesmo ícone da tela de produtos do computador. */
-export function AbertaBadge({ size = 13 }: { size?: number }) {
+/**
+ * "+ 1 aberta" — só texto.
+ *
+ * Sem ícone de garrafa: o catálogo não é só bebida (o mesmo sinal aparece em
+ * saco de café e em galão de detergente), e num cartão de lista o desenho
+ * competia com o número, que é o que se lê.
+ */
+export function AbertaBadge() {
   return (
-    <span className="inline-flex items-center gap-0.5 text-warn">
-      <span className="text-[12px] leading-none font-bold">+</span>
-      <span className="inline-flex items-center rounded-full bg-warn/10 p-0.5">
-        <BottleWine size={size} className="shrink-0" aria-label="Tem uma aberta" />
-      </span>
-      <span className="text-[11px] font-medium">1 aberta</span>
-    </span>
+    <span className="text-[11px] font-medium whitespace-nowrap text-warn">+ 1 aberta</span>
   );
 }

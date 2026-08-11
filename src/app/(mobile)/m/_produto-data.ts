@@ -75,9 +75,9 @@ export type FichaProduto = {
   precoVenda: number | null;
   /** Preço de custo do cadastro. null sem `produto.custo`. */
   custo: number | null;
-  /** null quando a pessoa não tem `produto.custo`. */
+  /** null quando a pessoa não tem `produto.custo`. Não vai à ficha — ver `margemPct`. */
   custoMedio: number | null;
-  /** Margem sobre o preço, em %. Precisa das DUAS permissões. */
+  /** Margem sobre o preço, em %, contra o PREÇO DE CUSTO. Precisa das DUAS permissões. */
   margemPct: number | null;
 
   saldos: SaldoSite[];
@@ -104,6 +104,9 @@ export type FichaProduto = {
 
   lotes: LoteFicha[];
   embalagens: EmbalagemFicha[];
+
+  /** Unidades vendidas nos últimos 30 dias (vendas PAGAS) — giro real na mão. */
+  vendidos30d: number;
 
   /** Como o código escaneado casou — o operador precisa saber se bipou o fardo. */
   casouPor: "ean" | "sku" | "embalagem" | "id";
@@ -224,7 +227,11 @@ export async function montarFicha(
   const desde = new Date(Date.now() - janelaDias * DIA_MS);
   const alertaMs = args.validadeAlertaDias * DIA_MS;
 
-  const [saidas, lotesCrus] = await Promise.all([
+  // 30 dias fixos, independente da janela da estratégia: o cartão de venda diz
+  // "nos últimos 30 dias" e o número tem que bater com a frase.
+  const desde30 = new Date(Date.now() - 30 * DIA_MS);
+
+  const [saidas, lotesCrus, vendas30] = await Promise.all([
     db.stockMovement.findMany({
       where: {
         productId: produto.id,
@@ -248,6 +255,18 @@ export async function montarFicha(
           take: 20,
         })
       : Promise.resolve([]),
+    // Só venda PAGA: carrinho aberto e cancelada não são giro.
+    db.saleItem.aggregate({
+      where: {
+        productId: produto.id,
+        sale: {
+          status: "PAGA",
+          createdAt: { gte: desde30 },
+          ...(siteId ? { siteId } : {}),
+        },
+      },
+      _sum: { quantidade: true },
+    }),
   ]);
 
   const consumoJanela = saidas.reduce(
@@ -298,9 +317,10 @@ export async function montarFicha(
   const precoVenda = vePreco ? n(produto.precoVenda) || null : null;
   const custoMedio = veCusto ? n(produto.custoMedio) || null : null;
   const custo = veCusto ? n(produto.custo) || null : null;
-  // Margem contra o que a empresa realmente paga hoje: custo médio quando há
-  // entradas, senão o custo do cadastro.
-  const baseCusto = custoMedio ?? custo;
+  // Margem contra o PREÇO DE CUSTO do cadastro — é o número que o operador
+  // negocia com o fornecedor e reconhece na ficha. O custo médio continua
+  // disponível (sheet de preço, relatórios), mas não é o que a ficha mostra.
+  const baseCusto = custo;
 
   return {
     id: produto.id,
@@ -340,6 +360,7 @@ export async function montarFicha(
       ean: p.ean,
       fator: n(p.fatorConversao),
     })),
+    vendidos30d: n(vendas30._sum.quantidade),
 
     casouPor: args.casouPor,
     embalagemCasada: args.embalagemCasada ?? null,

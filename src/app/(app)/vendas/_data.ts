@@ -180,6 +180,13 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
   });
 }
 
+export type ItemVenda = {
+  nome: string;
+  quantidade: number;
+  precoUnitario: number;
+  total: number;
+};
+
 export type VendaRow = {
   id: string;
   origem: string;
@@ -189,6 +196,10 @@ export type VendaRow = {
   metodos: string[];
   createdAt: Date;
   paidAt: Date | null;
+  /** Nome do cliente identificado na venda; null no balcão anônimo. */
+  cliente: string | null;
+  /** O que foi vendido — a lista abre no toque, sem nova ida ao servidor. */
+  itens: ItemVenda[];
 };
 
 export async function loadVendasRecentes(siteId: string | null, limit = 30): Promise<VendaRow[]> {
@@ -203,19 +214,41 @@ export async function loadVendasRecentes(siteId: string | null, limit = 30): Pro
       total: true,
       createdAt: true,
       paidAt: true,
-      _count: { select: { items: true } },
+      customer: { select: { nome: true } },
+      items: {
+        select: { productId: true, quantidade: true, precoUnitario: true, total: true },
+      },
       payments: { select: { metodo: true, status: true } },
     },
   });
+
+  // SaleItem guarda o productId sem relação com Product (o item é histórico:
+  // sobrevive ao produto ser apagado). O nome vem numa consulta só, pelos ids
+  // que apareceram nesta página de vendas.
+  const produtoIds = [...new Set(sales.flatMap((s) => s.items.map((i) => i.productId)))];
+  const produtos = produtoIds.length
+    ? await db.product.findMany({
+        where: { id: { in: produtoIds } },
+        select: { id: true, nome: true },
+      })
+    : [];
+  const nomePorId = new Map(produtos.map((p) => [p.id, p.nome]));
 
   return sales.map((s) => ({
     id: s.id,
     origem: s.origem,
     status: s.status,
     total: num(s.total),
-    numItens: s._count.items,
+    numItens: s.items.length,
     metodos: [...new Set(s.payments.filter((p) => p.status !== "ESTORNADO").map((p) => p.metodo))],
     createdAt: s.createdAt,
     paidAt: s.paidAt,
+    cliente: s.customer?.nome ?? null,
+    itens: s.items.map((i) => ({
+      nome: nomePorId.get(i.productId) ?? "Produto removido",
+      quantidade: num(i.quantidade),
+      precoUnitario: num(i.precoUnitario),
+      total: num(i.total),
+    })),
   }));
 }

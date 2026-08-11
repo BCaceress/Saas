@@ -49,7 +49,6 @@ export default async function VendasMobilePage() {
         siteId={dados.siteId}
         autoatendimento={toggles.moduloAutoatendimento}
         podeRegistrar={podeEmAlguma(ctx.acessos, "venda.registrar")}
-        podeCancelar={podeEmAlguma(ctx.acessos, "venda.cancelar")}
       />
     </>
   );

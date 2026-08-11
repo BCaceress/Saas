@@ -6,14 +6,16 @@ import {
   Refrigerator,
   Snowflake,
   Store,
+  TrendingUp,
   TriangleAlert,
   Warehouse,
 } from "lucide-react";
 import { brl, cn } from "@/lib/utils";
 import { AcoesProduto, type AcaoInicial } from "@/components/mobile/acoes-produto";
+import { BotaoCopiar } from "@/components/mobile/copiar";
 import { AbertaBadge, SaldoUn } from "@/components/mobile/saldo-unidades";
 import { Badge, Card } from "@/components/ui/misc";
-import { NIVEL_COBERTURA_LABEL, type NivelCobertura } from "@/lib/estoque-estrategia";
+import type { NivelCobertura, TipoControleEstoque } from "@/lib/estoque-estrategia";
 import type { FichaProduto, LoteFicha, TipoLocal } from "@/app/(mobile)/m/_produto-data";
 
 /**
@@ -31,6 +33,20 @@ const NIVEL_TOM: Record<NivelCobertura, { badge: "danger" | "warn" | "ok" | "neu
   ideal: { badge: "ok", barra: "bg-ok" },
   "sem-giro": { badge: "neutral", barra: "bg-muted" },
 };
+
+/**
+ * Nome curto da estratégia de reposição da empresa. Os rótulos longos de
+ * `CONTROLE_LABELS` são de tela de configuração — num selo de canto de cartão
+ * "Controle por rotatividade" quebra em três linhas.
+ */
+const ESTRATEGIA_CURTA: Record<TipoControleEstoque, string> = {
+  MINIMO: "Mínimo",
+  MINIMO_IDEAL: "Mínimo + ideal",
+  ROTATIVIDADE: "Em giro",
+};
+
+const un = (v: number) =>
+  `${v.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} un`;
 
 /** Mesmos ícones e cores dos locais de armazenagem na tela de computador. */
 const LOCAL_ICONE: Record<TipoLocal, typeof Box> = {
@@ -60,6 +76,7 @@ export function FichaProdutoView({ ficha }: { ficha: FichaProduto }) {
       {ficha.controlaEstoque ? <Estoque ficha={ficha} /> : <SemControle />}
       {ficha.lotes.length > 0 && <Lotes lotes={ficha.lotes} />}
       <Embalagens ficha={ficha} />
+      <VendaRecente ficha={ficha} />
     </div>
   );
 }
@@ -131,12 +148,14 @@ function AvisoEmbalagem({ ficha }: { ficha: FichaProduto }) {
  * Venda · custo · margem, lado a lado.
  *
  * Os três juntos porque a pergunta na gôndola é sempre a mesma — "dá para
- * baixar esse preço?" — e ela não se responde com dois dos três. O custo
- * exibido é o médio quando existe (o que a empresa pagou de fato); sem
- * entradas, o do cadastro.
+ * baixar esse preço?" — e ela não se responde com dois dos três.
+ *
+ * O custo aqui é o PREÇO DE CUSTO do cadastro, não o custo médio: é o número
+ * que o operador negocia com o fornecedor e reconhece de cabeça. Sem preço de
+ * custo cadastrado, a coluna (e a margem) simplesmente não aparece.
  */
 function PrecoECusto({ ficha }: { ficha: FichaProduto }) {
-  const custo = ficha.custoMedio ?? ficha.custo;
+  const custo = ficha.custo;
   // Sem nenhuma das duas permissões o cartão inteiro sai — melhor que três
   // traços alinhados sem explicação.
   if (ficha.precoVenda == null && custo == null) return null;
@@ -153,9 +172,7 @@ function PrecoECusto({ ficha }: { ficha: FichaProduto }) {
       )}
       {custo != null && (
         <div className="flex-1 p-4">
-          <p className="text-xs text-ink-2">
-            {ficha.custoMedio != null ? "Custo médio" : "Preço de custo"}
-          </p>
+          <p className="text-xs text-ink-2">Preço de custo</p>
           <p className="font-display text-xl font-semibold text-ink">{brl(custo)}</p>
         </div>
       )}
@@ -195,19 +212,38 @@ function SemControle() {
  * a contagem: `estoqueFechado` é sempre "quantas embalagens". A sobra da que
  * está aberta entra como sinal (`SaldoUn`), não como número somável.
  *
- * A linha por loja mostra a meta que a empresa DE FATO usa: mínimo, mínimo +
+ * O canto direito mostra a meta que a empresa DE FATO usa: mínimo, mínimo +
  * ideal ou giro (ver `lib/estoque-estrategia`). Mostrar "ideal" para quem
- * trabalha só com piso é inventar meta que ninguém definiu.
+ * trabalha só com piso é inventar meta que ninguém definiu. Cada linha de baixo
+ * é uma loja: onde o produto está guardado e quanto tem ali.
  */
 function Estoque({ ficha }: { ficha: FichaProduto }) {
   const c = ficha.cobertura;
   const tom = c ? NIVEL_TOM[c.nivel] : null;
   const e = ficha.estrategia;
 
+  // Metas do produto inteiro: a meta por loja continua existindo, mas o topo do
+  // cartão fala do total — é ele que está no número grande ao lado.
+  const totalMinimo = ficha.saldos.reduce((a, s) => a + s.minimo, 0);
+  const totalIdeal = ficha.saldos.reduce((a, s) => a + s.ideal, 0);
+
+  // O "informativo" da estratégia: por giro, quantos dias a compra cobre; por
+  // meta fixa, o piso (e o ideal, quando a empresa usa os dois).
+  const informativo = e.usaGiro
+    ? [
+        `cobre ${e.diasCobertura} ${e.diasCobertura === 1 ? "dia" : "dias"}`,
+        c ? `dura ${c.label}` : null,
+      ]
+    : [
+        e.usaMinimo ? `mínimo ${un(totalMinimo)}` : null,
+        e.usaIdeal ? `ideal ${un(totalIdeal)}` : null,
+        c ? `dura ${c.label}` : null,
+      ];
+
   return (
     <Card className="overflow-hidden">
-      <div className="flex items-end gap-4 p-4">
-        <div>
+      <div className="flex items-start gap-4 p-4">
+        <div className="min-w-0">
           <p className="text-xs text-ink-2">Em estoque</p>
           <p className="font-display text-3xl leading-none font-semibold text-ink tabular-nums">
             {ficha.totalFechado.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
@@ -220,63 +256,39 @@ function Estoque({ ficha }: { ficha: FichaProduto }) {
           )}
         </div>
 
-        {c && tom && (
-          <div className="ml-auto text-right">
-            <Badge tone={tom.badge}>{NIVEL_COBERTURA_LABEL[c.nivel]}</Badge>
-            <p className="mt-1 text-xs text-muted">dura {c.label}</p>
-          </div>
-        )}
+        {/* Selo com a estratégia que ESTA empresa usa, na cor do nível de
+            cobertura: em uma olhada, "como eu reponho" e "estou bem?". */}
+        <div className="ml-auto min-w-0 text-right">
+          <Badge tone={tom?.badge ?? "neutral"}>{ESTRATEGIA_CURTA[e.tipo]}</Badge>
+          <p className="mt-1 text-xs text-muted">
+            {informativo.filter(Boolean).join(" · ")}
+          </p>
+        </div>
       </div>
 
       {c && c.sugestao > 0 && (
         <p className="border-t border-line bg-surface-2 px-4 py-2 text-[13px] text-ink-2">
           Sugestão de compra:{" "}
-          <strong className="font-semibold text-ink">
-            {c.sugestao.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} un
-          </strong>
+          <strong className="font-semibold text-ink">{un(c.sugestao)}</strong>
         </p>
       )}
 
-      {/* Uma linha por loja, mesmo com loja única: é onde moram o local de
-          guarda e a meta de reposição — que o total não tem como mostrar. */}
+      {/* Uma linha por loja, mesmo com loja única: é onde mora o local de
+          guarda, que o total não tem como mostrar. Tudo em UMA linha — loja,
+          local e saldo — porque a leitura é horizontal: "onde e quanto". */}
       <div className="divide-y divide-line border-t border-line">
         {ficha.saldos.map((s) => (
-          <div key={s.siteId ?? "global"} className="px-4 py-2.5 text-[13px]">
-            <div className="flex items-center gap-2">
-              <Store className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden />
-              <span className="min-w-0 flex-1 truncate text-ink-2">{s.siteNome}</span>
+          <div
+            key={s.siteId ?? "global"}
+            className="flex items-center gap-2 px-4 py-2.5 text-[13px]"
+          >
+            <Store className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden />
+            <span className="min-w-0 shrink truncate text-ink-2">{s.siteNome}</span>
+            <span className="shrink-0 text-faint">·</span>
+            <Local nome={s.localNome} tipo={s.localTipo} />
+            <span className="ml-auto shrink-0">
               <SaldoUn fechado={s.fechado} aberto={s.aberto} tom="text-ink" />
-            </div>
-
-            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 pl-5.5 text-xs text-muted">
-              <Local nome={s.localNome} tipo={s.localTipo} />
-
-              {e.usaGiro ? (
-                <span>
-                  por giro · cobre {e.diasCobertura}{" "}
-                  {e.diasCobertura === 1 ? "dia" : "dias"}
-                </span>
-              ) : (
-                <>
-                  {e.usaMinimo && (
-                    <span>
-                      mínimo{" "}
-                      <strong className="font-medium text-ink-2 tabular-nums">
-                        {s.minimo.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} un
-                      </strong>
-                    </span>
-                  )}
-                  {e.usaIdeal && (
-                    <span>
-                      ideal{" "}
-                      <strong className="font-medium text-ink-2 tabular-nums">
-                        {s.ideal.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} un
-                      </strong>
-                    </span>
-                  )}
-                </>
-              )}
-            </div>
+            </span>
           </div>
         ))}
       </div>
@@ -284,17 +296,47 @@ function Estoque({ ficha }: { ficha: FichaProduto }) {
   );
 }
 
+/**
+ * Giro recente em uma frase — o contraponto do saldo: "sai, ou está parado?"
+ *
+ * A média por dia sai destes mesmos 30 dias, e não de `cobertura.mediaDia`: lá
+ * a janela é a da estratégia da empresa (pode ser 15 ou 90 dias), e dois números
+ * com bases diferentes na mesma frase é convite a conta errada.
+ */
+function VendaRecente({ ficha }: { ficha: FichaProduto }) {
+  const q = ficha.vendidos30d;
+  const porDia = q / 30;
+  return (
+    <Card className="flex items-center gap-3 p-4">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-surface-2 text-brand">
+        <TrendingUp className="h-4 w-4" aria-hidden />
+      </span>
+      <p className="text-[13px] text-ink-2">
+        {q > 0 ? (
+          <>
+            <strong className="font-semibold text-ink">{un(q)}</strong> vendidas nos
+            últimos 30 dias ·{" "}
+            {porDia.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} por dia
+          </>
+        ) : (
+          "Nenhuma unidade vendida nos últimos 30 dias."
+        )}
+      </p>
+    </Card>
+  );
+}
+
 /** Onde o produto fica guardado — ícone do tipo, como em /estoque no computador. */
 function Local({ nome, tipo }: { nome: string | null; tipo: TipoLocal | null }) {
-  if (!nome) return <span className="text-faint">sem local definido</span>;
+  if (!nome) return <span className="shrink-0 text-xs text-faint">sem local</span>;
   const Icone = tipo ? LOCAL_ICONE[tipo] : Warehouse;
   return (
-    <span className="flex items-center gap-1">
+    <span className="flex min-w-0 shrink items-center gap-1 text-muted">
       <Icone
         className={cn("h-3.5 w-3.5 shrink-0", tipo ? LOCAL_COR[tipo] : "text-faint")}
         aria-hidden
       />
-      {nome}
+      <span className="truncate">{nome}</span>
     </span>
   );
 }
@@ -343,9 +385,10 @@ function Lotes({ lotes }: { lotes: LoteFicha[] }) {
 /**
  * Embalagens em que este produto entra e sai, da unidade para cima.
  *
- * A unidade abre a lista com o código de barras dela: é o que se bipa na
- * gôndola, e sem ele a tabela começa no fardo — que ninguém lê primeiro. Cada
- * linha diz quantas UNIDADES a embalagem contém (`fatorConversao`).
+ * Uma linha só por embalagem — "Unidade · 1 un" à esquerda, o código de barras
+ * e o botão de copiar à direita. O código fica encostado no botão de propósito:
+ * ler treze dígitos da tela para digitar em outro lugar é onde nasce o erro, e
+ * o botão elimina a digitação.
  *
  * Some inteira quando não há nada além da unidade: uma tabela de conversão de
  * uma linha só ("1 unidade = 1 unidade") não informa nada.
@@ -365,14 +408,19 @@ function Embalagens({ ficha }: { ficha: FichaProduto }) {
       </h2>
       <Card className="divide-y divide-line overflow-hidden">
         {linhas.map((e) => (
-          <div key={e.id} className="flex items-center gap-2 px-4 py-2.5 text-[13px]">
-            <div className="min-w-0 flex-1">
-              <p className="font-medium text-ink">{e.nome}</p>
-              <p className="font-mono text-xs text-muted">{e.ean ?? "sem código de barras"}</p>
-            </div>
-            <span className="text-ink-2 tabular-nums">
-              {e.fator.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} un
-            </span>
+          <div key={e.id} className="flex items-center gap-2 py-1.5 pr-2 pl-4 text-[13px]">
+            <span className="shrink-0 font-medium text-ink">{e.nome}</span>
+            <span className="shrink-0 text-ink-2 tabular-nums">{un(e.fator)}</span>
+            {e.ean ? (
+              <>
+                <span className="ml-auto truncate font-mono text-xs text-muted">
+                  {e.ean}
+                </span>
+                <BotaoCopiar valor={e.ean} rotulo={`código de barras de ${e.nome.toLowerCase()}`} />
+              </>
+            ) : (
+              <span className="ml-auto pr-2 text-xs text-faint">sem código de barras</span>
+            )}
           </div>
         ))}
       </Card>

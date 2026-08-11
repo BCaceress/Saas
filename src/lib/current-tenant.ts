@@ -1,5 +1,7 @@
 import "server-only";
+import { cache } from "react";
 import { headers } from "next/headers";
+import { after } from "next/server";
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { basePrisma } from "./prisma";
@@ -32,8 +34,13 @@ export type ActiveTenant = {
  * + verifica que o usuário logado é membro. Usa o client cru (basePrisma) de
  * propósito: a verificação acontece ANTES de entrar no contexto de tenant.
  * Retorna null se algo falhar (sem subdomínio, sem sessão, sem membership).
+ *
+ * `cache()` do React: layout e página chamam isso na MESMA requisição (o shell
+ * mobile resolve o tenant, a página resolve de novo), e sem a memoização cada
+ * navegação pagava duas vezes sessão + tenant + membership. A cache é por
+ * requisição — não vaza contexto entre usuários.
  */
-export async function getActiveTenant(): Promise<ActiveTenant | null> {
+export const getActiveTenant = cache(async function getActiveTenant(): Promise<ActiveTenant | null> {
   const h = await headers();
   const sub = getSubdomainFromHost(h.get("host"));
   if (!sub) return null;
@@ -59,7 +66,7 @@ export async function getActiveTenant(): Promise<ActiveTenant | null> {
     membershipId: membership.id,
     user: session.user,
   };
-}
+});
 
 /**
  * Exige tenant ativo; redireciona para login no domínio raiz se não houver.
@@ -86,22 +93,31 @@ const TOUCH_INTERVALO_MS = 15 * 60 * 1000;
 
 /**
  * Carimba `ultimoAcesso` no Membership, no máximo a cada 15 min por pessoa.
- * Best-effort: falha aqui nunca derruba a página.
+ *
+ * Roda em `after()`: é telemetria de "quem entrou quando", e uma ESCRITA no
+ * Neon no caminho crítico de toda página autenticada custava um ida-e-volta de
+ * rede antes do primeiro byte. Depois da resposta, o mesmo dado sai de graça.
+ *
+ * `cache()` porque layout e página chamam o shell na mesma requisição — sem
+ * ele, dois updates para o mesmo carimbo. Best-effort: falha nunca derruba a
+ * página.
  */
-export async function touchUltimoAcesso(membershipId: string): Promise<void> {
-  const limite = new Date(Date.now() - TOUCH_INTERVALO_MS);
-  try {
-    await basePrisma.membership.updateMany({
-      where: {
-        id: membershipId,
-        OR: [{ ultimoAcesso: null }, { ultimoAcesso: { lt: limite } }],
-      },
-      data: { ultimoAcesso: new Date() },
-    });
-  } catch {
-    // silencioso de propósito
-  }
-}
+export const touchUltimoAcesso = cache(function touchUltimoAcesso(membershipId: string): void {
+  after(async () => {
+    const limite = new Date(Date.now() - TOUCH_INTERVALO_MS);
+    try {
+      await basePrisma.membership.updateMany({
+        where: {
+          id: membershipId,
+          OR: [{ ultimoAcesso: null }, { ultimoAcesso: { lt: limite } }],
+        },
+        data: { ultimoAcesso: new Date() },
+      });
+    } catch {
+      // silencioso de propósito
+    }
+  });
+});
 
 // ── Permissões sobre o contexto ativo ───────────────────────
 // Açúcar em cima de lib/permissoes — evita repetir `ctx.acessos` no call site.

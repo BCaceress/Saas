@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Loader2, Monitor, Receipt, Users } from "lucide-react";
+import { ChevronDown, Loader2, Monitor, Receipt, Users } from "lucide-react";
 import { brl, cn } from "@/lib/utils";
 import { Badge, Card } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,6 @@ import { metodoLabel, origemLabel } from "@/lib/pagamento-labels";
 import {
   pollAutoatendimentoAction,
   confirmarPagamentoTotemAction,
-  cancelarVendaAction,
   type FilaAutoatendimento,
 } from "@/app/(app)/vendas/actions";
 import type { ResumoVendas, MixPagamento, PontoTempo } from "@/app/(app)/relatorios/_data";
@@ -30,7 +29,6 @@ export function VendasClient({
   siteId,
   autoatendimento,
   podeRegistrar,
-  podeCancelar,
 }: {
   resumo: ResumoVendas;
   mix: MixPagamento[];
@@ -39,7 +37,6 @@ export function VendasClient({
   siteId: string | null;
   autoatendimento: boolean;
   podeRegistrar: boolean;
-  podeCancelar: boolean;
 }) {
   return (
     <div className="space-y-5">
@@ -65,7 +62,7 @@ export function VendasClient({
 
       {autoatendimento && podeRegistrar && siteId && <FilaTotem siteId={siteId} />}
 
-      <Recentes vendas={recentes} podeCancelar={podeCancelar} />
+      <Recentes vendas={recentes} />
 
       {/* O PDV não vem para o celular por decisão de escopo — dizer isso é
           melhor do que deixar a pessoa procurando o botão. */}
@@ -247,31 +244,16 @@ function FilaTotem({ siteId }: { siteId: string }) {
   );
 }
 
-function Recentes({
-  vendas,
-  podeCancelar,
-}: {
-  vendas: VendaRow[];
-  podeCancelar: boolean;
-}) {
-  const router = useRouter();
-  const [cancelando, setCancelando] = React.useState<string | null>(null);
-
-  async function cancelar(id: string) {
-    setCancelando(id);
-    try {
-      await cancelarVendaAction(id);
-      toast.success("Venda cancelada.");
-      router.refresh();
-    } catch (e) {
-      toast.error(
-        "Não foi possível cancelar",
-        e instanceof Error ? e.message : "Tente pelo PDV.",
-      );
-    } finally {
-      setCancelando(null);
-    }
-  }
+/**
+ * Últimas vendas — consulta, não operação.
+ *
+ * Sem cancelar: estornar uma venda mexe em estoque, caixa e fiscal, e a
+ * conferência disso é de balcão. No celular a linha só ABRE, mostrando o que foi
+ * vendido — que é a pergunta real de quem confere ("essa de R$ 40 foi o quê?").
+ * O cancelamento continua no PDV, onde a gaveta está.
+ */
+function Recentes({ vendas }: { vendas: VendaRow[] }) {
+  const [aberta, setAberta] = React.useState<string | null>(null);
 
   if (vendas.length === 0) {
     return (
@@ -286,43 +268,85 @@ function Recentes({
     <section className="space-y-2">
       <h2 className="font-display text-base font-semibold text-ink">Últimas vendas</h2>
       <Card className="divide-y divide-line overflow-hidden">
-        {vendas.map((v) => (
-          <div key={v.id} className="flex items-center gap-3 p-3">
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-ink">{brl(v.total)}</p>
-              <p className="truncate text-xs text-muted">
-                {origemLabel(v.origem)} · {v.numItens}{" "}
-                {v.numItens === 1 ? "item" : "itens"}
-                {v.metodos.length > 0 && ` · ${v.metodos.map(metodoLabel).join(", ")}`}
-              </p>
-            </div>
-
-            <span className="shrink-0 text-right">
-              <span className="block text-xs text-muted tabular-nums">
-                {(v.paidAt ?? v.createdAt).toLocaleTimeString("pt-BR", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </span>
-              {v.status !== "PAGA" && (
-                <Badge tone={v.status === "CANCELADA" ? "danger" : "warn"}>
-                  {v.status === "CANCELADA" ? "Cancelada" : "Aberta"}
-                </Badge>
-              )}
-            </span>
-
-            {podeCancelar && v.status === "PAGA" && (
+        {vendas.map((v) => {
+          const expandida = aberta === v.id;
+          const quando = v.paidAt ?? v.createdAt;
+          return (
+            <div key={v.id}>
               <button
                 type="button"
-                onClick={() => cancelar(v.id)}
-                disabled={cancelando === v.id}
-                className="shrink-0 cursor-pointer rounded-full px-2 py-1 text-[11px] font-medium text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
+                onClick={() => setAberta(expandida ? null : v.id)}
+                aria-expanded={expandida}
+                className="flex w-full cursor-pointer items-center gap-3 p-3 text-left transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] focus-visible:outline-none"
               >
-                {cancelando === v.id ? "…" : "Cancelar"}
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-ink">{brl(v.total)}</p>
+                  <p className="truncate text-xs text-muted">
+                    {origemLabel(v.origem)} · {v.numItens}{" "}
+                    {v.numItens === 1 ? "item" : "itens"}
+                    {v.metodos.length > 0 && ` · ${v.metodos.map(metodoLabel).join(", ")}`}
+                  </p>
+                </div>
+
+                <span className="min-w-0 shrink-0 text-right">
+                  {/* O comprador só aparece quando existe cadastro — inventar
+                      "Consumidor" para a venda de balcão seria ruído. */}
+                  {v.cliente && (
+                    <span className="block max-w-32 truncate text-xs font-medium text-ink">
+                      {v.cliente}
+                    </span>
+                  )}
+                  <span className="block text-xs text-muted tabular-nums">
+                    {quando.toLocaleDateString("pt-BR", {
+                      day: "2-digit",
+                      month: "2-digit",
+                    })}{" "}
+                    {quando.toLocaleTimeString("pt-BR", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                  {v.status !== "PAGA" && (
+                    <Badge tone={v.status === "CANCELADA" ? "danger" : "warn"}>
+                      {v.status === "CANCELADA" ? "Cancelada" : "Aberta"}
+                    </Badge>
+                  )}
+                </span>
+
+                <ChevronDown
+                  className={cn(
+                    "h-4 w-4 shrink-0 text-faint transition-transform",
+                    expandida && "rotate-180",
+                  )}
+                  aria-hidden
+                />
               </button>
-            )}
-          </div>
-        ))}
+
+              {expandida && (
+                <ul className="space-y-1.5 border-t border-line bg-surface-2 px-3 py-2.5">
+                  {v.itens.length === 0 ? (
+                    <li className="text-xs text-muted">Venda sem itens registrados.</li>
+                  ) : (
+                    v.itens.map((i, idx) => (
+                      <li key={idx} className="flex items-baseline gap-2 text-[13px]">
+                        <span className="shrink-0 font-mono text-xs text-muted tabular-nums">
+                          {i.quantidade.toLocaleString("pt-BR", {
+                            maximumFractionDigits: 3,
+                          })}
+                          ×
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-ink">{i.nome}</span>
+                        <span className="shrink-0 font-medium text-ink-2 tabular-nums">
+                          {brl(i.total)}
+                        </span>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              )}
+            </div>
+          );
+        })}
       </Card>
     </section>
   );
