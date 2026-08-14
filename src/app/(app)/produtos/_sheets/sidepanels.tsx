@@ -41,10 +41,48 @@ import type {
   SupplierRow,
 } from "../_types";
 import type { StorageType } from "@/generated/prisma";
+import { SkBarra } from "../_skeleton";
 
 function useRefresh() {
   const router = useRouter();
   return () => router.refresh();
+}
+
+/**
+ * Placeholder da lista enquanto os dados do painel estão em voo.
+ *
+ * O painel abre inteiro na hora — título, campo de cadastro, botão — e só a
+ * LISTA fica em cinza. Antes o slide-over inteiro era trocado por um
+ * "Carregando…", o que desmontava o Sheet e rodava a animação de entrada duas
+ * vezes; o operador via o painel entrar, sumir e entrar de novo.
+ */
+function ListaSkeleton({
+  linhas = 6,
+  className = "mt-5 space-y-2",
+}: {
+  linhas?: number;
+  className?: string;
+}) {
+  const larguras = ["w-1/2", "w-2/3", "w-3/5", "w-5/12", "w-7/12"];
+  return (
+    <>
+      <ul className={className} aria-hidden>
+        {Array.from({ length: linhas }).map((_, i) => (
+          <li
+            key={i}
+            className="flex items-center gap-3 rounded-[var(--radius-sm)] border border-line px-3 py-3"
+          >
+            <SkBarra className={cn("h-3.5", larguras[i % larguras.length])} />
+            <span className="flex-1" />
+            <SkBarra className="h-4 w-4" />
+          </li>
+        ))}
+      </ul>
+      <span className="sr-only" role="status">
+        Carregando…
+      </span>
+    </>
+  );
 }
 
 // ── Marcas ─────────────────────────────────────────────────
@@ -237,11 +275,14 @@ export function CategorySheet({
   open,
   onClose,
   tree,
+  carregando,
   onChanged,
 }: {
   open: boolean;
   onClose: () => void;
   tree: CategoryNode[];
+  /** Árvore ainda em voo: mostra placeholder no lugar da lista. */
+  carregando?: boolean;
   /** Recarrega a árvore de categorias (fonte fica fora do RSC — `router.refresh()` não alcança). */
   onChanged: () => void;
 }) {
@@ -347,6 +388,7 @@ export function CategorySheet({
       </div>
       {error && <p className="mt-2 text-xs text-muted">{error}</p>}
 
+      {carregando ? <ListaSkeleton /> : (
       <ul className="mt-5 space-y-2">
         {tree.length === 0 && (
           <li className="rounded-[var(--radius-sm)] border border-line px-3 py-6 text-center text-sm text-muted">
@@ -480,6 +522,7 @@ export function CategorySheet({
           );
         })}
       </ul>
+      )}
 
       <Modal
         open={!!modal}
@@ -550,11 +593,14 @@ export function StorageSheet({
   onClose,
   locations,
   sites,
+  carregando,
 }: {
   open: boolean;
   onClose: () => void;
   locations: StorageOpt[];
   sites: { id: string; nome: string }[];
+  /** Locais ainda em voo: mostra placeholder no lugar da lista. */
+  carregando?: boolean;
 }) {
   const refresh = useRefresh();
   const [nome, setNome] = useState("");
@@ -625,6 +671,7 @@ export function StorageSheet({
         </Button>
       </div>
       {error && <p className="mt-2 text-sm text-danger">{error}</p>}
+      {carregando ? <ListaSkeleton linhas={4} /> : (
       <ul className="mt-5 divide-y divide-line rounded-[var(--radius-sm)] border border-line">
         {locations.length === 0 && (
           <li className="px-3 py-6 text-center text-sm text-muted">
@@ -649,6 +696,7 @@ export function StorageSheet({
           </li>
         ))}
       </ul>
+      )}
     </Sheet>
   );
 }
@@ -711,10 +759,13 @@ export function SupplierSheet({
   open,
   onClose,
   suppliers,
+  carregando,
 }: {
   open: boolean;
   onClose: () => void;
   suppliers: SupplierRow[];
+  /** Fornecedores ainda em voo: mostra placeholder no lugar da lista. */
+  carregando?: boolean;
 }) {
   const refresh = useRefresh();
   const [pending, start] = useTransition();
@@ -868,6 +919,7 @@ export function SupplierSheet({
           className="pl-9"
         />
       </div>
+      {carregando ? <ListaSkeleton linhas={5} className="mt-3 space-y-2" /> : (
       <ul className="mt-3 divide-y divide-line rounded-[var(--radius-sm)] border border-line">
         {list.length === 0 && (
           <li className="px-3 py-6 text-center text-sm text-muted">
@@ -925,6 +977,7 @@ export function SupplierSheet({
           </li>
         ))}
       </ul>
+      )}
 
       <Modal
         open={!!form}

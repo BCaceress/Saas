@@ -20,6 +20,7 @@ import {
   type GerenciarExtras,
 } from "./_data";
 import { invalidarOpcoesFiltro } from "./_query";
+import { invalidarOpcoesFormulario } from "./_data";
 import type { ProductRow } from "./_types";
 import type { StorageType } from "@/generated/prisma";
 
@@ -39,10 +40,16 @@ const ok = () => {
   revalidatePath("/estoque");
 };
 
-const okStorage = () => {
+/**
+ * Local de armazenagem alimenta o select do cadastro de produto — por isso
+ * derruba também o cache das opções do formulário. Sem isso o operador cria o
+ * local e ele não aparece no produto seguinte.
+ */
+const okStorage = (tid: string) => {
   revalidatePath("/produtos");
   revalidatePath("/configuracoes/sites");
   revalidatePath("/estoque");
+  invalidarOpcoesFormulario(tid);
 };
 
 /**
@@ -250,7 +257,7 @@ export async function createStorageLocation(input: {
     const loc = await db.storageLocation.create({
       data: { tenantId: tid, nome, tipo: input.tipo, siteId: input.siteId },
     });
-    okStorage();
+    okStorage(tid);
     return loc.id;
   });
 }
@@ -259,7 +266,7 @@ export async function updateStorageLocation(
   id: string,
   input: { nome: string; tipo: StorageType; siteId: string },
 ) {
-  return tx(async () => {
+  return tx(async (tid) => {
     const nome = input.nome.trim();
     if (nome.length < 2) throw new Error("Informe o nome do local.");
     if (!input.siteId) throw new Error("Selecione o estabelecimento.");
@@ -271,26 +278,26 @@ export async function updateStorageLocation(
       where: { id },
       data: { nome, tipo: input.tipo, siteId: input.siteId },
     });
-    okStorage();
+    okStorage(tid);
   });
 }
 
 export async function deleteStorageLocation(id: string) {
-  return tx(async () => {
+  return tx(async (tid) => {
     const hasStock = await db.stock.findFirst({ where: { locationId: id } });
     if (hasStock)
       throw new Error(
         "Não é possível excluir: há produtos vinculados a este local. Inative-o.",
       );
     await db.storageLocation.delete({ where: { id } });
-    okStorage();
+    okStorage(tid);
   });
 }
 
 export async function toggleStorageLocationAtivo(id: string, ativo: boolean) {
-  return tx(async () => {
+  return tx(async (tid) => {
     await db.storageLocation.update({ where: { id }, data: { ativo } });
-    okStorage();
+    okStorage(tid);
   });
 }
 
@@ -305,10 +312,12 @@ async function txFornecedor<T>(fn: (tid: string) => Promise<T>): Promise<T> {
 }
 
 /** Toda tela que lê fornecedor: lista, centro de gestão, produtos e compras. */
-function okFornecedor() {
+function okFornecedor(tid: string) {
   revalidatePath("/fornecedores", "layout");
   revalidatePath("/produtos");
   revalidatePath("/compras", "layout");
+  // O picker de fornecedor do cadastro de produto vem de cache.
+  invalidarOpcoesFormulario(tid);
 }
 
 const supplierSchema = z.object({
@@ -374,13 +383,13 @@ export async function createSupplier(input: z.input<typeof supplierSchema>) {
       if (dup) throw new Error(`Já existe um fornecedor com esse CNPJ: «${dup.nomeFantasia || dup.razaoSocial}».`);
     }
     const sup = await db.supplier.create({ data: { tenantId: tid, ...data } });
-    okFornecedor();
+    okFornecedor(tid);
     return sup.id;
   });
 }
 
 export async function updateSupplier(id: string, input: z.input<typeof supplierSchema>) {
-  return txFornecedor(async () => {
+  return txFornecedor(async (tid) => {
     const d = supplierSchema.parse(input);
     const data = supplierData(d);
     if (data.cnpj) {
@@ -388,14 +397,14 @@ export async function updateSupplier(id: string, input: z.input<typeof supplierS
       if (dup) throw new Error(`Já existe um fornecedor com esse CNPJ: «${dup.nomeFantasia || dup.razaoSocial}».`);
     }
     await db.supplier.update({ where: { id }, data });
-    okFornecedor();
+    okFornecedor(tid);
   });
 }
 
 export async function setSupplierActive(id: string, ativo: boolean) {
-  return txFornecedor(async () => {
+  return txFornecedor(async (tid) => {
     await db.supplier.update({ where: { id }, data: { ativo } });
-    okFornecedor();
+    okFornecedor(tid);
   });
 }
 
@@ -764,6 +773,12 @@ const bulkEditSchema = z.object({
     })
     .optional(),
   vendeOnline: z.boolean().optional(),
+  /**
+   * Local de armazenagem do estoque. Um local pertence a um site, então a
+   * gravação alcança só o estoque daquele site. `null` = tira o local (aí
+   * não há site para deduzir: limpa em todos).
+   */
+  locationId: z.string().min(1).nullable().optional(),
   /** `null` = tira o perfil fiscal. */
   fiscalProfileId: z.string().min(1).nullable().optional(),
   ativo: z.boolean().optional(),
@@ -864,10 +879,11 @@ export async function bulkEditProducts(input: BulkEditInput): Promise<BulkEditRe
     const comPrecoIds = alvos.filter((a) => a.tipo !== "INSUMO").map((a) => a.id);
 
     // ── Snapshot para o "Desfazer" ──
-    // Fornecedor mexe em tabela de vínculo (com custo negociado por par): não
-    // cabe num snapshot de campos escalares, então esse lote não volta atrás.
+    // Fornecedor mexe em tabela de vínculo (com custo negociado por par) e o
+    // local mora no Stock, não no Product: nenhum dos dois cabe num snapshot de
+    // campos escalares, então esse lote não volta atrás.
     const desfazer: BulkSnapshotItem[] | null =
-      d.fornecedores || d.etiquetas || alvos.length > TETO_DESFAZER
+      d.fornecedores || d.etiquetas || d.locationId !== undefined || alvos.length > TETO_DESFAZER
         ? null
         : alvos.map((a) => ({
             id: a.id,
@@ -930,6 +946,26 @@ export async function bulkEditProducts(input: BulkEditInput): Promise<BulkEditRe
       await db.product.updateMany({
         where: { id: { in: alvoIds } },
         data: { fiscalProfileId: d.fiscalProfileId },
+      });
+    }
+
+    // ── Local de armazenagem ──
+    // Mora no Stock (produto × site), não no Product: por isso não entra no
+    // `data` de cima. Produto sem linha de estoque no site não é criado aqui —
+    // o local é onde a mercadoria fica, e ela ainda não está lá.
+    if (d.locationId !== undefined) {
+      let siteId: string | undefined;
+      if (d.locationId) {
+        const loc = await db.storageLocation.findFirst({
+          where: { id: d.locationId },
+          select: { siteId: true },
+        });
+        if (!loc) throw new Error("Local de armazenagem inválido.");
+        siteId = loc.siteId;
+      }
+      await db.stock.updateMany({
+        where: { productId: { in: alvoIds }, ...(siteId ? { siteId } : {}) },
+        data: { locationId: d.locationId },
       });
     }
 

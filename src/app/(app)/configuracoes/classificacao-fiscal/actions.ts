@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "@/lib/prisma";
 import { guardAction } from "@/lib/guard";
 import { runWithTenant } from "@/lib/tenant-context";
+import { invalidarOpcoesFormulario } from "../../produtos/_data";
 
 async function tx<T>(fn: (tid: string) => Promise<T>): Promise<T> {
   const ctx = await guardAction("config.gerenciar");
@@ -48,19 +49,22 @@ export async function createFiscalProfile(input: FiscalProfileInput) {
     const profile = await db.fiscalProfile.create({
       data: { tenantId: tid, ...fiscalProfileData(d) },
     });
+    // O select de perfil fiscal do cadastro de produto vem de cache.
+    invalidarOpcoesFormulario(tid);
     return profile.id;
   });
 }
 
 export async function updateFiscalProfile(id: string, input: FiscalProfileInput) {
-  return tx(async () => {
+  return tx(async (tid) => {
     const d = fiscalProfileSchema.parse(input);
     await db.fiscalProfile.update({ where: { id }, data: fiscalProfileData(d) });
+    invalidarOpcoesFormulario(tid);
   });
 }
 
 export async function deleteFiscalProfile(id: string) {
-  return tx(async () => {
+  return tx(async (tid) => {
     const usadoPorProduto = await db.product.findFirst({
       where: { fiscalProfileId: id },
       select: { id: true },
@@ -74,6 +78,7 @@ export async function deleteFiscalProfile(id: string) {
     if (usadoPorSubcategoria)
       throw new Error("Não é possível excluir: há subcategorias vinculadas a este perfil fiscal.");
     await db.fiscalProfile.delete({ where: { id } });
+    invalidarOpcoesFormulario(tid);
   });
 }
 
@@ -81,10 +86,13 @@ export async function setSubcategoryFiscalProfile(
   subcategoryId: string,
   fiscalProfileId: string | null,
 ) {
-  return tx(async () => {
+  return tx(async (tid) => {
     await db.subcategory.update({
       where: { id: subcategoryId },
       data: { defaultFiscalProfileId: fiscalProfileId },
     });
+    // `defaultFiscalProfileId` viaja em `subOpts` — é ele que pré-seleciona o
+    // perfil quando o operador escolhe a subcategoria no cadastro.
+    invalidarOpcoesFormulario(tid);
   });
 }

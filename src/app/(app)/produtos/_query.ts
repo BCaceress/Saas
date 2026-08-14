@@ -4,7 +4,7 @@ import { db, basePrisma, comTenant } from "@/lib/prisma";
 import { requireTenantId, runWithTenant } from "@/lib/tenant-context";
 import { derive, type DeriveComponent } from "@/lib/derive";
 import { margem } from "@/lib/utils";
-import { PRODUCT_INCLUDE, toProductRow } from "./_data";
+import { PRODUCT_INCLUDE, toProductRow, invalidarOpcoesFormulario } from "./_data";
 import {
   SEM_MARCA,
   SEM_TAG,
@@ -17,7 +17,6 @@ import {
   type ProdutoSortDir,
   type ProdutoSortField,
   type ProdutosPagina,
-  type ProdutoVisao,
   type SiteOpt,
   type SubcategoryFilterOpt,
   type TagOpt,
@@ -45,7 +44,7 @@ export const FILTRO_VAZIO: ProdutoFiltro = {
   tag: "",
   status: "ativos",
   flags: {
-    semPreco: false, semImagem: false, semEan: false, semFiscal: false,
+    semImagem: false, semEan: false, semFiscal: false,
     online: false, maiorIdade: false,
   },
 };
@@ -90,8 +89,6 @@ export function whereDoFiltro(f: ProdutoFiltro): Prisma.ProductWhereInput {
   if (f.status === "ativos") and.push({ ativo: true });
   else if (f.status === "inativos") and.push({ ativo: false });
 
-  // INSUMO não vende, então "sem preço" nele não é problema de cadastro.
-  if (f.flags.semPreco) and.push({ precoVenda: null, tipo: { not: "INSUMO" } });
   if (f.flags.semImagem) and.push({ imagemUrl: null });
   if (f.flags.semEan) and.push({ ean: null });
   if (f.flags.semFiscal) and.push({ fiscalProfileId: null });
@@ -403,9 +400,14 @@ const tagOpcoesFiltro = (tenantId: string) => `produtos:opcoes:${tenantId}`;
  * seja, quem acabou de cadastrar ainda veria a lista velha uma vez. Aqui o caso
  * é ler a própria escrita, então a entrada expira na hora e a próxima leitura
  * paga a consulta.
+ *
+ * Derruba junto o cache das opções do FORMULÁRIO (_data.ts): as duas listas
+ * saem das mesmas tabelas e, separadas, o operador cadastraria uma marca e a
+ * veria no filtro mas não no cadastro do produto seguinte.
  */
 export function invalidarOpcoesFiltro(tenantId: string) {
   revalidateTag(tagOpcoesFiltro(tenantId), { expire: 0 });
+  invalidarOpcoesFormulario(tenantId);
 }
 
 type OpcoesFiltroDados = {
@@ -478,21 +480,6 @@ async function consultarOpcoesFiltro(): Promise<OpcoesFiltroDados> {
     siteOpts: sites,
     tagOpts: tags,
   };
-}
-
-// ── Visões salvas ────────────────────────────────────────────────────────────
-
-/**
- * Visões do usuário + as da loja (sem dono). A visão é do operador, não da
- * máquina: quem monta "Parados 60d" no balcão precisa achá-la no escritório.
- */
-export async function listarVisoes(userId: string): Promise<ProdutoVisao[]> {
-  const linhas = await db.productView.findMany({
-    where: { OR: [{ userId }, { userId: null }] },
-    orderBy: { nome: "asc" },
-    select: { id: true, nome: true, params: true, userId: true },
-  });
-  return linhas.map((v) => ({ id: v.id, nome: v.nome, params: v.params, minha: v.userId === userId }));
 }
 
 // ── Consulta principal ───────────────────────────────────────────────────────
@@ -574,6 +561,26 @@ export async function linhasDoFiltro(
 
   const rows = brutos.map((p) => toProductRow(p));
   return { rows, giro: await carregarGiro(rows.map((r) => r.id)) };
+}
+
+/**
+ * Só o que a edição em lote mostra de cada produto: nome, SKU e tipo.
+ *
+ * Separado de `linhasPorIds` de propósito — a linha completa arrasta estoque,
+ * fornecedores, etiquetas e embalagens de cada item, e "selecionar todos os N"
+ * transformava a abertura do painel numa varredura de milhares de linhas para
+ * exibir três campos.
+ */
+export async function linhasLevesPorIds(
+  ids: string[],
+): Promise<{ id: string; nome: string; sku: string; tipo: string }[]> {
+  const unicos = [...new Set(ids)].slice(0, TETO_VARREDURA);
+  if (!unicos.length) return [];
+  return db.product.findMany({
+    where: { id: { in: unicos } },
+    orderBy: { nome: "asc" },
+    select: { id: true, nome: true, sku: true, tipo: true },
+  });
 }
 
 /** Linhas de ids avulsos (seleção em lote que atravessa páginas). */

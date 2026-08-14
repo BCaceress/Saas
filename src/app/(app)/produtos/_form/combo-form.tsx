@@ -32,6 +32,7 @@ import {
   channelsToInput,
   type ChannelRow,
 } from "./online-channels";
+import { useVoltaProdutos } from "./_volta";
 import { createCombo, updateCombo } from "../actions";
 import type { SalesChannel } from "@/generated/prisma";
 import type {
@@ -51,6 +52,7 @@ export function ComboForm({
   candidates: ComponentCandidate[];
 }) {
   const router = useRouter();
+  const volta = useVoltaProdutos();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string>();
   const nomeRef = useRef<HTMLInputElement>(null);
@@ -194,7 +196,7 @@ export function ComboForm({
       try {
         if (combo) await updateCombo(combo.id, input);
         else await createCombo(input);
-        router.push("/produtos");
+        router.push(volta);
         router.refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Falha ao salvar.");
@@ -212,8 +214,8 @@ export function ComboForm({
   return (
     <div className="flex flex-col gap-4" onKeyDown={onKeyDownForm}>
       <PageHeader
-        backHref="/produtos"
-        breadcrumbs={[{ label: "Produtos", href: "/produtos" }, { label: title }]}
+        backHref={volta}
+        breadcrumbs={[{ label: "Produtos", href: volta }, { label: title }]}
         title={title}
         badge={mode === "edit" && combo?.sku ? <SkuTag sku={combo.sku} /> : undefined}
         innerClassName="max-w-none sm:px-8"
@@ -604,7 +606,7 @@ export function ComboForm({
           </kbd>
           para salvar
         </span>
-        <Button variant="ghost" onClick={() => router.push("/produtos")} disabled={pending}>
+        <Button variant="ghost" onClick={() => router.push(volta)} disabled={pending}>
           Cancelar
         </Button>
         <Button onClick={salvar} disabled={pending}>

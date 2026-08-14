@@ -8,10 +8,12 @@ import {
   consultarProdutos,
   idsDoFiltro,
   linhasDoFiltro,
+  linhasLevesPorIds,
   linhasPorIds,
-  listarVisoes,
 } from "./_query";
+import { loadProductFormOptions } from "./_data";
 import type {
+  LoteOpcoes,
   ProductRow,
   ProdutoConsulta,
   ProdutoFiltro,
@@ -19,7 +21,6 @@ import type {
   ProdutoSortDir,
   ProdutoSortField,
   ProdutosPagina,
-  ProdutoVisao,
 } from "./_types";
 
 /**
@@ -59,51 +60,26 @@ export async function linhasSelecionadas(ids: string[]): Promise<ProductRow[]> {
   return leitura(() => linhasPorIds(ids));
 }
 
-// ── Visões salvas ────────────────────────────────────────────────────────────
-
-/** Visões do usuário + as da loja. */
-export async function buscarVisoes(): Promise<ProdutoVisao[]> {
-  const ctx = await guardAction("produto.ver", null, { mesmoSuspenso: true });
-  return runWithTenant(ctx.tenant.id, () => listarVisoes(ctx.user.id));
+/** Fila da edição em lote: nome, SKU e tipo dos ids que não estão mais na tela. */
+export async function produtosDoLote(
+  ids: string[],
+): Promise<{ id: string; nome: string; sku: string; tipo: string }[]> {
+  return leitura(() => linhasLevesPorIds(ids));
 }
 
 /**
- * Salva (ou regrava) uma visão. `daLoja` a deixa sem dono — visível a todo
- * mundo do tenant; é como o gerente publica a lista que a equipe deve olhar.
+ * Opções do painel de edição em lote. Sai do MESMO cache das opções do
+ * formulário de produto (`loadProductFormOptions`, por tenant, derrubado a cada
+ * cadastro): quem já abriu "novo produto" nesta sessão do servidor não paga
+ * consulta nenhuma para abrir o lote.
+ *
+ * Não reaproveita `getGerenciarExtras` porque aquele payload carrega o
+ * fornecedor inteiro (endereço, IE, logo) para desenhar dois selects.
  */
-export async function salvarVisao(input: {
-  nome: string;
-  params: string;
-  daLoja?: boolean;
-}): Promise<ProdutoVisao[]> {
-  const ctx = await guardAction("produto.ver");
-  const nome = input.nome.trim();
-  if (nome.length < 2) throw new Error("Dê um nome à visão.");
-  if (nome.length > 60) throw new Error("Nome muito longo (máximo 60 caracteres).");
-
-  return runWithTenant(ctx.tenant.id, async () => {
-    const userId = input.daLoja ? null : ctx.user.id;
-    const existente = await db.productView.findFirst({
-      where: { nome, userId },
-      select: { id: true },
-    });
-    if (existente) {
-      await db.productView.update({ where: { id: existente.id }, data: { params: input.params } });
-    } else {
-      await db.productView.create({
-        data: { tenantId: ctx.tenant.id, userId, nome, params: input.params },
-      });
-    }
-    return listarVisoes(ctx.user.id);
-  });
-}
-
-export async function apagarVisao(id: string): Promise<ProdutoVisao[]> {
-  const ctx = await guardAction("produto.ver");
-  return runWithTenant(ctx.tenant.id, async () => {
-    await db.productView.deleteMany({ where: { id } });
-    return listarVisoes(ctx.user.id);
-  });
+export async function opcoesDoLote(): Promise<LoteOpcoes> {
+  const ctx = await guardAction("produto.ver", null, { mesmoSuspenso: true });
+  const o = await loadProductFormOptions(ctx.tenant.id);
+  return { suppliers: o.supplierRows, fiscais: o.fiscalOpts, locais: o.storageOpts };
 }
 
 /**

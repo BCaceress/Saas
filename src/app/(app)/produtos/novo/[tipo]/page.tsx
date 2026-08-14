@@ -3,9 +3,8 @@ import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { normalizeSkuPrefix } from "@/lib/normalize";
-import { ProductForm, type ProductPrefill } from "../../_form/product-form";
-import { ComboForm } from "../../_form/combo-form";
-import { ReceitaForm } from "../../_form/receita-form";
+import { FormProduto } from "../../_form/despachante";
+import type { ProductPrefill } from "../../_form/product-form";
 import { loadProductFormOptions, loadComponentCandidates } from "../../_data";
 import { carregarItemParaNovoProdutoAction } from "../../../compras/_catalogo/actions";
 import type { SubcategoryOpt } from "../../_types";
@@ -50,15 +49,16 @@ export default async function NovoProdutoPage({
     const ctx = await requireActiveTenant();
     const { opts, candidates } = await runWithTenant(ctx.tenant.id, async () => {
       const [opts, candidates] = await Promise.all([
-        loadProductFormOptions(),
+        loadProductFormOptions(ctx.tenant.id),
         loadComponentCandidates(),
       ]);
       return { opts, candidates };
     });
     return tipo === "combo" ? (
-      <ComboForm mode="new" candidates={candidates} />
+      <FormProduto kind="combo" mode="new" candidates={candidates} />
     ) : (
-      <ReceitaForm
+      <FormProduto
+        kind="receita"
         mode="new"
         subcategories={opts.subOpts}
         candidates={candidates}
@@ -71,7 +71,7 @@ export default async function NovoProdutoPage({
 
   const ctx = await requireActiveTenant();
   const { opts, prefill } = await runWithTenant(ctx.tenant.id, async () => {
-    const opts = await loadProductFormOptions();
+    const opts = await loadProductFormOptions(ctx.tenant.id);
     if (!fromItem) return { opts, prefill: undefined };
 
     // Item veio da revisão do catálogo de um fornecedor (encarte/tabela
@@ -98,7 +98,8 @@ export default async function NovoProdutoPage({
   });
 
   return (
-    <ProductForm
+    <FormProduto
+      kind="product"
       mode="new"
       tipo={mapped}
       brands={opts.brandOpts}

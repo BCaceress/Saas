@@ -3,9 +3,7 @@ import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
-import { ProductForm } from "../../_form/product-form";
-import { ComboForm } from "../../_form/combo-form";
-import { ReceitaForm } from "../../_form/receita-form";
+import { FormProduto } from "../../_form/despachante";
 import { loadProductFormOptions, loadComponentCandidates } from "../../_data";
 import type { ProductRow, ComboData, ReceitaData, RecipeType, SelectionType } from "../../_types";
 
@@ -13,6 +11,33 @@ export const metadata = { title: "Editar produto — NoHub Market" };
 
 const dec = (v: { toNumber: () => number } | null | undefined) =>
   v == null ? null : v.toNumber();
+
+/**
+ * Colunas comuns aos três formulários. Sempre `select`, nunca `include: true`:
+ * `include` traz a tabela inteira de cada relação (Supplier tem endereço, IE,
+ * logo…) e isso atravessa o payload RSC até o browser sem ninguém ler.
+ */
+const CAMPOS_BASE = {
+  id: true,
+  tipo: true,
+  nome: true,
+  sku: true,
+  ean: true,
+  imagemUrl: true,
+  brandId: true,
+  subcategoryId: true,
+  precoVenda: true,
+  ativo: true,
+  restricaoIdade: true,
+  fiscalProfileId: true,
+  vendeOnline: true,
+  pesoGramas: true,
+  descricaoOnline: true,
+  brand: { select: { nome: true } },
+  salesChannels: {
+    select: { canal: true, ativo: true, precoCanal: true, descricaoCanal: true },
+  },
+} as const;
 
 export default async function EditarProdutoPage({
   params,
@@ -23,41 +48,40 @@ export default async function EditarProdutoPage({
   const ctx = await requireActiveTenant();
 
   const data = await runWithTenant(ctx.tenant.id, async () => {
-    // Independentes — o produto em si e as opções do formulário (marcas,
-    // categorias, fornecedores…) não dependem uma da outra. Rodar junto
-    // corta o round-trip da segunda pela metade do tempo, não soma.
-    const [p, opts] = await Promise.all([
-      db.product.findFirst({
-        where: { id },
-        include: {
-          brand: true,
-          subcategory: { include: { category: true } },
-          stocks: true,
-          components: { where: { groupId: null } },
-          componentGroups: {
-            orderBy: { ordem: "asc" },
-            include: { components: true },
-          },
-          variants: { orderBy: { fatorEscala: "asc" } },
-          salesChannels: true,
-          suppliers: { include: { supplier: true } },
-          packagings: { orderBy: { isCompraDefault: "desc" } },
-        },
-      }),
-      loadProductFormOptions(),
+    // Sonda de tipo antes da consulta cheia.
+    //
+    // Os três formulários leem coisas diferentes: SIMPLES/INSUMO quer estoque,
+    // embalagens e fornecedores; COMBO/RECEITA quer itens, grupos e variações.
+    // Uma consulta só com tudo dentro fazia todo produto simples — o caso
+    // comum — pagar quatro consultas de relação que ninguém abriria. Uma ida
+    // extra ao banco por chave primária custa milissegundos; buscar o catálogo
+    // de itens de um produto que não é composto custa muito mais.
+    //
+    // Roda em paralelo com as opções do formulário, que vêm de cache (_data.ts)
+    // e no caso quente nem tocam o banco.
+    const [tipoRow, opts] = await Promise.all([
+      db.product.findFirst({ where: { id }, select: { tipo: true } }),
+      loadProductFormOptions(ctx.tenant.id),
     ]);
-    if (!p) return null;
+    if (!tipoRow) return null;
 
-    const salesChannels = p.salesChannels.map((sc) => ({
-      canal: sc.canal,
-      ativo: sc.ativo,
-      precoCanal: dec(sc.precoCanal),
-      descricaoCanal: sc.descricaoCanal,
-    }));
+    // ── COMBO — form próprio ──
+    if (tipoRow.tipo === "COMBO") {
+      const [p, candidates] = await Promise.all([
+        db.product.findFirst({
+          where: { id },
+          select: {
+            ...CAMPOS_BASE,
+            components: {
+              where: { groupId: null },
+              select: { componentProductId: true, quantidade: true },
+            },
+          },
+        }),
+        loadComponentCandidates(),
+      ]);
+      if (!p) return null;
 
-    // COMBO — form próprio.
-    if (p.tipo === "COMBO") {
-      const candidates = await loadComponentCandidates();
       const combo: ComboData = {
         id: p.id,
         nome: p.nome,
@@ -77,14 +101,63 @@ export default async function EditarProdutoPage({
           componentProductId: c.componentProductId,
           quantidade: dec(c.quantidade) ?? 1,
         })),
-        salesChannels,
+        salesChannels: canais(p.salesChannels),
       };
       return { kind: "combo" as const, combo, opts, candidates };
     }
 
-    // PERSONALIZADO/RECEITA — form próprio (ficha técnica + split DRINK/PRATO).
-    if (p.tipo === "PERSONALIZADO") {
-      const candidates = await loadComponentCandidates();
+    // ── PERSONALIZADO/RECEITA — ficha técnica + split DRINK/PRATO ──
+    if (tipoRow.tipo === "PERSONALIZADO") {
+      const [p, candidates] = await Promise.all([
+        db.product.findFirst({
+          where: { id },
+          select: {
+            ...CAMPOS_BASE,
+            tipoReceita: true,
+            copoMl: true,
+            modoPreparo: true,
+            components: {
+              where: { groupId: null },
+              select: { componentProductId: true, quantidade: true, unidade: true },
+            },
+            componentGroups: {
+              orderBy: { ordem: "asc" },
+              select: {
+                id: true,
+                nome: true,
+                obrigatoria: true,
+                tipoSelecao: true,
+                maxSelecoes: true,
+                ordem: true,
+                components: {
+                  select: {
+                    componentProductId: true,
+                    quantidade: true,
+                    unidade: true,
+                    isDefault: true,
+                    acrescenta: true,
+                    acrescimoPreco: true,
+                  },
+                },
+              },
+            },
+            variants: {
+              orderBy: { fatorEscala: "asc" },
+              select: {
+                id: true,
+                nome: true,
+                volumeMl: true,
+                fatorEscala: true,
+                precoVenda: true,
+                isDefault: true,
+              },
+            },
+          },
+        }),
+        loadComponentCandidates(),
+      ]);
+      if (!p) return null;
+
       const inferredType = p.tipoReceita ?? (p.variants.length > 0 ? "DRINK" : "OUTRO");
       const receita: ReceitaData = {
         id: p.id,
@@ -134,10 +207,57 @@ export default async function EditarProdutoPage({
           precoVenda: dec(v.precoVenda),
           isDefault: v.isDefault,
         })),
-        salesChannels,
+        salesChannels: canais(p.salesChannels),
       };
       return { kind: "receita" as const, receita, opts, candidates };
     }
+
+    // ── SIMPLES/INSUMO — o caso comum ──
+    const p = await db.product.findFirst({
+      where: { id },
+      select: {
+        ...CAMPOS_BASE,
+        custo: true,
+        unidadeBase: true,
+        vendaUnidade: true,
+        fracionavel: true,
+        conteudoPorUnidade: true,
+        dosePadrao: true,
+        alturaCm: true,
+        larguraCm: true,
+        comprimentoCm: true,
+        gtinTributavel: true,
+        unidadeTributavel: true,
+        fatorConversaoTrib: true,
+        codigoAnp: true,
+        controlaEstoque: true,
+        subcategory: {
+          select: { nome: true, categoryId: true, category: { select: { nome: true } } },
+        },
+        stocks: {
+          select: {
+            estoqueFechado: true,
+            estoqueAberto: true,
+            estoqueMinimo: true,
+            estoqueIdeal: true,
+            locationId: true,
+          },
+        },
+        suppliers: {
+          select: {
+            supplierId: true,
+            isPrincipal: true,
+            custoFornecedor: true,
+            supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+          },
+        },
+        packagings: {
+          orderBy: { isCompraDefault: "desc" },
+          select: { id: true, nome: true, ean: true, fatorConversao: true },
+        },
+      },
+    });
+    if (!p) return null;
 
     const principal = p.suppliers.find((s) => s.isPrincipal) ?? p.suppliers[0];
     const row: ProductRow = {
@@ -184,7 +304,7 @@ export default async function EditarProdutoPage({
       fornecedorPrincipalId: principal?.supplierId ?? null,
       custoFornecedor: dec(principal?.custoFornecedor),
       disponibilidadeDerivada: null,
-      salesChannels,
+      salesChannels: canais(p.salesChannels),
       packagings: p.packagings.map((pk) => ({
         id: pk.id,
         nome: pk.nome,
@@ -205,7 +325,8 @@ export default async function EditarProdutoPage({
 
   if (data.kind === "combo") {
     return (
-      <ComboForm
+      <FormProduto
+        kind="combo"
         mode="edit"
         combo={data.combo}
         candidates={data.candidates}
@@ -215,7 +336,8 @@ export default async function EditarProdutoPage({
 
   if (data.kind === "receita") {
     return (
-      <ReceitaForm
+      <FormProduto
+        kind="receita"
         mode="edit"
         receita={data.receita}
         subcategories={data.opts.subOpts}
@@ -225,7 +347,8 @@ export default async function EditarProdutoPage({
   }
 
   return (
-    <ProductForm
+    <FormProduto
+      kind="product"
       mode="edit"
       tipo={data.row.tipo === "INSUMO" ? "INSUMO" : "SIMPLES"}
       product={data.row}
@@ -239,3 +362,18 @@ export default async function EditarProdutoPage({
     />
   );
 }
+
+type CanalRow = {
+  canal: ProductRow["salesChannels"][number]["canal"];
+  ativo: boolean;
+  precoCanal: { toNumber: () => number } | null;
+  descricaoCanal: string | null;
+};
+
+const canais = (rows: CanalRow[]): ProductRow["salesChannels"] =>
+  rows.map((sc) => ({
+    canal: sc.canal,
+    ativo: sc.ativo,
+    precoCanal: dec(sc.precoCanal),
+    descricaoCanal: sc.descricaoCanal,
+  }));

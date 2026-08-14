@@ -11,10 +11,10 @@ import {
   X,
   Info,
   Coins,
-  Globe,
   Receipt,
-  EyeOff,
-  Tags,
+  TextCursorInput,
+  MapPin,
+  BadgePercent,
 } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -23,8 +23,10 @@ import { Input, Select } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
 import { brl, cn, maskMoney, parseMoney } from "@/lib/utils";
-import { bulkEditProducts, desfazerBulkEdit } from "../actions";
-import type { BrandOpt, CategoryNode, FiscalOpt, SupplierRow, TagOpt } from "../_types";
+import { bulkEditProducts, bulkRenameProducts, desfazerBulkEdit } from "../actions";
+import type {
+  BrandOpt, CategoryFilterOpt, FiscalOpt, StorageOpt, SubcategoryFilterOpt, SupplierPickerOpt,
+} from "../_types";
 
 /** Produto na fila da edição em lote — só o que a prévia precisa mostrar. */
 export type ProdutoLote = {
@@ -49,12 +51,13 @@ const MODO_HINT: Record<ModoFornecedor, string> = {
   remover: "Tira os escolhidos de quem os tiver. Os demais continuam.",
 };
 
-const nomeFornecedor = (s: SupplierRow) => s.nomeFantasia || s.razaoSocial;
+const nomeFornecedor = (s: SupplierPickerOpt) => s.nomeFantasia || s.razaoSocial;
 
 /**
- * Edição em lote da listagem: categoria/subcategoria, marca e fornecedores dos
- * produtos selecionados. Cada bloco começa desligado — o que o operador não
- * ligar não é enviado e o campo fica como está no cadastro.
+ * Edição em lote da listagem, em quatro grupos: catálogo (categoria, marca,
+ * nomes), comercial (preço), estoque (fornecedores, localização) e fiscal.
+ * Cada bloco começa desligado — o que o operador não ligar não é enviado e o
+ * campo fica como está no cadastro.
  */
 type ModoPreco = "percentual" | "valor" | "fixo";
 
@@ -63,6 +66,16 @@ const PRECO_LABEL: Record<ModoPreco, string> = {
   valor: "Somar R$",
   fixo: "Preço fixo",
 };
+
+/**
+ * Teto de campos de nome desenhados de uma vez. Renomear é edição fina — quem
+ * seleciona três mil produtos está mexendo em preço ou categoria, não digitando
+ * três mil nomes; e três mil `<input>` controlados travam a digitação.
+ */
+const TETO_NOMES = 200;
+
+/** Idem para a prévia "quais produtos vão mudar" — é conferência, não catálogo. */
+const TETO_PREVIA = 300;
 
 const ARRED_LABEL: Record<string, string> = {
   nenhum: "Sem arredondar",
@@ -75,22 +88,28 @@ export function LoteSheet({
   open,
   onClose,
   produtos,
-  categoryTree,
+  categorias,
+  subcategorias,
   brands,
-  suppliers,
+  suppliers = [],
   fiscais = [],
-  etiquetasExistentes = [],
+  locais = [],
+  carregandoOpcoes = false,
   onAplicado,
 }: {
   open: boolean;
   onClose: () => void;
   produtos: ProdutoLote[];
-  categoryTree: CategoryNode[];
+  /** Categorias e subcategorias já estão no cliente (contexto do layout). */
+  categorias: CategoryFilterOpt[];
+  subcategorias: SubcategoryFilterOpt[];
   brands: BrandOpt[];
-  suppliers: SupplierRow[];
+  suppliers?: SupplierPickerOpt[];
   fiscais?: FiscalOpt[];
-  /** Etiquetas já usadas no tenant — viram atalho para não nascer variação. */
-  etiquetasExistentes?: TagOpt[];
+  /** Locais de armazenagem ativos — cada um pertence a um site. */
+  locais?: StorageOpt[];
+  /** As três listas acima ainda estão vindo do servidor. */
+  carregandoOpcoes?: boolean;
   onAplicado?: () => void;
 }) {
   const [pending, start] = useTransition();
@@ -112,26 +131,40 @@ export function LoteSheet({
   const [precoValor, setPrecoValor] = useState("");
   const [arredondar, setArredondar] = useState<"nenhum" | "90" | "99" | "inteiro">("nenhum");
 
-  // ── Etiquetas ──
-  const [mexerEtiquetas, setMexerEtiquetas] = useState(false);
-  const [modoEtiqueta, setModoEtiqueta] = useState<ModoFornecedor>("adicionar");
-  const [etiquetaTexto, setEtiquetaTexto] = useState("");
-  const [etiquetas, setEtiquetas] = useState<string[]>([]);
+  // ── Nomes (um campo por produto) ──
+  const [mexerNomes, setMexerNomes] = useState(false);
+  /** Começa vazio: só quem for editado entra no mapa (5.000 selecionados não viram 5.000 strings). */
+  const [nomes, setNomes] = useState<Record<string, string>>({});
+  /** Campos de verdade na tela — acima disso o navegador engasga, não o servidor. */
+  const nomesVisiveis = useMemo(
+    () => (mexerNomes ? produtos.slice(0, TETO_NOMES) : []),
+    [mexerNomes, produtos],
+  );
+  const nomeOriginal = useMemo(
+    () => new Map(produtos.map((p) => [p.id, p.nome])),
+    [produtos],
+  );
+  /** Só o que o operador mexeu de fato vai para o servidor. */
+  const nomesAlterados = useMemo(
+    () =>
+      Object.entries(nomes)
+        .map(([id, nome]) => ({ id, nome: nome.trim() }))
+        .filter((n) => n.nome && n.nome !== nomeOriginal.get(n.id)),
+    [nomes, nomeOriginal],
+  );
+  const nomeCurto = Object.values(nomes).some((n) => n.trim().length < 2);
 
-  function addEtiqueta(nome: string) {
-    const limpo = nome.trim();
-    if (limpo.length < 2) return;
-    setEtiquetas((prev) => (prev.includes(limpo) ? prev : [...prev, limpo]));
-    setEtiquetaTexto("");
-  }
-
-  // ── Venda online / fiscal / situação ──
-  const [mexerOnline, setMexerOnline] = useState(false);
-  const [vendeOnline, setVendeOnline] = useState(true);
+  // ── Fiscal ──
   const [mexerFiscal, setMexerFiscal] = useState(false);
   const [fiscalId, setFiscalId] = useState("");
-  const [mexerSituacao, setMexerSituacao] = useState(false);
-  const [ativo, setAtivo] = useState(false);
+
+  // ── Localização (local de armazenagem) ──
+  const [mexerLocal, setMexerLocal] = useState(false);
+  /** "" = sem local (limpa em todos os sites); senão é um storageLocationId. */
+  const [localId, setLocalId] = useState("");
+
+  /** Prévia do lote: a lista só é montada depois que o operador abre. */
+  const [previaAberta, setPreviaAberta] = useState(false);
 
   // ── Fornecedores ──
   const [mexerFornecedor, setMexerFornecedor] = useState(false);
@@ -140,30 +173,37 @@ export function LoteSheet({
   /** Ordem importa no modo "substituir": o primeiro vira o principal. */
   const [fornSel, setFornSel] = useState<string[]>([]);
 
-  const subs = useMemo(() => {
-    const cat = categoryTree.find((c) => c.id === categoryId);
-    return (cat?.subcategorias ?? []).filter((s) => s.ativo);
-  }, [categoryTree, categoryId]);
-
-  const fornecedoresAtivos = useMemo(
-    () => suppliers.filter((s) => s.ativo),
-    [suppliers],
+  const subs = useMemo(
+    () => subcategorias.filter((s) => s.categoryId === categoryId),
+    [subcategorias, categoryId],
   );
 
   const listaForn = useMemo(() => {
     const termo = buscaForn.trim().toLowerCase();
-    if (!termo) return fornecedoresAtivos;
-    return fornecedoresAtivos.filter((s) =>
+    if (!termo) return suppliers;
+    return suppliers.filter((s) =>
       `${s.razaoSocial} ${s.nomeFantasia ?? ""} ${s.cnpj ?? ""}`
         .toLowerCase()
         .includes(termo),
     );
-  }, [fornecedoresAtivos, buscaForn]);
+  }, [suppliers, buscaForn]);
 
   const porId = useMemo(
     () => new Map(suppliers.map((s) => [s.id, s])),
     [suppliers],
   );
+
+  /** Locais por loja: o mesmo nome ("Depósito") se repete entre sites. */
+  const locaisPorSite = useMemo(() => {
+    const mapa = new Map<string, { siteNome: string; itens: StorageOpt[] }>();
+    for (const l of locais) {
+      const chave = l.siteId ?? "sem-loja";
+      const g = mapa.get(chave) ?? { siteNome: l.siteNome ?? "Loja", itens: [] };
+      g.itens.push(l);
+      mapa.set(chave, g);
+    }
+    return [...mapa.values()];
+  }, [locais]);
 
   /** Receitas na fila: o servidor não aplica marca nelas — o painel avisa antes. */
   const receitas = produtos.filter((p) => p.tipo === "PERSONALIZADO").length;
@@ -205,7 +245,7 @@ export function LoteSheet({
   const alteracoes: string[] = [];
   if (mexerCategoria && subcategoryId) {
     const sub = subs.find((s) => s.id === subcategoryId);
-    const cat = categoryTree.find((c) => c.id === categoryId);
+    const cat = categorias.find((c) => c.id === categoryId);
     alteracoes.push(`categoria → ${cat?.nome} › ${sub?.nome}`);
   }
   if (mexerMarca) {
@@ -226,12 +266,11 @@ export function LoteSheet({
           : `preço → ${brl(precoNum)} fixo`,
     );
   }
-  if (mexerEtiquetas && (etiquetas.length || modoEtiqueta === "substituir")) {
+  if (mexerNomes && nomesAlterados.length) {
     alteracoes.push(
-      `etiquetas → ${MODO_LABEL[modoEtiqueta].toLowerCase()} ${etiquetas.length || "todas"}`,
+      `nomes → ${nomesAlterados.length} alterado${nomesAlterados.length === 1 ? "" : "s"}`,
     );
   }
-  if (mexerOnline) alteracoes.push(vendeOnline ? "venda online → ligada" : "venda online → desligada");
   if (mexerFiscal) {
     alteracoes.push(
       fiscalId
@@ -239,7 +278,6 @@ export function LoteSheet({
         : "fiscal → sem perfil",
     );
   }
-  if (mexerSituacao) alteracoes.push(ativo ? "situação → ativos" : "situação → inativos");
   if (mexerFornecedor && fornSel.length) {
     alteracoes.push(
       `fornecedores → ${MODO_LABEL[modo].toLowerCase()} ${fornSel.length}`,
@@ -247,6 +285,22 @@ export function LoteSheet({
   } else if (mexerFornecedor && modo === "substituir") {
     alteracoes.push("fornecedores → remover todos");
   }
+  if (mexerLocal) {
+    alteracoes.push(
+      localId
+        ? `local → ${locais.find((l) => l.id === localId)?.nome}`
+        : "local → sem local",
+    );
+  }
+
+  /** Tem campo que vale para o lote inteiro? Nome sozinho não passa por lá. */
+  const temCampoLote =
+    (mexerCategoria && !!subcategoryId) ||
+    mexerMarca ||
+    (mexerPreco && precoValido) ||
+    mexerFiscal ||
+    mexerFornecedor ||
+    mexerLocal;
 
   function aplicar() {
     // Erro que explica o quê e como resolver, em vez de botão morto sem motivo.
@@ -262,8 +316,8 @@ export function LoteSheet({
       toast.info("Informe o valor da reprecificação", "Ex.: 10 para subir 10%.");
       return;
     }
-    if (mexerEtiquetas && modoEtiqueta !== "substituir" && !etiquetas.length) {
-      toast.info("Escreva ao menos uma etiqueta", "Digite e aperte Enter para incluir na lista.");
+    if (mexerNomes && nomeCurto) {
+      toast.info("Nome muito curto", "Cada produto precisa de ao menos 2 letras.");
       return;
     }
     if (mexerFornecedor && modo !== "substituir" && !fornSel.length) {
@@ -280,6 +334,21 @@ export function LoteSheet({
 
     start(async () => {
       try {
+        // Nome é campo por produto: vai por fora do lote, que aplica o MESMO
+        // valor a todos. Renomeia antes para o `desfazer` do lote continuar
+        // valendo para o que ele mesmo mudou.
+        if (mexerNomes && nomesAlterados.length) {
+          await bulkRenameProducts(nomesAlterados);
+        }
+
+        if (!temCampoLote) {
+          const n = nomesAlterados.length;
+          toast.success(`${n} ${n === 1 ? "produto renomeado" : "produtos renomeados"}`);
+          onAplicado?.();
+          onClose();
+          return;
+        }
+
         const { alterados, desfazer } = await bulkEditProducts({
           ids: produtos.map((p) => p.id),
           ...(mexerCategoria && subcategoryId ? { subcategoryId } : {}),
@@ -291,17 +360,19 @@ export function LoteSheet({
           ...(mexerPreco
             ? { preco: { modo: modoPreco, valor: precoNum, arredondar } }
             : {}),
-          ...(mexerEtiquetas
-            ? { etiquetas: { modo: modoEtiqueta, nomes: etiquetas } }
-            : {}),
-          ...(mexerOnline ? { vendeOnline } : {}),
           ...(mexerFiscal ? { fiscalProfileId: fiscalId || null } : {}),
-          ...(mexerSituacao ? { ativo } : {}),
+          ...(mexerLocal ? { locationId: localId || null } : {}),
           ...(mexerFornecedor ? { fornecedores: { modo, ids: fornSel } } : {}),
         });
         toast.success(
           `${alterados} ${alterados === 1 ? "produto atualizado" : "produtos atualizados"}`,
-          desfazer ? undefined : "Vínculo de fornecedor não volta atrás.",
+          desfazer
+            ? mexerNomes && nomesAlterados.length
+              ? "O nome não volta com o desfazer."
+              : undefined
+            : mexerFornecedor
+              ? "Vínculo de fornecedor não volta atrás."
+              : "Local do estoque não volta atrás.",
           desfazer
             ? {
                 rotulo: "Desfazer",
@@ -347,7 +418,9 @@ export function LoteSheet({
         </div>
       }
     >
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-6">
+        {/* ── Catálogo: o que o produto É ── */}
+        <Grupo titulo="Catálogo">
         {/* ── Categoria / subcategoria ── */}
         <Bloco
           icon={<FolderTree size={15} />}
@@ -366,7 +439,7 @@ export function LoteSheet({
                 }}
               >
                 <option value="">Escolha a categoria</option>
-                {categoryTree.map((c) => (
+                {categorias.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.nome}
                   </option>
@@ -452,6 +525,41 @@ export function LoteSheet({
           )}
         </Bloco>
 
+        {/* ── Nomes ──
+            Único bloco por produto: os demais aplicam o mesmo valor a todos. */}
+        <Bloco
+          icon={<TextCursorInput size={15} />}
+          titulo="Nomes dos produtos"
+          resumo="Corrige o nome de cada selecionado sem abrir um por um."
+          ligado={mexerNomes}
+          onToggle={() => setMexerNomes((v) => !v)}
+        >
+          <div className="flex max-h-80 flex-col gap-3 overflow-y-auto pr-0.5">
+            {nomesVisiveis.map((p) => (
+              <Field key={p.id} label={p.sku}>
+                <Input
+                  value={nomes[p.id] ?? p.nome}
+                  onChange={(e) =>
+                    setNomes((cur) => ({ ...cur, [p.id]: e.target.value }))
+                  }
+                  placeholder="Nome do produto"
+                />
+              </Field>
+            ))}
+          </div>
+          <p className="mt-2 flex items-start gap-1.5 text-xs text-muted">
+            <Info size={13} className="mt-0.5 shrink-0" />
+            {produtos.length > TETO_NOMES
+              ? `Mostrando os ${TETO_NOMES} primeiros de ${produtos.length}. Renomear é um a um — para o resto, filtre e volte aqui.`
+              : nomesAlterados.length
+                ? `${nomesAlterados.length} nome${nomesAlterados.length === 1 ? "" : "s"} alterado${nomesAlterados.length === 1 ? "" : "s"}. O nome não volta com o desfazer.`
+                : "Quem não for editado fica com o nome atual."}
+          </p>
+        </Bloco>
+        </Grupo>
+
+        {/* ── Comercial: o que o cliente paga ── */}
+        <Grupo titulo="Comercial">
         {/* ── Preço ── */}
         <Bloco
           icon={<Coins size={15} />}
@@ -522,192 +630,25 @@ export function LoteSheet({
           <p className="mt-1 text-xs text-muted">Insumo fica de fora: é uso interno, não tem venda.</p>
         </Bloco>
 
-        {/* ── Etiquetas ── */}
-        <Bloco
-          icon={<Tags size={15} />}
-          titulo="Etiquetas"
-          resumo="Marca livre do operador: promoção, curva A, verão."
-          ligado={mexerEtiquetas}
-          onToggle={() => setMexerEtiquetas((v) => !v)}
-        >
-          <div className="flex flex-wrap gap-1.5">
-            {(Object.keys(MODO_LABEL) as ModoFornecedor[]).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setModoEtiqueta(m)}
-                className={cn(
-                  "cursor-pointer rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                  modoEtiqueta === m
-                    ? "border-brand/40 bg-brand-soft text-brand-strong"
-                    : "border-line text-ink-2 hover:bg-surface-2",
-                )}
-              >
-                {MODO_LABEL[m]}
-              </button>
-            ))}
-          </div>
+        {/* ── Promoção ──
+            Ainda não existe promoção com prazo no cadastro: o lugar dela fica
+            reservado aqui para o operador não procurar em outra tela. */}
+        <BlocoFuturo
+          icon={<BadgePercent size={15} />}
+          titulo="Promoção"
+          resumo="Preço com data de início e fim, sem perder o preço cheio. Em breve."
+        />
+        </Grupo>
 
-          {etiquetas.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {etiquetas.map((nome) => (
-                <span
-                  key={nome}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-brand/30 bg-brand-soft px-2.5 py-1 text-xs font-medium text-brand-strong"
-                >
-                  {nome}
-                  <button
-                    type="button"
-                    onClick={() => setEtiquetas((prev) => prev.filter((x) => x !== nome))}
-                    className="cursor-pointer rounded-full p-0.5 hover:bg-brand/15"
-                    aria-label={`Tirar ${nome} da lista`}
-                  >
-                    <X size={12} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-
-          <div className="mt-3">
-            <Input
-              value={etiquetaTexto}
-              onChange={(e) => setEtiquetaTexto(e.target.value)}
-              onKeyDown={(e) => {
-                // Enter e vírgula fecham a etiqueta: é como se digita lista.
-                if (e.key === "Enter" || e.key === ",") {
-                  e.preventDefault();
-                  addEtiqueta(etiquetaTexto);
-                }
-              }}
-              onBlur={() => addEtiqueta(etiquetaTexto)}
-              placeholder="Digite e aperte Enter (ex.: promoção)"
-            />
-          </div>
-
-          {/* Etiquetas já em uso viram atalho — evita "promoçao" e "promoção". */}
-          {etiquetasExistentes.length > 0 && modoEtiqueta !== "substituir" && (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <span className="text-xs text-muted">Em uso:</span>
-              {etiquetasExistentes
-                .filter((t) => !etiquetas.includes(t.nome))
-                .slice(0, 12)
-                .map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    onClick={() => addEtiqueta(t.nome)}
-                    className="cursor-pointer rounded-full border border-line bg-surface-2 px-2.5 py-1 text-xs text-ink-2 transition-colors hover:border-brand/40 hover:bg-brand-soft hover:text-brand-strong"
-                  >
-                    {t.nome}
-                  </button>
-                ))}
-            </div>
-          )}
-          {modoEtiqueta === "substituir" && (
-            <p className="mt-2 flex items-start gap-1.5 text-xs text-warn">
-              <Info size={13} className="mt-0.5 shrink-0" />
-              Substituir apaga as etiquetas atuais dos selecionados.
-            </p>
-          )}
-        </Bloco>
-
-        {/* ── Venda online ── */}
-        <Bloco
-          icon={<Globe size={15} />}
-          titulo="Venda online"
-          resumo="Liga ou desliga os selecionados dos canais online."
-          ligado={mexerOnline}
-          onToggle={() => setMexerOnline((v) => !v)}
-        >
-          <div className="flex flex-wrap gap-1.5">
-            {[
-              { v: true, label: "Vende online" },
-              { v: false, label: "Não vende online" },
-            ].map((o) => (
-              <button
-                key={String(o.v)}
-                type="button"
-                onClick={() => setVendeOnline(o.v)}
-                className={cn(
-                  "cursor-pointer rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                  vendeOnline === o.v
-                    ? "border-brand/40 bg-brand-soft text-brand-strong"
-                    : "border-line text-ink-2 hover:bg-surface-2",
-                )}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-          <p className="mt-2 text-xs text-muted">
-            Preço e descrição por canal continuam como estão em cada produto.
-          </p>
-        </Bloco>
-
-        {/* ── Perfil fiscal ── */}
-        <Bloco
-          icon={<Receipt size={15} />}
-          titulo="Perfil fiscal"
-          resumo="Aplica o mesmo NCM/CST a todos os selecionados."
-          ligado={mexerFiscal}
-          onToggle={() => setMexerFiscal((v) => !v)}
-        >
-          <Field label="Perfil">
-            <Select value={fiscalId} onChange={(e) => setFiscalId(e.target.value)}>
-              <option value="">Sem perfil (limpar)</option>
-              {fiscais.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.nome} · NCM {f.ncm}
-                  {f.precisaRevisao ? " (a revisar)" : ""}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          {fiscais.some((f) => f.id === fiscalId && f.precisaRevisao) && (
-            <p className="mt-2 flex items-start gap-1.5 text-xs text-warn">
-              <Info size={13} className="mt-0.5 shrink-0" />
-              Este perfil ainda não passou pelo contador — vale como rascunho, não como verdade.
-            </p>
-          )}
-        </Bloco>
-
-        {/* ── Situação ── */}
-        <Bloco
-          icon={<EyeOff size={15} />}
-          titulo="Situação"
-          resumo="Tira da listagem sem apagar o histórico, ou traz de volta."
-          ligado={mexerSituacao}
-          onToggle={() => setMexerSituacao((v) => !v)}
-        >
-          <div className="flex flex-wrap gap-1.5">
-            {[
-              { v: true, label: "Ativar" },
-              { v: false, label: "Inativar" },
-            ].map((o) => (
-              <button
-                key={String(o.v)}
-                type="button"
-                onClick={() => setAtivo(o.v)}
-                className={cn(
-                  "cursor-pointer rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                  ativo === o.v
-                    ? "border-brand/40 bg-brand-soft text-brand-strong"
-                    : "border-line text-ink-2 hover:bg-surface-2",
-                )}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-        </Bloco>
-
+        {/* ── Estoque: onde a mercadoria está e de quem vem ── */}
+        <Grupo titulo="Estoque">
         {/* ── Fornecedores ── */}
         <Bloco
           icon={<Truck size={15} />}
           titulo="Fornecedores"
           resumo="Vincula ou desvincula fornecedores em massa."
           ligado={mexerFornecedor}
+          carregando={carregandoOpcoes}
           onToggle={() => setMexerFornecedor((v) => !v)}
         >
           <div className="flex flex-wrap gap-1.5">
@@ -768,7 +709,7 @@ export function LoteSheet({
           <ul className="mt-2 max-h-64 divide-y divide-line overflow-y-auto rounded-[var(--radius)] border border-line">
             {listaForn.length === 0 && (
               <li className="px-3 py-6 text-center text-xs text-muted">
-                {fornecedoresAtivos.length === 0
+                {suppliers.length === 0
                   ? "Nenhum fornecedor cadastrado ainda."
                   : "Nenhum fornecedor bate com a busca."}
               </li>
@@ -802,22 +743,154 @@ export function LoteSheet({
           )}
         </Bloco>
 
-        {/* ── Prévia do lote ── */}
-        <details className="rounded-[var(--radius)] border border-line">
+        {/* ── Localização ──
+            O local mora no estoque (produto × loja), não no cadastro: por isso
+            alcança só a loja dona do local escolhido. */}
+        <Bloco
+          icon={<MapPin size={15} />}
+          titulo="Localização"
+          resumo="Diz onde a mercadoria fica: geladeira, depósito, prateleira."
+          ligado={mexerLocal}
+          carregando={carregandoOpcoes}
+          onToggle={() => setMexerLocal((v) => !v)}
+        >
+          {locaisPorSite.length === 0 ? (
+            <p className="text-xs text-muted">
+              Nenhum local de armazenagem cadastrado. Crie um em Configurações › Lojas.
+            </p>
+          ) : (
+            <>
+              <Field label="Local">
+                <Select value={localId} onChange={(e) => setLocalId(e.target.value)}>
+                  <option value="">Sem local (limpar)</option>
+                  {locaisPorSite.map((g, i) => (
+                    <optgroup key={i} label={g.siteNome}>
+                      {g.itens.map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.nome}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </Select>
+              </Field>
+              <p className="mt-2 flex items-start gap-1.5 text-xs text-muted">
+                <Info size={13} className="mt-0.5 shrink-0" />
+                {localId
+                  ? "Vale para o estoque da loja dona do local. Produto sem estoque nessa loja fica como está."
+                  : "Sem local limpa a localização em todas as lojas."}
+              </p>
+            </>
+          )}
+        </Bloco>
+        </Grupo>
+
+        {/* ── Fiscal: o que a nota precisa saber ── */}
+        <Grupo titulo="Fiscal">
+        {/* ── Perfil fiscal ── */}
+        <Bloco
+          icon={<Receipt size={15} />}
+          titulo="Perfil fiscal"
+          resumo="Aplica o mesmo NCM/CST a todos os selecionados."
+          ligado={mexerFiscal}
+          carregando={carregandoOpcoes}
+          onToggle={() => setMexerFiscal((v) => !v)}
+        >
+          <Field label="Perfil">
+            <Select value={fiscalId} onChange={(e) => setFiscalId(e.target.value)}>
+              <option value="">Sem perfil (limpar)</option>
+              {fiscais.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.nome} · NCM {f.ncm}
+                  {f.precisaRevisao ? " (a revisar)" : ""}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          {fiscais.some((f) => f.id === fiscalId && f.precisaRevisao) && (
+            <p className="mt-2 flex items-start gap-1.5 text-xs text-warn">
+              <Info size={13} className="mt-0.5 shrink-0" />
+              Este perfil ainda não passou pelo contador — vale como rascunho, não como verdade.
+            </p>
+          )}
+        </Bloco>
+        </Grupo>
+
+        {/* ── Prévia do lote ──
+            A lista só existe depois de aberta: com a seleção inteira do filtro,
+            desenhar milhares de linhas fechadas atrasava a abertura do painel
+            para mostrar o que ninguém pediu. */}
+        <details
+          className="rounded-[var(--radius)] border border-line"
+          onToggle={(e) => setPreviaAberta(e.currentTarget.open)}
+        >
           <summary className="cursor-pointer select-none px-4 py-2.5 text-sm text-ink-2 hover:bg-surface-2">
             Ver os {produtos.length} produtos que vão mudar
           </summary>
-          <ul className="max-h-56 divide-y divide-line overflow-y-auto border-t border-line text-xs">
-            {produtos.map((p) => (
-              <li key={p.id} className="flex items-center gap-2 px-4 py-1.5 text-ink-2">
-                <span className="min-w-0 flex-1 truncate">{p.nome}</span>
-                <span className="shrink-0 font-mono text-faint">{p.sku}</span>
-              </li>
-            ))}
-          </ul>
+          {previaAberta && (
+            <ul className="max-h-56 divide-y divide-line overflow-y-auto border-t border-line text-xs">
+              {produtos.slice(0, TETO_PREVIA).map((p) => (
+                <li key={p.id} className="flex items-center gap-2 px-4 py-1.5 text-ink-2">
+                  <span className="min-w-0 flex-1 truncate">{p.nome}</span>
+                  <span className="shrink-0 font-mono text-faint">{p.sku}</span>
+                </li>
+              ))}
+              {produtos.length > TETO_PREVIA && (
+                <li className="px-4 py-1.5 text-muted">
+                  … e mais {produtos.length - TETO_PREVIA}.
+                </li>
+              )}
+            </ul>
+          )}
         </details>
       </div>
     </Sheet>
+  );
+}
+
+/**
+ * Grupo de blocos. Sete caixas iguais empilhadas viram uma parede; o título
+ * diz de qual parte do produto o trecho fala (catálogo, comercial, estoque,
+ * fiscal) e dá onde descansar o olho ao rolar.
+ */
+function Grupo({ titulo, children }: { titulo: string; children: React.ReactNode }) {
+  return (
+    <section>
+      <h3 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted">
+        {titulo}
+        <span className="h-px flex-1 bg-line" />
+      </h3>
+      <div className="flex flex-col gap-3">{children}</div>
+    </section>
+  );
+}
+
+/** Lugar reservado de um campo que ainda não existe — desligado, sem checkbox. */
+function BlocoFuturo({
+  icon,
+  titulo,
+  resumo,
+}: {
+  icon: React.ReactNode;
+  titulo: string;
+  resumo: string;
+}) {
+  return (
+    <section className="rounded-[var(--radius)] border border-dashed border-line">
+      <div className="flex items-start gap-3 px-4 py-3 opacity-60">
+        <Checkbox checked={false} onChange={() => {}} disabled className="mt-0.5" />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-1.5 text-sm font-semibold text-ink-2">
+            <span className="text-faint">{icon}</span>
+            {titulo}
+            <span className="rounded-full border border-line px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-muted">
+              em breve
+            </span>
+          </span>
+          <span className="mt-0.5 block text-xs text-muted">{resumo}</span>
+        </span>
+      </div>
+    </section>
   );
 }
 
@@ -827,6 +900,7 @@ function Bloco({
   titulo,
   resumo,
   ligado,
+  carregando,
   onToggle,
   children,
 }: {
@@ -834,6 +908,8 @@ function Bloco({
   titulo: string;
   resumo: string;
   ligado: boolean;
+  /** A lista deste bloco ainda está vindo — o painel abre antes dela. */
+  carregando?: boolean;
   onToggle: () => void;
   children: React.ReactNode;
 }) {
@@ -854,7 +930,17 @@ function Bloco({
           <span className="mt-0.5 block text-xs text-muted">{resumo}</span>
         </span>
       </label>
-      {ligado && <div className="border-t border-line/70 px-4 py-3">{children}</div>}
+      {ligado && (
+        <div className="border-t border-line/70 px-4 py-3">
+          {carregando ? (
+            <p className="text-xs text-muted" aria-live="polite">
+              Carregando opções…
+            </p>
+          ) : (
+            children
+          )}
+        </div>
+      )}
     </section>
   );
 }

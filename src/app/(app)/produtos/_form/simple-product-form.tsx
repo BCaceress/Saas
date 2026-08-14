@@ -58,6 +58,7 @@ import {
   channelsToInput,
   type ChannelRow,
 } from "./online-channels";
+import { useVoltaProdutos } from "./_volta";
 import {
   createProduct,
   updateProduct,
@@ -521,6 +522,7 @@ export function SimpleProductForm({
   prefill?: ProductPrefill;
 }) {
   const router = useRouter();
+  const volta = useVoltaProdutos();
   const [pending, start] = useTransition();
   const [enriching, setEnriching] = useState(false);
   const [error, setError] = useState<string>();
@@ -1345,7 +1347,7 @@ export function SimpleProductForm({
           requestAnimationFrame(() => document.getElementById("ean")?.focus());
           return;
         }
-        router.push(itemId && prefill ? `/fornecedores/${prefill.supplierId}/catalogo` : "/produtos");
+        router.push(itemId && prefill ? `/fornecedores/${prefill.supplierId}/catalogo` : volta);
         router.refresh();
       } catch (e) {
         savedRef.current = false;
@@ -1379,7 +1381,7 @@ export function SimpleProductForm({
         return;
       }
       e.preventDefault();
-      router.push("/produtos");
+      router.push(volta);
     }
   }
 
@@ -1402,8 +1404,8 @@ export function SimpleProductForm({
   return (
     <div className="flex flex-col gap-4" onKeyDown={onKeyDownForm}>
       <PageHeader
-        backHref="/produtos"
-        breadcrumbs={[{ label: "Produtos", href: "/produtos" }, { label: title }]}
+        backHref={volta}
+        breadcrumbs={[{ label: "Produtos", href: volta }, { label: title }]}
         title={title}
         badge={
           mode === "edit" && product?.sku ? (
@@ -2820,7 +2822,7 @@ export function SimpleProductForm({
         </span>
         <Button
           variant="ghost"
-          onClick={() => router.push("/produtos")}
+          onClick={() => router.push(volta)}
           disabled={pending}
         >
           Cancelar

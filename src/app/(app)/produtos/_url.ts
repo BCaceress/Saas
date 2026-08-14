@@ -41,7 +41,6 @@ export function lerConsulta(p: Params, fornecedorIdInicial?: string): ProdutoCon
     tag: str(p, "tag"),
     status: str(p, "status") || STATUS_PADRAO,
     flags: {
-      semPreco: str(p, "f_semPreco") === "1",
       semImagem: str(p, "f_semImagem") === "1",
       semEan: str(p, "f_semEan") === "1",
       semFiscal: str(p, "f_semFiscal") === "1",

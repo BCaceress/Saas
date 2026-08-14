@@ -105,7 +105,6 @@ export type ProdutoSortDir = "asc" | "desc";
 
 /** Filtros booleanos de higiene/negócio da listagem. */
 export type ProdutoFlags = {
-  semPreco: boolean;
   semImagem: boolean;
   semEan: boolean;
   semFiscal: boolean;
@@ -147,15 +146,6 @@ export type ProdutosPagina = {
   total: number;
   /** Quantos produtos o tenant tem no total, sem filtro nenhum. */
   totalGeral: number;
-};
-
-/** Visão salva da listagem (filtro + colunas + ordenação). */
-export type ProdutoVisao = {
-  id: string;
-  nome: string;
-  params: string;
-  /** false = visão da loja inteira (criada sem dono). */
-  minha: boolean;
 };
 
 export type TagOpt = { id: string; nome: string };
@@ -225,6 +215,14 @@ export type SupplierPickerOpt = {
   id: string;
   razaoSocial: string;
   nomeFantasia: string | null;
+  /** Só para a busca: o operador procura o fornecedor pelo CNPJ da nota. */
+  cnpj: string | null;
+};
+/** Listas remotas do painel de edição em lote (as demais já vêm do layout). */
+export type LoteOpcoes = {
+  suppliers: SupplierPickerOpt[];
+  fiscais: FiscalOpt[];
+  locais: StorageOpt[];
 };
 export type FiscalOpt = {
   id: string;

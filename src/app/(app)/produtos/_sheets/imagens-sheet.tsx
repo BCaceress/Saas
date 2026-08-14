@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ImageOff,
   ImagePlus,
-  CheckCircle2,
   AlertTriangle,
   Loader2,
   RefreshCw,
@@ -72,13 +71,12 @@ export function ImagensSheet({
   onAplicado?: () => void;
 }) {
   // Sem nenhum código de barras na fila não há o que consultar: já abre na revisão.
-  const [fase, setFase] = useState<"buscando" | "revisao" | "gravando" | "fim">(() =>
+  const [fase, setFase] = useState<"buscando" | "revisao" | "gravando">(() =>
     produtos.some((p) => temEan(p)) ? "buscando" : "revisao",
   );
   const [sugestoes, setSugestoes] = useState<ImagemSugestao[]>([]);
   const [marcados, setMarcados] = useState<Set<string>>(new Set());
   const [interrompido, setInterrompido] = useState<ImagemStatus | null>(null);
-  const [gravados, setGravados] = useState(0);
   /** Número da busca em curso — ver `rodar`. */
   const execucao = useRef(0);
 
@@ -197,15 +195,23 @@ export function ImagensSheet({
     setFase("gravando");
     try {
       const n = await aplicarImagens(itens);
-      setGravados(n);
-      setFase("fim");
-      // Falha silenciosa é pior que erro: se nada entrou, diga que nada entrou.
+      // Falha silenciosa é pior que erro: se nada entrou, diga que nada entrou —
+      // e o painel fica de pé para o operador tentar de novo.
       if (n === 0) {
+        setFase("revisao");
         toast.error("Nenhuma imagem foi salva", "Tente de novo ou avise o suporte.");
-      } else {
-        toast.success(`${n} ${n === 1 ? "imagem salva" : "imagens salvas"}`);
+        return;
       }
+      toast.success(
+        `${n} ${n === 1 ? "imagem salva" : "imagens salvas"}`,
+        falhas.length > 0
+          ? `${falhas.length} produto(s) seguem sem foto.`
+          : undefined,
+      );
       onAplicado?.();
+      // Salvou: o painel some. Tela de "concluir" só somava um clique ao fim —
+      // o toast já confirma o que entrou.
+      onClose();
     } catch (e) {
       setFase("revisao");
       toast.error(
@@ -220,49 +226,43 @@ export function ImagensSheet({
       open={open}
       onClose={onClose}
       title="Buscar imagens por código de barras"
-      description={
-        fase === "fim"
-          ? undefined
-          : `${produtos.length} produto${produtos.length === 1 ? "" : "s"} na fila · consulta a base de códigos e você aprova o que entra.`
-      }
+      description={`${produtos.length} produto${produtos.length === 1 ? "" : "s"} na fila · consulta a base de códigos e você aprova o que entra.`}
       width="3xl"
       footer={
         // Rodapé presente durante a busca também: quem já viu 20 fotos boas pode
         // salvar sem esperar o resto da fila, e o botão nunca "some" da tela.
-        fase !== "fim" ? (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <span className="text-sm text-muted">
-              {marcados.size} de {encontradas.length} imagens escolhidas
-              {buscando && " · busca em andamento"}
-            </span>
-            <div className="flex items-center gap-2">
-              {retentaveis.length > 0 && (
-                <Button
-                  variant="ghost"
-                  onClick={() =>
-                    rodar(
-                      comEan.filter((p) => retentaveis.some((r) => r.id === p.id)),
-                      sugestoes,
-                    )
-                  }
-                  disabled={buscando}
-                  className="gap-1.5"
-                >
-                  <RefreshCw size={15} /> Tentar de novo ({retentaveis.length})
-                </Button>
-              )}
-              {/* Segue clicável com zero marcadas: botão morto sem explicação foi
-                  exatamente o que confundiu antes — agora o clique diz o que falta. */}
-              <Button onClick={aplicar} disabled={fase === "gravando"}>
-                {fase === "gravando"
-                  ? "Salvando…"
-                  : marcados.size === 0
-                    ? "Aplicar imagens"
-                    : `Aplicar ${marcados.size} ${marcados.size === 1 ? "imagem" : "imagens"}`}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="text-sm text-muted">
+            {marcados.size} de {encontradas.length} imagens escolhidas
+            {buscando && " · busca em andamento"}
+          </span>
+          <div className="flex items-center gap-2">
+            {retentaveis.length > 0 && (
+              <Button
+                variant="ghost"
+                onClick={() =>
+                  rodar(
+                    comEan.filter((p) => retentaveis.some((r) => r.id === p.id)),
+                    sugestoes,
+                  )
+                }
+                disabled={buscando}
+                className="gap-1.5"
+              >
+                <RefreshCw size={15} /> Tentar de novo ({retentaveis.length})
               </Button>
-            </div>
+            )}
+            {/* Segue clicável com zero marcadas: botão morto sem explicação foi
+                exatamente o que confundiu antes — agora o clique diz o que falta. */}
+            <Button onClick={aplicar} disabled={fase === "gravando"}>
+              {fase === "gravando"
+                ? "Salvando…"
+                : marcados.size === 0
+                  ? "Aplicar imagens"
+                  : `Aplicar ${marcados.size} ${marcados.size === 1 ? "imagem" : "imagens"}`}
+            </Button>
           </div>
-        ) : null
+        </div>
       }
     >
       {/* ── Progresso ── */}
@@ -293,102 +293,85 @@ export function ImagensSheet({
         </div>
       )}
 
-      {fase === "fim" ? (
-        <div className="flex flex-col gap-4 py-4">
-          <div className="flex items-center gap-2 rounded-[var(--radius)] bg-ok-soft px-4 py-3 text-ok">
-            <CheckCircle2 size={18} /> {gravados} imagens salvas.
+      <div className="flex flex-col gap-4">
+        {/* Nada marcado por padrão porque tudo já tem foto — sem isto o rodapé
+            diz "Aplicar imagens" e o operador não sabe por que nada acontece. */}
+        {soJaTinham && (
+          <div className="flex items-start gap-2 rounded-[var(--radius)] border border-info/30 bg-info-soft px-4 py-3 text-sm text-info">
+            <Info size={16} className="mt-0.5 shrink-0" />
+            <span>
+              Todos estes produtos já têm foto — por isso nada veio marcado. Marque os que devem ser{" "}
+              <strong>substituídos</strong> pela imagem da base.
+            </span>
           </div>
-          {falhas.length > 0 && (
-            <p className="text-xs text-muted">
-              {falhas.length} produto(s) seguem sem foto. Dá para tentar de novo mais tarde ou subir
-              a imagem à mão na tela do produto.
+        )}
+
+        {encontradas.length > 0 && (
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium text-ink">
+              {encontradas.length} imagem(ns) encontrada(s)
+              {jaTinhamFoto > 0 && (
+                <span className="font-normal text-muted"> · {jaTinhamFoto} já com foto</span>
+              )}
             </p>
-          )}
-          <Button onClick={onClose} className="self-end">
-            Concluir
-          </Button>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-4">
-          {/* Nada marcado por padrão porque tudo já tem foto — sem isto o rodapé
-              diz "Aplicar imagens" e o operador não sabe por que nada acontece. */}
-          {soJaTinham && (
-            <div className="flex items-start gap-2 rounded-[var(--radius)] border border-info/30 bg-info-soft px-4 py-3 text-sm text-info">
-              <Info size={16} className="mt-0.5 shrink-0" />
-              <span>
-                Todos estes produtos já têm foto — por isso nada veio marcado. Marque os que devem
-                ser <strong>substituídos</strong> pela imagem da base.
-              </span>
+            <div className="flex items-center gap-1">
+              <Button variant="ghost" size="sm" onClick={() => todos(true)}>
+                Marcar todas
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => todos(false)}>
+                Desmarcar
+              </Button>
             </div>
-          )}
-
-          {encontradas.length > 0 && (
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-sm font-medium text-ink">
-                {encontradas.length} imagem(ns) encontrada(s)
-                {jaTinhamFoto > 0 && (
-                  <span className="font-normal text-muted"> · {jaTinhamFoto} já com foto</span>
-                )}
-              </p>
-              <div className="flex items-center gap-1">
-                <Button variant="ghost" size="sm" onClick={() => todos(true)}>
-                  Marcar todas
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => todos(false)}>
-                  Desmarcar
-                </Button>
-              </div>
-            </div>
-          )}
-
-          <div className="grid gap-2 sm:grid-cols-2">
-            {encontradas.map((s) => (
-              <CardSugestao
-                key={s.id}
-                sugestao={s}
-                atual={atuais.get(s.id) ?? null}
-                marcado={marcados.has(s.id)}
-                onToggle={() => alternar(s.id)}
-              />
-            ))}
           </div>
+        )}
 
-          {(falhas.length > 0 || semEan.length > 0) && !buscando && (
-            <details className="rounded-[var(--radius)] border border-line">
-              <summary className="cursor-pointer select-none px-4 py-2.5 text-sm text-ink-2 hover:bg-surface-2">
-                {falhas.length + semEan.length} produto(s) sem imagem
-              </summary>
-              <ul className="max-h-56 divide-y divide-line overflow-y-auto border-t border-line text-xs">
-                {semEan.map((p) => (
-                  <li key={p.id} className="flex items-center gap-2 px-4 py-1.5 text-ink-2">
-                    <ScanBarcode size={13} className="shrink-0 text-faint" />
-                    <span className="min-w-0 flex-1 truncate">{p.nome}</span>
-                    <span className="shrink-0 text-muted">{MOTIVO.sem_ean}</span>
-                  </li>
-                ))}
-                {falhas.map((s) => (
-                  <li key={s.id} className="flex items-center gap-2 px-4 py-1.5 text-ink-2">
-                    <ImageOff size={13} className="shrink-0 text-faint" />
-                    <span className="min-w-0 flex-1 truncate">{s.nome}</span>
-                    <span className="shrink-0 text-muted">{MOTIVO[s.status]}</span>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
-
-          {!buscando && encontradas.length === 0 && (
-            <div className="flex flex-col items-center gap-2 py-10 text-center">
-              <ImageOff size={26} className="text-faint" />
-              <p className="text-sm text-ink">Nenhuma imagem encontrada.</p>
-              <p className="max-w-sm text-xs text-muted">
-                A base só devolve foto para códigos de barras conhecidos. Produto de fabricação
-                própria ou sem EAN precisa de imagem enviada à mão.
-              </p>
-            </div>
-          )}
+        <div className="grid gap-2 sm:grid-cols-2">
+          {encontradas.map((s) => (
+            <CardSugestao
+              key={s.id}
+              sugestao={s}
+              atual={atuais.get(s.id) ?? null}
+              marcado={marcados.has(s.id)}
+              onToggle={() => alternar(s.id)}
+            />
+          ))}
         </div>
-      )}
+
+        {(falhas.length > 0 || semEan.length > 0) && !buscando && (
+          <details className="rounded-[var(--radius)] border border-line">
+            <summary className="cursor-pointer select-none px-4 py-2.5 text-sm text-ink-2 hover:bg-surface-2">
+              {falhas.length + semEan.length} produto(s) sem imagem
+            </summary>
+            <ul className="max-h-56 divide-y divide-line overflow-y-auto border-t border-line text-xs">
+              {semEan.map((p) => (
+                <li key={p.id} className="flex items-center gap-2 px-4 py-1.5 text-ink-2">
+                  <ScanBarcode size={13} className="shrink-0 text-faint" />
+                  <span className="min-w-0 flex-1 truncate">{p.nome}</span>
+                  <span className="shrink-0 text-muted">{MOTIVO.sem_ean}</span>
+                </li>
+              ))}
+              {falhas.map((s) => (
+                <li key={s.id} className="flex items-center gap-2 px-4 py-1.5 text-ink-2">
+                  <ImageOff size={13} className="shrink-0 text-faint" />
+                  <span className="min-w-0 flex-1 truncate">{s.nome}</span>
+                  <span className="shrink-0 text-muted">{MOTIVO[s.status]}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+
+        {!buscando && encontradas.length === 0 && (
+          <div className="flex flex-col items-center gap-2 py-10 text-center">
+            <ImageOff size={26} className="text-faint" />
+            <p className="text-sm text-ink">Nenhuma imagem encontrada.</p>
+            <p className="max-w-sm text-xs text-muted">
+              A base só devolve foto para códigos de barras conhecidos. Produto de fabricação própria
+              ou sem EAN precisa de imagem enviada à mão.
+            </p>
+          </div>
+        )}
+      </div>
     </Sheet>
   );
 }

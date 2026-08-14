@@ -13,8 +13,8 @@ import {
   Barcode, Hash, ChevronLeft, ChevronRight,
   ArrowUp, ArrowDown, ChevronsUpDown, Globe, SlidersHorizontal, Columns3,
   Download, Rows2, Rows3, LayoutGrid, FilterX, Percent, BottleWine, Printer, ImagePlus,
-  TextCursorInput, Box, Refrigerator, Snowflake, Star, Trash2, Check as CheckIcon,
-  TrendingUp, Clock, Users, FileSpreadsheet, ChevronUp,
+  Box, Refrigerator, Snowflake, Check as CheckIcon,
+  TrendingUp, Clock, FileSpreadsheet, ChevronUp,
 } from "lucide-react";
 import { cn, brl, margem, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
 import { thumbSrc } from "@/lib/imagem";
@@ -31,16 +31,16 @@ import {
   ProductSidePanel, stockLevel, TIPO_LABEL, TIPO_ICON, STOCK_COLOR, STOCK_TITLE, STOCK_TEXT,
 } from "@/components/app/product-side-panel";
 import { TipoIcone } from "@/components/app/produto-tipo";
-import { BrandSheet, CategorySheet, StorageSheet, SupplierSheet } from "./_sheets/sidepanels";
-import { CsvSheet } from "./_sheets/csv-sheet";
-import { EtiquetasSheet } from "./_sheets/etiquetas-sheet";
-import { ImagensSheet, type ProdutoImagem } from "./_sheets/imagens-sheet";
-import { LoteSheet } from "./_sheets/lote-sheet";
-import { NomesSheet } from "./_sheets/nomes-sheet";
+import {
+  painelCsv, painelEtiquetas, painelGerenciar, painelImagens, painelLote,
+  prepararGerenciar, prepararLote,
+} from "./_sheets/_despachante";
+import type { ProdutoImagem } from "./_sheets/imagens-sheet";
+import type { ProdutoLote } from "./_sheets/lote-sheet";
 import { archiveProduct, getGerenciarExtras } from "./actions";
 import {
-  apagarVisao, buscarProdutos, linhasParaExport, linhasSelecionadas,
-  salvarVisao, selecionarIdsDoFiltro, setPrecoVenda,
+  buscarProdutos, linhasParaExport, linhasSelecionadas, opcoesDoLote, produtosDoLote,
+  selecionarIdsDoFiltro, setPrecoVenda,
 } from "./list-actions";
 import { consultaParaParams, contarFiltros, soFiltro, STATUS_PADRAO } from "./_url";
 import {
@@ -48,17 +48,21 @@ import {
   type ColKey, type Density, type InfoKey,
 } from "./_colunas";
 import { CardsSkeleton } from "./_skeleton";
+import {
+  SelecaoProvider, useNovaSelecao, useQtdDaPagina, useQtdSelecionada, useSelecao, useSelecionado,
+} from "./_selecao";
 import { useOpcoes } from "./_opcoes";
 import { baixarXlsx } from "./_export";
 import {
   SEM_MARCA, SEM_TAG,
+  type LoteOpcoes,
   type ProductRow, type ProductPackagingItem, type ProdutoConsulta, type ProdutoFlags,
   type ProdutoGiro, type ProdutoSortDir, type ProdutoSortField,
-  type ProdutosPagina, type ProdutoVisao,
+  type ProdutosPagina,
 } from "./_types";
 import type { GerenciarExtras } from "./_data";
 
-type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv" | "imagens" | "lote" | "nomes";
+type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv" | "imagens" | "lote";
 
 /**
  * Teto de produtos por rodada de busca de imagem. A cota da base de códigos é
@@ -66,7 +70,31 @@ type SheetKind = null | "brand" | "category" | "storage" | "supplier" | "csv" | 
  */
 const IMAGENS_POR_RODADA = 100;
 
+/** Onde a listagem guarda o lugar em que o operador parou antes do cadastro. */
+const CHAVE_VOLTA = "produtos:volta";
+
 const POR_PAGINA = [25, 50, 100, 200];
+
+/**
+ * Lista vazia estável para os painéis que abrem antes dos dados chegarem.
+ * Um `[]` novo a cada renderização trocaria a prop e faria o painel redesenhar
+ * a lista à toa enquanto ela ainda é um placeholder.
+ */
+const LISTA_VAZIA: [] = [];
+
+/**
+ * `kind: "full"` do `router.prefetch` — pré-busca a rota RENDERIZADA, com os
+ * dados, e não só até a fronteira do `loading.tsx`.
+ *
+ * O tipo (`PrefetchKind`) não é exportado por `next/navigation`; o valor é a
+ * string. Em vez de importar de dentro de `next/dist`, que muda de lugar entre
+ * versões, o tipo sai da própria assinatura do router: se o Next mexer na API,
+ * isto quebra no `tsc` em vez de virar prefetch silenciosamente ignorado.
+ */
+type OpcoesPrefetch = NonNullable<
+  Parameters<ReturnType<typeof useRouter>["prefetch"]>[1]
+>;
+const PREFETCH_COMPLETO = "full" as OpcoesPrefetch["kind"];
 
 /** Quantidade de estoque exibível (null = produto sem controle de estoque). */
 function stockQty(p: ProductRow): number | null {
@@ -136,7 +164,7 @@ function AbertaBadge({ size = 16 }: { size?: number }) {
 }
 
 const FLAG_LABEL: Record<keyof ProdutoFlags, string> = {
-  semPreco: "Sem preço", semImagem: "Sem imagem", semEan: "Sem código de barras",
+  semImagem: "Sem imagem", semEan: "Sem código de barras",
   semFiscal: "Sem perfil fiscal", online: "Vende online", maiorIdade: "Restrição +18",
 };
 
@@ -166,13 +194,12 @@ function colsDaString(s: string | null): Record<ColKey, boolean> | null {
 export function ProdutosClient(props: {
   pagina: ProdutosPagina;
   consultaInicial: ProdutoConsulta;
-  visoesIniciais: ProdutoVisao[];
   initialFornecedorNome?: string;
   /** Estratégia de estoque — define as colunas do importador de CSV. */
   policy?: EstoquePolicy;
 }) {
   const {
-    pagina, consultaInicial, visoesIniciais,
+    pagina, consultaInicial,
     initialFornecedorNome, policy = POLICY_PADRAO,
   } = props;
   const router = useRouter();
@@ -185,6 +212,18 @@ export function ProdutosClient(props: {
   const { rows, giro, total, totalGeral } = pagina;
 
   const [sheet, setSheet] = useState<SheetKind>(null);
+  const fecharSheet = useCallback(() => setSheet(null), []);
+
+  // Pedaços de JavaScript dos painéis. O `true` só marca quem precisa AGORA —
+  // quem já pré-buscou (hover em "Gerenciar", seleção em lote) recebe o módulo
+  // pronto e o painel abre sem passar por "Carregando…".
+  const Gerenciar = painelGerenciar.useModulo(
+    sheet === "brand" || sheet === "category" || sheet === "storage" || sheet === "supplier",
+  );
+  const Csv = painelCsv.useModulo(sheet === "csv");
+  const Imagens = painelImagens.useModulo(sheet === "imagens");
+  const Lote = painelLote.useModulo(sheet === "lote");
+
   /** Fila da busca de imagens — congelada na abertura do painel. */
   const [imagensAlvo, setImagensAlvo] = useState<ProdutoImagem[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
@@ -194,11 +233,53 @@ export function ProdutosClient(props: {
   // são buscados quando o usuário de fato abre o menu — não no load da página.
   const [extras, setExtras] = useState<GerenciarExtras | null>(null);
   const extrasRequested = useRef(false);
-  function ensureExtras() {
+  const ensureExtras = useCallback(() => {
     if (extrasRequested.current) return;
     extrasRequested.current = true;
     getGerenciarExtras().then(setExtras);
-  }
+  }, []);
+
+  /**
+   * Primeiro sinal de intenção no menu "Gerenciar": põe no forno o pedaço de
+   * JavaScript dos painéis E a consulta que eles precisam. Chegar no clique com
+   * as duas coisas prontas é o que faz o painel abrir de uma vez só, em vez de
+   * entrar vazio e se preencher depois.
+   *
+   * `pointerdown` cobre o toque, onde `mouseenter` só dispara junto com o clique.
+   */
+  const aquecerGerenciar = useCallback(() => {
+    prepararGerenciar();
+    ensureExtras();
+  }, [ensureExtras]);
+
+  /**
+   * Listas do painel de lote (fornecedores, perfis fiscais, locais). Vêm de uma
+   * ação própria e enxuta em vez de `getGerenciarExtras`: o painel desenha dois
+   * selects e uma lista de nomes, não precisa do endereço nem do logo de cada
+   * fornecedor. No servidor sai do cache das opções do formulário.
+   *
+   * Categorias, subcategorias e marcas nem entram aqui — já estão no cliente,
+   * vindas do layout.
+   */
+  const [loteOpcoes, setLoteOpcoes] = useState<LoteOpcoes | null>(null);
+  const loteRequested = useRef(false);
+  const ensureLoteOpcoes = useCallback(() => {
+    if (loteRequested.current) return;
+    loteRequested.current = true;
+    opcoesDoLote()
+      .then(setLoteOpcoes)
+      .catch(() => {
+        // Painel abre do mesmo jeito: os blocos remotos ficam vazios e o
+        // operador ainda renomeia, reprecifica e recategoriza.
+        loteRequested.current = false;
+      });
+  }, []);
+
+  /** Primeiro sinal de intenção na barra de seleção: código E dados no forno. */
+  const aquecerLote = useCallback(() => {
+    prepararLote();
+    ensureLoteOpcoes();
+  }, [ensureLoteOpcoes]);
 
   // ── Consulta (filtro + ordem + página) ──
   // O estado local responde ao teclado na hora; a URL — e com ela o servidor —
@@ -291,17 +372,39 @@ export function ProdutosClient(props: {
     return () => clearTimeout(t);
   }, [alvoUrl, urlAtual, consulta.pagina, router]);
 
+  // Volta do cadastro: a URL já traz filtros/página (veio no `voltar`), falta
+  // devolver a rolagem. Só restaura se a listagem for a mesma que saiu daqui —
+  // entrar por /produtos limpo tem que abrir no topo.
+  useEffect(() => {
+    let bruto: string | null = null;
+    try {
+      bruto = sessionStorage.getItem(CHAVE_VOLTA);
+      if (bruto) sessionStorage.removeItem(CHAVE_VOLTA);
+    } catch {}
+    if (!bruto) return;
+    let alvo: { busca?: string; y?: number };
+    try { alvo = JSON.parse(bruto); } catch { return; }
+    if (!alvo.y || alvo.busca !== window.location.search) return;
+    // Duas frames: a virtualização precisa medir as linhas antes, senão a
+    // página ainda é curta demais e o scroll é aparado.
+    const id = requestAnimationFrame(() =>
+      requestAnimationFrame(() => window.scrollTo(0, alvo.y!)),
+    );
+    return () => cancelAnimationFrame(id);
+  }, []);
+
   // Seleção em lote (atravessa páginas: guarda ids, não linhas).
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Fora do estado do React de propósito — ver `_selecao.tsx`.
+  const selecao = useNovaSelecao();
   const [etiquetasAlvo, setEtiquetasAlvo] = useState<ProductRow[]>([]);
   const [etiquetasOpen, setEtiquetasOpen] = useState(false);
-  const ultimoIdx = useRef<number | null>(null);
+  const Etiquetas = painelEtiquetas.useModulo(etiquetasOpen);
 
   /** Muda a consulta e volta para a página 1 (salvo quando é a própria página). */
   const aplicar = useCallback((patch: Partial<ProdutoConsulta>) => {
     setConsulta((c) => ({ ...c, ...patch, pagina: patch.pagina ?? 1 }));
-    if (patch.pagina === undefined) setSelected(new Set());
-  }, []);
+    if (patch.pagina === undefined) selecao.limpar();
+  }, [selecao]);
 
   const aplicarFlag = useCallback((k: keyof ProdutoFlags, valor?: boolean) => {
     setConsulta((c) => ({
@@ -309,8 +412,8 @@ export function ProdutosClient(props: {
       pagina: 1,
       flags: { ...c.flags, [k]: valor ?? !c.flags[k] },
     }));
-    setSelected(new Set());
-  }, []);
+    selecao.limpar();
+  }, [selecao]);
 
   function toggleSort(field: ProdutoSortField) {
     setConsulta((c) => ({
@@ -334,16 +437,76 @@ export function ProdutosClient(props: {
       q: "", tipo: "", sub: "", marca: "", fornecedorId: "", siteId: "", tag: "",
       status: STATUS_PADRAO,
       flags: {
-        semPreco: false, semImagem: false, semEan: false, semFiscal: false,
+        semImagem: false, semEan: false, semFiscal: false,
         online: false, maiorIdade: false,
       },
       pagina: 1,
     }));
-    setSelected(new Set());
-  }, []);
+    selecao.limpar();
+  }, [selecao]);
 
-  function novo(tipo: "simples" | "insumo" | "combo" | "personalizado") { router.push(`/produtos/novo/${tipo}`); }
-  function editar(p: ProductRow) { router.push(`/produtos/${p.id}/editar`); }
+  /**
+   * Sai da listagem levando o estado dela junto: a URL viaja no `voltar` (o
+   * cadastro devolve o operador nela) e a rolagem fica guardada na aba. Voltar
+   * do cadastro e cair no topo de /produtos sem filtro é perder o lugar na
+   * prateleira — em catálogo de 3 mil itens isso custa caro.
+   */
+  const sairPara = useCallback((destino: string) => {
+    try {
+      sessionStorage.setItem(
+        CHAVE_VOLTA,
+        JSON.stringify({ busca: window.location.search, y: window.scrollY }),
+      );
+    } catch {}
+    router.push(`${destino}${alvoUrl ? `?voltar=${encodeURIComponent(alvoUrl)}` : ""}`);
+  }, [router, alvoUrl]);
+
+  function novo(tipo: "simples" | "insumo" | "combo" | "personalizado") { sairPara(`/produtos/novo/${tipo}`); }
+  function editar(p: ProductRow) { sairPara(`/produtos/${p.id}/editar`); }
+
+  /**
+   * Cadastro no forno quando o mouse encosta na linha.
+   *
+   * Sem isto o clique em "Editar" só COMEÇA a baixar o JS do formulário (ele é
+   * grande) — e a tela fica em branco pelo caminho inteiro. Passar o mouse já
+   * traz a casca do cadastro; o clique vira troca de tela, não download.
+   *
+   * `Set` de guarda: o mouse atravessa a mesma linha várias vezes numa lista
+   * de 200 itens, e o Next não deduplica pedido já servido. Cada produto entra
+   * na fila uma vez só.
+   */
+  const prefetchados = useRef<Set<string>>(new Set());
+  const prefetchEditar = useCallback((id: string) => {
+    if (prefetchados.current.has(id)) return;
+    prefetchados.current.add(id);
+    router.prefetch(`/produtos/${id}/editar`);
+  }, [router]);
+
+  /**
+   * Prefetch COMPLETO — traz os dados do produto, não só a casca.
+   *
+   * `router.prefetch()` sem opção pára no `loading.tsx`: chega a casca e o
+   * JavaScript, mas a consulta do produto só sai no clique. Com `kind: "full"`
+   * o servidor renderiza a página inteira e o clique vira troca de tela, sem
+   * ida ao servidor.
+   *
+   * NÃO usar isso no hover da linha: numa lista de 200 itens, passar o mouse
+   * varrendo a tabela dispararia 200 renders completos no servidor e 200
+   * consultas no Neon. Fica reservado ao sinal de um produto só — a ficha
+   * aberta, onde o operador já escolheu.
+   */
+  const completos = useRef<Set<string>>(new Set());
+  const prefetchEditarCompleto = useCallback((id: string) => {
+    if (completos.current.has(id)) return;
+    completos.current.add(id);
+    router.prefetch(`/produtos/${id}/editar`, { kind: PREFETCH_COMPLETO });
+  }, [router]);
+
+  // Ficha aberta é o sinal de intenção mais forte que existe — e é o único que
+  // o toque dá, porque no celular `pointerenter` só dispara junto com o clique.
+  useEffect(() => {
+    if (selectedProduct) prefetchEditarCompleto(selectedProduct.id);
+  }, [selectedProduct, prefetchEditarCompleto]);
 
   /** Inativar/ativar com volta atrás: a ação é reversível, o modal seria atrito. */
   function toggleInativo(p: ProductRow) {
@@ -369,47 +532,22 @@ export function ProdutosClient(props: {
   }
 
   // ── Seleção ──
-  const pageIds = rows.map((p) => p.id);
-  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
-  const somePageSelected = pageIds.some((id) => selected.has(id));
+  const pageIds = useMemo(() => rows.map((p) => p.id), [rows]);
 
   // `lista` explícita porque o mobile empilha páginas: o índice do card não é o
   // mesmo índice de `rows` depois do primeiro "Carregar mais".
-  function toggleRow(id: string, idx: number, shift = false, lista: ProductRow[] = rows) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      // Shift-clique marca o intervalo desde a última linha tocada — é como o
-      // operador seleciona "essa prateleira inteira" sem 40 cliques.
-      if (shift && ultimoIdx.current !== null) {
-        const [ini, fim] = [ultimoIdx.current, idx].sort((a, b) => a - b);
-        const marcar = !prev.has(id);
-        for (let i = ini; i <= fim; i++) {
-          const alvo = lista[i]?.id;
-          if (!alvo) continue;
-          if (marcar) next.add(alvo); else next.delete(alvo);
-        }
-      } else if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-    ultimoIdx.current = idx;
-  }
-
-  function toggleAllPage() {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (allPageSelected) pageIds.forEach((id) => next.delete(id));
-      else pageIds.forEach((id) => next.add(id));
-      return next;
-    });
-    ultimoIdx.current = null;
-  }
+  const toggleRow = useCallback(
+    (id: string, idx: number, shift = false, lista: ProductRow[] = rows) => {
+      selecao.alternar(id, idx, shift, lista);
+    },
+    [selecao, rows],
+  );
 
   async function selecionarTudoDoFiltro() {
     setOcupado(true);
     try {
       const ids = await selecionarIdsDoFiltro(soFiltro(consulta));
-      setSelected(new Set(ids));
+      selecao.definir(ids);
       toast.info(`${ids.length} produtos selecionados`, "Vale para todas as páginas do filtro.");
     } catch (e) {
       toast.error("Não deu para selecionar tudo", e instanceof Error ? e.message : undefined);
@@ -420,16 +558,23 @@ export function ProdutosClient(props: {
 
   /** Linhas completas dos selecionados — a seleção pode estar fora da página. */
   async function linhasDaSelecao(): Promise<ProductRow[]> {
-    const ids = [...selected];
+    const ids = selecao.lista();
     const naPagina = new Map(rows.map((r) => [r.id, r]));
     if (ids.every((id) => naPagina.has(id))) return ids.map((id) => naPagina.get(id)!);
     return linhasSelecionadas(ids);
   }
 
+  /**
+   * Roda uma ação em lote e solta a seleção. Os painéis (imagens, etiquetas,
+   * lote) congelam a fila que receberam, então limpar aqui não muda o
+   * que eles vão processar — e evita que a próxima ação pegue de carona uma
+   * seleção que o operador já considerava resolvida.
+   */
   async function comSelecao(fn: (linhas: ProductRow[]) => void) {
     setOcupado(true);
     try {
       fn(await linhasDaSelecao());
+      selecao.limpar();
     } catch (e) {
       toast.error("Não deu para carregar a seleção", e instanceof Error ? e.message : undefined);
     } finally {
@@ -442,7 +587,7 @@ export function ProdutosClient(props: {
   async function exportar(formato: "csv" | "xlsx") {
     setOcupado(true);
     try {
-      const { linhas, giroExport } = selected.size
+      const { linhas, giroExport } = selecao.tamanho
         ? { linhas: await linhasDaSelecao(), giroExport: giro }
         : await linhasParaExport(soFiltro(consulta), consulta.sort, consulta.dir).then((r) => ({
             linhas: r.rows,
@@ -458,6 +603,7 @@ export function ProdutosClient(props: {
           linhas: tabela.linhas,
         });
       }
+      selecao.limpar();
     } catch (e) {
       toast.error("Não deu para exportar", e instanceof Error ? e.message : undefined);
     } finally {
@@ -481,53 +627,44 @@ export function ProdutosClient(props: {
 
   // ── Edição em lote (categoria, marca, preço, fornecedores) ──
   /** Fila congelada na abertura do painel — mesma ideia da busca de imagens. */
-  const [loteAlvo, setLoteAlvo] = useState<{ id: string; nome: string; sku: string; tipo: string }[]>([]);
-  function abrirLote(lista: ProductRow[]) {
-    setLoteAlvo(lista.map((p) => ({ id: p.id, nome: p.nome, sku: p.sku, tipo: p.tipo })));
-    ensureExtras();
-    setSheet("lote");
-  }
+  const [loteAlvo, setLoteAlvo] = useState<ProdutoLote[]>([]);
 
-  // ── Alterar nomes em massa ──
-  const [nomesAlvo, setNomesAlvo] = useState<{ id: string; nome: string; sku: string }[]>([]);
-  function abrirNomes(lista: ProductRow[]) {
-    setNomesAlvo(lista.map((p) => ({ id: p.id, nome: p.nome, sku: p.sku })));
-    setSheet("nomes");
-  }
+  /**
+   * Abre o painel de lote SEM esperar nada.
+   *
+   * A fila leve (nome/SKU/tipo) sai da página quando a seleção cabe nela; só
+   * quem selecionou além da tela paga uma consulta — e mesmo essa devolve três
+   * campos, não a linha inteira com estoque, fornecedores e etiquetas.
+   */
+  async function abrirLote() {
+    const ids = selecao.lista();
+    if (!ids.length) return;
+    aquecerLote();
+    const naPagina = new Map(rowsMobile.map((r) => [r.id, r]));
+    const daPagina = ids.every((id) => naPagina.has(id))
+      ? ids.map((id) => {
+          const r = naPagina.get(id)!;
+          return { id: r.id, nome: r.nome, sku: r.sku, tipo: r.tipo };
+        })
+      : null;
 
-  // ── Visões salvas ──
-  const [visoes, setVisoes] = useState<ProdutoVisao[]>(visoesIniciais);
-  const [salvandoVisao, setSalvandoVisao] = useState(false);
+    if (daPagina) {
+      setLoteAlvo(daPagina);
+      setSheet("lote");
+      selecao.limpar();
+      return;
+    }
 
-  function guardarVisao(daLoja: boolean) {
-    const nome = window.prompt(
-      daLoja ? "Nome da visão da loja (todo mundo vê)" : "Nome da visão (ex.: Bebidas sem preço)",
-    )?.trim();
-    if (!nome) return;
-    setSalvandoVisao(true);
-    salvarVisao({ nome, params: alvoUrl, daLoja })
-      .then((lista) => {
-        setVisoes(lista);
-        toast.success(
-          `Visão "${nome}" salva`,
-          daLoja ? "Visível para toda a equipe." : "Aparece no menu Visões, em qualquer máquina.",
-        );
-      })
-      .catch((e) => toast.error("Não deu para salvar a visão", e instanceof Error ? e.message : undefined))
-      .finally(() => setSalvandoVisao(false));
-  }
-
-  function removerVisao(v: ProdutoVisao) {
-    apagarVisao(v.id)
-      .then(setVisoes)
-      .catch((e) => toast.error("Não deu para apagar", e instanceof Error ? e.message : undefined));
-  }
-
-  function aplicarVisao(v: ProdutoVisao) {
-    start(() => router.replace(v.params ? `/produtos?${v.params}` : "/produtos", { scroll: false }));
-    const c = colsDaString(new URLSearchParams(v.params).get("cols"));
-    if (c) setCols(c);
-    setSelected(new Set());
+    setOcupado(true);
+    try {
+      setLoteAlvo(await produtosDoLote(ids));
+      setSheet("lote");
+      selecao.limpar();
+    } catch (e) {
+      toast.error("Não deu para carregar a seleção", e instanceof Error ? e.message : undefined);
+    } finally {
+      setOcupado(false);
+    }
   }
 
   const carregando = navegando || ocupado;
@@ -623,6 +760,7 @@ export function ProdutosClient(props: {
   }, [consulta, categoryOpts, subOpts, brandOpts, siteOpts, tagOpts, initialFornecedorNome, aplicar, aplicarFlag]);
 
   return (
+    <SelecaoProvider store={selecao}>
     <TooltipLayer>
       <PageHeader
         title="Produtos"
@@ -631,66 +769,15 @@ export function ProdutosClient(props: {
         actions={
           <>
             <Menu
-                align="end"
-                trigger={
-                  <Button variant="ghost" size="sm" className="gap-1.5">
-                    <Star size={15} /> Visões
-                    {visoes.length > 0 && (
-                      <span className="grid h-4 min-w-4 place-items-center rounded-full bg-surface-2 px-1 text-[10px] font-bold text-muted">
-                        {visoes.length}
-                      </span>
-                    )}
-                    <ChevronDown size={14} className="-mr-0.5 text-muted" />
-                  </Button>
-                }
-              >
-                {visoes.length === 0 && (
-                  <p className="px-2.5 py-2 text-xs text-muted">
-                    Nenhuma visão salva. Monte um filtro e guarde aqui.
-                  </p>
-                )}
-                {visoes.map((v) => (
-                  <div key={v.id} className="flex items-center">
-                    <button
-                      type="button"
-                      onClick={() => aplicarVisao(v)}
-                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-left text-sm text-ink transition-colors hover:bg-surface-2"
-                    >
-                      <span className="min-w-0 truncate">{v.nome}</span>
-                      {!v.minha && (
-                        <span className="shrink-0 rounded-full bg-surface-2 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-muted">
-                          loja
-                        </span>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => removerVisao(v)}
-                      aria-label={`Apagar visão ${v.nome}`}
-                      className="mr-1 cursor-pointer rounded-full p-1.5 text-faint transition-colors hover:bg-danger-soft hover:text-danger"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                ))}
-                <div className="my-1 h-px bg-line" role="separator" />
-                <MenuItem icon={<Plus size={15} />} onClick={() => guardarVisao(false)} disabled={salvandoVisao}>
-                  Salvar visão atual
-                </MenuItem>
-                <MenuItem icon={<Users size={15} />} onClick={() => guardarVisao(true)} disabled={salvandoVisao}>
-                  Salvar para a loja
-                </MenuItem>
-            </Menu>
-
-            <Menu
               align="end"
               trigger={
                 <Button
                   variant="secondary"
                   size="sm"
                   className="gap-1.5 border-transparent"
-                  onMouseEnter={ensureExtras}
-                  onFocus={ensureExtras}
+                  onMouseEnter={aquecerGerenciar}
+                  onPointerDown={aquecerGerenciar}
+                  onFocus={aquecerGerenciar}
                 >
                   <Settings2 size={15} /> Gerenciar
                   <ChevronDown size={14} className="-mr-0.5 text-muted" />
@@ -944,13 +1031,13 @@ export function ProdutosClient(props: {
                   big
                   cols={cols}
                   info={info}
-                  selected={selected.has(p.id)}
                   onToggle={(shift) => toggleRow(p.id, idx, shift)}
                   onOpen={() => setSelectedProduct(p)}
                   onImage={p.imagemUrl ? () => setImageUrl(p.imagemUrl) : undefined}
                   onEdit={() => editar(p)}
                   onArchive={() => toggleInativo(p)}
                   onBuscarImagem={() => abrirImagens([p])}
+                  onIntent={() => prefetchEditar(p.id)}
                 />
               ))}
             </div>
@@ -966,12 +1053,7 @@ export function ProdutosClient(props: {
                 <thead className="sticky top-0 z-10 border-b border-line bg-surface-2 text-[11px] font-semibold uppercase tracking-wider text-faint">
                   <tr>
                     <th className="w-10 px-3 py-2.5">
-                      <Check
-                        checked={allPageSelected}
-                        indeterminate={!allPageSelected && somePageSelected}
-                        onChange={toggleAllPage}
-                        label="Selecionar todos desta página"
-                      />
+                      <CheckDaPagina ids={pageIds} />
                     </th>
                     <SortableTh label="Produto" field="nome" sort={consulta.sort} dir={consulta.dir} onSort={toggleSort} />
                     {cols.marca && <SortableTh label="Marca" field="marca" sort={consulta.sort} dir={consulta.dir} onSort={toggleSort} className="hidden w-36 xl:table-cell" />}
@@ -998,25 +1080,30 @@ export function ProdutosClient(props: {
                   {rows.map((p, idx) => {
                     const level = stockLevel(p);
                     const principal = principalFornecedor(p);
-                    const isSel = selected.has(p.id);
                     return (
                       // A linha inteira continua clicável (o mouse espera isso),
                       // mas quem carrega o papel de botão é o nome do produto —
                       // `role="button"` no <tr> aninha botão dentro de botão e
                       // o leitor de tela não sabe o que anunciar.
+                      //
+                      // O realce de "marcada" sai do CSS (`:has`), não do React:
+                      // é o que permite marcar a caixa sem redesenhar a linha
+                      // inteira — e, antes, a tabela inteira.
                       <tr
                         key={p.id}
                         onClick={() => setSelectedProduct(p)}
+                        onPointerEnter={() => prefetchEditar(p.id)}
                         className={cn(
                           "group relative cursor-pointer transition-colors hover:bg-brand-soft/30 focus-within:bg-brand-soft/30",
-                          isSel && "bg-brand-soft/40",
+                          "has-[input:checked]:bg-brand-soft/40",
                           !p.ativo && "opacity-50",
                         )}
                       >
                         <td className={cn("px-3", cellPad)} onClick={(e) => e.stopPropagation()}>
-                          <Check
-                            checked={isSel}
-                            onChange={(shift) => toggleRow(p.id, idx, shift)}
+                          <CheckLinha
+                            id={p.id}
+                            idx={idx}
+                            onToggle={toggleRow}
                             label={`Selecionar ${p.nome}`}
                           />
                         </td>
@@ -1185,13 +1272,13 @@ export function ProdutosClient(props: {
               giro={giroMobile}
               cols={cols}
               info={info}
-              selected={selected}
               onToggle={(id, idx, shift) => toggleRow(id, idx, shift, rowsMobile)}
               onOpen={setSelectedProduct}
               onImage={setImageUrl}
               onEdit={editar}
               onArchive={toggleInativo}
               onBuscarImagem={(p) => abrirImagens([p])}
+              onIntent={(p) => prefetchEditar(p.id)}
             />
 
             {/* Rolagem infinita: as linhas já carregadas ficam onde estão; só as
@@ -1237,18 +1324,7 @@ export function ProdutosClient(props: {
                 </select>
                 por página
               </label>
-              {selected.size < total && (
-                <>
-                  <span className="text-line">·</span>
-                  <button
-                    type="button"
-                    onClick={selecionarTudoDoFiltro}
-                    className="cursor-pointer font-medium text-brand-strong underline-offset-2 hover:underline"
-                  >
-                    Selecionar todos os {total}
-                  </button>
-                </>
-              )}
+              <SelecionarTudo total={total} onSelecionar={selecionarTudoDoFiltro} />
             </div>
 
             {totalPaginas > 1 && (
@@ -1277,84 +1353,111 @@ export function ProdutosClient(props: {
           </div>
         )}
 
-        {sheet === "brand" && <BrandSheet open onClose={() => setSheet(null)} brands={brandOpts} />}
+        {/* ── Slide-overs ──
+            Cada painel vive num pedaço próprio de JavaScript (ver
+            `_sheets/_despachante.tsx`). Enquanto o pedaço não chega, entra o
+            `LoadingSheet`; quando os DADOS é que faltam, o painel abre inteiro
+            e só a lista fica em placeholder (`carregando`) — assim o Sheet monta
+            uma vez só e a animação de entrada não roda duas vezes. */}
+        {sheet === "brand" && (
+          Gerenciar
+            ? <Gerenciar.BrandSheet open onClose={fecharSheet} brands={brandOpts} />
+            : <LoadingSheet title="Marcas" onClose={fecharSheet} />
+        )}
         {sheet === "category" && (
-          extras
-            ? <CategorySheet
+          Gerenciar
+            ? <Gerenciar.CategorySheet
                 open
-                onClose={() => setSheet(null)}
-                tree={extras.categoryTree}
+                onClose={fecharSheet}
+                tree={extras?.categoryTree ?? LISTA_VAZIA}
+                carregando={!extras}
                 onChanged={() => getGerenciarExtras().then(setExtras)}
               />
-            : <LoadingSheet title="Categorias" onClose={() => setSheet(null)} />
+            : <LoadingSheet title="Categorias" onClose={fecharSheet} />
         )}
         {sheet === "storage" && (
-          extras
-            ? <StorageSheet open onClose={() => setSheet(null)} locations={extras.storageOpts} sites={extras.siteOpts} />
-            : <LoadingSheet title="Armazenagem" onClose={() => setSheet(null)} />
+          Gerenciar
+            ? <Gerenciar.StorageSheet
+                open
+                onClose={fecharSheet}
+                locations={extras?.storageOpts ?? LISTA_VAZIA}
+                sites={extras?.siteOpts ?? LISTA_VAZIA}
+                carregando={!extras}
+              />
+            : <LoadingSheet title="Armazenagem" onClose={fecharSheet} />
         )}
         {sheet === "supplier" && (
-          extras
-            ? <SupplierSheet open onClose={() => setSheet(null)} suppliers={extras.supplierRows} />
-            : <LoadingSheet title="Fornecedores" onClose={() => setSheet(null)} />
-        )}
-        {sheet === "csv" && <CsvSheet open onClose={() => setSheet(null)} policy={policy} />}
-        {sheet === "imagens" && (
-          <ImagensSheet
-            open
-            onClose={() => setSheet(null)}
-            produtos={imagensAlvo}
-            onAplicado={() => router.refresh()}
-          />
-        )}
-        {sheet === "lote" && (
-          extras
-            ? <LoteSheet
+          Gerenciar
+            ? <Gerenciar.SupplierSheet
                 open
-                onClose={() => setSheet(null)}
-                produtos={loteAlvo}
-                categoryTree={extras.categoryTree}
-                brands={brandOpts}
-                suppliers={extras.supplierRows}
-                fiscais={extras.fiscalOpts}
-                etiquetasExistentes={tagOpts}
-                onAplicado={() => { setSelected(new Set()); router.refresh(); }}
+                onClose={fecharSheet}
+                suppliers={extras?.supplierRows ?? LISTA_VAZIA}
+                carregando={!extras}
               />
-            : <LoadingSheet title="Editar em lote" onClose={() => setSheet(null)} />
+            : <LoadingSheet title="Fornecedores" onClose={fecharSheet} />
         )}
-        {sheet === "nomes" && (
-          <NomesSheet
-            open
-            onClose={() => setSheet(null)}
-            produtos={nomesAlvo}
-            onAplicado={() => { setSelected(new Set()); router.refresh(); }}
-          />
+        {sheet === "csv" && (
+          Csv
+            ? <Csv.CsvSheet open onClose={fecharSheet} policy={policy} />
+            : <LoadingSheet title="Importar CSV" onClose={fecharSheet} />
+        )}
+        {sheet === "imagens" && (
+          Imagens
+            ? <Imagens.ImagensSheet
+                open
+                onClose={fecharSheet}
+                produtos={imagensAlvo}
+                onAplicado={() => router.refresh()}
+              />
+            : <LoadingSheet title="Buscar imagens" onClose={fecharSheet} />
+        )}
+        {/* Abre com o que já está no cliente (categoria, marca, nome, preço) e
+            completa os blocos remotos quando eles chegam — em vez de segurar o
+            painel inteiro atrás de uma consulta. */}
+        {sheet === "lote" && (
+          Lote
+            ? <Lote.LoteSheet
+                open
+                onClose={fecharSheet}
+                produtos={loteAlvo}
+                categorias={categoryOpts}
+                subcategorias={subOpts}
+                brands={brandOpts}
+                suppliers={loteOpcoes?.suppliers}
+                fiscais={loteOpcoes?.fiscais}
+                locais={loteOpcoes?.locais}
+                carregandoOpcoes={!loteOpcoes}
+                onAplicado={() => { selecao.limpar(); router.refresh(); }}
+              />
+            : <LoadingSheet title="Editar em lote" onClose={fecharSheet} />
         )}
       </div>
 
       {/* ── Barra de ações em lote ──
           Some enquanto um painel está aberto: ela é `fixed` no rodapé e, vindo
           depois no DOM, ficava por cima do rodapé do slide-over — engolindo o
-          botão de salvar do painel que ela mesma abriu. */}
-      {selected.size > 0 && !painelAberto && (
-        <BulkBar
-          count={selected.size}
-          ocupado={ocupado}
-          onEditar={() => comSelecao(abrirLote)}
-          onNomes={() => comSelecao(abrirNomes)}
-          onEtiquetas={() => comSelecao((l) => { setEtiquetasAlvo(l); setEtiquetasOpen(true); })}
-          onExportar={exportar}
-          onImagens={() => comSelecao(abrirImagens)}
-          onLimpar={() => setSelected(new Set())}
-        />
-      )}
+          botão de salvar do painel que ela mesma abriu.
+          Quem conta os selecionados é ela, não a listagem: assim marcar a
+          primeira caixa acende a barra sem redesenhar a tabela. */}
+      <BulkBar
+        escondida={painelAberto}
+        ocupado={ocupado}
+        onEditar={abrirLote}
+        onAquecerEditar={aquecerLote}
+        onEtiquetas={() => comSelecao((l) => { setEtiquetasAlvo(l); setEtiquetasOpen(true); })}
+        onExportar={exportar}
+        onImagens={() => comSelecao(abrirImagens)}
+        onLimpar={() => selecao.limpar()}
+      />
 
       {etiquetasOpen && (
-        <EtiquetasSheet
-          open
-          onClose={() => setEtiquetasOpen(false)}
-          products={etiquetasAlvo}
-        />
+        Etiquetas
+          ? <Etiquetas.EtiquetasSheet
+              open
+              onClose={() => setEtiquetasOpen(false)}
+              products={etiquetasAlvo}
+            />
+          : <LoadingSheet title="Etiquetas" onClose={() => setEtiquetasOpen(false)} />
       )}
 
       {selectedProduct && (() => {
@@ -1365,7 +1468,7 @@ export function ProdutosClient(props: {
             key={selectedProduct.id}
             product={selectedProduct}
             onClose={() => setSelectedProduct(null)}
-            onEdit={() => router.push(`/produtos/${selectedProduct.id}/editar`)}
+            onEdit={() => sairPara(`/produtos/${selectedProduct.id}/editar`)}
             navegacao={
               idx >= 0
                 ? {
@@ -1382,6 +1485,7 @@ export function ProdutosClient(props: {
 
       {imageUrl && <ImageViewer url={imageUrl} onClose={() => setImageUrl(null)} />}
     </TooltipLayer>
+    </SelecaoProvider>
   );
 }
 
@@ -1465,13 +1569,83 @@ function Check({
 }) {
   const shiftRef = useRef(false);
   return (
-    <Checkbox
-      checked={checked}
-      indeterminate={indeterminate}
-      onChange={() => onChange(shiftRef.current)}
-      // O evento de change não carrega o shift; o clique carrega.
-      onClick={(e) => { shiftRef.current = e.shiftKey; e.stopPropagation(); }}
-      aria-label={label}
+    <span className="relative inline-flex">
+      <Checkbox
+        checked={checked}
+        indeterminate={indeterminate}
+        onChange={() => onChange(shiftRef.current)}
+        // Só o teclado chega até aqui pelo clique (o alvo abaixo cobre o mouse);
+        // o evento de change não carrega o shift, o clique carrega.
+        onClick={(e) => { shiftRef.current = e.shiftKey; e.stopPropagation(); }}
+        aria-label={label}
+      />
+      {/*
+        Alvo de clique de 32px sobre um desenho de 16px.
+        Marcar quarenta produtos em sequência com uma pastilha de 16px é mira,
+        não trabalho — e no toque a caixa fica abaixo do mínimo confortável.
+        A camada é absoluta, então o alvo cresce sem empurrar nada no layout.
+      */}
+      <span
+        aria-hidden
+        className="absolute -inset-2 cursor-pointer"
+        onClick={(e) => { e.stopPropagation(); onChange(e.shiftKey); }}
+      />
+    </span>
+  );
+}
+
+/**
+ * Caixa de uma linha da tabela.
+ *
+ * É o único pedaço da linha que acompanha a seleção — assina só o próprio id.
+ * Marcar uma caixa numa página de 200 produtos re-renderiza este componente e
+ * mais nada: o realce da linha vem do CSS (`has-[input:checked]`).
+ */
+function CheckLinha({
+  id, idx, onToggle, label,
+}: {
+  id: string;
+  idx: number;
+  onToggle: (id: string, idx: number, shift: boolean) => void;
+  label: string;
+}) {
+  const marcado = useSelecionado(id);
+  return (
+    <Check
+      checked={marcado}
+      onChange={(shift) => onToggle(id, idx, shift)}
+      label={label}
+    />
+  );
+}
+
+/** Mesma ideia, no card: o índice já vem embutido no `onToggle` de quem lista. */
+function CheckProduto({
+  id, onToggle, label,
+}: {
+  id: string;
+  onToggle: (shift: boolean) => void;
+  label: string;
+}) {
+  const marcado = useSelecionado(id);
+  return <Check checked={marcado} onChange={onToggle} label={label} />;
+}
+
+/**
+ * "Todos desta página" — assina o total e conta quantos desta página estão
+ * marcados. Fora da listagem de propósito: a tabela inteira não pode
+ * re-renderizar por causa deste tique.
+ */
+function CheckDaPagina({ ids }: { ids: string[] }) {
+  const selecao = useSelecao();
+  const marcados = useQtdDaPagina(ids);
+  const todos = ids.length > 0 && marcados === ids.length;
+  return (
+    <Check
+      checked={todos}
+      indeterminate={!todos && marcados > 0}
+      onChange={() => selecao.alternarVarios(ids, !todos)}
+      label="Selecionar todos desta página"
     />
   );
 }
@@ -1502,19 +1676,49 @@ function DensityBtn({ active, onClick, icon, children }: { active: boolean; onCl
 
 // ── Barra de ações em lote (flutuante) ───────────────────────────────────────
 
+/** Atalho "Selecionar todos os N" — só aparece quando ainda falta alguém. */
+function SelecionarTudo({ total, onSelecionar }: { total: number; onSelecionar: () => void }) {
+  const marcados = useQtdSelecionada();
+  if (marcados >= total) return null;
+  return (
+    <>
+      <span className="text-line">·</span>
+      <button
+        type="button"
+        onClick={onSelecionar}
+        className="cursor-pointer font-medium text-brand-strong underline-offset-2 hover:underline"
+      >
+        Selecionar todos os {total}
+      </button>
+    </>
+  );
+}
+
 function BulkBar({
-  count, ocupado, onEditar, onNomes, onEtiquetas, onExportar, onImagens, onLimpar,
+  escondida, ocupado, onEditar, onAquecerEditar, onEtiquetas, onExportar, onImagens, onLimpar,
 }: {
-  count: number;
+  /** Um painel está aberto: a barra sai da frente (ver comentário na chamada). */
+  escondida: boolean;
   ocupado: boolean;
-  /** Categoria/subcategoria, marca, preço, fiscal e fornecedores dos selecionados. */
+  /** Nomes, categoria/subcategoria, marca, preço, fiscal e fornecedores. */
   onEditar: () => void;
-  onNomes: () => void;
+  /** Mouse/dedo encostou no botão: põe código e listas no forno antes do clique. */
+  onAquecerEditar: () => void;
   onEtiquetas: () => void;
   onExportar: (formato: "csv" | "xlsx") => void;
   onImagens: () => void;
   onLimpar: () => void;
 }) {
+  const count = useQtdSelecionada();
+
+  // Selecionou algo? Os painéis que a barra abre já vão para o forno — quando o
+  // operador clicar em "Editar em lote", o pedaço de JavaScript já chegou.
+  useEffect(() => {
+    if (count > 0) prepararLote();
+  }, [count]);
+
+  if (count === 0 || escondida) return null;
+
   return (
     // z-40: um degrau abaixo do slide-over (z-50). Empatar em 50 fazia a ordem
     // do DOM decidir quem cobre quem — e a barra ganhava.
@@ -1524,11 +1728,16 @@ function BulkBar({
           {count} selecionado{count === 1 ? "" : "s"}
         </span>
         <div className="h-5 w-px bg-line" />
-        <Button size="sm" onClick={onEditar} disabled={ocupado} className="gap-1.5">
+        <Button
+          size="sm"
+          onClick={onEditar}
+          onPointerEnter={onAquecerEditar}
+          onPointerDown={onAquecerEditar}
+          onFocus={onAquecerEditar}
+          disabled={ocupado}
+          className="gap-1.5"
+        >
           <SlidersHorizontal size={15} /> Editar em lote
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onNomes} disabled={ocupado} className="gap-1.5">
-          <TextCursorInput size={15} /> Alterar nomes
         </Button>
         <Button variant="ghost" size="sm" onClick={onEtiquetas} disabled={ocupado} className="gap-1.5">
           <Printer size={15} /> Imprimir etiquetas
@@ -1573,16 +1782,17 @@ function BulkBar({
  * categoria/tipo, que não cabem na versão compacta do mobile.
  */
 function ProductCard({
-  p, giro, selected, onToggle, onOpen, onImage, onEdit, onArchive, onBuscarImagem, big, cols, info,
+  p, giro, onToggle, onOpen, onImage, onEdit, onArchive, onBuscarImagem, onIntent, big, cols, info,
 }: {
   p: ProductRow;
   giro?: ProdutoGiro;
-  selected: boolean;
   onToggle: (shift: boolean) => void;
   onOpen: () => void;
   onImage?: () => void;
   onEdit: () => void;
   onArchive: () => void;
+  /** Mouse/dedo encostou no card — hora de pré-buscar o cadastro. */
+  onIntent?: () => void;
   /** Busca a foto do produto pelo código de barras. */
   onBuscarImagem: () => void;
   big?: boolean;
@@ -1626,14 +1836,16 @@ function ProductCard({
     // inválido. A semântica de lista fica preservada para o leitor de tela.
     <div
       role="listitem"
+      onPointerEnter={onIntent}
       className={cn(
         "flex items-start gap-3 rounded-[var(--radius)] border border-line bg-surface",
         big ? "p-3.5" : "items-center p-2.5",
-        selected && "border-brand/40 bg-brand-soft/40",
+        // Realce de "marcado" pelo CSS — o card não re-renderiza por causa da caixa.
+        "has-[input:checked]:border-brand/40 has-[input:checked]:bg-brand-soft/40",
         !p.ativo && "opacity-50",
       )}
     >
-      <Check checked={selected} onChange={onToggle} label={`Selecionar ${p.nome}`} />
+      <CheckProduto id={p.id} onToggle={onToggle} label={`Selecionar ${p.nome}`} />
       {/*
         A miniatura é irmã do botão que abre a ficha, não filha dele: `Thumb` é
         um `<button>` (abre a foto em tela cheia) e `<button>` dentro de
@@ -1866,7 +2078,7 @@ const LIMIAR_VIRTUAL = 120;
 const ALTURA_CARD = 88;
 
 function ListaCards({
-  rows, giro, cols, info, selected, atenuado, onToggle, onOpen, onImage, onEdit, onArchive, onBuscarImagem,
+  rows, giro, cols, info, atenuado, onToggle, onOpen, onImage, onEdit, onArchive, onBuscarImagem, onIntent,
 }: {
   rows: ProductRow[];
   giro: Record<string, ProdutoGiro>;
@@ -1874,13 +2086,13 @@ function ListaCards({
   atenuado?: boolean;
   cols: Record<ColKey, boolean>;
   info: Record<InfoKey, boolean>;
-  selected: Set<string>;
   onToggle: (id: string, idx: number, shift: boolean) => void;
   onOpen: (p: ProductRow) => void;
   onImage: (url: string) => void;
   onEdit: (p: ProductRow) => void;
   onArchive: (p: ProductRow) => void;
   onBuscarImagem: (p: ProductRow) => void;
+  onIntent: (p: ProductRow) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [offsetTopo, setOffsetTopo] = useState(0);
@@ -1912,13 +2124,13 @@ function ListaCards({
       giro={giro[p.id]}
       cols={cols}
       info={info}
-      selected={selected.has(p.id)}
       onToggle={(shift) => onToggle(p.id, idx, shift)}
       onOpen={() => onOpen(p)}
       onImage={p.imagemUrl ? () => onImage(p.imagemUrl!) : undefined}
       onEdit={() => onEdit(p)}
       onArchive={() => onArchive(p)}
       onBuscarImagem={() => onBuscarImagem(p)}
+      onIntent={() => onIntent(p)}
     />
   );
 
@@ -2157,14 +2369,6 @@ function StockCell({ p, level }: { p: ProductRow; level: "ok" | "warn" | "danger
 
   const hasDetail = lojas.length > 0;
 
-  // Medidor sempre presente — é a assinatura da tela, e trilho vazio também
-  // informa ("este produto não tem meta"). Meta = ideal; sem ideal, o dobro do
-  // mínimo (o ponto onde repor deixa de ser urgente).
-  const meta = p.estoque.ideal > 0 ? p.estoque.ideal : p.estoque.minimo > 0 ? p.estoque.minimo * 2 : 0;
-  const pct = meta > 0 && qty !== null ? Math.max(0, Math.min(100, Math.round((qty / meta) * 100))) : null;
-  const marcaMinimo =
-    meta > 0 && p.estoque.minimo > 0 ? Math.min(97, Math.round((p.estoque.minimo / meta) * 100)) : null;
-
   function handleEnter() {
     if (!hasDetail) return;
     tip.mostrar(ref.current, () => (
@@ -2200,7 +2404,7 @@ function StockCell({ p, level }: { p: ProductRow; level: "ok" | "warn" | "danger
     <>
       <div
         ref={ref}
-        className={cn("inline-flex flex-col gap-1", hasDetail && "cursor-help")}
+        className={cn("inline-flex", hasDetail && "cursor-help")}
         onMouseEnter={handleEnter}
         onMouseLeave={tip.esconder}
       >
@@ -2209,21 +2413,6 @@ function StockCell({ p, level }: { p: ProductRow; level: "ok" | "warn" | "danger
           <span className="font-mono tnum text-[13px]">{qty}</span>
           <span className="text-[11px] font-normal text-muted">un</span>
           {p.estoque.aberto > 0 && <AbertaBadge size={16} />}
-        </span>
-        <span
-          className={cn("relative h-1 w-16 overflow-hidden rounded-full bg-line", pct === null && "opacity-40")}
-          aria-hidden
-        >
-          {pct !== null && (
-            <span className={cn("block h-full rounded-full", STOCK_COLOR[level])} style={{ width: `${pct}%` }} />
-          )}
-          {marcaMinimo !== null && (
-            <span
-              className="absolute inset-y-0 w-px bg-ink/40"
-              style={{ left: `${marcaMinimo}%` }}
-              title="Estoque mínimo"
-            />
-          )}
         </span>
       </div>
 
@@ -2442,10 +2631,26 @@ function MargemCell({ precoVenda, custo, tipo }: { precoVenda: number | null; cu
   return <span className={cn("text-[12px] font-semibold tnum", margemColor(m))}>{m}%</span>;
 }
 
+/**
+ * Painel enquanto o pedaço de JavaScript dele ainda vem pela rede.
+ *
+ * Só aparece para quem clicou sem passar o mouse antes (toque, teclado rápido);
+ * com o hover, o módulo já está em memória e o painel de verdade abre direto.
+ * Placeholder em vez de "Carregando…": o painel já nasce com a forma que vai
+ * ter, então nada salta de lugar quando ele chega.
+ */
 function LoadingSheet({ title, onClose }: { title: string; onClose: () => void }) {
   return (
     <Sheet open onClose={onClose} title={title}>
-      <p className="py-8 text-center text-sm text-muted">Carregando…</p>
+      <div className="space-y-2" aria-hidden>
+        <div className="sk-shimmer h-9 rounded-full" />
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div key={i} className="flex items-center gap-3 rounded-[var(--radius-sm)] border border-line px-3 py-3">
+            <div className={cn("sk-shimmer h-3.5 rounded-full", i % 2 ? "w-2/5" : "w-3/5")} />
+          </div>
+        ))}
+      </div>
+      <span className="sr-only" role="status">Carregando…</span>
     </Sheet>
   );
 }
@@ -2464,7 +2669,17 @@ function EmptyState({ onNew, onCsv }: { onNew: () => void; onCsv: () => void }) 
       </div>
       <div className="flex gap-2">
         <Button onClick={onNew} className="gap-1.5"><Plus size={16} /> Cadastrar produto</Button>
-        <Button variant="outline" onClick={onCsv} className="gap-1.5"><Upload size={16} /> Importar CSV</Button>
+        {/* Catálogo vazio é a primeira tela de todo mercado novo: o importador
+            entra no forno antes do clique para não abrir em placeholder. */}
+        <Button
+          variant="outline"
+          onClick={onCsv}
+          onPointerEnter={() => painelCsv.preparar()}
+          onFocus={() => painelCsv.preparar()}
+          className="gap-1.5"
+        >
+          <Upload size={16} /> Importar CSV
+        </Button>
       </div>
     </div>
   );

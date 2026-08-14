@@ -44,6 +44,7 @@ import {
   channelsToInput,
   type ChannelRow,
 } from "./online-channels";
+import { useVoltaProdutos } from "./_volta";
 import { createReceita, updateReceita } from "../actions";
 import type { SalesChannel } from "@/generated/prisma";
 import type {
@@ -186,6 +187,7 @@ export function ReceitaForm({
   candidates: ComponentCandidate[];
 }) {
   const router = useRouter();
+  const volta = useVoltaProdutos();
   const [pending, start] = useTransition();
   const [pdvOpen, setPdvOpen] = useState(false);
   const [triedSave, setTriedSave] = useState(false);
@@ -579,7 +581,7 @@ export function ReceitaForm({
         if (receita) await updateReceita(receita.id, input);
         else await createReceita(input);
         savedRef.current = true;
-        router.push("/produtos");
+        router.push(volta);
         router.refresh();
       } catch (e) {
         savedRef.current = false;
@@ -622,8 +624,8 @@ export function ReceitaForm({
   return (
     <div className="flex flex-col gap-4" onKeyDown={onKeyDownForm}>
       <PageHeader
-        backHref="/produtos"
-        breadcrumbs={[{ label: "Produtos", href: "/produtos" }, { label: title }]}
+        backHref={volta}
+        breadcrumbs={[{ label: "Produtos", href: volta }, { label: title }]}
         title={title}
         badge={mode === "edit" && receita?.sku ? <SkuTag sku={receita.sku} /> : undefined}
         innerClassName="max-w-none sm:px-8"
@@ -1402,7 +1404,7 @@ export function ReceitaForm({
         >
           <Eye size={15} /> Visualizar no PDV
         </Button>
-        <Button variant="ghost" onClick={() => router.push("/produtos")} disabled={pending}>
+        <Button variant="ghost" onClick={() => router.push(volta)} disabled={pending}>
           Cancelar
         </Button>
         <Button onClick={salvar} disabled={pending}>

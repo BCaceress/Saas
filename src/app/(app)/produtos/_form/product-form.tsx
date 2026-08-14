@@ -25,6 +25,7 @@ import { toast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app/page-header";
 import { SkuTag } from "@/components/sku-tag";
 import { SimpleProductForm } from "./simple-product-form";
+import { useVoltaProdutos } from "./_volta";
 import { createProduct, updateProduct, createSubcategory } from "../actions";
 import type {
   BrandOpt,
@@ -177,6 +178,7 @@ function InsumoForm({
   policy = POLICY_PADRAO,
 }: Omit<FormProps, "tipo">) {
   const router = useRouter();
+  const volta = useVoltaProdutos();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string>();
   const nomeRef = useRef<HTMLInputElement>(null);
@@ -379,7 +381,7 @@ function InsumoForm({
           requestAnimationFrame(() => nomeRef.current?.focus());
           return;
         }
-        router.push("/produtos");
+        router.push(volta);
         router.refresh();
       } catch (e) {
         savedRef.current = false;
@@ -435,9 +437,9 @@ function InsumoForm({
     <div className="flex flex-col gap-4" onKeyDown={onKeyDownForm}>
       {/* ── Cabeçalho ── */}
       <PageHeader
-        backHref="/produtos"
+        backHref={volta}
         breadcrumbs={[
-          { label: "Produtos", href: "/produtos" },
+          { label: "Produtos", href: volta },
           { label: title },
         ]}
         title={title}
@@ -814,7 +816,7 @@ function InsumoForm({
         </span>
         <Button
           variant="ghost"
-          onClick={() => router.push("/produtos")}
+          onClick={() => router.push(volta)}
           disabled={pending}
         >
           Cancelar

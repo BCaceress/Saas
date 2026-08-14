@@ -1,4 +1,4 @@
-import { Plus, ChevronDown, Star, Settings2 } from "lucide-react";
+import { Plus, ChevronDown, Settings2 } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import { CorpoProdutosSkeleton } from "./_skeleton";
@@ -20,9 +20,6 @@ export default function ProdutosLoading() {
         innerClassName="max-w-none"
         actions={
           <>
-            <BotaoInerte variant="ghost">
-              <Star size={15} /> Visões <ChevronDown size={14} className="-mr-0.5 text-muted" />
-            </BotaoInerte>
             <BotaoInerte variant="secondary">
               <Settings2 size={15} /> Gerenciar <ChevronDown size={14} className="-mr-0.5 text-muted" />
             </BotaoInerte>

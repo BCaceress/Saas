@@ -1,4 +1,6 @@
+import { unstable_cache, revalidateTag } from "next/cache";
 import { db } from "@/lib/prisma";
+import { runWithTenant } from "@/lib/tenant-context";
 import { derive, type DeriveComponent } from "@/lib/derive";
 import type { Prisma } from "@/generated/prisma";
 import type {
@@ -223,28 +225,90 @@ export type ProductFormOptions = {
   fiscalOpts: FiscalOpt[];
 };
 
+/** Tag de invalidação das opções do formulário — POR TENANT, nunca global. */
+const tagOpcoesFormulario = (tenantId: string) => `produtos:form-opcoes:${tenantId}`;
+
+/**
+ * Derruba o cache das opções do formulário de produto. Chamar depois de criar
+ * ou renomear marca, categoria, subcategoria, local de armazenagem, fornecedor
+ * ou perfil fiscal — é o que faz o operador ver o que acabou de cadastrar sem
+ * esperar o revalidate.
+ *
+ * `invalidarOpcoesFiltro` (_query.ts) chama esta função: os cinco pontos de
+ * escrita do módulo Produtos já invalidam os dois caches de uma vez. Fora do
+ * módulo (fornecedores, classificação fiscal) a chamada é explícita.
+ */
+export function invalidarOpcoesFormulario(tenantId: string) {
+  revalidateTag(tagOpcoesFormulario(tenantId), { expire: 0 });
+}
+
 /**
  * Opções para os formulários de produto (marcas, subcategorias ativas, locais,
- * fornecedores, perfis fiscais). Roda dentro de `runWithTenant`.
+ * fornecedores, perfis fiscais).
+ *
+ * Cacheadas: são cinco consultas que devolvem sempre a mesma coisa, e antes
+ * rodavam INTEIRAS a cada abertura de "editar produto" — o operador que revisa
+ * trinta itens pagava cento e cinquenta idas ao banco por nada.
+ *
+ * ATENÇÃO ao mexer (mesma armadilha de `carregarOpcoesFiltro`): `unstable_cache`
+ * monta a chave a partir dos ARGUMENTOS e não enxerga o `AsyncLocalStorage` do
+ * tenant. Cachear a versão que lê o tenant do contexto serviria as marcas do
+ * tenant A para o tenant B. Por isso o tenantId é parâmetro, entra na chave E
+ * abre o próprio `runWithTenant` aqui dentro — as três coisas juntas.
  */
-export async function loadProductFormOptions(): Promise<ProductFormOptions> {
+export function loadProductFormOptions(tenantId: string): Promise<ProductFormOptions> {
+  return unstable_cache(
+    () => runWithTenant(tenantId, consultarProductFormOptions),
+    ["produtos", "form-opcoes", tenantId],
+    // Revalidate como rede de segurança para escrita por um caminho que esqueceu
+    // de invalidar (importação de XML criando fornecedor, por exemplo).
+    { tags: [tagOpcoesFormulario(tenantId)], revalidate: 300 },
+  )();
+}
+
+async function consultarProductFormOptions(): Promise<ProductFormOptions> {
   const [categories, brands, locations, suppliers, fiscalProfiles] = await Promise.all([
     db.category.findMany({
       orderBy: { nome: "asc" },
-      include: { subcategories: { where: { ativo: true }, orderBy: { nome: "asc" } } },
+      select: {
+        id: true,
+        nome: true,
+        skuPrefix: true,
+        subcategories: {
+          where: { ativo: true },
+          orderBy: { nome: "asc" },
+          select: {
+            id: true,
+            nome: true,
+            skuPrefix: true,
+            defaultStorageType: true,
+            defaultFiscalProfileId: true,
+          },
+        },
+      },
     }),
-    db.brand.findMany({ orderBy: { nome: "asc" } }),
+    db.brand.findMany({ orderBy: { nome: "asc" }, select: { id: true, nome: true } }),
     db.storageLocation.findMany({
       where: { ativo: true },
       orderBy: { nome: "asc" },
-      include: { site: { select: { nome: true } } },
+      select: {
+        id: true,
+        nome: true,
+        tipo: true,
+        ativo: true,
+        siteId: true,
+        site: { select: { nome: true } },
+      },
     }),
     db.supplier.findMany({
       where: { ativo: true },
       orderBy: { razaoSocial: "asc" },
-      select: { id: true, razaoSocial: true, nomeFantasia: true },
+      select: { id: true, razaoSocial: true, nomeFantasia: true, cnpj: true },
     }),
-    db.fiscalProfile.findMany({ orderBy: { nome: "asc" } }),
+    db.fiscalProfile.findMany({
+      orderBy: { nome: "asc" },
+      select: { id: true, nome: true, ncm: true, precisaRevisao: true },
+    }),
   ]);
 
   const subOpts: SubcategoryOpt[] = categories.flatMap((c) =>
@@ -275,6 +339,7 @@ export async function loadProductFormOptions(): Promise<ProductFormOptions> {
       id: s.id,
       razaoSocial: s.razaoSocial,
       nomeFantasia: s.nomeFantasia,
+      cnpj: s.cnpj,
     })),
     fiscalOpts: fiscalProfiles.map((f) => ({
       id: f.id,
@@ -291,10 +356,28 @@ export async function loadProductFormOptions(): Promise<ProductFormOptions> {
  * Roda dentro de `runWithTenant`.
  */
 export async function loadComponentCandidates(): Promise<ComponentCandidate[]> {
+  // `select` e não `include`: é o catálogo inteiro do tenant, e `include: true`
+  // trazia todas as colunas de Product e de ProductStock em cada linha — peso
+  // que atravessa o payload RSC até o browser sem ninguém ler.
   const products = await db.product.findMany({
     where: { tipo: { in: ["SIMPLES", "INSUMO"] }, ativo: true },
     orderBy: { nome: "asc" },
-    include: { brand: true, stocks: true },
+    select: {
+      id: true,
+      nome: true,
+      sku: true,
+      tipo: true,
+      imagemUrl: true,
+      precoVenda: true,
+      custo: true,
+      unidadeBase: true,
+      fracionavel: true,
+      conteudoPorUnidade: true,
+      dosePadrao: true,
+      restricaoIdade: true,
+      brand: { select: { nome: true } },
+      stocks: { select: { estoqueFechado: true, estoqueAberto: true } },
+    },
   });
 
   return products.map((p) => ({
