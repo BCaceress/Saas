@@ -536,6 +536,28 @@ const VENDAS: RelatorioDef[] = [
     tempoMedioSeg: 3,
     keywords: ["dia da semana", "segunda", "sabado", "fim de semana"],
   },
+  {
+    id: "vendas-top-caixa",
+    nome: "Mais vendidos por caixa",
+    descricao:
+      "Os 3 produtos que mais saíram em unidade em cada caixa aberto, da abertura ao fechamento.",
+    categoria: "vendas",
+    icon: "Trophy",
+    permissao: "relatorio.ver",
+    destino: { tipo: "pagina", href: "/vendas/caixa" },
+    filtros: ["periodo", "site", "produto"],
+    exportacoes: EXPORT_CONSULTA,
+    tempoMedioSeg: 4,
+    keywords: [
+      "top 3",
+      "mais vendidos",
+      "unidades",
+      "caixa aberto",
+      "turno",
+      "operador",
+      "ranking",
+    ],
+  },
 ];
 
 // ── Clientes ────────────────────────────────────────────────
@@ -982,18 +1004,23 @@ export function hrefExport(
     return `/relatorios/consulta/export?q=${q}&formato=${formato}`;
   }
 
-  if (formato === "pdf") {
-    if (!rel.documento) return null;
+  if (formato === "pdf" && rel.documento) {
     return `/documento/${rel.documento}?${queryPeriodo(params).toString()}`;
   }
 
   if (formato === "imprimir") return hrefExecucao(rel, params);
 
-  if (rel.exportTipo) {
+  if (formato !== "pdf" && rel.exportTipo) {
     const qs = queryPeriodo(params);
     if (formato === "xlsx") qs.set("formato", "xlsx");
     return `/relatorios/${rel.exportTipo}/export?${qs.toString()}`;
   }
 
-  return null;
+  // Sem modelo fixo e sem rota antiga: o motor genérico serve qualquer
+  // relatório que tenha definição, só pelo id. Quem não tem definição também
+  // não promete esses formatos — o catálogo é quem diz o que sai.
+  const id = encodeURIComponent(rel.id);
+  return formato === "pdf"
+    ? `/documento/relatorio?rel=${id}`
+    : `/relatorios/gerar/export?rel=${id}&formato=${formato}`;
 }

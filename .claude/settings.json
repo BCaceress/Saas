@@ -53,7 +53,12 @@
       "Bash(grep -A3 \"_header.tsx$\\\\|entradas.nova._client.tsx$\")",
       "Bash(npx vitest *)",
       "Bash(node -e \"console.log\\(require\\('d:/Saas/node_modules/next/package.json'\\).version\\)\")",
-      "Bash(node -e \"const l=require\\('lucide-react'\\);for\\(const n of ['Box','Boxes','FlaskConical','Layers','Layers2','Martini','Blend','CupSoda','Droplets','Component','GlassWater','Wine','Container','PackageOpen','Beaker','Sandwich','Grape','Citrus']\\)console.log\\(n, !!l[n]\\)\")"
+      "Bash(node -e \"const l=require\\('lucide-react'\\);for\\(const n of ['Box','Boxes','FlaskConical','Layers','Layers2','Martini','Blend','CupSoda','Droplets','Component','GlassWater','Wine','Container','PackageOpen','Beaker','Sandwich','Grape','Citrus']\\)console.log\\(n, !!l[n]\\)\")",
+      "Bash(rm -f probe3.tmp.mjs)",
+      "Bash(node -e \"const s=require\\('fs'\\).statSync\\('.next/dev/types/routes.d.ts'\\);console.log\\('routes.d.ts bytes',s.size, s.mtime\\)\")",
+      "Bash(node -e \"console.log\\(require\\('fs'\\).readFileSync\\('.next/dev/types/routes.d.ts','utf8'\\).split\\('\\\\n'\\).length,'lines'\\)\")",
+      "Bash(powershell -NoProfile -Command \"Stop-Process -Id 19576 -Force; Start-Sleep -Seconds 2; 'killed'\")",
+      "Bash(rm -rf .next)"
     ],
     "additionalDirectories": [
       "\\tmp"

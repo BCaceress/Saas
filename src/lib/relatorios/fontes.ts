@@ -1,7 +1,9 @@
 import "server-only";
-import { db } from "@/lib/prisma";
+import { basePrisma, comTenant, db } from "@/lib/prisma";
+import { requireTenantId } from "@/lib/tenant-context";
 import { listSites } from "@/lib/sites";
 import { consumoPorProduto } from "@/lib/estoque-giro";
+import { FUSO_LOJA } from "@/lib/datas";
 import {
   curvaABC,
   comprasPorFornecedor,
@@ -255,6 +257,205 @@ export async function carregarCaixa(ctx: FonteCtx): Promise<Linha[]> {
     quebra: f.quebra,
     conferido: f.contado != null,
   }));
+}
+
+/** "12/08 08:03" no fuso da loja — o horário que o operador viu no relógio. */
+const HORA_CAIXA = new Intl.DateTimeFormat("pt-BR", {
+  timeZone: FUSO_LOJA,
+  day: "2-digit",
+  month: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+function horaCaixa(d: Date): string {
+  return HORA_CAIXA.format(d).replace(", ", " ");
+}
+
+const SITUACAO_CAIXA: Record<string, "ABERTA" | "FECHADA"> = {
+  aberto: "ABERTA",
+  fechado: "FECHADA",
+};
+
+type LinhaPodio = {
+  sessao: string;
+  produto: string;
+  unidades: number;
+  receita: number;
+  vendas: number;
+  posicao: number;
+};
+
+/**
+ * Os produtos que mais saíram EM UNIDADE em cada caixa — por padrão os 3 de
+ * cada caixa ABERTO.
+ *
+ * O grão é (caixa × posição): uma linha por produto premiado, com o lugar dele
+ * no turno. O período recorta os CAIXAS que encostam nele (abertos antes do fim
+ * e não fechados antes do início); dentro do caixa o ranking é do turno inteiro,
+ * que é o que "mais vendido neste caixa" quer dizer — cortar os itens pelo
+ * período daria o ranking de um pedaço do turno.
+ *
+ * `situacao` e `porCaixa` são empurrados para o banco (`aplicaNaFonte`): o
+ * pódio sai de um `ROW_NUMBER` por sessão, não de uma peneira depois de trazer
+ * item por item de cada turno.
+ */
+export async function carregarTopProdutosCaixa(ctx: FonteCtx): Promise<Linha[]> {
+  const range = faixa(ctx);
+  const quantas = Math.min(Math.max(Math.trunc(Number(ctx.filtros.porCaixa)) || 3, 1), 20);
+
+  const escolhidas = (
+    Array.isArray(ctx.filtros.situacao)
+      ? ctx.filtros.situacao
+      : typeof ctx.filtros.situacao === "string" && ctx.filtros.situacao !== ""
+        ? [ctx.filtros.situacao]
+        : ["Aberto"]
+  )
+    .map((s) => SITUACAO_CAIXA[String(s).toLowerCase()])
+    .filter((s): s is "ABERTA" | "FECHADA" => !!s);
+  // Nenhuma ou as duas: sem WHERE de status. Uma só: filtra no banco.
+  const status = escolhidas.length === 1 ? escolhidas[0] : null;
+
+  const sessoes = await db.cashSession.findMany({
+    where: {
+      ...(status ? { status } : {}),
+      ...(ctx.siteId ? { siteId: ctx.siteId } : {}),
+      abertaEm: { lt: range.fim },
+      OR: [{ fechadaEm: null }, { fechadaEm: { gte: range.inicio } }],
+    },
+    orderBy: { abertaEm: "desc" },
+    take: 300,
+    select: {
+      id: true,
+      status: true,
+      abertaEm: true,
+      fechadaEm: true,
+      operatorUserId: true,
+      site: { select: { nome: true } },
+    },
+  });
+  if (sessoes.length === 0) return [];
+
+  const podio = await podioPorCaixa(
+    sessoes.map((s) => s.id),
+    quantas,
+  );
+  if (podio.length === 0) return [];
+
+  const [operadores, produtos] = await Promise.all([
+    nomesDeOperadores(sessoes.map((s) => s.operatorUserId)),
+    db.product.findMany({
+      where: { id: { in: [...new Set(podio.map((p) => p.produto))] } },
+      select: {
+        id: true,
+        nome: true,
+        sku: true,
+        subcategory: { select: { nome: true, category: { select: { nome: true } } } },
+      },
+    }),
+  ]);
+  const porProduto = new Map(produtos.map((p) => [p.id, p]));
+
+  const porSessao = new Map<string, LinhaPodio[]>();
+  for (const l of podio) {
+    const atual = porSessao.get(l.sessao);
+    if (atual) atual.push(l);
+    else porSessao.set(l.sessao, [l]);
+  }
+
+  return sessoes.flatMap((s) => {
+    const linhas = porSessao.get(s.id);
+    // Caixa sem venda paga não vira linha vazia: some do relatório.
+    if (!linhas) return [];
+
+    const site = s.site?.nome ?? "—";
+    const fim = s.fechadaEm ? horaCaixa(s.fechadaEm) : "em aberto";
+    const caixa = `${site} · ${horaCaixa(s.abertaEm)} → ${fim}`;
+    const operador = operadores.get(s.operatorUserId) ?? "Usuário removido";
+
+    return linhas
+      .sort((a, b) => a.posicao - b.posicao)
+      .map((l): Linha => {
+        const p = porProduto.get(l.produto);
+        return {
+          caixa,
+          site,
+          operador,
+          statusCaixa: s.status === "ABERTA" ? "Aberto" : "Fechado",
+          abertaEm: s.abertaEm,
+          fechadaEm: s.fechadaEm,
+          posicao: l.posicao,
+          produto: p?.nome ?? "Produto removido",
+          sku: p?.sku ?? "—",
+          categoria: p?.subcategory?.category?.nome ?? null,
+          subcategoria: p?.subcategory?.nome ?? null,
+          unidades: l.unidades,
+          vendas: l.vendas,
+          receita: l.receita,
+          precoMedio: l.unidades > 0 ? l.receita / l.unidades : 0,
+        };
+      });
+  });
+}
+
+/**
+ * Pódio de produtos de cada caixa em UMA ida ao banco.
+ *
+ * `SaleItem` não guarda o caixa — quem guarda é `Sale` —, então não dá para
+ * resolver com `groupBy` do Prisma, e trazer item por item de 300 turnos para
+ * somar em memória seria pior. É SQL cru com `ROW_NUMBER` por sessão, com o
+ * tenantId explícito no WHERE (raw não passa pelo extension).
+ *
+ * Os ids das sessões viajam como UM parâmetro de texto virando jsonb (e não via
+ * `Prisma.join`): o bundler do Next pode carregar duas cópias do runtime do
+ * Prisma e o fragmento acabaria enviado como parâmetro.
+ */
+async function podioPorCaixa(sessaoIds: string[], quantas: number): Promise<LinhaPodio[]> {
+  if (sessaoIds.length === 0) return [];
+  const tid = requireTenantId();
+  const idsJson = JSON.stringify(sessaoIds);
+
+  return comTenant(
+    tid,
+    basePrisma.$queryRaw<LinhaPodio[]>`
+      WITH itens AS (
+        SELECT s."cashSessionId"                 AS sessao,
+               si."productId"                    AS produto,
+               SUM(si.quantidade)::float8        AS unidades,
+               SUM(si.total)::float8             AS receita,
+               COUNT(DISTINCT si."saleId")::int  AS vendas
+          FROM "SaleItem" si
+          JOIN "Sale" s ON s.id = si."saleId"
+         WHERE si."tenantId" = ${tid}
+           AND s.status = 'PAGA'
+           AND s."cashSessionId" IN (SELECT jsonb_array_elements_text(${idsJson}::jsonb))
+         GROUP BY 1, 2
+      ), ranqueado AS (
+        SELECT itens.*,
+               (ROW_NUMBER() OVER (
+                  PARTITION BY sessao ORDER BY unidades DESC, receita DESC, produto
+               ))::int AS posicao
+          FROM itens
+      )
+      SELECT sessao, produto, unidades, receita, vendas, posicao
+        FROM ranqueado
+       WHERE posicao <= ${quantas}::int
+    `,
+  );
+}
+
+/**
+ * Nome de quem operou o caixa, via Membership — nunca lendo User direto. Assim
+ * só aparece quem é membro DESTE tenant (o `db` injeta o tenantId no membership).
+ */
+async function nomesDeOperadores(ids: (string | null)[]): Promise<Map<string, string>> {
+  const unicos = [...new Set(ids.filter((id): id is string => !!id))];
+  if (unicos.length === 0) return new Map();
+  const membros = await db.membership.findMany({
+    where: { userId: { in: unicos } },
+    select: { userId: true, user: { select: { name: true, email: true } } },
+  });
+  return new Map(membros.map((m) => [m.userId, m.user.name ?? m.user.email]));
 }
 
 // ── Movimentações ───────────────────────────────────────────

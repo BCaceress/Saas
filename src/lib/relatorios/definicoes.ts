@@ -33,6 +33,7 @@ import {
   carregarPerdas,
   carregarProducao,
   carregarProdutosVendidos,
+  carregarTopProdutosCaixa,
   carregarValidade,
 } from "./fontes";
 
@@ -560,6 +561,95 @@ const DECLARADAS: ReportDefinition[] = [
     ordenacaoPadrao: { coluna: "fechadaEm", ordem: "desc" },
     limitePadrao: 2000,
     carregar: carregarCaixa,
+  },
+
+  // ── Mais vendidos por caixa ───────────────────────────────
+  // Ordenação padrão pela abertura do caixa (e não pelas unidades): mantém as
+  // linhas do mesmo turno juntas, na ordem do pódio — 1º, 2º, 3º. Ordenar por
+  // unidades embaralharia os caixas e o "por caixa" do título sumiria.
+  {
+    ...doCatalogo("vendas-top-caixa"),
+    filtros: [
+      FILTRO_PERIODO,
+      FILTRO_SITE,
+      {
+        id: "situacao",
+        label: "Situação do caixa",
+        tipo: "opcoes",
+        coluna: "statusCaixa",
+        multiplo: true,
+        padrao: ["Aberto"],
+        ajuda: "Por padrão só os caixas abertos agora.",
+        aplicaNaFonte: true,
+        opcoes: [
+          { valor: "Aberto", label: "Aberto" },
+          { valor: "Fechado", label: "Fechado" },
+        ],
+      },
+      {
+        id: "porCaixa",
+        label: "Quantos por caixa",
+        tipo: "numero",
+        coluna: "posicao",
+        modo: "menor",
+        padrao: 3,
+        sufixo: "produtos",
+        ajuda: "Tamanho do pódio de cada caixa.",
+        aplicaNaFonte: true,
+      },
+      texto("operador", "Operador"),
+      texto("produto", "Produto"),
+    ],
+    colunas: [
+      { id: "posicao", label: "#", tipo: "inteiro", obrigatoria: true },
+      { id: "caixa", label: "Caixa", tipo: "texto", obrigatoria: true },
+      { id: "abertaEm", label: "Aberto em", tipo: "datahora" },
+      { id: "fechadaEm", label: "Fechado em", tipo: "datahora" },
+      { id: "statusCaixa", label: "Situação", tipo: "texto", padrao: false },
+      { id: "site", label: "Loja", tipo: "texto", padrao: false },
+      { id: "operador", label: "Operador", tipo: "texto" },
+      { id: "produto", label: "Produto", tipo: "texto", obrigatoria: true },
+      { id: "sku", label: "SKU", tipo: "codigo" },
+      { id: "categoria", label: "Categoria", tipo: "texto", padrao: false },
+      { id: "subcategoria", label: "Subcategoria", tipo: "texto", padrao: false },
+      { id: "unidades", label: "Unidades", tipo: "numero", totalizar: "soma" },
+      { id: "vendas", label: "Vendas", tipo: "inteiro", padrao: false, totalizar: "soma" },
+      { id: "receita", label: "Faturamento", tipo: "moeda", totalizar: "soma" },
+      { id: "precoMedio", label: "Preço médio", tipo: "moeda", padrao: false },
+    ],
+    ordenacoes: [
+      ordena("abertaEm", "Abertura do caixa"),
+      ordena("unidades", "Unidades"),
+      ordena("receita", "Faturamento"),
+      ordena("caixa", "Caixa"),
+      ordena("operador", "Operador"),
+      ordena("produto", "Produto"),
+    ],
+    agrupamentos: [agrupa("caixa", "Caixa"), agrupa("operador", "Operador"), agrupa("site", "Loja")],
+    indicadores: [
+      {
+        id: "caixas",
+        label: "Caixas",
+        tipo: "inteiro",
+        calcular: (linhas) => new Set(linhas.map((l) => String(l.caixa))).size,
+      },
+      {
+        id: "unidades",
+        label: "Unidades no pódio",
+        tipo: "numero",
+        hint: "só os produtos listados",
+        calcular: somaDe("unidades"),
+      },
+      {
+        id: "receita",
+        label: "Faturamento no pódio",
+        tipo: "moeda",
+        calcular: somaDe("receita"),
+      },
+    ],
+    ordenacaoPadrao: { coluna: "abertaEm", ordem: "desc" },
+    limitePadrao: 1000,
+    carregar: carregarTopProdutosCaixa,
   },
 
   // ── Produção / drinks ─────────────────────────────────────
