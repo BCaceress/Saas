@@ -1,6 +1,7 @@
+import { unstable_cache, revalidateTag } from "next/cache";
 import type { Prisma, ProductType } from "@/generated/prisma";
 import { db, basePrisma, comTenant } from "@/lib/prisma";
-import { requireTenantId } from "@/lib/tenant-context";
+import { requireTenantId, runWithTenant } from "@/lib/tenant-context";
 import { derive, type DeriveComponent } from "@/lib/derive";
 import { margem } from "@/lib/utils";
 import { PRODUCT_INCLUDE, toProductRow } from "./_data";
@@ -120,28 +121,19 @@ const ORDER_DB: Partial<
   preco: (d) => [{ precoVenda: { sort: d, nulls: "last" } }, { nome: "asc" }],
 };
 
-/** Só o que as ordens derivadas precisam — bem mais leve que PRODUCT_INCLUDE. */
-const SELECT_LEVE = {
+const num = (v: { toNumber: () => number } | null | undefined) => (v == null ? null : v.toNumber());
+
+/** Compostos derivam custo e disponibilidade dos componentes, não têm os seus. */
+const ehComposto = (t: ProductType) => t === "COMBO" || t === "PERSONALIZADO";
+
+/**
+ * Só os compostos, com o que `derive()` precisa. Diferente do antigo
+ * `SELECT_LEVE`, que subia isto para o catálogo INTEIRO só para ordenar.
+ */
+const SELECT_COMPOSTO = {
   id: true,
-  nome: true,
   tipo: true,
   precoVenda: true,
-  custo: true,
-  conteudoPorUnidade: true,
-  stocks: {
-    select: {
-      estoqueFechado: true,
-      estoqueAberto: true,
-      estoqueMinimo: true,
-      estoqueIdeal: true,
-    },
-  },
-  suppliers: {
-    select: {
-      isPrincipal: true,
-      supplier: { select: { nomeFantasia: true, razaoSocial: true } },
-    },
-  },
   components: {
     select: {
       quantidade: true,
@@ -158,12 +150,9 @@ const SELECT_LEVE = {
   },
 } satisfies Prisma.ProductSelect;
 
-type ProdutoLeve = Prisma.ProductGetPayload<{ select: typeof SELECT_LEVE }>;
+type ProdutoComposto = Prisma.ProductGetPayload<{ select: typeof SELECT_COMPOSTO }>;
 
-const num = (v: { toNumber: () => number } | null | undefined) => (v == null ? null : v.toNumber());
-
-function derivadoDe(p: ProdutoLeve) {
-  if (p.tipo !== "COMBO" && p.tipo !== "PERSONALIZADO") return null;
+function derivadoDe(p: ProdutoComposto) {
   const comps: DeriveComponent[] = p.components.map((c) => ({
     quantidade: num(c.quantidade) ?? 0,
     unidade: c.unidade,
@@ -176,90 +165,174 @@ function derivadoDe(p: ProdutoLeve) {
   return derive(comps);
 }
 
-/** Mesma regra de `stockQty` da tela: null = produto sem controle de estoque. */
-function saldoDe(p: ProdutoLeve, disponibilidadeDerivada: number | null): number | null {
-  if (disponibilidadeDerivada !== null) return disponibilidadeDerivada;
-  const minimo = num(p.stocks[0]?.estoqueMinimo) ?? 0;
-  const ideal = num(p.stocks[0]?.estoqueIdeal) ?? 0;
-  if (p.tipo === "PERSONALIZADO" || (p.tipo === "INSUMO" && minimo <= 0 && ideal <= 0)) return null;
-  return p.stocks.reduce((s, st) => s + Number(st.estoqueFechado), 0);
+/** Chave de ordenação de uma linha: número ordena por valor, texto por localeCompare. */
+type Chave = number | string;
+
+/** Sem valor vai para o fim do ASC — mesma convenção da versão anterior. */
+const SEM_VALOR = Number.NEGATIVE_INFINITY;
+
+/**
+ * Chaves de ordenação calculadas NO BANCO, para as ordens que o `ORDER_BY` do
+ * Prisma não alcança.
+ *
+ * Antes isto era feito em JS: um SELECT com stocks, suppliers e components
+ * aninhados do catálogo inteiro, a cada clique de ordenar ou virar página,
+ * amortizado por um `Map` de 30s que vivia no processo — ou seja, que em
+ * serverless quase nunca acertava, porque a próxima requisição cai em outra
+ * instância. Aqui sobe uma linha de duas colunas por produto.
+ *
+ * O WHERE continua sendo montado pelo Prisma (`whereDoFiltro`) e chega aqui
+ * como lista de ids: a regra de filtro segue tendo UMA implementação.
+ *
+ * A lista de ids viaja como um parâmetro de texto virando jsonb pelo mesmo
+ * motivo documentado em `carregarGiro` — `Prisma.join` quebra quando o bundler
+ * carrega duas cópias do runtime.
+ */
+async function chavesNoBanco(ids: string[], sort: ProdutoSortField): Promise<Map<string, Chave>> {
+  const mapa = new Map<string, Chave>();
+  if (!ids.length) return mapa;
+
+  const tid = requireTenantId();
+  const idsJson = JSON.stringify(ids);
+
+  if (sort === "margem") {
+    // Espelha `margem()` de lib/utils: null quando falta preço ou custo, ou
+    // quando o preço não é positivo.
+    const linhas = await comTenant(
+      tid,
+      basePrisma.$queryRaw<{ id: string; chave: number | null }[]>`
+        SELECT p.id,
+               CASE WHEN p."precoVenda" > 0 AND p.custo IS NOT NULL
+                    THEN round(((p."precoVenda" - p.custo) / p."precoVenda") * 100)
+                    ELSE NULL END::float8 AS "chave"
+          FROM "Product" p
+         WHERE p."tenantId" = ${tid}
+           AND p.id IN (SELECT jsonb_array_elements_text(${idsJson}::jsonb))
+      `,
+    );
+    for (const l of linhas) mapa.set(l.id, l.chave ?? SEM_VALOR);
+    return mapa;
+  }
+
+  if (sort === "estoque") {
+    // Espelha `stockQty` da tela: PERSONALIZADO e INSUMO sem meta não têm saldo
+    // exibível. `MAX` em vez do "primeiro Stock" que o JS lia: o produto tem uma
+    // linha de Stock por site (@@unique([productId, siteId])) e a versão antiga
+    // pegava `stocks[0]` sem ORDER BY — ou seja, uma linha arbitrária. Com uma
+    // loja só o resultado é idêntico; com várias, "alguma loja tem meta" é
+    // determinístico, que a leitura anterior não era.
+    const linhas = await comTenant(
+      tid,
+      basePrisma.$queryRaw<{ id: string; chave: number | null }[]>`
+        SELECT p.id,
+               CASE WHEN p.tipo = 'PERSONALIZADO'
+                      OR (p.tipo = 'INSUMO'
+                          AND COALESCE(MAX(s."estoqueMinimo"), 0) <= 0
+                          AND COALESCE(MAX(s."estoqueIdeal"), 0) <= 0)
+                    THEN NULL
+                    ELSE COALESCE(SUM(s."estoqueFechado"), 0) END::float8 AS "chave"
+          FROM "Product" p
+          LEFT JOIN "Stock" s ON s."productId" = p.id AND s."tenantId" = p."tenantId"
+         WHERE p."tenantId" = ${tid}
+           AND p.id IN (SELECT jsonb_array_elements_text(${idsJson}::jsonb))
+         GROUP BY p.id, p.tipo
+      `,
+    );
+    for (const l of linhas) mapa.set(l.id, l.chave ?? SEM_VALOR);
+    return mapa;
+  }
+
+  if (sort === "fornecedor") {
+    // `isPrincipal` primeiro, senão qualquer um — mesma escolha do JS anterior.
+    const linhas = await comTenant(
+      tid,
+      basePrisma.$queryRaw<{ id: string; chave: string | null }[]>`
+        SELECT p.id, lower(COALESCE(f."nomeFantasia", f."razaoSocial", '')) AS "chave"
+          FROM "Product" p
+          LEFT JOIN LATERAL (
+            SELECT s."nomeFantasia", s."razaoSocial"
+              FROM "ProductSupplier" ps
+              JOIN "Supplier" s ON s.id = ps."supplierId"
+             WHERE ps."productId" = p.id AND ps."tenantId" = p."tenantId"
+             ORDER BY ps."isPrincipal" DESC
+             LIMIT 1
+          ) f ON TRUE
+         WHERE p."tenantId" = ${tid}
+           AND p.id IN (SELECT jsonb_array_elements_text(${idsJson}::jsonb))
+      `,
+    );
+    for (const l of linhas) mapa.set(l.id, l.chave ?? "");
+    return mapa;
+  }
+
+  // vendas / parado: o giro já era SQL — o desperdício era carregar o catálogo
+  // ao lado dele sem precisar.
+  const giro = await carregarGiro(ids);
+  for (const id of ids) {
+    mapa.set(
+      id,
+      sort === "vendas"
+        ? giro[id]?.vendas30d ?? 0
+        : // Nunca vendido é o mais parado de todos.
+          giro[id]?.diasSemVenda ?? Number.MAX_SAFE_INTEGER,
+    );
+  }
+  return mapa;
 }
 
 /**
- * Cache curtíssimo da ordenação derivada. Sem ele, virar a página com "ordenar
- * por margem" varre o catálogo inteiro de novo a cada clique. 30s é menos que o
- * tempo de olhar uma página e ainda assim cobre a paginação inteira.
+ * Ids do filtro já na ordem pedida, para as ordens que o Postgres não resolve
+ * com um `ORDER BY` simples.
+ *
+ * Três passos: o Prisma diz QUEM passa no filtro (id/tipo/nome, nada aninhado),
+ * o banco calcula a chave de cada um, e `derive()` corrige os compostos — que
+ * são os únicos cujo custo e disponibilidade não estão numa coluna.
+ *
+ * A ordenação final fica em JS de propósito: `localeCompare("pt-BR")` e o
+ * desempate por nome são os mesmos de antes, sem depender do collation do banco.
  */
-const CACHE_ORDEM_MS = 30_000;
-const cacheOrdem = new Map<string, { em: number; ids: string[] }>();
-
-function lerCacheOrdem(chave: string): string[] | null {
-  const hit = cacheOrdem.get(chave);
-  if (!hit) return null;
-  if (Date.now() - hit.em > CACHE_ORDEM_MS) {
-    cacheOrdem.delete(chave);
-    return null;
-  }
-  return hit.ids;
-}
-
-function gravarCacheOrdem(chave: string, ids: string[]) {
-  // Teto de entradas: o Map vive no processo e não pode virar vazamento.
-  if (cacheOrdem.size > 50) {
-    for (const k of cacheOrdem.keys()) {
-      cacheOrdem.delete(k);
-      if (cacheOrdem.size <= 25) break;
-    }
-  }
-  cacheOrdem.set(chave, { em: Date.now(), ids });
-}
-
-/**
- * Ids do filtro já na ordem pedida, para as ordenações derivadas. Duas fases:
- * um SELECT leve ordena tudo, depois só a fatia da página vira linha completa.
- */
-async function idsOrdenadosEmMemoria(
+async function idsOrdenados(
   where: Prisma.ProductWhereInput,
   sort: ProdutoSortField,
   dir: ProdutoSortDir,
 ): Promise<string[]> {
-  const chave = `${requireTenantId()}|${sort}|${dir}|${JSON.stringify(where)}`;
-  const doCache = lerCacheOrdem(chave);
-  if (doCache) return doCache;
+  const alvos = await db.product.findMany({
+    where,
+    select: { id: true, nome: true, tipo: true },
+  });
+  if (!alvos.length) return [];
 
-  const leves = await db.product.findMany({ where, select: SELECT_LEVE });
+  const chaves = await chavesNoBanco(alvos.map((a) => a.id), sort);
 
-  const giro =
-    sort === "vendas" || sort === "parado"
-      ? await carregarGiro(leves.map((p) => p.id))
-      : {};
-
-  const chaveDe = (p: ProdutoLeve): number | string => {
-    const d = derivadoDe(p);
-    switch (sort) {
-      case "margem": {
-        const custo = d ? d.custoTotal : num(p.custo);
-        return margem(num(p.precoVenda), custo) ?? Number.NEGATIVE_INFINITY;
+  // Composto não tem custo nem saldo próprios: o valor vem dos componentes, e
+  // quem sabe essa regra é `derive()`. Reimplementá-la em SQL criaria duas
+  // versões da mesma conta, que divergem no primeiro ajuste de receita.
+  if (sort === "margem" || sort === "estoque") {
+    const idsCompostos = alvos.filter((a) => ehComposto(a.tipo)).map((a) => a.id);
+    if (idsCompostos.length) {
+      const compostos = await db.product.findMany({
+        where: { id: { in: idsCompostos } },
+        select: SELECT_COMPOSTO,
+      });
+      for (const c of compostos) {
+        const d = derivadoDe(c);
+        chaves.set(
+          c.id,
+          sort === "margem"
+            ? margem(num(c.precoVenda), d.custoTotal) ?? SEM_VALOR
+            : // Vale para COMBO **e** PERSONALIZADO. Tentador escrever aqui que
+              // PERSONALIZADO "não tem saldo" como faz `stockQty` — mas lá a
+              // checagem é código morto: composto sempre tem `disponibilidade`
+              // derivada e sai no `if` anterior. Quem ordenar por estoque espera
+              // a mesma posição que a coluna mostra.
+              d.disponibilidade,
+        );
       }
-      case "estoque":
-        return saldoDe(p, d ? d.disponibilidade : null) ?? Number.NEGATIVE_INFINITY;
-      case "fornecedor": {
-        const principal = p.suppliers.find((s) => s.isPrincipal) ?? p.suppliers[0];
-        const s = principal?.supplier;
-        return (s ? s.nomeFantasia ?? s.razaoSocial : "").toLowerCase();
-      }
-      case "vendas":
-        return giro[p.id]?.vendas30d ?? 0;
-      case "parado":
-        // Nunca vendido é o mais parado de todos.
-        return giro[p.id]?.diasSemVenda ?? Number.MAX_SAFE_INTEGER;
-      default:
-        return p.nome.toLowerCase();
     }
-  };
+  }
 
-  const ordenados = leves
-    .map((p) => ({ id: p.id, k: chaveDe(p), nome: p.nome }))
+  return alvos
+    .map((a) => ({ id: a.id, nome: a.nome, k: chaves.get(a.id) ?? SEM_VALOR }))
     .sort((a, b) => {
       const cmp =
         typeof a.k === "number" && typeof b.k === "number"
@@ -268,9 +341,6 @@ async function idsOrdenadosEmMemoria(
       return (dir === "asc" ? cmp : -cmp) || a.nome.localeCompare(b.nome, "pt-BR");
     })
     .map((x) => x.id);
-
-  gravarCacheOrdem(chave, ordenados);
-  return ordenados;
 }
 
 // ── Giro (vendas 30d / dias sem venda) ───────────────────────────────────────
@@ -321,18 +391,57 @@ export async function carregarGiro(ids: string[]): Promise<Record<string, Produt
 
 // ── Opções dos filtros ───────────────────────────────────────────────────────
 
+/** Tag de invalidação das opções de filtro — POR TENANT, nunca global. */
+const tagOpcoesFiltro = (tenantId: string) => `produtos:opcoes:${tenantId}`;
+
 /**
- * Listas que alimentam os selects da barra de filtros. Ficam no LAYOUT, não na
- * página: layout não re-renderiza quando só a query string muda, então trocar
- * de filtro deixou de pagar quatro consultas que devolvem sempre o mesmo.
+ * Derruba o cache das opções de filtro do tenant. Chamar depois de criar ou
+ * renomear categoria, subcategoria, marca, etiqueta ou loja — é o que faz o
+ * operador ver a marca recém-cadastrada no filtro sem esperar o revalidate.
+ *
+ * `{ expire: 0 }` e não `"max"`: o perfil `max` é stale-while-revalidate, ou
+ * seja, quem acabou de cadastrar ainda veria a lista velha uma vez. Aqui o caso
+ * é ler a própria escrita, então a entrada expira na hora e a próxima leitura
+ * paga a consulta.
  */
-export async function carregarOpcoesFiltro(): Promise<{
+export function invalidarOpcoesFiltro(tenantId: string) {
+  revalidateTag(tagOpcoesFiltro(tenantId), { expire: 0 });
+}
+
+type OpcoesFiltroDados = {
   categoryOpts: CategoryFilterOpt[];
   subOpts: SubcategoryFilterOpt[];
   brandOpts: BrandOpt[];
   siteOpts: SiteOpt[];
   tagOpts: TagOpt[];
-}> {
+};
+
+/**
+ * Listas que alimentam os selects da barra de filtros. Ficam no LAYOUT, não na
+ * página: layout não re-renderiza quando só a query string muda, então trocar
+ * de filtro deixou de pagar quatro consultas que devolvem sempre o mesmo.
+ *
+ * Cacheadas porque categoria/marca/loja/etiqueta quase não mudam, e ainda assim
+ * custavam quatro idas ao banco a cada entrada no módulo.
+ *
+ * ATENÇÃO ao mexer: `unstable_cache` monta a chave a partir dos ARGUMENTOS e
+ * dos `keyParts`, e não enxerga o `AsyncLocalStorage` do tenant. Cachear a
+ * versão que lê o tenant do contexto serviria a lista do tenant A para o tenant
+ * B. Por isso o tenantId é parâmetro, entra na chave E abre o próprio
+ * `runWithTenant` aqui dentro — as três coisas juntas, não uma delas.
+ */
+export function carregarOpcoesFiltro(tenantId: string): Promise<OpcoesFiltroDados> {
+  return unstable_cache(
+    () => runWithTenant(tenantId, consultarOpcoesFiltro),
+    ["produtos", "opcoes-filtro", tenantId],
+    // A tag cobre o caso normal (operador cadastra marca e quer vê-la no ato);
+    // o revalidate é rede de segurança para escrita por um caminho que esqueceu
+    // de invalidar — melhor 5 min de atraso que uma lista velha para sempre.
+    { tags: [tagOpcoesFiltro(tenantId)], revalidate: 300 },
+  )();
+}
+
+async function consultarOpcoesFiltro(): Promise<OpcoesFiltroDados> {
   const [categories, brands, sites, tags] = await Promise.all([
     db.category.findMany({
       orderBy: { nome: "asc" },
@@ -412,7 +521,7 @@ export async function consultarProdutos(c: ProdutoConsulta): Promise<ProdutosPag
       include: PRODUCT_INCLUDE,
     });
   } else {
-    const ordenados = await idsOrdenadosEmMemoria(where, c.sort, c.dir);
+    const ordenados = await idsOrdenados(where, c.sort, c.dir);
     const idsPagina = ordenados.slice(skip, skip + porPagina);
     const fatia = idsPagina.length
       ? await db.product.findMany({ where: { id: { in: idsPagina } }, include: PRODUCT_INCLUDE })
@@ -455,7 +564,7 @@ export async function linhasDoFiltro(
       include: PRODUCT_INCLUDE,
     });
   } else {
-    const ordenados = (await idsOrdenadosEmMemoria(where, sort, dir)).slice(0, TETO_VARREDURA);
+    const ordenados = (await idsOrdenados(where, sort, dir)).slice(0, TETO_VARREDURA);
     const fatia = ordenados.length
       ? await db.product.findMany({ where: { id: { in: ordenados } }, include: PRODUCT_INCLUDE })
       : [];

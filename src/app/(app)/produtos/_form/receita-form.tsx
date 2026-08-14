@@ -29,6 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { cn, brl, margem, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
+import { arquivoParaThumb } from "@/lib/imagem";
 import { derive, type DeriveComponent } from "@/lib/derive";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
@@ -480,7 +481,7 @@ export function ReceitaForm({
 
   // ── Imagem ────────────────────────────────────────────────
 
-  function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
+  async function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
@@ -492,11 +493,11 @@ export function ReceitaForm({
       toast.error("Imagem muito grande", "Escolha uma imagem de até 2 MB.");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => setImagemUrl(String(reader.result));
-    reader.onerror = () =>
-      toast.error("Erro ao ler imagem", "Não foi possível abrir o arquivo.");
-    reader.readAsDataURL(file);
+    try {
+      setImagemUrl(await arquivoParaThumb(file));
+    } catch (err) {
+      toast.error("Erro ao ler imagem", err instanceof Error ? err.message : "Tente outro arquivo.");
+    }
   }
 
   // ── Salvar ────────────────────────────────────────────────
@@ -1409,17 +1410,18 @@ export function ReceitaForm({
         </Button>
       </div>
 
-      {/* Modal PDV preview */}
-      <PdvPreviewModal
-        open={pdvOpen}
-        onClose={() => setPdvOpen(false)}
-        nome={nome}
-        tipoReceita={tipoReceita}
-        precoNum={precoNum}
-        imagemUrl={imagemUrl}
-        groups={groups}
-        byId={byId}
-      />
+      {/* Modal PDV preview — montado só aberto: montar já é o "reset ao abrir". */}
+      {pdvOpen && (
+        <PdvPreviewModal
+          onClose={() => setPdvOpen(false)}
+          nome={nome}
+          tipoReceita={tipoReceita}
+          precoNum={precoNum}
+          imagemUrl={imagemUrl}
+          groups={groups}
+          byId={byId}
+        />
+      )}
     </div>
   );
 }
@@ -1427,7 +1429,6 @@ export function ReceitaForm({
 // ── PDV preview modal ────────────────────────────────────────
 
 function PdvPreviewModal({
-  open,
   onClose,
   nome,
   tipoReceita,
@@ -1436,7 +1437,6 @@ function PdvPreviewModal({
   groups,
   byId,
 }: {
-  open: boolean;
   onClose: () => void;
   nome: string;
   tipoReceita: RecipeType;
@@ -1445,28 +1445,29 @@ function PdvPreviewModal({
   groups: Group[];
   byId: Map<string, ComponentCandidate>;
 }) {
-  const [selections, setSelections] = useState<Record<string, string[]>>({});
-  const [qty, setQty] = useState(1);
-
-  // Reset ao abrir
-  useEffect(() => {
-    if (!open) return;
+  /**
+   * Seleção inicial: o que o grupo marca como padrão, ou o primeiro item.
+   *
+   * Calculada no `useState` e não num efeito de reset — o modal só existe
+   * enquanto está aberto, então montar já é o reset. Efeito que chamava
+   * `setSelections` no corpo causava render em cascata a cada abertura.
+   */
+  const [selections, setSelections] = useState<Record<string, string[]>>(() => {
     const s: Record<string, string[]> = {};
     for (const g of groups) {
       const defs = g.items.filter((i) => i.isDefault).map((i) => i.componentProductId);
       s[g.key] = defs.length ? defs : g.items.slice(0, 1).map((i) => i.componentProductId);
     }
-    setSelections(s);
-    setQty(1);
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+    return s;
+  });
+  const [qty, setQty] = useState(1);
 
   // ESC fecha
   useEffect(() => {
-    if (!open) return;
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [open, onClose]);
+  }, [onClose]);
 
   const acrescimoTotal = useMemo(() => {
     let total = 0;
@@ -1492,8 +1493,6 @@ function PdvPreviewModal({
       return { ...prev, [g.key]: [...cur, id] };
     });
   }
-
-  if (!open) return null;
 
   const TipoIcon =
     tipoReceita === "DRINK" ? Martini : tipoReceita === "PRATO" ? Utensils : CookingPot;

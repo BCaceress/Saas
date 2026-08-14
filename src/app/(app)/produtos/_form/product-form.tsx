@@ -15,6 +15,7 @@ import {
   Truck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { arquivoParaThumb } from "@/lib/imagem";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
@@ -269,8 +270,9 @@ function InsumoForm({
     return Number.isFinite(x) && v !== "" ? x : null;
   }
 
-  // Imagem por arquivo local — lida como data URL (protótipo, sem storage ainda).
-  function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
+  // Imagem por arquivo local — data URL na coluna (protótipo, sem storage ainda),
+  // mas encolhida antes: o `data:` cru viaja no payload de TODA listagem depois.
+  async function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
@@ -282,11 +284,11 @@ function InsumoForm({
       toast.error("Imagem muito grande", "Escolha uma imagem de até 2 MB.");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => setImagemUrl(String(reader.result));
-    reader.onerror = () =>
-      toast.error("Erro ao ler imagem", "Não foi possível abrir o arquivo.");
-    reader.readAsDataURL(file);
+    try {
+      setImagemUrl(await arquivoParaThumb(file));
+    } catch (err) {
+      toast.error("Erro ao ler imagem", err instanceof Error ? err.message : "Tente outro arquivo.");
+    }
   }
 
   // Limpa a identidade para o próximo cadastro, preservando o contexto de lote.

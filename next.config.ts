@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { HOSTS_IMAGEM } from "./src/lib/imagem";
 
 const nextConfig: NextConfig = {
   // Multi-tenant usa subdomínios em dev (x.lvh.me:3000). O Next 15+ bloqueia
@@ -13,8 +14,11 @@ const nextConfig: NextConfig = {
   },
 
   images: {
-    // miniaturas do Cosmos Bluesoft (enriquecimento por EAN)
-    remotePatterns: [{ protocol: "https", hostname: "**.bluesoft.com.br" }],
+    // Allowlist do otimizador (hoje: miniaturas do Cosmos Bluesoft, do
+    // enriquecimento por EAN). Vem de `src/lib/imagem.ts` porque o cliente usa a
+    // MESMA lista para decidir se manda a foto pelo otimizador ou direto: as
+    // duas pontas desalinhadas viram 400 na miniatura.
+    remotePatterns: HOSTS_IMAGEM.map((p) => ({ ...p })),
   },
 
   // O service worker não pode ser cacheado: alguns browsers seguram a versão

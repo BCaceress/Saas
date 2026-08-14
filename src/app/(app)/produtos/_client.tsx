@@ -1,7 +1,10 @@
 "use client";
 
-import { Fragment, useMemo, useState, useTransition, useRef, useEffect, useCallback } from "react";
+import {
+  Fragment, createContext, useContext, useMemo, useState, useTransition, useRef, useEffect, useCallback,
+} from "react";
 import { createPortal } from "react-dom";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Plus, Tag, FolderTree, Warehouse, Truck, Upload, Search, Settings2,
@@ -14,6 +17,7 @@ import {
   TrendingUp, Clock, Users, FileSpreadsheet, ChevronUp,
 } from "lucide-react";
 import { cn, brl, margem, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
+import { thumbSrc } from "@/lib/imagem";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuItem } from "@/components/ui/menu";
@@ -35,7 +39,7 @@ import { LoteSheet } from "./_sheets/lote-sheet";
 import { NomesSheet } from "./_sheets/nomes-sheet";
 import { archiveProduct, getGerenciarExtras } from "./actions";
 import {
-  apagarVisao, linhasParaExport, linhasSelecionadas,
+  apagarVisao, buscarProdutos, linhasParaExport, linhasSelecionadas,
   salvarVisao, selecionarIdsDoFiltro, setPrecoVenda,
 } from "./list-actions";
 import { consultaParaParams, contarFiltros, soFiltro, STATUS_PADRAO } from "./_url";
@@ -227,9 +231,17 @@ export function ProdutosClient(props: {
   // Voltar/avançar no navegador (ou refresh do RSC) manda: adota o que veio.
   // Ajuste durante o render, não em efeito — evita o flash da tela com o filtro
   // antigo antes do efeito rodar.
+  // Páginas extras que o "Carregar mais" do mobile empilhou sobre a do servidor.
+  const [maisRows, setMaisRows] = useState<ProductRow[]>([]);
+  const [maisGiro, setMaisGiro] = useState<Record<string, ProdutoGiro>>({});
+  const [carregandoMais, setCarregandoMais] = useState(false);
+
   if (chaveServidor !== chaveAdotada) {
     setChaveAdotada(chaveServidor);
     setConsulta(consultaInicial);
+    // Filtro/ordem/página mudaram: o que estava empilhado é de outra consulta.
+    setMaisRows([]);
+    setMaisGiro({});
   }
 
   // Preferências de exibição: URL manda (link compartilhável), navegador é o
@@ -269,13 +281,25 @@ export function ProdutosClient(props: {
   const alvoUrl = paramsDaTela(consulta, cols, info);
   const urlAtual = searchParams.toString();
 
+  // Debounce só vale para quem digita. Clicar num select, marcar um chip ou
+  // trocar a ordenação é uma decisão pronta: esperar 300ms ali não economiza
+  // consulta nenhuma, só faz a tela parecer travada.
+  const qAnterior = useRef(consulta.q);
   useEffect(() => {
+    const digitou = consulta.q !== qAnterior.current;
+    qAnterior.current = consulta.q;
     if (alvoUrl === urlAtual) return;
-    const t = setTimeout(() => {
+
+    const ir = () =>
       start(() => router.replace(alvoUrl ? `/produtos?${alvoUrl}` : "/produtos", { scroll: false }));
-    }, 300);
+
+    if (!digitou) {
+      ir();
+      return;
+    }
+    const t = setTimeout(ir, 300);
     return () => clearTimeout(t);
-  }, [alvoUrl, urlAtual, router]);
+  }, [alvoUrl, urlAtual, consulta.q, router]);
 
   // Próxima página no forno assim que a atual assenta: paginar catálogo é
   // clicar seguido, e o RSC dela já chega pronto.
@@ -369,7 +393,9 @@ export function ProdutosClient(props: {
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
   const somePageSelected = pageIds.some((id) => selected.has(id));
 
-  function toggleRow(id: string, idx: number, shift = false) {
+  // `lista` explícita porque o mobile empilha páginas: o índice do card não é o
+  // mesmo índice de `rows` depois do primeiro "Carregar mais".
+  function toggleRow(id: string, idx: number, shift = false, lista: ProductRow[] = rows) {
     setSelected((prev) => {
       const next = new Set(prev);
       // Shift-clique marca o intervalo desde a última linha tocada — é como o
@@ -378,7 +404,7 @@ export function ProdutosClient(props: {
         const [ini, fim] = [ultimoIdx.current, idx].sort((a, b) => a - b);
         const marcar = !prev.has(id);
         for (let i = ini; i <= fim; i++) {
-          const alvo = rows[i]?.id;
+          const alvo = lista[i]?.id;
           if (!alvo) continue;
           if (marcar) next.add(alvo); else next.delete(alvo);
         }
@@ -536,6 +562,28 @@ export function ProdutosClient(props: {
   const paginaAtual = Math.min(consulta.pagina, totalPaginas);
   const inicio = (paginaAtual - 1) * consulta.porPagina;
 
+  // ── "Carregar mais" (mobile) ──
+  // No celular a paginação numerada é atrito: o operador rola. A lista empilha
+  // páginas em cima da que o RSC entregou, em vez de trocá-la.
+  const rowsMobile = maisRows.length ? [...rows, ...maisRows] : rows;
+  const giroMobile = maisRows.length ? { ...giro, ...maisGiro } : giro;
+  const temMais = inicio + rowsMobile.length < total;
+
+  async function carregarMais() {
+    if (carregandoMais) return;
+    setCarregandoMais(true);
+    try {
+      const proxima = paginaAtual + Math.floor(maisRows.length / consulta.porPagina) + 1;
+      const p = await buscarProdutos({ ...consulta, pagina: proxima });
+      setMaisRows((r) => [...r, ...p.rows]);
+      setMaisGiro((g) => ({ ...g, ...p.giro }));
+    } catch {
+      toast.error("Não foi possível carregar", "Verifique a conexão e tente de novo.");
+    } finally {
+      setCarregandoMais(false);
+    }
+  }
+
   // Chips: o operador precisa ver O QUÊ está filtrando, não só quantos filtros.
   const chips = useMemo(() => {
     const lista: { key: string; label: string; limpar: () => void }[] = [];
@@ -595,7 +643,7 @@ export function ProdutosClient(props: {
   }, [consulta, categoryOpts, subOpts, brandOpts, siteOpts, tagOpts, initialFornecedorNome, aplicar, aplicarFlag]);
 
   return (
-    <>
+    <TooltipLayer>
       <PageHeader
         title="Produtos"
         icon={navIcon("/produtos")}
@@ -914,7 +962,7 @@ export function ProdutosClient(props: {
         ) : cozy ? (
           <>
             {/* ── Cards (densidade confortável — todas as telas) ── */}
-            <ul className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div role="list" className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {rows.map((p, idx) => (
                 <ProductCard
                   key={p.id}
@@ -932,7 +980,7 @@ export function ProdutosClient(props: {
                   onBuscarImagem={() => abrirImagens([p])}
                 />
               ))}
-            </ul>
+            </div>
           </>
         ) : (
           <>
@@ -1151,24 +1199,34 @@ export function ProdutosClient(props: {
             </div>
 
             {/* ── Cards (mobile — densidade compacta) ── */}
-            <ul className="mt-4 space-y-2 md:hidden">
-              {rows.map((p, idx) => (
-                <ProductCard
-                  key={p.id}
-                  p={p}
-                  giro={giro[p.id]}
-                  cols={cols}
-                  info={info}
-                  selected={selected.has(p.id)}
-                  onToggle={(shift) => toggleRow(p.id, idx, shift)}
-                  onOpen={() => setSelectedProduct(p)}
-                  onImage={p.imagemUrl ? () => setImageUrl(p.imagemUrl) : undefined}
-                  onEdit={() => editar(p)}
-                  onArchive={() => toggleInativo(p)}
-                  onBuscarImagem={() => abrirImagens([p])}
-                />
-              ))}
-            </ul>
+            <ListaCards
+              rows={rowsMobile}
+              giro={giroMobile}
+              cols={cols}
+              info={info}
+              selected={selected}
+              onToggle={(id, idx, shift) => toggleRow(id, idx, shift, rowsMobile)}
+              onOpen={setSelectedProduct}
+              onImage={setImageUrl}
+              onEdit={editar}
+              onArchive={toggleInativo}
+              onBuscarImagem={(p) => abrirImagens([p])}
+            />
+
+            {temMais && (
+              <div className="mt-3 md:hidden">
+                <Button
+                  variant="ghost"
+                  className="w-full"
+                  onClick={carregarMais}
+                  disabled={carregandoMais}
+                >
+                  {carregandoMais
+                    ? "Carregando…"
+                    : `Carregar mais ${Math.min(consulta.porPagina, total - inicio - rowsMobile.length)}`}
+                </Button>
+              </div>
+            )}
           </>
         )}
         </div>
@@ -1340,7 +1398,7 @@ export function ProdutosClient(props: {
       })()}
 
       {imageUrl && <ImageViewer url={imageUrl} onClose={() => setImageUrl(null)} />}
-    </>
+    </TooltipLayer>
   );
 }
 
@@ -1580,7 +1638,11 @@ function ProductCard({
   if (cols.fornecedor && principal) metaParts.push({ key: "forn", node: principal.nome });
 
   return (
-    <li
+    // `role="listitem"` num <div> e não um <li>: a lista virtualizada precisa
+    // envolver cada card num elemento posicionado, e <li> dentro de <li> é HTML
+    // inválido. A semântica de lista fica preservada para o leitor de tela.
+    <div
+      role="listitem"
       className={cn(
         "flex items-start gap-3 rounded-[var(--radius)] border border-line bg-surface",
         big ? "p-3.5" : "items-center p-2.5",
@@ -1589,8 +1651,14 @@ function ProductCard({
       )}
     >
       <Check checked={selected} onChange={onToggle} label={`Selecionar ${p.nome}`} />
-      <button type="button" onClick={onOpen} className={cn("flex min-w-0 flex-1 gap-3 text-left", big ? "items-start" : "items-center")}>
-        <Thumb url={p.imagemUrl} tipo={p.tipo} onClickImage={onImage} big={big} />
+      {/*
+        A miniatura é irmã do botão que abre a ficha, não filha dele: `Thumb` é
+        um `<button>` (abre a foto em tela cheia) e `<button>` dentro de
+        `<button>` é HTML inválido — o React acusava hydration mismatch e
+        rejogava a lista inteira no cliente a cada carregamento.
+      */}
+      <Thumb url={p.imagemUrl} tipo={p.tipo} onClickImage={onImage} big={big} />
+      <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 gap-3 text-left">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className={cn("truncate font-semibold text-ink", big ? "text-[14px]" : "text-[13px]")}>{p.nome}</span>
@@ -1674,7 +1742,7 @@ function ProductCard({
           {p.ativo ? "Inativar" : "Ativar"}
         </MenuItem>
       </Menu>
-    </li>
+    </div>
   );
 }
 
@@ -1772,12 +1840,13 @@ function Thumb({
         {/*
           `<img>` cru em vez de next/image: a foto pode vir de qualquer host
           (base de EAN, URL colada pelo operador, data: de upload) e o
-          otimizador exige allowlist. O que importava para a rolagem está aqui:
-          carrega só quando aparece e já reserva o espaço.
+          componente estoura quando o host não está na allowlist. `thumbSrc`
+          resolve isso por fora — manda pelo otimizador o que ele aceita (WebP a
+          36px em vez do arquivo cheio) e devolve o resto intacto.
         */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={url}
+          src={thumbSrc(url, big ? 128 : 96)}
           alt=""
           loading="lazy"
           decoding="async"
@@ -1798,6 +1867,177 @@ function Thumb({
   );
 }
 
+// ── Lista de cards (mobile), virtualizada ────────────────────────────────────
+
+/**
+ * A partir de quantos cards vale virtualizar.
+ *
+ * Abaixo disso o DOM inteiro é barato e vale mais manter o comportamento nativo:
+ * o Ctrl+F do navegador só acha o que está renderizado, e virtualizar cedo custa
+ * essa busca sem devolver nada em troca. Acima disso — o "Carregar mais" empilha
+ * página sobre página e a lista não tem teto — o custo se inverte.
+ */
+const LIMIAR_VIRTUAL = 120;
+
+/** Altura estimada de um card compacto; o virtualizador remede cada um ao montar. */
+const ALTURA_CARD = 88;
+
+function ListaCards({
+  rows, giro, cols, info, selected, onToggle, onOpen, onImage, onEdit, onArchive, onBuscarImagem,
+}: {
+  rows: ProductRow[];
+  giro: Record<string, ProdutoGiro>;
+  cols: Record<ColKey, boolean>;
+  info: Record<InfoKey, boolean>;
+  selected: Set<string>;
+  onToggle: (id: string, idx: number, shift: boolean) => void;
+  onOpen: (p: ProductRow) => void;
+  onImage: (url: string) => void;
+  onEdit: (p: ProductRow) => void;
+  onArchive: (p: ProductRow) => void;
+  onBuscarImagem: (p: ProductRow) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [offsetTopo, setOffsetTopo] = useState(0);
+
+  const virtual = rows.length > LIMIAR_VIRTUAL;
+
+  // Quem rola é a janela, não um container: assim o cabeçalho grudado e a
+  // rolagem do resto da página continuam funcionando como antes.
+  const virtualizer = useWindowVirtualizer({
+    count: virtual ? rows.length : 0,
+    estimateSize: () => ALTURA_CARD,
+    overscan: 6,
+    scrollMargin: offsetTopo,
+    getItemKey: (i) => rows[i]?.id ?? i,
+  });
+
+  // `scrollMargin` precisa saber onde a lista começa na página.
+  useEffect(() => {
+    if (!virtual) return;
+    const medir = () => setOffsetTopo(ref.current?.offsetTop ?? 0);
+    medir();
+    window.addEventListener("resize", medir);
+    return () => window.removeEventListener("resize", medir);
+  }, [virtual]);
+
+  const card = (p: ProductRow, idx: number) => (
+    <ProductCard
+      p={p}
+      giro={giro[p.id]}
+      cols={cols}
+      info={info}
+      selected={selected.has(p.id)}
+      onToggle={(shift) => onToggle(p.id, idx, shift)}
+      onOpen={() => onOpen(p)}
+      onImage={p.imagemUrl ? () => onImage(p.imagemUrl!) : undefined}
+      onEdit={() => onEdit(p)}
+      onArchive={() => onArchive(p)}
+      onBuscarImagem={() => onBuscarImagem(p)}
+    />
+  );
+
+  if (!virtual) {
+    return (
+      <div role="list" ref={ref} className="mt-4 space-y-2 md:hidden">
+        {rows.map((p, idx) => (
+          <Fragment key={p.id}>{card(p, idx)}</Fragment>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      role="list"
+      ref={ref}
+      className="relative mt-4 md:hidden"
+      style={{ height: virtualizer.getTotalSize() }}
+    >
+      {virtualizer.getVirtualItems().map((item) => {
+        const p = rows[item.index];
+        if (!p) return null;
+        return (
+          <div
+            key={item.key}
+            ref={virtualizer.measureElement}
+            data-index={item.index}
+            // `space-y` não alcança filho posicionado: o respiro entre os cards
+            // vira padding DENTRO do elemento medido, senão os cards colam.
+            className="absolute inset-x-0 top-0 pb-2"
+            style={{ transform: `translateY(${item.start - virtualizer.options.scrollMargin}px)` }}
+          >
+            {card(p, item.index)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Camada única de tooltip ──────────────────────────────────────────────────
+
+/**
+ * Um estado e um portal para a tabela inteira, em vez de um par por célula.
+ *
+ * Antes cada `BarcodeCell` e cada `StockCell` guardava `show` + `pos` próprios:
+ * a 200 linhas por página isso é ~800 `useState` vivos só para desenhar um
+ * balão de cada vez. Aqui o estado mora no provider; a célula só avisa "abre
+ * isto ancorado em mim".
+ *
+ * Dois detalhes fazem o ganho existir:
+ *
+ * - a API (`mostrar`/`esconder`) é memoizada e nunca muda, então consumir o
+ *   contexto não re-renderiza célula nenhuma;
+ * - `children` chega como prop de quem está FORA do provider, então quando o
+ *   estado muda o React reconhece o mesmo elemento e não reconcilia a tabela.
+ *
+ * O conteúdo entra como função, não como JSX: assim a linha que ninguém está
+ * apontando não paga para montar um balão que não aparece.
+ */
+type TooltipAlvo = { top: number; left: number; render: () => React.ReactNode };
+
+const TooltipCtx = createContext<{
+  mostrar: (el: HTMLElement | null, render: () => React.ReactNode) => void;
+  esconder: () => void;
+}>({ mostrar: () => {}, esconder: () => {} });
+
+function TooltipLayer({ children }: { children: React.ReactNode }) {
+  const [alvo, setAlvo] = useState<TooltipAlvo | null>(null);
+
+  const api = useMemo(
+    () => ({
+      mostrar: (el: HTMLElement | null, render: () => React.ReactNode) => {
+        const r = el?.getBoundingClientRect();
+        if (!r) return;
+        setAlvo({ top: r.top + window.scrollY, left: r.left + window.scrollX, render });
+      },
+      esconder: () => setAlvo(null),
+    }),
+    [],
+  );
+
+  return (
+    <TooltipCtx.Provider value={api}>
+      {children}
+      {alvo &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed z-100 min-w-50 max-w-70 rounded-lg border border-line bg-surface p-2.5 shadow-lg"
+            style={{ top: alvo.top - 8, left: alvo.left, transform: "translateY(-100%)" }}
+            onMouseLeave={api.esconder}
+          >
+            {alvo.render()}
+          </div>,
+          document.body,
+        )}
+    </TooltipCtx.Provider>
+  );
+}
+
+const useTooltip = () => useContext(TooltipCtx);
+
 // ── Célula de códigos de barra com tooltip portal ────────────────────────────
 
 function BarcodeCell({
@@ -1808,9 +2048,8 @@ function BarcodeCell({
   packagings: ProductPackagingItem[];
   showSku?: boolean;
 }) {
-  const [show, setShow] = useState(false);
-  const [pos, setPos] = useState({ top: 0, left: 0 });
   const ref = useRef<HTMLDivElement>(null);
+  const tip = useTooltip();
 
   const codes = [
     ean ? { label: "Unid.", code: ean } : null,
@@ -1824,9 +2063,21 @@ function BarcodeCell({
 
   function handleEnter() {
     if (!hasCodes) return;
-    const rect = ref.current?.getBoundingClientRect();
-    if (rect) setPos({ top: rect.top + window.scrollY, left: rect.left + window.scrollX });
-    setShow(true);
+    tip.mostrar(ref.current, () => (
+      <>
+        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
+          <Barcode size={11} /> Códigos de barra
+        </div>
+        <div className="space-y-1">
+          {codes.map((item) => (
+            <div key={item.code} className="flex items-center gap-3 text-[11px]">
+              <span className="w-20 shrink-0 text-faint">{item.label}</span>
+              <span className="font-mono text-ink">{item.code}</span>
+            </div>
+          ))}
+        </div>
+      </>
+    ));
   }
 
   return (
@@ -1835,7 +2086,7 @@ function BarcodeCell({
         ref={ref}
         className={cn("mt-0.5 flex items-center gap-3", hasCodes && "cursor-help")}
         onMouseEnter={handleEnter}
-        onMouseLeave={() => setShow(false)}
+        onMouseLeave={tip.esconder}
       >
         {showSku && (
           <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-2">
@@ -1851,27 +2102,6 @@ function BarcodeCell({
         )}
       </div>
 
-      {show && hasCodes && typeof document !== "undefined" && createPortal(
-        <div
-          className="fixed z-[100] min-w-[200px] rounded-lg border border-line bg-surface p-2.5 shadow-lg"
-          style={{ top: pos.top - 8, left: pos.left, transform: "translateY(-100%)" }}
-          onMouseEnter={() => setShow(true)}
-          onMouseLeave={() => setShow(false)}
-        >
-          <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
-            <Barcode size={11} /> Códigos de barra
-          </div>
-          <div className="space-y-1">
-            {codes.map((item) => (
-              <div key={item.code} className="flex items-center gap-3 text-[11px]">
-                <span className="w-20 shrink-0 text-faint">{item.label}</span>
-                <span className="font-mono text-ink">{item.code}</span>
-              </div>
-            ))}
-          </div>
-        </div>,
-        document.body,
-      )}
     </>
   );
 }
@@ -1899,7 +2129,7 @@ function ImageViewer({ url, onClose }: { url: string; onClose: () => void }) {
       <div className="absolute inset-0 bg-ink/85 backdrop-blur-sm" aria-hidden />
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={url}
+        src={thumbSrc(url, 1080)}
         alt=""
         className="relative max-h-full max-w-full rounded-[var(--radius-lg)] object-contain shadow-2xl"
         onClick={(e) => e.stopPropagation()}
@@ -1918,9 +2148,8 @@ function ImageViewer({ url, onClose }: { url: string; onClose: () => void }) {
 // ── Célula de estoque (número inline + medidor + tooltip por loja) ────────────
 
 function StockCell({ p, level }: { p: ProductRow; level: "ok" | "warn" | "danger" }) {
-  const [show, setShow] = useState(false);
-  const [pos, setPos] = useState({ top: 0, left: 0 });
   const ref = useRef<HTMLDivElement>(null);
+  const tip = useTooltip();
 
   const qty = stockQty(p);
   const semControle = qty === null;
@@ -1951,9 +2180,28 @@ function StockCell({ p, level }: { p: ProductRow; level: "ok" | "warn" | "danger
 
   function handleEnter() {
     if (!hasDetail) return;
-    const rect = ref.current?.getBoundingClientRect();
-    if (rect) setPos({ top: rect.top + window.scrollY, left: rect.left + window.scrollX });
-    setShow(true);
+    tip.mostrar(ref.current, () => (
+      <>
+        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">Estoque por loja</p>
+        <ul className="space-y-2">
+          {lojas.map((l, i) => (
+            <li key={i} className="text-[12px] leading-snug">
+              <span className="font-semibold text-ink-2">{l.siteNome}</span>
+              <p className="text-muted">
+                <span className="font-mono font-medium text-ink tnum">{l.fechado}</span> un.
+                {/* aberto é o ml/g restante da garrafa em uso, não uma contagem — só existe 1 aberta por vez. */}
+                {l.aberto > 0 && (
+                  <>
+                    {" "}e{" "}
+                    <span className="font-mono font-medium text-ink tnum">1</span> aberta
+                  </>
+                )}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </>
+    ));
   }
 
   if (semControle) {
@@ -1967,7 +2215,7 @@ function StockCell({ p, level }: { p: ProductRow; level: "ok" | "warn" | "danger
         ref={ref}
         className={cn("inline-flex flex-col gap-1", hasDetail && "cursor-help")}
         onMouseEnter={handleEnter}
-        onMouseLeave={() => setShow(false)}
+        onMouseLeave={tip.esconder}
       >
         <span className={cn("inline-flex items-center gap-1.5 text-[12px] font-medium", STOCK_TEXT[level])}>
           <span className={cn("h-2 w-2 shrink-0 rounded-full", STOCK_COLOR[level])} />
@@ -1992,34 +2240,6 @@ function StockCell({ p, level }: { p: ProductRow; level: "ok" | "warn" | "danger
         </span>
       </div>
 
-      {show && hasDetail && typeof document !== "undefined" && createPortal(
-        <div
-          className="fixed z-[100] min-w-50 max-w-70 rounded-lg border border-line bg-surface p-2.5 shadow-lg"
-          style={{ top: pos.top - 8, left: pos.left, transform: "translateY(-100%)" }}
-          onMouseEnter={() => setShow(true)}
-          onMouseLeave={() => setShow(false)}
-        >
-          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">Estoque por loja</p>
-          <ul className="space-y-2">
-            {lojas.map((l, i) => (
-              <li key={i} className="text-[12px] leading-snug">
-                <span className="font-semibold text-ink-2">{l.siteNome}</span>
-                <p className="text-muted">
-                  <span className="font-mono font-medium text-ink tnum">{l.fechado}</span> un.
-                  {/* aberto é o ml/g restante da garrafa em uso, não uma contagem — só existe 1 aberta por vez. */}
-                  {l.aberto > 0 && (
-                    <>
-                      {" "}e{" "}
-                      <span className="font-mono font-medium text-ink tnum">1</span> aberta
-                    </>
-                  )}
-                </p>
-              </li>
-            ))}
-          </ul>
-        </div>,
-        document.body,
-      )}
     </>
   );
 }

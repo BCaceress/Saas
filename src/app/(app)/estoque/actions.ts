@@ -8,6 +8,7 @@ import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { loadComprasFormOptions, loadInventarioFormOptions, loadInventariosConcluidos } from "./_data";
+import { invalidarOpcoesFiltro } from "../produtos/_query";
 import {
   registrarEntrada,
   registrarAjuste,
@@ -71,6 +72,17 @@ async function txpDepois<T>(
 
 const ok = () => revalidatePath("/estoque", "layout");
 
+/**
+ * Loja mexida. Além do estoque, a lista de lojas alimenta o filtro de
+ * /produtos, que é cacheado por tenant — sem isto a loja nova só apareceria lá
+ * quando o revalidate vencesse.
+ */
+const okSite = (tid: string) => {
+  ok();
+  revalidatePath("/produtos", "layout");
+  invalidarOpcoesFiltro(tid);
+};
+
 // ── Sites ────────────────────────────────────────────────────
 
 const siteSchema = z.object({
@@ -109,13 +121,13 @@ export async function createSite(input: z.input<typeof siteSchema>) {
         controleIdade: d.tipo === "LOJA" && d.controleIdade,
       },
     });
-    ok();
+    okSite(tid);
     return site.id;
   });
 }
 
 export async function updateSite(id: string, input: z.input<typeof siteSchema>) {
-  return txp("config.gerenciar", null, async () => {
+  return txp("config.gerenciar", null, async (tid) => {
     const d = siteSchema.parse(input);
     const nome = d.nome.trim();
     const dup = await db.site.findFirst({ where: { nome: { equals: nome, mode: "insensitive" }, id: { not: id } } });
@@ -135,14 +147,14 @@ export async function updateSite(id: string, input: z.input<typeof siteSchema>) 
         controleIdade: d.tipo === "LOJA" && d.controleIdade,
       },
     });
-    ok();
+    okSite(tid);
   });
 }
 
 export async function toggleSiteAtivo(id: string, ativo: boolean) {
-  return txp("config.gerenciar", null, async () => {
+  return txp("config.gerenciar", null, async (tid) => {
     await db.site.update({ where: { id }, data: { ativo } });
-    ok();
+    okSite(tid);
   });
 }
 

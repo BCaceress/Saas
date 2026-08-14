@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { thumbSrc } from "@/lib/imagem";
 import { TipoIcone } from "@/components/app/produto-tipo";
 
 /** Cartão de seção do formulário — cabeçalho mono + corpo em coluna. */
@@ -73,8 +74,16 @@ export function Thumb({
 }) {
   const dim = size === 9 ? "h-9 w-9" : "h-10 w-10";
   if (url) {
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={url} alt="" className={cn(dim, "shrink-0 rounded-[var(--radius-sm)] border border-line object-cover")} />;
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={thumbSrc(url, 96)}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        className={cn(dim, "shrink-0 rounded-[var(--radius-sm)] border border-line object-cover")}
+      />
+    );
   }
   return (
     <span

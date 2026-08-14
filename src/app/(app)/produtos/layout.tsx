@@ -1,5 +1,4 @@
 import { requirePermissao } from "@/lib/guard";
-import { runWithTenant } from "@/lib/tenant-context";
 import { carregarOpcoesFiltro } from "./_query";
 import { OpcoesProvider } from "./_opcoes";
 
@@ -9,10 +8,13 @@ import { OpcoesProvider } from "./_opcoes";
  * As opções dos filtros são carregadas aqui de propósito — layout não
  * re-renderiza a cada mudança de query string, então a listagem filtra sem
  * repetir as consultas de categoria/marca/loja/etiqueta.
+ *
+ * Sem `runWithTenant` em volta: a consulta é cacheada e abre o próprio contexto
+ * a partir do tenantId que recebe (ver `carregarOpcoesFiltro`).
  */
 export default async function ProdutosLayout({ children }: { children: React.ReactNode }) {
   const ctx = await requirePermissao("produto.editar");
-  const opcoes = await runWithTenant(ctx.tenant.id, () => carregarOpcoesFiltro());
+  const opcoes = await carregarOpcoesFiltro(ctx.tenant.id);
 
   return <OpcoesProvider valor={opcoes}>{children}</OpcoesProvider>;
 }

@@ -19,6 +19,7 @@ import {
   type ProductInsights,
   type GerenciarExtras,
 } from "./_data";
+import { invalidarOpcoesFiltro } from "./_query";
 import type { ProductRow } from "./_types";
 import type { StorageType } from "@/generated/prisma";
 
@@ -42,6 +43,18 @@ const okStorage = () => {
   revalidatePath("/produtos");
   revalidatePath("/configuracoes/sites");
   revalidatePath("/estoque");
+};
+
+/**
+ * Como `ok()`, mas também derruba o cache das opções de filtro.
+ *
+ * Separado de propósito: salvar produto é a escrita mais comum da tela e não
+ * mexe em categoria/marca/etiqueta. Se `ok()` invalidasse tudo, o cache viveria
+ * segundos e não serviria para nada.
+ */
+const okOpcoes = (tid: string) => {
+  ok();
+  invalidarOpcoesFiltro(tid);
 };
 
 // ── Busca global (navbar) ──────────────────────────────────
@@ -95,13 +108,13 @@ export async function createBrand(nomeRaw: string) {
       return { id: existing.id, nome: existing.nome, jaExistia: true };
     }
     const brand = await db.brand.create({ data: { tenantId: tid, nome, nomeNormalizado } });
-    ok();
+    okOpcoes(tid);
     return { id: brand.id, nome: brand.nome, jaExistia: false };
   });
 }
 
 export async function updateBrand(input: { id: string; nome: string }) {
-  return tx(async () => {
+  return tx(async (tid) => {
     const nome = input.nome.trim();
     if (nome.length < 2) throw new Error("Informe o nome da marca.");
     const nomeNormalizado = normalizeBrand(nome);
@@ -110,7 +123,7 @@ export async function updateBrand(input: { id: string; nome: string }) {
     });
     if (dup) throw new Error(`Já existe a marca «${dup.nome}».`);
     await db.brand.update({ where: { id: input.id }, data: { nome, nomeNormalizado } });
-    ok();
+    okOpcoes(tid);
   });
 }
 
@@ -159,7 +172,7 @@ export async function createCategory(nomeRaw: string) {
     }
     const skuPrefix = await uniqueCategoryPrefix(nome);
     const cat = await db.category.create({ data: { tenantId: tid, nome, skuPrefix } });
-    ok();
+    okOpcoes(tid);
     return { id: cat.id, nome: cat.nome, jaExistia: false };
   });
 }
@@ -189,13 +202,13 @@ export async function createSubcategory(input: {
         defaultFiscalProfileId: input.defaultFiscalProfileId ?? null,
       },
     });
-    ok();
+    okOpcoes(tid);
     return sub.id;
   });
 }
 
 export async function updateSubcategory(input: { id: string; nome: string }) {
-  return tx(async () => {
+  return tx(async (tid) => {
     const nome = input.nome.trim();
     if (nome.length < 2) throw new Error("Informe o nome da subcategoria.");
     const atual = await db.subcategory.findFirst({ where: { id: input.id } });
@@ -209,14 +222,14 @@ export async function updateSubcategory(input: { id: string; nome: string }) {
     });
     if (dup) throw new Error(`Já existe a subcategoria «${dup.nome}» nesta categoria.`);
     await db.subcategory.update({ where: { id: input.id }, data: { nome } });
-    ok();
+    okOpcoes(tid);
   });
 }
 
 export async function setSubcategoryActive(id: string, ativo: boolean) {
-  return tx(async () => {
+  return tx(async (tid) => {
     await db.subcategory.update({ where: { id }, data: { ativo } });
-    ok();
+    okOpcoes(tid);
   });
 }
 
@@ -548,6 +561,9 @@ async function resolveBrandId(tid: string, brandId?: string | null, marcaNome?: 
   const existing = await db.brand.findFirst({ where: { nomeNormalizado } });
   if (existing) return existing.id;
   const created = await db.brand.create({ data: { tenantId: tid, nome, nomeNormalizado } });
+  // Marca nascida de dentro do cadastro de produto conta igual: entra na lista
+  // do filtro. Invalidar aqui cobre todos os chamadores de uma vez.
+  invalidarOpcoesFiltro(tid);
   return created.id;
 }
 
@@ -946,6 +962,7 @@ export async function bulkEditProducts(input: BulkEditInput): Promise<BulkEditRe
         // digitar uma palavra.
         if (!tag && d.etiquetas.modo !== "remover") {
           tag = await db.tag.create({ data: { tenantId: tid, nome }, select: { id: true } });
+          invalidarOpcoesFiltro(tid);
         }
         if (tag) tagIds.push(tag.id);
       }
@@ -1104,7 +1121,10 @@ async function attachTags(tid: string, productId: string, tags: string[]) {
     const nome = raw.trim();
     if (!nome) continue;
     let tag = await db.tag.findFirst({ where: { nome } });
-    if (!tag) tag = await db.tag.create({ data: { tenantId: tid, nome } });
+    if (!tag) {
+      tag = await db.tag.create({ data: { tenantId: tid, nome } });
+      invalidarOpcoesFiltro(tid);
+    }
     await db.productTag
       .create({ data: { tenantId: tid, productId, tagId: tag.id } })
       .catch(() => {});

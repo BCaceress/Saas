@@ -1575,6 +1575,10 @@ model Sale {
   @@index([totemDeviceId])
   @@index([status])
   @@index([createdAt])
+  // O giro junta Sale por status='PAGA' e recorta por paidAt. Os índices soltos
+  // de status e createdAt não servem: um não filtra data, o outro é da coluna
+  // errada (createdAt ≠ paidAt).
+  @@index([tenantId, status, paidAt])
 }
 
 // Terminal físico de autoatendimento. Registrado pelo quiosque no primeiro
@@ -1614,6 +1618,10 @@ model SaleItem {
   @@index([tenantId])
   @@index([saleId])
   @@index([productId])
+  // Giro da listagem de /produtos: "quanto este produto vendeu" filtra por
+  // tenant + produto. Só ([productId]) obriga a reler linha a linha para
+  // conferir o tenant.
+  @@index([tenantId, productId])
 }
 
 model Payment {

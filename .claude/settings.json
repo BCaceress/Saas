@@ -58,7 +58,8 @@
       "Bash(node -e \"const s=require\\('fs'\\).statSync\\('.next/dev/types/routes.d.ts'\\);console.log\\('routes.d.ts bytes',s.size, s.mtime\\)\")",
       "Bash(node -e \"console.log\\(require\\('fs'\\).readFileSync\\('.next/dev/types/routes.d.ts','utf8'\\).split\\('\\\\n'\\).length,'lines'\\)\")",
       "Bash(powershell -NoProfile -Command \"Stop-Process -Id 19576 -Force; Start-Sleep -Seconds 2; 'killed'\")",
-      "Bash(rm -rf .next)"
+      "Bash(rm -rf .next)",
+      "Bash(cd /d/Saas; cp \".next/dev/logs/next-development.log\" /tmp/log-antes.txt 2>/dev/null; wc -l < /tmp/log-antes.txt; npx tsc --noEmit -p tsconfig.json 2>&1 | grep -v \"relatorios-central\\\\|Property 'consulta'\"; echo \"--- tsc ok ---\"; npx eslint \"src/app/\\(app\\)/produtos/_client.tsx\" 2>&1 | tail -5; echo \"--- lint ok ---\")"
     ],
     "additionalDirectories": [
       "\\tmp"

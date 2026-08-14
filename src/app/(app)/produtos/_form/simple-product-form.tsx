@@ -43,6 +43,7 @@ import {
   parseMoney,
 } from "@/lib/utils";
 import { onlyDigits } from "@/lib/normalize";
+import { arquivoParaThumb } from "@/lib/imagem";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
@@ -1134,7 +1135,7 @@ export function SimpleProductForm({
     }
   }
 
-  function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
+  async function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
@@ -1146,11 +1147,11 @@ export function SimpleProductForm({
       toast.error("Imagem muito grande", "Escolha uma imagem de até 2 MB.");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => setImagemUrl(String(reader.result));
-    reader.onerror = () =>
-      toast.error("Erro ao ler imagem", "Não foi possível abrir o arquivo.");
-    reader.readAsDataURL(file);
+    try {
+      setImagemUrl(await arquivoParaThumb(file));
+    } catch (err) {
+      toast.error("Erro ao ler imagem", err instanceof Error ? err.message : "Tente outro arquivo.");
+    }
   }
 
   /** Lê "330ml", "1L", "500g", "1kg" do nome — poupa uma digitação. */

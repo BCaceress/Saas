@@ -10,6 +10,7 @@ import { getOrCreateDefaultSite } from "@/lib/sites";
 import { generateSku } from "@/lib/sku";
 import { parseBool, parseEan, parseNumero, parseUnidade, type CsvRow } from "./_sheets/csv-campos";
 import { createCategory, createSubcategory } from "./actions";
+import { invalidarOpcoesFiltro } from "./_query";
 
 export type ImportOptions = {
   /** Cria a subcategoria (e a categoria) que não existir, em vez de recusar a linha. */
@@ -381,6 +382,10 @@ export async function commitImport(
 
     revalidatePath("/produtos");
     revalidatePath("/estoque");
+    // Uma importação costuma criar marca e categoria pelo caminho. Invalidar uma
+    // vez no fim, e não por linha: o resultado é o mesmo e o arquivo pode ter
+    // milhares delas.
+    invalidarOpcoesFiltro(tid);
     return result;
   });
 }

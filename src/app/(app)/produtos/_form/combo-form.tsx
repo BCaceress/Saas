@@ -16,6 +16,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { cn, brl, margem, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
+import { arquivoParaThumb } from "@/lib/imagem";
 import { derive, type DeriveComponent } from "@/lib/derive";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -142,7 +143,7 @@ export function ComboForm({
     setItems((prev) => prev.filter((i) => i.componentProductId !== id));
   }
 
-  function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
+  async function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
@@ -154,11 +155,11 @@ export function ComboForm({
       toast.error("Imagem muito grande", "Escolha uma imagem de até 2 MB.");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => setImagemUrl(String(reader.result));
-    reader.onerror = () =>
-      toast.error("Erro ao ler imagem", "Não foi possível abrir o arquivo.");
-    reader.readAsDataURL(file);
+    try {
+      setImagemUrl(await arquivoParaThumb(file));
+    } catch (err) {
+      toast.error("Erro ao ler imagem", err instanceof Error ? err.message : "Tente outro arquivo.");
+    }
   }
 
   function salvar() {
