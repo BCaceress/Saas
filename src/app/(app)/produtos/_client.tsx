@@ -43,6 +43,11 @@ import {
   salvarVisao, selecionarIdsDoFiltro, setPrecoVenda,
 } from "./list-actions";
 import { consultaParaParams, contarFiltros, soFiltro, STATUS_PADRAO } from "./_url";
+import {
+  COL_LABEL, COL_ORDER, DEFAULT_COLS, DEFAULT_INFO, INFO_LABEL, INFO_ORDER,
+  type ColKey, type Density, type InfoKey,
+} from "./_colunas";
+import { CardsSkeleton } from "./_skeleton";
 import { useOpcoes } from "./_opcoes";
 import { baixarXlsx } from "./_export";
 import {
@@ -129,31 +134,6 @@ function AbertaBadge({ size = 16 }: { size?: number }) {
     </span>
   );
 }
-
-// ── Colunas configuráveis ────────────────────────────────────────────────────
-type ColKey =
-  | "marca" | "tipo" | "categoria" | "local" | "margem" | "fornecedor" | "estoque"
-  | "vendas" | "parado";
-const COL_ORDER: ColKey[] = [
-  "marca", "tipo", "categoria", "local", "margem", "fornecedor", "estoque", "vendas", "parado",
-];
-const COL_LABEL: Record<ColKey, string> = {
-  marca: "Marca", tipo: "Tipo", categoria: "Categoria", local: "Local de estoque",
-  margem: "Margem", fornecedor: "Fornecedor", estoque: "Estoque",
-  vendas: "Vendas 30d", parado: "Parado há",
-};
-const DEFAULT_COLS: Record<ColKey, boolean> = {
-  marca: false, tipo: true, categoria: true, local: false,
-  margem: true, fornecedor: true, estoque: true, vendas: false, parado: false,
-};
-/** compact = tabela · denso = tabela sem foto e sem respiro · cozy = grade de cards. */
-type Density = "cozy" | "compact" | "denso";
-
-// ── Informativos (badges auxiliares, independentes de coluna) ───────────────
-type InfoKey = "restricao" | "sku";
-const INFO_ORDER: InfoKey[] = ["restricao", "sku"];
-const INFO_LABEL: Record<InfoKey, string> = { restricao: "Restrição +18", sku: "SKU" };
-const DEFAULT_INFO: Record<InfoKey, boolean> = { restricao: true, sku: true };
 
 const FLAG_LABEL: Record<keyof ProdutoFlags, string> = {
   semPreco: "Sem preço", semImagem: "Sem imagem", semEan: "Sem código de barras",
@@ -936,25 +916,12 @@ export function ProdutosClient(props: {
         )}
 
         <div className="relative">
-        {/* Enquanto a próxima página não chega, linhas-fantasma na altura certa.
-            `loading.tsx` só cobre a entrada na rota — trocar filtro é a mesma
-            rota, e sem isto a tela só ficava pálida. */}
-        {carregando && total > 0 && (
-          <div className="absolute inset-x-0 top-4 z-20 rounded-[var(--radius-lg)] bg-surface/85 p-2 backdrop-blur-[1px]">
-            <div className="animate-pulse space-y-2" aria-hidden>
-              {Array.from({ length: Math.min(rows.length || 8, 12) }).map((_, i) => (
-                <div key={i} className="flex items-center gap-3 px-2">
-                  {!denso && <div className="h-9 w-9 shrink-0 rounded-[var(--radius-sm)] bg-surface-2" />}
-                  <div className="h-3 flex-1 rounded-full bg-surface-2" />
-                  <div className="h-3 w-16 rounded-full bg-surface-2" />
-                  <div className="h-3 w-12 rounded-full bg-surface-2" />
-                </div>
-              ))}
-            </div>
-            <span className="sr-only" role="status">Carregando produtos…</span>
-          </div>
-        )}
-        <div className={cn("transition-opacity", carregando && "pointer-events-none opacity-40")}>
+        {/* Trocar filtro NÃO limpa a tabela: as linhas atuais seguem legíveis a
+            70% com um sweep discreto por cima, e voltam a 100% em 150ms quando
+            a nova consulta chega. Cobrir tudo com linhas-fantasma fazia a tela
+            piscar duas vezes a cada tecla. */}
+        {carregando && <span className="sr-only" role="status">Carregando produtos…</span>}
+        <div className={cn("relative", carregando && "sk-stale pointer-events-none")}>
         {!temProdutos ? (
           <EmptyState onNew={() => novo("simples")} onCsv={() => setSheet("csv")} />
         ) : total === 0 ? (
@@ -962,7 +929,13 @@ export function ProdutosClient(props: {
         ) : cozy ? (
           <>
             {/* ── Cards (densidade confortável — todas as telas) ── */}
-            <div role="list" className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div
+              role="list"
+              className={cn(
+                "mt-4 grid grid-cols-1 gap-3 transition-opacity duration-150 ease-out sm:grid-cols-2 xl:grid-cols-3",
+                carregando && "opacity-70",
+              )}
+            >
               {rows.map((p, idx) => (
                 <ProductCard
                   key={p.id}
@@ -1014,7 +987,14 @@ export function ProdutosClient(props: {
                     <th className="w-10 px-3 py-2.5" />
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-line">
+                {/* Só o corpo esmaece: o cabeçalho das colunas é informação boa
+                    e continua nítido enquanto a nova consulta não chega. */}
+                <tbody
+                  className={cn(
+                    "divide-y divide-line transition-opacity duration-150 ease-out",
+                    carregando && "opacity-70",
+                  )}
+                >
                   {rows.map((p, idx) => {
                     const level = stockLevel(p);
                     const principal = principalFornecedor(p);
@@ -1201,6 +1181,7 @@ export function ProdutosClient(props: {
             {/* ── Cards (mobile — densidade compacta) ── */}
             <ListaCards
               rows={rowsMobile}
+              atenuado={carregando}
               giro={giroMobile}
               cols={cols}
               info={info}
@@ -1213,17 +1194,19 @@ export function ProdutosClient(props: {
               onBuscarImagem={(p) => abrirImagens([p])}
             />
 
-            {temMais && (
+            {/* Rolagem infinita: as linhas já carregadas ficam onde estão; só as
+                novas entram como esqueleto, no lugar exato onde vão aparecer. */}
+            {carregandoMais && (
+              <CardsSkeleton
+                linhas={Math.min(4, Math.max(1, total - inicio - rowsMobile.length))}
+                className="sk-fade-in mt-2 md:hidden"
+              />
+            )}
+
+            {temMais && !carregandoMais && (
               <div className="mt-3 md:hidden">
-                <Button
-                  variant="ghost"
-                  className="w-full"
-                  onClick={carregarMais}
-                  disabled={carregandoMais}
-                >
-                  {carregandoMais
-                    ? "Carregando…"
-                    : `Carregar mais ${Math.min(consulta.porPagina, total - inicio - rowsMobile.length)}`}
+                <Button variant="ghost" className="w-full" onClick={carregarMais}>
+                  {`Carregar mais ${Math.min(consulta.porPagina, total - inicio - rowsMobile.length)}`}
                 </Button>
               </div>
             )}
@@ -1883,10 +1866,12 @@ const LIMIAR_VIRTUAL = 120;
 const ALTURA_CARD = 88;
 
 function ListaCards({
-  rows, giro, cols, info, selected, onToggle, onOpen, onImage, onEdit, onArchive, onBuscarImagem,
+  rows, giro, cols, info, selected, atenuado, onToggle, onOpen, onImage, onEdit, onArchive, onBuscarImagem,
 }: {
   rows: ProductRow[];
   giro: Record<string, ProdutoGiro>;
+  /** Consulta nova em voo: os cards atuais ficam a 70% em vez de sumir. */
+  atenuado?: boolean;
   cols: Record<ColKey, boolean>;
   info: Record<InfoKey, boolean>;
   selected: Set<string>;
@@ -1937,9 +1922,11 @@ function ListaCards({
     />
   );
 
+  const atenuacao = cn("transition-opacity duration-150 ease-out", atenuado && "opacity-70");
+
   if (!virtual) {
     return (
-      <div role="list" ref={ref} className="mt-4 space-y-2 md:hidden">
+      <div role="list" ref={ref} className={cn("mt-4 space-y-2 md:hidden", atenuacao)}>
         {rows.map((p, idx) => (
           <Fragment key={p.id}>{card(p, idx)}</Fragment>
         ))}
@@ -1951,7 +1938,7 @@ function ListaCards({
     <div
       role="list"
       ref={ref}
-      className="relative mt-4 md:hidden"
+      className={cn("relative mt-4 md:hidden", atenuacao)}
       style={{ height: virtualizer.getTotalSize() }}
     >
       {virtualizer.getVirtualItems().map((item) => {
