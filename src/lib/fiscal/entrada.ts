@@ -1,7 +1,14 @@
 import "server-only";
 import { db } from "@/lib/prisma";
 import { registrarEntrada, type EntradaItem } from "@/lib/estoque";
-import { parseNotaXml, extrairXmls, XmlInvalidoError, type NotaXml } from "./nfe-xml";
+import {
+  parseNotaXml,
+  extrairXmls,
+  XmlInvalidoError,
+  type ItemNotaXml,
+  type NotaXml,
+} from "./nfe-xml";
+import { fatorDaNota } from "./fator";
 import type { FiscalInboundStatus } from "@/generated/prisma";
 
 // ============================================================
@@ -29,13 +36,14 @@ export type ResultadoImportacao = {
 
 /**
  * Custo real da mercadoria: o que entra no estoque não é só `vProd`.
- * ICMS-ST, IPI e frete são pagos ao fornecedor e fazem parte do custo; ignorá-los
- * dá margem falsamente alta na venda. Bonificação entra com custo zero.
+ * ICMS-ST, FCP-ST, IPI e frete são pagos ao fornecedor e fazem parte do custo;
+ * ignorá-los dá margem falsamente alta na venda. Bonificação entra com custo zero.
  */
 function custoDoItem(i: {
   valorTotal: number;
   valorDesconto: number;
   valorIcmsSt: number;
+  valorFcpSt: number;
   valorIpi: number;
   valorFrete: number;
   bonificacao: boolean;
@@ -43,7 +51,7 @@ function custoDoItem(i: {
   if (i.bonificacao) return 0;
   return Math.max(
     0,
-    i.valorTotal - i.valorDesconto + i.valorIcmsSt + i.valorIpi + i.valorFrete,
+    i.valorTotal - i.valorDesconto + i.valorIcmsSt + i.valorFcpSt + i.valorIpi + i.valorFrete,
   );
 }
 
@@ -101,14 +109,18 @@ type ItemResolvido = {
 /**
  * Tenta resolver um item do XML no catálogo, em ordem de confiança:
  *   1. de-para salvo para este fornecedor (o operador já decidiu antes);
- *   2. GTIN do item = EAN de um produto;
- *   3. GTIN = EAN de uma embalagem (fardo/caixa) — traz o fator junto.
+ *   2. GTIN = EAN de uma embalagem (fardo/caixa) — traz o fator do cadastro;
+ *   3. GTIN do item = EAN de um produto.
  * Sem match, fica null e a nota nasce PENDENTE.
+ *
+ * O fator, quando não vem de um cadastro nosso, vem da própria nota
+ * (`qTrib/qCom`). Sem isso, uma nota de distribuidor com 5 CX de long neck
+ * entraria como 5 garrafas em vez de 120 — e o de-para que o operador salvasse
+ * em cima disso repetiria o erro em toda nota seguinte.
  */
-async function resolverItem(
-  supplierId: string,
-  item: { codigoFornecedor: string; gtin: string | null },
-): Promise<ItemResolvido> {
+async function resolverItem(supplierId: string, item: ItemNotaXml): Promise<ItemResolvido> {
+  const daNota = fatorDaNota(item) ?? 1;
+
   const mapeado = await db.supplierItemMap.findFirst({
     where: { supplierId, codigoFornecedor: item.codigoFornecedor },
     select: { productId: true, packagingId: true, fatorConversao: true },
@@ -122,12 +134,8 @@ async function resolverItem(
   }
 
   if (item.gtin) {
-    const produto = await db.product.findFirst({
-      where: { ean: item.gtin, ativo: true },
-      select: { id: true },
-    });
-    if (produto) return { productId: produto.id, packagingId: null, fatorConversao: 1 };
-
+    // Embalagem antes de produto: o GTIN de um fardo cadastrado responde a
+    // pergunta "quantas unidades vêm aqui" melhor do que a nota.
     const embalagem = await db.productPackaging.findFirst({
       where: { ean: item.gtin },
       select: { id: true, productId: true, fatorConversao: true },
@@ -139,9 +147,16 @@ async function resolverItem(
         fatorConversao: Number(embalagem.fatorConversao),
       };
     }
+
+    const produto = await db.product.findFirst({
+      where: { ean: item.gtin, ativo: true },
+      select: { id: true },
+    });
+    // EAN de unidade numa linha vendida em caixa: quem desempata é o qTrib.
+    if (produto) return { productId: produto.id, packagingId: null, fatorConversao: daNota };
   }
 
-  return { productId: null, packagingId: null, fatorConversao: 1 };
+  return { productId: null, packagingId: null, fatorConversao: daNota };
 }
 
 /** PENDENTE enquanto houver item sem produto; CONCILIADO quando todos têm. */
@@ -255,10 +270,13 @@ async function importarUmXml(input: {
           cfop: item.cfop,
           unidade: item.unidade,
           quantidade: item.quantidade,
+          unidadeTributavel: item.unidadeTributavel,
+          quantidadeTributavel: item.quantidadeTributavel,
           valorUnitario: item.valorUnitario,
           valorTotal: item.valorTotal,
           valorDesconto: item.valorDesconto,
           valorIcmsSt: item.valorIcmsSt,
+          valorFcpSt: item.valorFcpSt,
           valorIpi: item.valorIpi,
           valorFrete: item.valorFrete,
           bonificacao: item.bonificacao,
@@ -385,6 +403,7 @@ export async function gerarEntradaDaNota(input: {
           valorTotal: true,
           valorDesconto: true,
           valorIcmsSt: true,
+          valorFcpSt: true,
           valorIpi: true,
           valorFrete: true,
           bonificacao: true,
@@ -417,6 +436,7 @@ export async function gerarEntradaDaNota(input: {
       valorTotal: Number(i.valorTotal),
       valorDesconto: Number(i.valorDesconto),
       valorIcmsSt: Number(i.valorIcmsSt),
+      valorFcpSt: Number(i.valorFcpSt),
       valorIpi: Number(i.valorIpi),
       valorFrete: Number(i.valorFrete),
       bonificacao: i.bonificacao,

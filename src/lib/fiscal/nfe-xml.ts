@@ -21,12 +21,20 @@ export type ItemNotaXml = {
   descricao: string;
   ncm: string | null;
   cfop: string | null;
+  /** uCom — unidade em que o fornecedor VENDE (caixa, fardo, display). */
   unidade: string;
+  /** qCom — quantidade na unidade de venda. */
   quantidade: number;
+  /** uTrib — unidade tributável. Costuma ser a unidade que vai pra prateleira. */
+  unidadeTributavel: string | null;
+  /** qTrib — quantidade na unidade tributável. */
+  quantidadeTributavel: number | null;
   valorUnitario: number;
   valorTotal: number;
   valorDesconto: number;
   valorIcmsSt: number;
+  /** FCP retido por ST (vFCPST). Pago ao fornecedor: é custo, como o ICMS-ST. */
+  valorFcpSt: number;
   valorIpi: number;
   valorFrete: number;
   /** CFOP de bonificação/brinde/amostra: entra no estoque com custo zero. */
@@ -107,6 +115,7 @@ function gtinValido(v: unknown): string | null {
   return [8, 12, 13, 14].includes(d.length) ? d : null;
 }
 
+
 export function parseNotaXml(xml: string): NotaXml {
   let raiz: Qualquer;
   try {
@@ -150,9 +159,14 @@ export function parseNotaXml(xml: string): NotaXml {
     // ICMS-ST e IPI podem estar em qualquer variação do grupo (ICMS10, ICMS60,
     // IPITrib…). Varremos os filhos em vez de adivinhar a combinação.
     let valorIcmsSt = 0;
+    let valorFcpSt = 0;
     for (const grupo of Object.values((imposto.ICMS ?? {}) as Qualquer)) {
       const g = grupo as Qualquer;
       valorIcmsSt += num(g?.vICMSST);
+      // vFCPST é cobrado nesta nota. vFCPSTRet e vFCP já estão embutidos no
+      // preço que o fornecedor pagou antes — somá-los contaria o mesmo custo
+      // duas vezes, pelo mesmo motivo que ignoramos vICMSSTRet.
+      valorFcpSt += num(g?.vFCPST);
     }
     let valorIpi = 0;
     for (const grupo of Object.values((imposto.IPI ?? {}) as Qualquer)) {
@@ -172,10 +186,13 @@ export function parseNotaXml(xml: string): NotaXml {
       cfop,
       unidade: String(prod.uCom ?? "UN").trim().toUpperCase(),
       quantidade: num(prod.qCom),
+      unidadeTributavel: str(prod.uTrib)?.toUpperCase() ?? null,
+      quantidadeTributavel: prod.qTrib == null ? null : num(prod.qTrib),
       valorUnitario: num(prod.vUnCom),
       valorTotal: num(prod.vProd),
       valorDesconto: num(prod.vDesc),
       valorIcmsSt,
+      valorFcpSt,
       valorIpi,
       valorFrete: num(prod.vFrete) + num(prod.vOutro),
       bonificacao: cfop ? CFOP_SEM_CUSTO.has(cfop) : false,

@@ -20,6 +20,7 @@ import { Sheet, Modal } from "@/components/ui/sheet";
 import { Badge, Field } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
 import { maskCnpj } from "@/lib/masks";
+import { fatorDaNota } from "@/lib/fiscal/fator";
 import { cn } from "@/lib/utils";
 import { fmtMoney, fmtQtd, relDia } from "../../compras/_ui";
 import {
@@ -47,10 +48,13 @@ export type ItemNota = {
   cfop: string | null;
   unidade: string;
   quantidade: number;
+  unidadeTributavel: string | null;
+  quantidadeTributavel: number | null;
   valorUnitario: number;
   valorTotal: number;
   valorDesconto: number;
   valorIcmsSt: number;
+  valorFcpSt: number;
   valorIpi: number;
   valorFrete: number;
   bonificacao: boolean;
@@ -88,9 +92,22 @@ const STATUS_UI: Record<Status, { label: string; tone: "warn" | "brand" | "ok" |
 };
 
 /** Custo real do item: mercadoria + ST + IPI + frete − desconto. */
+/**
+ * Fator salvo × fator que a nota declara. Divergência é erro de estoque
+ * esperando acontecer: ou o fornecedor mudou o fardo, ou o de-para nasceu
+ * errado. Quem decide é o operador — a tela só não deixa passar calado.
+ */
+function fatorDivergente(i: ItemNota): number | null {
+  const daNota = fatorDaNota(i);
+  return daNota != null && daNota !== i.fatorConversao ? daNota : null;
+}
+
 function custoItem(i: ItemNota): number {
   if (i.bonificacao) return 0;
-  return Math.max(0, i.valorTotal - i.valorDesconto + i.valorIcmsSt + i.valorIpi + i.valorFrete);
+  return Math.max(
+    0,
+    i.valorTotal - i.valorDesconto + i.valorIcmsSt + i.valorFcpSt + i.valorIpi + i.valorFrete,
+  );
 }
 
 export function NotasRecebidasClient({
@@ -687,6 +704,11 @@ function DetalheNota({
                           = {fmtQtd(i.quantidade * i.fatorConversao)} un
                         </span>
                       )}
+                      {fatorDivergente(i) && (
+                        <span className="block text-[11px] text-warn">
+                          nota: {fmtQtd(i.quantidadeTributavel ?? 0)} {i.unidadeTributavel}
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
                       {i.bonificacao ? (
@@ -791,10 +813,15 @@ function RelacionarItem({
     }
   }
 
+  /** O que a nota declara em qTrib/qCom — usado como padrão e como aviso. */
+  const sugerido = fatorDaNota(item);
+
   function escolher(p: ProdutoOpt) {
     setEscolhido(p);
     setPackagingId("");
-    setFator("1");
+    // Voltar para 1 aqui era o que fazia a caixa de long neck entrar como 5
+    // garrafas: o operador escolhia o produto e perdia o fator da nota.
+    setFator(String(sugerido ?? 1));
   }
 
   function salvar() {
@@ -897,7 +924,13 @@ function RelacionarItem({
             <Field
               label="Unidades por item da nota"
               htmlFor="fator"
-              hint={`A nota traz ${fmtQtd(item.quantidade)} ${item.unidade}.`}
+              hint={
+                sugerido
+                  ? `A nota traz ${fmtQtd(item.quantidade)} ${item.unidade} e tributa ${fmtQtd(
+                      item.quantidadeTributavel ?? 0,
+                    )} ${item.unidadeTributavel} — ${fmtQtd(sugerido)} por ${item.unidade}.`
+                  : `A nota traz ${fmtQtd(item.quantidade)} ${item.unidade}.`
+              }
             >
               <Input
                 id="fator"
@@ -906,6 +939,15 @@ function RelacionarItem({
                 inputMode="decimal"
                 className="font-mono"
               />
+              {sugerido != null && (Number(fator.replace(",", ".")) || 0) !== sugerido && (
+                <button
+                  type="button"
+                  onClick={() => setFator(String(sugerido))}
+                  className="mt-1 text-xs font-medium text-brand underline"
+                >
+                  Usar {fmtQtd(sugerido)}, como o fornecedor declarou
+                </button>
+              )}
             </Field>
             <p className="text-sm text-muted sm:col-span-2">
               Entra no estoque:{" "}
