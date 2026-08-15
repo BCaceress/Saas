@@ -7,6 +7,9 @@ import {
 /**
  * Seleção em lote fora do estado do React.
  *
+ * Compartilhado por /produtos e /estoque — as duas listagens têm o mesmo
+ * problema (centenas de linhas caras) e a mesma solução.
+ *
  * Guardar `Set<string>` num `useState` da listagem custava caro: marcar UMA
  * caixa re-renderizava a página inteira — 200 linhas, cada uma com menu,
  * célula de preço, medidor de estoque e tooltip. O clique ficava com um atraso

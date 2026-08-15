@@ -1,5 +1,6 @@
 import { Search, ChevronsUpDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SkBarra } from "@/components/app/skeletons";
 import {
   COL_LABEL, COL_ORDER, COL_TH_CLASS, DEFAULT_COLS,
   type ColKey, type Density,
@@ -20,10 +21,8 @@ import {
  * só as linhas (troca de filtro e "carregar mais").
  */
 
-/** Bloco cinza com shimmer. `rounded-full` por padrão — é o formato das barras. */
-export function SkBarra({ className }: { className?: string }) {
-  return <div className={cn("sk-shimmer rounded-full", className)} aria-hidden />;
-}
+/** Bloco cinza com shimmer — definição única em `components/app/skeletons`. */
+export { SkBarra };
 
 // ── Linhas da tabela (md+) ───────────────────────────────────────────────────
 

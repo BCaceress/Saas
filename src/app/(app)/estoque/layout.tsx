@@ -1,8 +1,7 @@
-import Link from "next/link";
-import { redirect } from "next/navigation";
 import { withTenant } from "@/lib/current-tenant";
 import { requirePermissao } from "@/lib/guard";
 import { listSites, getActiveSiteId } from "@/lib/sites";
+import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { EstoqueHeader } from "./_header";
 
 export default async function EstoqueLayout({ children }: { children: React.ReactNode }) {
@@ -22,6 +21,7 @@ export default async function EstoqueLayout({ children }: { children: React.Reac
         multiSite={multiSite}
         topologia={ctx.tenant.topologia ?? "LOCAL"}
         empresa={ctx.tenant.nome}
+        policy={policyDoTenant(ctx.tenant)}
       />
       {children}
     </div>

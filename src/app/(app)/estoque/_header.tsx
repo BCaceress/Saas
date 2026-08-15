@@ -21,6 +21,8 @@ import {
   loadComprasFormOptionsAction,
 } from "./actions";
 import { cn } from "@/lib/utils";
+import type { EstoquePolicy } from "@/lib/estoque-estrategia";
+import { EstrategiaChip } from "./_estrategia-chip";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import { Sheet } from "@/components/ui/sheet";
@@ -167,12 +169,15 @@ export function EstoqueHeader({
   multiSite,
   topologia,
   empresa,
+  policy,
 }: {
   sites: SiteRow[];
   activeSiteId: string | null;
   multiSite: boolean;
   topologia: string;
   empresa: string;
+  /** Estratégia de controle da empresa — contexto do chip "Medindo por". */
+  policy: EstoquePolicy;
 }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -222,6 +227,11 @@ export function EstoqueHeader({
           className="pb-3"
           actions={
             <>
+          {/* Opção B — régua ativa como contexto da tela, ao lado da loja.
+              Só na lista de saldos: nas outras rotas de Estoque a régua não
+              muda nada do que está na tela. */}
+          {pathname === "/estoque" && <EstrategiaChip policy={policy} variant="chip" className="mr-1" />}
+
           {/* Movimentações, Validade e Inventários saíram daqui: viraram itens
               da gaveta "Estoque" no menu lateral. O cabeçalho fica só com o
               que é ação (criar movimentação) e contexto (loja ativa). */}

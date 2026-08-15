@@ -12,6 +12,15 @@ export function Sk({ className }: { className?: string }) {
 }
 
 /**
+ * Bloco com brilho próprio (`.sk-shimmer`, 1.4s) — não depende do
+ * `animate-pulse` do wrapper. É o que as listagens (produtos, estoque) usam nas
+ * linhas de placeholder. `rounded-full` por padrão: é o formato das barras.
+ */
+export function SkBarra({ className }: { className?: string }) {
+  return <div className={cn("sk-shimmer rounded-full", className)} aria-hidden />;
+}
+
+/**
  * Cabeçalho de página — espelha o PageHeader real: banda com border-b,
  * tile de ícone brand-soft, título + descrição, ações em pill à direita.
  */

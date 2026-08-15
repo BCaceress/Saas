@@ -35,6 +35,8 @@ export type SaldoRow = {
   consumoJanela: number;
   /** Tamanho da janela usada em `consumoJanela`. */
   janelaDias: number;
+  /** Cadastro do produto (ISO) — proxy do histórico disponível p/ a média de giro. */
+  criadoEm: string;
   ultimaMovTipo: string | null; // tipo da última movimentação
   ultimaMovEm: string | null;   // ISO
   ultimaCompraEm: string | null;
@@ -49,7 +51,11 @@ export type SaldoRow = {
   locationNome: string | null;
   locationTipo: "AMBIENTE" | "REFRIGERADO" | "CONGELADO" | null;
   temFornecedor: boolean;
+  /** Nome da subcategoria — o que a lista mostra ao lado do SKU. */
   categoria: string | null;
+  subcategoriaId: string | null;
+  categoriaId: string | null;
+  categoriaNome: string | null;
   marca: string | null;
   fornecedorNome: string | null;
   /** Todos os fornecedores vinculados ao produto (principal primeiro) — hint da coluna Fornecedor. */
@@ -80,27 +86,20 @@ export type MovimentacaoRow = {
   createdAt: Date;
 };
 
-export type ReposicaoRow = {
-  productId: string;
-  sku: string;
-  nome: string;
-  estoqueFechado: number;
-  estoqueMinimo: number;
-  estoqueIdeal: number;
-  deficit: number;
-  supplierNome: string | null;
-  supplierId: string | null;
-};
-
 // ── Saldos ──────────────────────────────────────────────────
 
 export async function loadSaldos(
   siteId: string | null,
   policy: EstoquePolicy = POLICY_PADRAO,
 ): Promise<SaldoRow[]> {
-  // Produtos com controlaEstoque=false (ex.: insumo sem meta) também entram —
-  // aparecem na lista como informativo (qtd comprada), sem status/meta (§ EstoqueCell).
-  const where = { ...(siteId ? { siteId } : {}) };
+  // A lista é a operação do estoque: só entra o que se controla e ainda está em
+  // linha. Produto inativo (arquivado) e produto marcado como
+  // `controlaEstoque=false` não têm saldo a gerir — apareciam como informativo
+  // e só engordavam contagem, filtro e exportação.
+  const where = {
+    ...(siteId ? { siteId } : {}),
+    product: { is: { ativo: true, controlaEstoque: true } },
+  };
   const stocks = await db.stock.findMany({
     where,
     include: {
@@ -108,9 +107,9 @@ export async function loadSaldos(
         select: {
           id: true, sku: true, ean: true, nome: true, tipo: true, unidadeBase: true,
           fracionavel: true, conteudoPorUnidade: true, custoMedio: true, controlaEstoque: true,
-          precoVenda: true, custo: true, imagemUrl: true,
+          precoVenda: true, custo: true, imagemUrl: true, createdAt: true,
           brand: { select: { nome: true } },
-          subcategory: { select: { nome: true } },
+          subcategory: { select: { id: true, nome: true, category: { select: { id: true, nome: true } } } },
           suppliers: {
             select: { isPrincipal: true, supplier: { select: { razaoSocial: true, nomeFantasia: true } } },
             orderBy: { isPrincipal: "desc" },
@@ -294,6 +293,7 @@ export async function loadSaldos(
       consumo30: consumoMap.get(s.productId)?.d30 ?? 0,
       consumoJanela: consumoMap.get(s.productId)?.janela ?? 0,
       janelaDias,
+      criadoEm: s.product.createdAt.toISOString(),
       ultimaMovTipo: lastMap.get(s.productId)?.tipo ?? null,
       ultimaMovEm: lastMap.get(s.productId)?.at.toISOString() ?? null,
       ultimaCompraEm: lastCompra.get(s.productId)?.toISOString() ?? null,
@@ -308,6 +308,9 @@ export async function loadSaldos(
       locationTipo: s.location?.tipo ?? null,
       temFornecedor: s.product.suppliers.length > 0,
       categoria: s.product.subcategory?.nome ?? null,
+      subcategoriaId: s.product.subcategory?.id ?? null,
+      categoriaId: s.product.subcategory?.category.id ?? null,
+      categoriaNome: s.product.subcategory?.category.nome ?? null,
       marca: s.product.brand?.nome ?? null,
       fornecedorNome: s.product.suppliers[0]
         ? (s.product.suppliers[0].supplier.nomeFantasia ?? s.product.suppliers[0].supplier.razaoSocial)
@@ -443,7 +446,8 @@ export async function contarNiveisEstoque(
   policy: EstoquePolicy = POLICY_PADRAO,
 ): Promise<{ sem: number; baixo: number }> {
   const stocks = await db.stock.findMany({
-    where: { ...(siteId ? { siteId } : {}), product: { is: { controlaEstoque: true } } },
+    // Mesmo recorte da lista de saldos: só o que se controla e está ativo.
+    where: { ...(siteId ? { siteId } : {}), product: { is: { ativo: true, controlaEstoque: true } } },
     select: { estoqueFechado: true, estoqueMinimo: true },
   });
   let sem = 0, baixo = 0;
@@ -1144,47 +1148,9 @@ export async function loadEntradaFormOptions() {
   return { products, sites };
 }
 
-// ── Reposição ─────────────────────────────────────────────────
-
-export async function loadReposicao(siteId: string | null): Promise<ReposicaoRow[]> {
-  const stocks = await db.stock.findMany({
-    where: {
-      ...(siteId ? { siteId } : {}),
-      product: { controlaEstoque: true },
-    },
-    include: {
-      product: {
-        select: {
-          id: true,
-          nome: true,
-          sku: true,
-          suppliers: {
-            where: { isPrincipal: true },
-            include: { supplier: { select: { id: true, razaoSocial: true, nomeFantasia: true } } },
-          },
-        },
-      },
-    },
-  });
-
-  return stocks
-    .filter((s) => Number(s.estoqueFechado) < Number(s.estoqueMinimo))
-    .map((s) => {
-      const sup = s.product.suppliers[0]?.supplier;
-      return {
-        productId: s.productId,
-        sku: s.product.sku,
-        nome: s.product.nome,
-        estoqueFechado: n(s.estoqueFechado),
-        estoqueMinimo: n(s.estoqueMinimo),
-        estoqueIdeal: n(s.estoqueIdeal),
-        deficit: n(s.estoqueIdeal) - n(s.estoqueFechado),
-        supplierNome: sup ? (sup.nomeFantasia ?? sup.razaoSocial) : null,
-        supplierId: sup?.id ?? null,
-      };
-    })
-    .sort((a, b) => (b.deficit - a.deficit));
-}
+// A reposição (sugestão de quanto comprar) vive só em
+// /compras/reposicao-inteligente, que calcula pelo `alvoReposicao` da
+// estratégia ativa. Não recriar aqui uma versão com mínimo/ideal cravado.
 
 // ── Produtos personalizados para produção ─────────────────────
 

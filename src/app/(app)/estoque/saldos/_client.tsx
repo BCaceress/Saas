@@ -2,6 +2,8 @@
 
 import {
   createContext,
+  Fragment,
+  useCallback,
   useContext,
   useMemo,
   useState,
@@ -45,14 +47,20 @@ import {
   X,
   ShoppingCart,
   Copy,
-  Check,
+  Check as CheckIcon,
+  ChevronUp,
+  FileSpreadsheet,
   Lightbulb,
+  Rows2,
+  Rows3,
   Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
+  APRENDIZADO_DIAS,
   MSG_APRENDIZADO,
   POLICY_PADRAO,
+  estaAprendendo,
   fmtCobertura,
   mediaDiaria,
   necessidadeGiro,
@@ -60,11 +68,17 @@ import {
   type EstoquePolicy,
 } from "@/lib/estoque-estrategia";
 import { toast } from "@/components/ui/toast";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { Input, Select } from "@/components/ui/input";
 import { NovaEntradaForm, type Item } from "../entradas/nova/_client";
 import { AdicionarCompraSheet } from "./_comprar";
+import { FILTRO_LABEL, FILTRO_TOM, filtroValido, filtrosDaPolicy, type Filtro } from "../_filtros";
+import { baixarXlsx } from "@/lib/baixar-xlsx";
+import {
+  SelecaoProvider, useNovaSelecao, useQtdDaPagina, useQtdSelecionada, useSelecao, useSelecionado,
+} from "@/components/app/selecao";
 import { PEDIDO_STATUS } from "../../compras/_ui";
 import type { SaldoRow, LocalArmazenagemRow } from "../_data";
 import {
@@ -175,7 +189,6 @@ function fmtMovData(iso: string): string {
   return `${rotulo} • ${hora}`;
 }
 
-export type Filtro = "todos" | "sem" | "baixoMinimo" | "repor" | "quaseIdeal" | "baixaCobertura" | "aberto";
 type SortKey = "nome" | "fechado" | "valor";
 type SortDir = "asc" | "desc";
 type FormOptions = Pick<ComponentProps<typeof NovaEntradaForm>, "products" | "sites">;
@@ -198,6 +211,7 @@ type Status =
   | "semControle"
   | "coberturaCritica"
   | "coberturaAtencao"
+  | "aprendendo"
   | "semGiro";
 
 /** Contexto da estratégia — evita passar policy por dez níveis de componente. */
@@ -205,6 +219,9 @@ const PolicyCtx = createContext<EstoquePolicy>(POLICY_PADRAO);
 const usePolicy = () => useContext(PolicyCtx);
 
 /** Produto marcado para não controlar estoque — some do funil de meta/urgência, só informa qtd comprada. */
+// A consulta já exclui produto inativo e produto sem controle de estoque
+// (loadSaldos). O tratamento segue aqui como rede: se um Stock chegar por outro
+// caminho, ele informa em vez de entrar no funil de meta/urgência.
 const semControle = (s: SaldoRow) => !s.controlaEstoque;
 
 function statusOf(s: SaldoRow, policy: EstoquePolicy): Status {
@@ -214,8 +231,12 @@ function statusOf(s: SaldoRow, policy: EstoquePolicy): Status {
 
   if (policy.usaGiro) {
     const cob = diasCobertura(s, policy);
-    if (cob == null) return "semGiro";
     const nivel = nivelCobertura(cob, policy.diasCobertura);
+    // Histórico curto demais: a média ainda não descreve o produto — informa em
+    // vez de alarmar. Exceção: cobertura crítica passa assim mesmo (ruptura
+    // iminente é ruptura, mesmo estimada por poucos dias de venda).
+    if (aprendendo(s, policy) && nivel !== "muito-baixo") return "aprendendo";
+    if (cob == null) return "semGiro";
     if (nivel === "muito-baixo") return "coberturaCritica";
     if (nivel === "atencao") return "coberturaAtencao";
     return "abastecido";
@@ -240,12 +261,17 @@ const STATUS_META: Record<Status, { label: string; text: string; dot: string; ba
   semControle: { label: "Sem controle",     text: "text-faint",  dot: "bg-faint",  bar: "bg-faint",  Icon: Package },
   coberturaCritica: { label: "Cobertura crítica", text: "text-danger", dot: "bg-danger", bar: "bg-danger", Icon: AlertTriangle },
   coberturaAtencao: { label: "Cobertura em atenção", text: "text-brand", dot: "bg-brand", bar: "bg-brand", Icon: AlertTriangle },
+  aprendendo:  { label: "Aprendendo",       text: "text-faint",  dot: "bg-faint",  bar: "bg-faint",  Icon: Lightbulb },
   semGiro:     { label: "Sem giro",         text: "text-faint",  dot: "bg-faint",  bar: "bg-faint",  Icon: PackageX },
 };
 
+// Todo filtro de situação deriva do status — e o status já respeita a
+// estratégia. Assim nenhuma contagem usa uma régua que a empresa não usa, e as
+// faixas ficam exclusivas entre si (zerado conta só em "Sem estoque", nunca
+// também em "Abaixo do mínimo").
 const semEstoque = (s: SaldoRow, policy: EstoquePolicy) => statusOf(s, policy) === "semEstoque";
-const abaixoMin = (s: SaldoRow) => !semControle(s) && s.estoqueMinimo > 0 && s.estoqueFechado < s.estoqueMinimo;
-const precisaRepor = (s: SaldoRow) => !semControle(s) && s.estoqueIdeal > 0 && s.estoqueFechado < s.estoqueIdeal;
+const abaixoMin = (s: SaldoRow, policy: EstoquePolicy) => statusOf(s, policy) === "baixoMinimo";
+const precisaRepor = (s: SaldoRow, policy: EstoquePolicy) => statusOf(s, policy) === "baixoIdeal";
 const valorEstoque = (s: SaldoRow) => s.estoqueFechado * (s.custoMedio ?? 0);
 const disponivel = (s: SaldoRow) => s.estoqueFechado - s.estoqueAberto;
 const temEstoqueAberto = (s: SaldoRow) => s.estoqueAberto > 0;
@@ -270,6 +296,16 @@ function diasCobertura(s: SaldoRow, policy: EstoquePolicy): number | null {
   return Math.max(0, Math.round(s.estoqueFechado / m));
 }
 
+/** Dias desde o cadastro — proxy do histórico de venda disponível para a média. */
+function diasHistorico(s: SaldoRow): number {
+  return Math.max(0, Math.floor((Date.now() - new Date(s.criadoEm).getTime()) / 864e5));
+}
+
+/** Produto novo demais para a média de giro dizer alguma coisa (≠ "sem giro"). */
+function aprendendo(s: SaldoRow, policy: EstoquePolicy): boolean {
+  return estaAprendendo(policy, diasHistorico(s));
+}
+
 /** Linha em vermelho: abaixo do mínimo ou cobertura crítica, conforme a estratégia. */
 function critico(s: SaldoRow, policy: EstoquePolicy): boolean {
   const st = statusOf(s, policy);
@@ -278,10 +314,10 @@ function critico(s: SaldoRow, policy: EstoquePolicy): boolean {
 
 /** Cobertura abaixo da desejada — o "precisa repor" do modo rotatividade. */
 function baixaCobertura(s: SaldoRow, policy: EstoquePolicy): boolean {
-  if (semControle(s) || !policy.usaGiro) return false;
-  const cob = diasCobertura(s, policy);
-  const nivel = nivelCobertura(cob, policy.diasCobertura);
-  return nivel === "muito-baixo" || nivel === "atencao";
+  // Deriva do status para herdar a regra do "aprendendo" — alarmar por uma
+  // média de três dias seria ruído, não sinal.
+  const st = statusOf(s, policy);
+  return st === "coberturaCritica" || st === "coberturaAtencao";
 }
 
 /**
@@ -314,58 +350,82 @@ const PRIORITY: Record<Status, number> = {
   coberturaAtencao: 2,
   semMeta: 3,
   semGiro: 3,
+  aprendendo: 3,
   abastecido: 4,
   semControle: 5,
 };
 
-/* CSV: separador ";" e decimal com vírgula (Excel pt-BR). As colunas de meta
-   seguem a estratégia — quem controla por giro exporta média e cobertura. */
-function toCsv(rows: SaldoRow[], policy: EstoquePolicy): string {
-  const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
-  const num = (n: number) => n.toLocaleString("pt-BR", { maximumFractionDigits: 3, useGrouping: false });
-  const head = [
-    "Produto", "Tipo", "SKU", "Codigo de barras", "Categoria", "Marca", "Fornecedor",
-    "Fechado", "Aberto", "Disponivel",
-    ...(policy.usaMinimo ? ["Minimo"] : []),
-    ...(policy.usaIdeal ? ["Ideal"] : []),
-    ...(policy.usaGiro ? ["Media diaria", "Cobertura (dias)", "Cobertura desejada"] : []),
-    "Custo medio", "Valor em estoque", "Local",
+// ── Exportação (CSV e planilha) ───────────────────────────────
+// Um catálogo de colunas só, nos dois formatos: planilha que não bate com o CSV
+// é planilha que ninguém confere. As colunas de meta seguem a estratégia —
+// quem controla por giro exporta média e cobertura, não mínimo/ideal.
+
+type ColunaExport = { titulo: string; valor: (s: SaldoRow) => string | number | null };
+
+function colunasExport(policy: EstoquePolicy): ColunaExport[] {
+  return [
+    { titulo: "Produto", valor: (s) => s.nome },
+    { titulo: "Tipo", valor: (s) => TIPO_LABEL[s.tipo] ?? s.tipo },
+    { titulo: "SKU", valor: (s) => s.sku },
+    { titulo: "Codigo de barras", valor: (s) => s.ean ?? "" },
+    { titulo: "Categoria", valor: (s) => s.categoriaNome ?? "" },
+    { titulo: "Subcategoria", valor: (s) => s.categoria ?? "" },
+    { titulo: "Marca", valor: (s) => s.marca ?? "" },
+    { titulo: "Fornecedor", valor: (s) => s.fornecedorNome ?? "" },
+    { titulo: "Fechado", valor: (s) => s.estoqueFechado },
+    { titulo: "Aberto", valor: (s) => s.estoqueAberto },
+    { titulo: "Disponivel", valor: (s) => disponivel(s) },
+    ...(policy.usaMinimo ? [{ titulo: "Minimo", valor: (s: SaldoRow) => s.estoqueMinimo }] : []),
+    ...(policy.usaIdeal ? [{ titulo: "Ideal", valor: (s: SaldoRow) => s.estoqueIdeal }] : []),
+    ...(policy.usaGiro
+      ? [
+          { titulo: "Media diaria", valor: (s: SaldoRow) => mediaDia(s, policy) },
+          { titulo: "Cobertura (dias)", valor: (s: SaldoRow) => diasCobertura(s, policy) },
+          { titulo: "Cobertura desejada", valor: () => policy.diasCobertura },
+        ]
+      : []),
+    { titulo: "Custo medio", valor: (s) => s.custoMedio ?? 0 },
+    { titulo: "Valor em estoque", valor: (s) => valorEstoque(s) },
+    { titulo: "Local", valor: (s) => s.locationNome ?? "" },
   ];
-  const body = rows.map((s) => {
-    const cob = diasCobertura(s, policy);
-    return [
-      esc(s.nome),
-      esc(TIPO_LABEL[s.tipo] ?? s.tipo),
-      esc(s.sku),
-      esc(s.ean ?? ""),
-      esc(s.categoria ?? ""),
-      esc(s.marca ?? ""),
-      esc(s.fornecedorNome ?? ""),
-      num(s.estoqueFechado),
-      num(s.estoqueAberto),
-      num(disponivel(s)),
-      ...(policy.usaMinimo ? [num(s.estoqueMinimo)] : []),
-      ...(policy.usaIdeal ? [num(s.estoqueIdeal)] : []),
-      ...(policy.usaGiro
-        ? [num(mediaDia(s, policy)), cob != null ? num(cob) : "", num(policy.diasCobertura)]
-        : []),
-      num(s.custoMedio ?? 0),
-      num(valorEstoque(s)),
-      esc(s.locationNome ?? ""),
-    ].join(";");
-  });
-  return [head.join(";"), ...body].join("\r\n");
 }
 
-function baixarCsv(rows: SaldoRow[], policy: EstoquePolicy) {
-  const csv = "﻿" + toCsv(rows, policy);
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
+const nomeArquivoExport = (ext: string) => `saldos-${new Date().toISOString().slice(0, 10)}.${ext}`;
+
+function baixarArquivo(conteudo: BlobPart, tipo: string, nome: string) {
+  const url = URL.createObjectURL(new Blob([conteudo], { type: tipo }));
   const a = document.createElement("a");
   a.href = url;
-  a.download = `saldos-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = nome;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/** CSV com separador ";" e decimal com vírgula — o que o Excel pt-BR abre direto. */
+function baixarCsv(rows: SaldoRow[], policy: EstoquePolicy) {
+  const colunas = colunasExport(policy);
+  const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
+  const cel = (v: string | number | null) =>
+    v == null ? "" : typeof v === "number"
+      ? v.toLocaleString("pt-BR", { maximumFractionDigits: 3, useGrouping: false })
+      : esc(v);
+  const linhas = [
+    colunas.map((c) => c.titulo).join(";"),
+    ...rows.map((s) => colunas.map((c) => cel(c.valor(s))).join(";")),
+  ];
+  // BOM: sem ele o Excel abre o arquivo em ANSI e come os acentos.
+  baixarArquivo("﻿" + linhas.join("\r\n"), "text/csv;charset=utf-8", nomeArquivoExport("csv"));
+}
+
+/** Planilha: número vai como número, para o operador somar sem converter nada. */
+function baixarPlanilha(rows: SaldoRow[], policy: EstoquePolicy) {
+  const colunas = colunasExport(policy);
+  baixarXlsx({
+    nomeArquivo: nomeArquivoExport("xlsx"),
+    aba: "Saldos",
+    cabecalho: colunas.map((c) => c.titulo),
+    linhas: rows.map((s) => colunas.map((c) => c.valor(s))),
+  });
 }
 
 // ── Colunas configuráveis (persistidas no navegador, não na URL) ─────────────
@@ -375,6 +435,9 @@ const COL_LABEL: Record<ColKey, string> = {
   local: "Local", fornecedor: "Fornecedor", aberto: "Aberto (consumo/drinks)", pedido: "Pedido",
 };
 const DEFAULT_COLS: Record<ColKey, boolean> = { local: true, fornecedor: true, aberto: true, pedido: true };
+
+/** Densidade da tabela — "denso" é a versão simples, sem miniatura. */
+type Density = "denso" | "compact";
 
 function readLS<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -411,16 +474,23 @@ export function SaldosView({
 }) {
   const router = useRouter();
   const [q, setQ] = useState(initialQ);
-  const [filtro, setFiltro] = useState<Filtro>(initialFiltro);
+  const [filtroState, setFiltro] = useState<Filtro>(initialFiltro);
+  // A estratégia pode mudar sob os pés (troca em outra aba + refresh): filtro
+  // que deixou de existir na régua nova vira "todos" em vez de lista vazia.
+  const filtro = filtroValido(filtroState, policy);
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
   const [entradaItems, setEntradaItems] = useState<Item[] | null>(null);
   const [entradaLoading, setEntradaLoading] = useState(false);
   // Compra manual — o operador escolhe produtos e o sistema só registra.
   const [comprarIds, setComprarIds] = useState<string[] | null>(null);
-  const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
+  // Seleção fora do React (mesma loja de /produtos): marcar uma caixa numa
+  // página de 100 linhas re-renderiza a caixa, não a tabela.
+  const selecao = useNovaSelecao();
   const [detalhe, setDetalhe] = useState<{ row: SaldoRow; tab: Tab } | null>(null);
   const [page, setPage] = useState(initialPage);
-  const [pageSize, setPageSize] = useState(25);
+  // 50 por página: a conferência de estoque é varredura, não leitura de uma
+  // linha — rolar pesa menos que paginar de 25 em 25.
+  const [pageSize, setPageSize] = useState(50);
 
   // Opções do form de reposição: carregadas sob demanda (1ª vez) e cacheadas —
   // evita puxar todos os produtos/fornecedores no carregamento da página.
@@ -442,18 +512,28 @@ export function SaldosView({
   const [cols, setCols] = useState<Record<ColKey, boolean>>(() => readLS("estoque:cols", DEFAULT_COLS));
   useEffect(() => { try { localStorage.setItem("estoque:cols", JSON.stringify(cols)); } catch {} }, [cols]);
 
+  // Densidade: "Densa" tira a miniatura e aperta a linha — quem confere estoque
+  // pelo nome/SKU vê o dobro de produtos sem rolar.
+  const [density, setDensity] = useState<Density>(() => readLS("estoque:ui", { density: "compact" as Density }).density);
+  useEffect(() => { try { localStorage.setItem("estoque:ui", JSON.stringify({ density })); } catch {} }, [density]);
+  const denso = density === "denso";
+  const cellPad = denso ? "py-1" : "py-2";
+
+  // Uma passada, um statusOf por produto — as contagens não podem divergir do
+  // que a linha mostra.
   const counts = useMemo(() => {
     let sem = 0, baixoMinimo = 0, repor = 0, quaseIdealN = 0, cobertura = 0, aberto = 0, semlocal = 0, pendencias = 0, comEstoque = 0, semMeta = 0;
     for (const s of saldos) {
-      if (!semEstoque(s, policy)) comEstoque++; else sem++;
-      if (abaixoMin(s)) baixoMinimo++;
-      if (precisaRepor(s)) repor++;
+      const st = statusOf(s, policy);
+      if (st === "semEstoque") sem++; else comEstoque++;
+      if (st === "baixoMinimo") baixoMinimo++;
+      if (st === "baixoIdeal") repor++;
+      if (st === "coberturaCritica" || st === "coberturaAtencao") cobertura++;
+      if (st === "semMeta") semMeta++;
       if (quaseIdeal(s, policy)) quaseIdealN++;
-      if (baixaCobertura(s, policy)) cobertura++;
       if (temEstoqueAberto(s)) aberto++;
       if (!s.locationNome) semlocal++;
       if (dataGaps(s).length > 0) pendencias++;
-      if (statusOf(s, policy) === "semMeta") semMeta++;
     }
     return { todos: saldos.length, sem, baixoMinimo, repor, quaseIdeal: quaseIdealN, baixaCobertura: cobertura, aberto, semlocal, pendencias, comEstoque, semMeta };
   }, [saldos, policy]);
@@ -467,10 +547,29 @@ export function SaldosView({
   const [avFornecedor, setAvFornecedor] = useState("");
   const [avLocal, setAvLocal] = useState("");
 
-  const categorias = useMemo(
-    () => [...new Set(saldos.map((s) => s.categoria).filter((v): v is string => !!v))].sort(),
-    [saldos],
-  );
+  // Categoria/subcategoria como em /produtos: a categoria é uma opção que filtra
+  // tudo dela, com as subcategorias indentadas logo abaixo. A árvore sai dos
+  // próprios saldos — nenhuma consulta extra.
+  const arvoreCategorias = useMemo(() => {
+    const cats = new Map<string, { id: string; nome: string; subs: Map<string, string> }>();
+    for (const s of saldos) {
+      if (!s.categoriaId || !s.categoriaNome) continue;
+      let c = cats.get(s.categoriaId);
+      if (!c) {
+        c = { id: s.categoriaId, nome: s.categoriaNome, subs: new Map() };
+        cats.set(s.categoriaId, c);
+      }
+      if (s.subcategoriaId && s.categoria) c.subs.set(s.subcategoriaId, s.categoria);
+    }
+    return [...cats.values()]
+      .sort((a, b) => a.nome.localeCompare(b.nome))
+      .map((c) => ({
+        ...c,
+        subs: [...c.subs.entries()]
+          .map(([id, nome]) => ({ id, nome }))
+          .sort((a, b) => a.nome.localeCompare(b.nome)),
+      }));
+  }, [saldos]);
   const fornecedores = useMemo(
     () => [...new Set(saldos.map((s) => s.fornecedorNome).filter((v): v is string => !!v))].sort(),
     [saldos],
@@ -499,8 +598,8 @@ export function SaldosView({
     const out = saldos.filter((s) => {
       switch (filtro) {
         case "sem":            if (!semEstoque(s, policy)) return false; break;
-        case "baixoMinimo":    if (!abaixoMin(s)) return false; break;
-        case "repor":          if (!precisaRepor(s)) return false; break;
+        case "baixoMinimo":    if (!abaixoMin(s, policy)) return false; break;
+        case "repor":          if (!precisaRepor(s, policy)) return false; break;
         case "quaseIdeal":     if (!quaseIdeal(s, policy)) return false; break;
         case "baixaCobertura": if (!baixaCobertura(s, policy)) return false; break;
         case "aberto":         if (!temEstoqueAberto(s)) return false; break;
@@ -509,7 +608,12 @@ export function SaldosView({
       if (avSemLocal && s.locationNome) return false;
       if (avSemMeta && statusOf(s, policy) !== "semMeta") return false;
       if (avPendenciaCadastro && dataGaps(s).length === 0) return false;
-      if (avCategoria && s.categoria !== avCategoria) return false;
+      // "cat:<id>" pega a categoria inteira; qualquer outro valor é subcategoria.
+      if (avCategoria) {
+        if (avCategoria.startsWith("cat:")) {
+          if (s.categoriaId !== avCategoria.slice(4)) return false;
+        } else if (s.subcategoriaId !== avCategoria) return false;
+      }
       if (avFornecedor && s.fornecedorNome !== avFornecedor) return false;
       if (avLocal && s.locationNome !== avLocal) return false;
       if (termo) {
@@ -523,9 +627,12 @@ export function SaldosView({
       // Sort explícito do usuário vence o agrupamento por severidade —
       // clicar "Produto A→Z" deve ordenar a lista inteira, não dentro dos grupos.
       if (sort) {
+        // Na rotatividade a coluna mostra dias, então ordena por dias — ordenar
+        // por unidades ali deixaria o topo da lista mentindo.
         const f = (s: SaldoRow) =>
           sort.key === "nome" ? s.nome.toLowerCase()
-          : sort.key === "fechado" ? s.estoqueFechado
+          : sort.key === "fechado"
+            ? policy.usaGiro ? (diasCobertura(s, policy) ?? Number.POSITIVE_INFINITY) : s.estoqueFechado
           : valorEstoque(s);
         const va = f(a), vb = f(b);
         const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number);
@@ -595,8 +702,8 @@ export function SaldosView({
   // produtos selecionados e limpa a seleção (o refresh traz o novo local).
   const [localSalvando, setLocalSalvando] = useState(false);
   async function aplicarLocal(local: LocalArmazenagemRow | null) {
-    if (!siteId || selecionados.size === 0 || localSalvando) return;
-    const ids = [...selecionados];
+    const ids = selecao.lista();
+    if (!siteId || ids.length === 0 || localSalvando) return;
     setLocalSalvando(true);
     try {
       const { count } = await alterarLocalEmMassaAction({
@@ -608,7 +715,7 @@ export function SaldosView({
         local ? `Movidos para ${local.nome}` : "Local removido",
         `${count} ${count === 1 ? "produto atualizado" : "produtos atualizados"}.`,
       );
-      setSelecionados(new Set());
+      selecao.limpar();
       router.refresh();
     } catch (e) {
       toast.error(
@@ -621,50 +728,36 @@ export function SaldosView({
   }
 
   // ── Seleção múltipla (checkbox por linha + action bar) ────────
-  function toggleSelecionado(productId: string) {
-    setSelecionados((cur) => {
-      const next = new Set(cur);
-      if (next.has(productId)) next.delete(productId);
-      else next.add(productId);
-      return next;
-    });
+  // `lista` é o que está na página: shift-clique marca o intervalo, como em
+  // /produtos ("essa prateleira inteira" sem 40 cliques).
+  const pageIds = useMemo(() => pageRows.map((s) => s.productId), [pageRows]);
+  const listaDaPagina = useMemo(() => pageIds.map((id) => ({ id })), [pageIds]);
+  const toggleRow = useCallback(
+    (id: string, idx: number, shift: boolean) => selecao.alternar(id, idx, shift, listaDaPagina),
+    [selecao, listaDaPagina],
+  );
+
+  /** Exporta o que está marcado — a lista inteira filtrada quando nada está. */
+  function exportarSelecionados(formato: "csv" | "xlsx") {
+    const marcados = new Set(selecao.lista());
+    const alvo = marcados.size > 0 ? saldos.filter((s) => marcados.has(s.productId)) : filtrados;
+    if (formato === "xlsx") baixarPlanilha(alvo, policy);
+    else baixarCsv(alvo, policy);
   }
 
   type Pill = { key: Filtro; label: string; count: number; tone: "neutral" | "danger" | "warn" | "brand" };
-  // Pills = mesmo estado de filtro dos KPIs acima (clicar um seleciona o
-  // outro também) — só um segundo jeito de chegar no mesmo filtro, mais os
-  // dois que não têm KPI: alerta preventivo e estoque aberto.
-  const pillsEstoque: Pill[] = policy.usaGiro
-    ? [
-        { key: "todos",          label: "Todos",           count: counts.todos,          tone: "neutral" },
-        { key: "sem",            label: "Sem estoque",     count: counts.sem,            tone: "danger"  },
-        { key: "baixaCobertura", label: "Cobertura baixa", count: counts.baixaCobertura, tone: "brand"   },
-        { key: "aberto",         label: "Estoque aberto",  count: counts.aberto,         tone: "neutral" },
-      ]
-    : [
-        { key: "todos",       label: "Todos",             count: counts.todos,      tone: "neutral" },
-        { key: "baixoMinimo", label: "Abaixo do mínimo",  count: counts.baixoMinimo, tone: "danger" },
-        ...(policy.usaIdeal
-          ? ([
-              { key: "repor",      label: "Abaixo do ideal", count: counts.repor,      tone: "brand" },
-              { key: "quaseIdeal", label: "Quase do ideal",  count: counts.quaseIdeal, tone: "warn"  },
-            ] as Pill[])
-          : []),
-        { key: "aberto",      label: "Estoque aberto",    count: counts.aberto,     tone: "neutral" },
-      ];
-
-  const pageAllSelected = pageRows.length > 0 && pageRows.every((s) => selecionados.has(s.productId));
-  function togglePageSelecionada() {
-    setSelecionados((cur) => {
-      const next = new Set(cur);
-      if (pageAllSelected) pageRows.forEach((s) => next.delete(s.productId));
-      else pageRows.forEach((s) => next.add(s.productId));
-      return next;
-    });
-  }
+  // Catálogo por estratégia (_filtros.ts) — a mesma lista que sanea o `?filtro=`
+  // da URL, para tela e link nunca discordarem sobre o que existe.
+  const pillsEstoque: Pill[] = filtrosDaPolicy(policy).map((k) => ({
+    key: k,
+    label: FILTRO_LABEL[k],
+    count: counts[k],
+    tone: FILTRO_TOM[k],
+  }));
 
   return (
    <PolicyCtx.Provider value={policy}>
+    <SelecaoProvider store={selecao}>
     <div className="flex flex-col gap-4">
       {/* ── Filtros + tabela na mesma superfície (mesmo padrão visual de /produtos) ── */}
       <div className="w-full rounded-[var(--radius-lg)] bg-surface p-3 shadow-[var(--shadow-float)] sm:p-4">
@@ -696,10 +789,22 @@ export function SaldosView({
           ))}
         </Select>
 
-        {categorias.length > 0 && (
+        {arvoreCategorias.length > 0 && (
           <Select value={avCategoria} onChange={(e) => setAvCategoria(e.target.value)} containerClassName="w-auto" className="h-9 rounded-full bg-surface">
             <option value="">Toda categoria</option>
-            {categorias.map((c) => <option key={c} value={c}>{c}</option>)}
+            {/* Mesmo desenho de /produtos: a categoria é opção clicável (optgroup
+                não é) e as subcategorias vêm recuadas com espaço inseparável — o
+                navegador engole espaço comum dentro de <option>. */}
+            {arvoreCategorias.map((c) => (
+              <Fragment key={c.id}>
+                <option value={`cat:${c.id}`} style={{ fontWeight: 600 }}>{c.nome}</option>
+                {c.subs.map((s) => (
+                  <option key={s.id} value={s.id} style={{ fontWeight: 400 }}>
+                    {"    "}{s.nome}
+                  </option>
+                ))}
+              </Fragment>
+            ))}
           </Select>
         )}
         {cols.fornecedor && fornecedores.length > 0 && (
@@ -776,6 +881,12 @@ export function SaldosView({
               }}
             />
           ))}
+          <div className="my-1 h-px bg-line" role="separator" />
+          <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-faint">Densidade</p>
+          <div className="flex gap-1 px-1.5 pb-1">
+            <DensityBtn active={denso} onClick={() => setDensity("denso")} icon={<Rows3 size={14} />}>Densa</DensityBtn>
+            <DensityBtn active={!denso} onClick={() => setDensity("compact")} icon={<Rows2 size={14} />}>Média</DensityBtn>
+          </div>
         </Menu>
 
         {(filtro !== "todos" || q.trim() !== "" || avancadoAtivo) && (
@@ -787,17 +898,6 @@ export function SaldosView({
             <FilterX size={14} /> Limpar
           </button>
         )}
-
-        <button
-          type="button"
-          onClick={() => baixarCsv(filtrados, policy)}
-          disabled={filtrados.length === 0}
-          title="Exportar CSV"
-          aria-label="Exportar CSV"
-          className="ml-auto grid h-9 w-9 shrink-0 place-items-center rounded-full border border-line bg-surface text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-40"
-        >
-          <Download size={15} />
-        </button>
       </div>
 
       {filtrados.length === 0 ? (
@@ -813,23 +913,31 @@ export function SaldosView({
                   ancestral de rolagem e anularia o efeito) */}
               <thead className="sticky top-0 z-10">
                 <tr className="border-b border-line bg-surface-2 text-left text-xs font-semibold uppercase tracking-wide text-faint">
-                  <th className="w-10 px-3 py-2">
-                    <input
-                      type="checkbox"
-                      checked={pageAllSelected}
-                      onChange={togglePageSelecionada}
-                      aria-label="Selecionar todos os produtos da página"
-                      className="h-4 w-4 accent-brand"
-                    />
+                  {/* Coluna da caixa estreita e Produto colado nela: o nome é a
+                      âncora de leitura da linha, não pode começar no meio. */}
+                  <th className="w-8 pl-2 pr-0 py-2">
+                    <CheckDaPagina ids={pageIds} />
                   </th>
-                  <Th label="Produto" sortKey="nome" sort={sort} onSort={toggleSort} />
+                  <Th label="Produto" sortKey="nome" sort={sort} onSort={toggleSort} className="pl-2" />
                   {cols.local && <th className="px-4 py-2">Local</th>}
-                  <Th label="Estoque" sortKey="fechado" sort={sort} onSort={toggleSort} />
+                  <Th
+                    label={policy.usaGiro ? "Cobertura" : "Estoque"}
+                    sortKey="fechado"
+                    sort={sort}
+                    onSort={toggleSort}
+                  />
                   {cols.aberto && (
                     <th className="hidden px-4 py-2 lg:table-cell">
-                      <span className="inline-flex items-center gap-1" title="Conteúdo restante da unidade aberta, vendida em doses/drinks">
-                        Aberto (consumo/drinks)
-                        <Info size={12} className="text-faint" aria-label="Conteúdo restante da unidade aberta, vendida em doses/drinks" />
+                      {/* Qualificador na linha de baixo, menor e em caixa baixa:
+                          explica a coluna sem alargá-la nem competir com o nome. */}
+                      <span className="flex flex-col leading-tight" title="Conteúdo restante da unidade aberta, vendida em doses/drinks">
+                        <span className="inline-flex items-center gap-1">
+                          Aberto
+                          <Info size={12} className="text-faint" aria-label="Conteúdo restante da unidade aberta, vendida em doses/drinks" />
+                        </span>
+                        <span className="text-[10px] font-medium normal-case tracking-normal text-faint">
+                          (consumo/drinks)
+                        </span>
                       </span>
                     </th>
                   )}
@@ -839,78 +947,71 @@ export function SaldosView({
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {pageRows.map((s) => (
+                {pageRows.map((s, idx) => (
+                  // O realce de "marcada" sai do CSS (`:has`), não do React: é o
+                  // que permite marcar a caixa sem redesenhar a linha inteira.
                   <tr
                     key={s.productId}
                     onClick={() => abrir(s)}
                     className={cn(
-                      "group cursor-pointer transition-colors hover:bg-surface-2",
+                      "group cursor-pointer transition-colors hover:bg-surface-2 has-[input:checked]:bg-brand-soft/40",
                       critico(s, policy) && "bg-danger-soft/40",
-                      selecionados.has(s.productId) && "bg-brand-soft/30",
                     )}
                   >
-                    <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={selecionados.has(s.productId)}
-                        onChange={() => toggleSelecionado(s.productId)}
-                        aria-label={`Selecionar ${s.nome}`}
-                        className="h-4 w-4 accent-brand"
+                    <td className={cn("pl-2 pr-0", cellPad)} onClick={(e) => e.stopPropagation()}>
+                      <CheckLinha
+                        id={s.productId}
+                        idx={idx}
+                        onToggle={toggleRow}
+                        label={`Selecionar ${s.nome}`}
                       />
                     </td>
-                    <td className="px-4 py-2">
+                    <td className={cn("pl-2 pr-4", cellPad)}>
                       <ProdutoCell
                         s={s}
+                        denso={denso}
                         onOpen={() => abrir(s)}
                         onPendencias={() => router.push(`/produtos/${s.productId}/editar`)}
                       />
                     </td>
                     {cols.local && (
-                      <td className="px-4 py-2">
+                      <td className={cn("px-4", cellPad)}>
                         <LocalCell s={s} />
                       </td>
                     )}
-                    <td className="px-4 py-2">
+                    <td className={cn("px-4", cellPad)}>
                       <EstoqueCell s={s} />
                     </td>
                     {cols.aberto && (
-                      <td className="hidden px-4 py-2 lg:table-cell">
+                      <td className={cn("hidden px-4 lg:table-cell", cellPad)}>
                         <AbertaCell s={s} />
                       </td>
                     )}
                     {cols.fornecedor && (
-                      <td className="hidden px-4 py-2 md:table-cell">
+                      <td className={cn("hidden px-4 md:table-cell", cellPad)}>
                         <FornecedorCell s={s} />
                       </td>
                     )}
                     {cols.pedido && (
-                      <td className="hidden px-4 py-2 md:table-cell">
+                      <td className={cn("hidden px-4 md:table-cell", cellPad)}>
                         <ReposicaoStatusCell s={s} />
                       </td>
                     )}
-                    <td className="px-3 py-2 text-right">
+                    <td className={cn("px-3 text-right", cellPad)}>
                       <ChevronRight size={16} className="ml-auto shrink-0 text-faint transition-colors group-hover:text-ink" />
                     </td>
                   </tr>
                 ))}
               </tbody>
-              <tfoot>
-                <tr className="border-t border-line bg-surface-2 text-xs font-semibold text-muted">
-                  <td className="px-4 py-2" colSpan={3 + (cols.local ? 1 : 0)}>
-                    {total} {total === 1 ? "produto" : "produtos"}
-                  </td>
-                  {cols.aberto && <td className="hidden px-4 py-2 lg:table-cell" />}
-                  {cols.fornecedor && <td className="hidden px-4 py-2 md:table-cell" />}
-                  {cols.pedido && <td className="hidden px-4 py-2 md:table-cell" />}
-                  <td className="px-3 py-2" />
-                </tr>
-              </tfoot>
+              {/* Sem tfoot de total: o rodapé de paginação já diz "1–50 de N
+                  produtos", e contar duas vezes a mesma coisa na mesma tela só
+                  faz o operador conferir se batem. */}
             </table>
           </div>
 
           {/* ── Cards (mobile) ── */}
           <div className="mt-4 flex flex-col gap-2.5 md:hidden">
-            {pageRows.map((s) => (
+            {pageRows.map((s, idx) => (
               <div
                 key={s.productId}
                 role="button"
@@ -918,21 +1019,20 @@ export function SaldosView({
                 onClick={() => abrir(s)}
                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(s); } }}
                 className={cn(
-                  "flex cursor-pointer items-start gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)",
+                  "flex cursor-pointer items-start gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring) has-[input:checked]:border-brand/50 has-[input:checked]:bg-brand-soft/20",
                   critico(s, policy) ? "border-danger/30 bg-danger-soft/30" : "border-line bg-surface",
-                  selecionados.has(s.productId) && "border-brand/50 bg-brand-soft/20",
                 )}
               >
-                <input
-                  type="checkbox"
-                  checked={selecionados.has(s.productId)}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={() => toggleSelecionado(s.productId)}
-                  aria-label={`Selecionar ${s.nome}`}
-                  className="mt-1 h-4 w-4 shrink-0 accent-brand"
-                />
+                <span className="mt-1 shrink-0">
+                  <CheckLinha
+                    id={s.productId}
+                    idx={idx}
+                    onToggle={toggleRow}
+                    label={`Selecionar ${s.nome}`}
+                  />
+                </span>
                 <div className="min-w-0 flex-1">
-                  <ProdutoCell s={s} onPendencias={() => router.push(`/produtos/${s.productId}/editar`)} />
+                  <ProdutoCell s={s} denso={denso} onPendencias={() => router.push(`/produtos/${s.productId}/editar`)} />
                   <div className="mt-2 flex items-end justify-between gap-3">
                     <EstoqueCell s={s} />
                     {cols.pedido && (
@@ -982,68 +1082,14 @@ export function SaldosView({
       />
 
       {/* ── Action bar — aparece com produtos selecionados ── */}
-      {selecionados.size > 0 && (
-        <div className="pointer-events-none fixed inset-x-0 bottom-5 z-40 flex justify-center px-4">
-          <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-line bg-surface py-2 pl-4 pr-2 shadow-(--shadow-2)">
-            <span className="text-sm font-medium text-ink">
-              <b className="tabular-nums">{selecionados.size}</b>{" "}
-              {selecionados.size === 1 ? "produto selecionado" : "produtos selecionados"}
-            </span>
-            {siteId && locais.length > 0 && (
-              <Menu
-                align="start"
-                className="max-h-80 w-64 overflow-y-auto"
-                trigger={
-                  <button
-                    type="button"
-                    disabled={localSalvando}
-                    className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line px-3.5 py-1.5 text-sm font-medium text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50"
-                  >
-                    {localSalvando ? <Loader2 size={14} className="animate-spin" /> : <MapPin size={14} />}
-                    Alterar local
-                    <ChevronDown size={13} className="text-faint" />
-                  </button>
-                }
-              >
-                <p className="px-2.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-faint">
-                  Mover para
-                </p>
-                {locais.map((l) => {
-                  const Icon = STORAGE_TIPO_ICON[l.tipo];
-                  return (
-                    <MenuItem
-                      key={l.id}
-                      icon={<Icon size={14} className={STORAGE_TIPO_COLOR[l.tipo]} />}
-                      onClick={() => aplicarLocal(l)}
-                    >
-                      {l.nome}
-                    </MenuItem>
-                  );
-                })}
-                <div className="my-1 h-px bg-line" />
-                <MenuItem icon={<X size={14} />} onClick={() => aplicarLocal(null)}>
-                  Sem local
-                </MenuItem>
-              </Menu>
-            )}
-            <button
-              type="button"
-              onClick={() => setComprarIds([...selecionados])}
-              className="flex items-center gap-1.5 rounded-full bg-brand px-3.5 py-1.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-            >
-              <ShoppingCart size={14} /> Comprar
-            </button>
-            <button
-              type="button"
-              onClick={() => setSelecionados(new Set())}
-              aria-label="Limpar seleção"
-              className="grid h-8 w-8 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-            >
-              <X size={15} />
-            </button>
-          </div>
-        </div>
-      )}
+      <BulkBar
+        siteId={siteId}
+        locais={locais}
+        localSalvando={localSalvando}
+        onLocal={aplicarLocal}
+        onComprar={() => setComprarIds(selecao.lista())}
+        onExportar={exportarSelecionados}
+      />
 
       {/* ── Sidepanel — compra manual (sem sugestões) ── */}
       <AdicionarCompraSheet
@@ -1053,7 +1099,7 @@ export function SaldosView({
         onClose={() => setComprarIds(null)}
         onDone={() => {
           setComprarIds(null);
-          setSelecionados(new Set());
+          selecao.limpar();
           router.refresh();
         }}
       />
@@ -1081,7 +1127,173 @@ export function SaldosView({
         )}
       </Sheet>
     </div>
+    </SelecaoProvider>
    </PolicyCtx.Provider>
+  );
+}
+
+// ── Barra de ações em lote (flutuante) ────────────────────────
+// Fora da listagem de propósito: assina só o total, então marcar uma caixa não
+// re-renderiza a tabela. É onde mora o "Exportar" — exportar é ação sobre o que
+// está selecionado, não um botão de barra de filtro.
+
+function BulkBar({
+  siteId,
+  locais,
+  localSalvando,
+  onLocal,
+  onComprar,
+  onExportar,
+}: {
+  siteId: string | null;
+  locais: LocalArmazenagemRow[];
+  localSalvando: boolean;
+  onLocal: (local: LocalArmazenagemRow | null) => void;
+  onComprar: () => void;
+  onExportar: (formato: "csv" | "xlsx") => void;
+}) {
+  const selecao = useSelecao();
+  const count = useQtdSelecionada();
+  if (count === 0) return null;
+
+  return (
+    <div className="pointer-events-none fixed inset-x-0 bottom-5 z-40 flex justify-center px-4">
+      <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 rounded-full border border-line bg-surface py-2 pl-4 pr-2 shadow-(--shadow-2)">
+        <span className="text-sm font-medium text-ink">
+          <b className="tabular-nums">{count}</b>{" "}
+          {count === 1 ? "produto selecionado" : "produtos selecionados"}
+        </span>
+        {siteId && locais.length > 0 && (
+          <Menu
+            align="start"
+            className="max-h-80 w-64 overflow-y-auto"
+            trigger={
+              <button
+                type="button"
+                disabled={localSalvando}
+                className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line px-3.5 py-1.5 text-sm font-medium text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50"
+              >
+                {localSalvando ? <Loader2 size={14} className="animate-spin" /> : <MapPin size={14} />}
+                Alterar local
+                <ChevronDown size={13} className="text-faint" />
+              </button>
+            }
+          >
+            <p className="px-2.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-faint">
+              Mover para
+            </p>
+            {locais.map((l) => {
+              const Icon = STORAGE_TIPO_ICON[l.tipo];
+              return (
+                <MenuItem
+                  key={l.id}
+                  icon={<Icon size={14} className={STORAGE_TIPO_COLOR[l.tipo]} />}
+                  onClick={() => onLocal(l)}
+                >
+                  {l.nome}
+                </MenuItem>
+              );
+            })}
+            <div className="my-1 h-px bg-line" />
+            <MenuItem icon={<X size={14} />} onClick={() => onLocal(null)}>
+              Sem local
+            </MenuItem>
+          </Menu>
+        )}
+        <Menu
+          align="end"
+          trigger={
+            <button
+              type="button"
+              className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line px-3.5 py-1.5 text-sm font-medium text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink"
+            >
+              <Download size={14} /> Exportar
+              <ChevronUp size={13} className="text-faint" />
+            </button>
+          }
+        >
+          <MenuItem icon={<FileSpreadsheet size={15} />} onClick={() => onExportar("xlsx")}>
+            Planilha (.xlsx)
+          </MenuItem>
+          <MenuItem icon={<Download size={15} />} onClick={() => onExportar("csv")}>
+            CSV
+          </MenuItem>
+        </Menu>
+        <button
+          type="button"
+          onClick={onComprar}
+          className="flex cursor-pointer items-center gap-1.5 rounded-full bg-brand px-3.5 py-1.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+        >
+          <ShoppingCart size={14} /> Comprar
+        </button>
+        <button
+          type="button"
+          onClick={() => selecao.limpar()}
+          aria-label="Limpar seleção"
+          className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+        >
+          <X size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Caixas de seleção ─────────────────────────────────────────
+// Mesmo desenho e mesma mecânica de /produtos: pastilha redonda, alvo de clique
+// de 32px sobre um desenho de 16px, shift-clique marcando intervalo, e cada
+// caixa assinando só o próprio id.
+
+function Check({
+  checked, indeterminate, onChange, label,
+}: {
+  checked: boolean;
+  indeterminate?: boolean;
+  onChange: (shift: boolean) => void;
+  label: string;
+}) {
+  const shiftRef = useRef(false);
+  return (
+    <span className="relative inline-flex">
+      <Checkbox
+        checked={checked}
+        indeterminate={indeterminate}
+        onChange={() => onChange(shiftRef.current)}
+        onClick={(e) => { shiftRef.current = e.shiftKey; e.stopPropagation(); }}
+        aria-label={label}
+      />
+      <span
+        aria-hidden
+        className="absolute -inset-2 cursor-pointer"
+        onClick={(e) => { e.stopPropagation(); onChange(e.shiftKey); }}
+      />
+    </span>
+  );
+}
+
+function CheckLinha({
+  id, idx, onToggle, label,
+}: {
+  id: string;
+  idx: number;
+  onToggle: (id: string, idx: number, shift: boolean) => void;
+  label: string;
+}) {
+  const marcado = useSelecionado(id);
+  return <Check checked={marcado} onChange={(shift) => onToggle(id, idx, shift)} label={label} />;
+}
+
+function CheckDaPagina({ ids }: { ids: string[] }) {
+  const selecao = useSelecao();
+  const marcados = useQtdDaPagina(ids);
+  const todos = ids.length > 0 && marcados === ids.length;
+  return (
+    <Check
+      checked={todos}
+      indeterminate={!todos && marcados > 0}
+      onChange={() => selecao.alternarVarios(ids, !todos)}
+      label="Selecionar todos desta página"
+    />
   );
 }
 
@@ -1090,14 +1302,32 @@ export function SaldosView({
 function CheckRow({ checked, label, onChange }: { checked: boolean; label: string; onChange: () => void }) {
   return (
     <label className="flex cursor-pointer items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-sm text-ink transition-colors hover:bg-surface-2">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={onChange}
-        className="h-4 w-4 cursor-pointer rounded border-line accent-brand"
-      />
+      <Checkbox checked={checked} onChange={onChange} />
       {label}
     </label>
+  );
+}
+
+/** Botão de densidade — par único: "Densa" (sem miniatura) e "Média". */
+function DensityBtn({
+  active, onClick, icon, children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border px-2 py-1.5 text-xs font-medium transition-colors",
+        active ? "border-brand/40 bg-brand-soft text-brand-strong" : "border-line text-ink-2 hover:bg-surface-2",
+      )}
+    >
+      {icon} {children}
+    </button>
   );
 }
 
@@ -1137,7 +1367,7 @@ function PaginationBar({
             onChange={(e) => onPageSize(Number(e.target.value))}
             className="rounded-lg border border-line bg-surface px-2 py-1 text-xs text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
           >
-            {[10, 25, 50, 100].map((n) => (
+            {[10, 25, 50, 100, 200].map((n) => (
               <option key={n} value={n}>{n}</option>
             ))}
           </select>
@@ -1290,6 +1520,222 @@ function FornecedorCell({ s }: { s: SaldoRow }) {
   );
 }
 
+/**
+ * Cada estratégia mede uma coisa diferente, então cada uma desenha a sua:
+ *  · MINIMO       → folga sobre o piso  (escala 0…2× mínimo, traço no meio);
+ *  · MINIMO_IDEAL → medidor dois-saldos (escala 0…ideal, traço no mínimo,
+ *                   sobra em âmbar quando passa do ideal);
+ *  · ROTATIVIDADE → régua de dias       (escala 0…1,5× meta, traço na meta) —
+ *                   ali a unidade de decisão é dia, não caixa.
+ * Compartilham a mesma moldura (largura, altura da barra, tipografia) para a
+ * coluna não "pular" quando a empresa troca de estratégia.
+ */
+
+/** Moldura comum: número em destaque, barra, linha de apoio. */
+function CelulaBase({
+  valor,
+  unidade,
+  extra,
+  children,
+  rodape,
+}: {
+  valor: string;
+  unidade: string;
+  /** Canto superior direito — cobertura, excesso, etc. */
+  extra?: React.ReactNode;
+  /** A barra da estratégia. */
+  children: React.ReactNode;
+  rodape: React.ReactNode;
+}) {
+  return (
+    <div className="flex w-40 max-w-full flex-col gap-1">
+      <div className="flex items-baseline gap-1.5">
+        <span className="font-mono text-sm font-semibold tabular-nums text-ink">{valor}</span>
+        <span className="text-[11px] text-muted">{unidade}</span>
+        {extra && <span className="ml-auto text-[11px] font-medium tabular-nums">{extra}</span>}
+      </div>
+      {children}
+      {rodape}
+    </div>
+  );
+}
+
+/** Trilho com preenchimento e um traço opcional de limiar. */
+function Trilho({
+  fill,
+  cor,
+  marca,
+  marcaTitle,
+  tracejado = false,
+  excesso = 0,
+}: {
+  fill: number;
+  cor: string;
+  /** Posição (0–100) do traço de limiar — mínimo ou meta. */
+  marca?: number | null;
+  marcaTitle?: string;
+  /** Sem dado suficiente: trilho vazio, contorno tracejado. */
+  tracejado?: boolean;
+  /** Largura (0–100) do bloco de sobra à direita, fora do trilho principal. */
+  excesso?: number;
+}) {
+  return (
+    <div className="flex items-center gap-px">
+      <div
+        className={cn(
+          "relative h-2 flex-1 overflow-hidden rounded-full bg-line ring-1 ring-inset ring-line",
+          tracejado && "bg-transparent ring-0 border border-dashed border-line",
+        )}
+      >
+        {!tracejado && (
+          <div className={cn("h-full rounded-full transition-all", cor)} style={{ width: `${fill}%` }} />
+        )}
+        {marca != null && (
+          <span
+            aria-hidden
+            title={marcaTitle}
+            className="absolute top-1/2 h-3 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink/60"
+            style={{ left: `${marca}%` }}
+          />
+        )}
+      </div>
+      {excesso > 0 && (
+        <div
+          aria-hidden
+          title="Acima do ideal"
+          className="h-2 shrink-0 rounded-full bg-accent/50"
+          style={{ width: `${excesso}%` }}
+        />
+      )}
+    </div>
+  );
+}
+
+const clampPct = (v: number) => Math.min(100, Math.max(0, v));
+
+/** MINIMO — o piso é limiar, não meta: o que interessa é a folga sobre ele. */
+function CelulaMinimo({ s }: { s: SaldoRow }) {
+  const policy = usePolicy();
+  const m = STATUS_META[statusOf(s, policy)];
+  const { estoqueFechado: f, estoqueMinimo: min } = s;
+  const un = closedUnitLabel(s);
+
+  if (min <= 0) {
+    return (
+      <CelulaBase valor={fmt(f)} unidade={un} rodape={<SemMeta productId={s.productId} />}>
+        <Trilho fill={f > 0 ? 100 : 0} cor={m.bar} />
+      </CelulaBase>
+    );
+  }
+
+  // Escala 0…2× mínimo: o traço cai sempre no meio e a folga fica visível.
+  const falta = min - f;
+  return (
+    <CelulaBase valor={fmt(f)} unidade={un} rodape={
+      <span className={cn("text-[10px] tabular-nums", falta > 0 ? "text-danger" : "text-faint")}>
+        mín {fmt(min)} · {falta > 0 ? `faltam ${fmt(falta)}` : `${fmt(-falta)} acima`}
+      </span>
+    }>
+      <Trilho fill={clampPct((f / (min * 2)) * 100)} cor={m.bar} marca={50} marcaTitle="Estoque mínimo" />
+    </CelulaBase>
+  );
+}
+
+/** MINIMO_IDEAL — medidor dois-saldos: piso marcado, ideal como fim do trilho. */
+function CelulaMinimoIdeal({ s }: { s: SaldoRow }) {
+  const policy = usePolicy();
+  const m = STATUS_META[statusOf(s, policy)];
+  const { estoqueFechado: f, estoqueIdeal: ideal, estoqueMinimo: min } = s;
+
+  // Sem ideal definido, a régua que sobra é o piso — cai no desenho do mínimo.
+  if (ideal <= 0) return <CelulaMinimo s={s} />;
+
+  const sobra = Math.max(0, f - ideal);
+  return (
+    <CelulaBase
+      valor={fmt(f)}
+      unidade={closedUnitLabel(s)}
+      extra={sobra > 0 ? <span className="text-accent">+{fmt(sobra)}</span> : undefined}
+      rodape={
+        <div className="flex justify-between text-[10px] tabular-nums text-faint">
+          <span>mín {fmt(min)}</span>
+          <span>ideal {fmt(ideal)}</span>
+        </div>
+      }
+    >
+      <Trilho
+        fill={clampPct((f / ideal) * 100)}
+        cor={m.bar}
+        marca={min > 0 ? Math.min(100, (min / ideal) * 100) : null}
+        marcaTitle="Estoque mínimo"
+        // Sobra proporcional, teto de 30% da largura — só sinaliza o encalhe.
+        excesso={sobra > 0 ? Math.min(30, (sobra / ideal) * 100) : 0}
+      />
+    </CelulaBase>
+  );
+}
+
+/** ROTATIVIDADE — a decisão é em dias: dia vira o número em destaque. */
+function CelulaGiro({ s }: { s: SaldoRow }) {
+  const policy = usePolicy();
+  const m = STATUS_META[statusOf(s, policy)];
+  const { estoqueFechado: f } = s;
+  const un = closedUnitLabel(s);
+  const qtd = (
+    <span className="text-[11px] tabular-nums text-muted">
+      {fmt(f)} {un}
+    </span>
+  );
+
+  // Produto recém-cadastrado: média de 3 dias não descreve nada. Informa, não alarma.
+  if (statusOf(s, policy) === "aprendendo") {
+    const faltam = Math.max(1, APRENDIZADO_DIAS - diasHistorico(s));
+    return (
+      <CelulaBase valor={fmt(f)} unidade={un} rodape={
+        <span className="inline-flex items-center gap-1 text-[10px] text-faint" title={MSG_APRENDIZADO}>
+          <Lightbulb size={10} /> aprendendo · faltam {faltam} d
+        </span>
+      }>
+        <Trilho fill={0} cor={m.bar} tracejado />
+      </CelulaBase>
+    );
+  }
+
+  const cob = diasCobertura(s, policy);
+  if (cob == null) {
+    return (
+      <CelulaBase valor={fmt(f)} unidade={un} rodape={
+        <span className="text-[10px] tabular-nums text-faint">sem venda em {policy.periodoMediaDias} d</span>
+      }>
+        <Trilho fill={0} cor={m.bar} />
+      </CelulaBase>
+    );
+  }
+
+  // Escala 0…1,5× meta: o traço da meta fica a 2/3 e ainda sobra trilho p/ ver excesso.
+  const meta = policy.diasCobertura;
+  return (
+    <CelulaBase
+      valor={String(cob)}
+      unidade={cob === 1 ? "dia" : "dias"}
+      extra={qtd}
+      rodape={
+        <div className="flex justify-between text-[10px] tabular-nums text-faint">
+          <span>{fmt1(mediaDia(s, policy))}/dia</span>
+          <span>meta {meta} d</span>
+        </div>
+      }
+    >
+      <Trilho
+        fill={clampPct((cob / (meta * 1.5)) * 100)}
+        cor={m.bar}
+        marca={100 / 1.5}
+        marcaTitle={`Cobertura desejada: ${meta} dias`}
+      />
+    </CelulaBase>
+  );
+}
+
 function EstoqueCell({ s }: { s: SaldoRow }) {
   const policy = usePolicy();
   // Sem controle: só a quantidade comprada — nem barra, nem mínimo/ideal, nem cobertura.
@@ -1304,60 +1750,21 @@ function EstoqueCell({ s }: { s: SaldoRow }) {
       </div>
     );
   }
-  const st = statusOf(s, policy);
-  const m = STATUS_META[st];
-  const { estoqueFechado: f, estoqueIdeal: ideal, estoqueMinimo: min } = s;
-  const cob = diasCobertura(s, policy);
+  if (policy.usaGiro) return <CelulaGiro s={s} />;
+  if (policy.usaIdeal) return <CelulaMinimoIdeal s={s} />;
+  return <CelulaMinimo s={s} />;
+}
 
-  // A barra mede o progresso rumo à meta da estratégia: ideal, mínimo ou
-  // cobertura desejada em dias.
-  const alvoBarra = policy.usaGiro ? policy.diasCobertura : policy.usaIdeal ? ideal : min;
-  const atualBarra = policy.usaGiro ? (cob ?? 0) : f;
-  const pct = alvoBarra > 0 ? Math.round((atualBarra / alvoBarra) * 100) : f > 0 ? 100 : 0;
-  const fill = Math.min(100, Math.max(0, pct));
-  const minPos = !policy.usaGiro && policy.usaIdeal && ideal > 0 && min > 0
-    ? Math.min(100, (min / ideal) * 100)
-    : null;
-
+function SemMeta({ productId }: { productId: string }) {
   return (
-    <div className="flex w-40 max-w-full flex-col gap-1">
-      <div className="flex items-baseline gap-1.5">
-        <span className="font-mono text-sm font-semibold tabular-nums text-ink">{fmt(f)}</span>
-        <span className="text-[11px] text-muted">{closedUnitLabel(s)}</span>
-        {cob != null && (
-          <span className="ml-auto text-[11px] font-medium tabular-nums text-muted" title="Cobertura estimada pela média de vendas">
-            ≈ {cob} {cob === 1 ? "dia" : "dias"}
-          </span>
-        )}
-      </div>
-      {/* Barra: progresso rumo à meta, com marcador do mínimo quando existe */}
-      <div className="relative h-2 w-full overflow-hidden rounded-full bg-line ring-1 ring-inset ring-line">
-        <div className={cn("h-full rounded-full transition-all", m.bar)} style={{ width: `${fill}%` }} />
-        {minPos != null && (
-          <span
-            aria-hidden
-            title="Estoque mínimo"
-            className="absolute top-1/2 h-3 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink/60"
-            style={{ left: `${minPos}%` }}
-          />
-        )}
-      </div>
-      {policy.usaGiro ? (
-        <div className="flex justify-between text-[10px] tabular-nums text-faint">
-          <span>{fmt1(mediaDia(s, policy))}/dia</span>
-          <span>meta {policy.diasCobertura} d</span>
-        </div>
-      ) : policy.usaIdeal && ideal > 0 ? (
-        <div className="flex justify-between text-[10px] tabular-nums text-faint">
-          <span>mín {fmt(min)}</span>
-          <span>ideal {fmt(ideal)}</span>
-        </div>
-      ) : min > 0 ? (
-        <span className="text-[10px] tabular-nums text-faint">mín {fmt(min)}</span>
-      ) : (
-        <span className="text-[10px] text-faint">sem meta definida</span>
-      )}
-    </div>
+    <Link
+      href={`/produtos/${productId}/editar`}
+      title="Definir estoque mínimo no cadastro do produto"
+      onClick={(e) => e.stopPropagation()}
+      className="text-[10px] text-faint underline-offset-2 hover:text-ink hover:underline"
+    >
+      sem meta definida
+    </Link>
   );
 }
 
@@ -1487,17 +1894,20 @@ function ProdutoCell({
   s,
   onPendencias,
   onOpen,
+  denso = false,
 }: {
   s: SaldoRow;
   onPendencias?: () => void;
   /** Quando presente, o nome vira botão focável — acesso por teclado nas linhas da tabela. */
   onOpen?: () => void;
+  /** Densidade "Densa": sem miniatura, para caber mais linha na tela. */
+  denso?: boolean;
 }) {
   const st = statusOf(s, usePolicy());
   const cadGaps = dataGaps(s).filter((g) => g !== "local"); // custo, fornecedor
   return (
     <div className="flex min-w-0 items-center gap-3">
-      <Thumb url={s.imagemUrl} />
+      {!denso && <Thumb url={s.imagemUrl} />}
       <div className="min-w-0">
         <div className="flex items-center gap-1.5">
           {onOpen ? (
@@ -1558,11 +1968,13 @@ function Th({
   const active = sort?.key === sortKey;
   return (
     <th className={cn("px-4 py-2.5", align === "right" && "text-right", className)}>
+      {/* `uppercase` explícito: o UA stylesheet zera text-transform em <button>,
+          então sem isto só as colunas ordenáveis saíam em caixa baixa. */}
       <button
         type="button"
         onClick={() => onSort(sortKey)}
         className={cn(
-          "inline-flex items-center gap-1 transition-colors hover:text-ink",
+          "inline-flex cursor-pointer items-center gap-1 uppercase tracking-wide transition-colors hover:text-ink",
           align === "right" && "flex-row-reverse",
           active && "text-ink",
         )}
@@ -1623,6 +2035,7 @@ const PANEL_STATUS: Record<Status, { label: string; text: string; dot: string }>
   semControle: { label: "Sem controle",      text: "text-faint",  dot: "bg-faint"  },
   coberturaCritica: { label: "Comprar hoje",       text: "text-danger", dot: "bg-danger" },
   coberturaAtencao: { label: "Comprar em breve",   text: "text-brand",  dot: "bg-brand"  },
+  aprendendo:  { label: "Aprendendo o giro",  text: "text-faint", dot: "bg-faint"  },
   semGiro:     { label: "Sem giro recente",  text: "text-faint",  dot: "bg-faint"  },
 };
 
@@ -1644,6 +2057,7 @@ function fraseSituacao(s: SaldoRow, policy: EstoquePolicy): string {
     ? "Defina mínimo e ideal para acompanhar a reposição."
     : "Defina o estoque mínimo para acompanhar a reposição.";
   if (st === "semGiro")     return "Sem vendas na janela analisada — o giro ainda não dá para projetar.";
+  if (st === "aprendendo")  return MSG_APRENDIZADO;
   const cob = diasCobertura(s, policy);
   if (st === "coberturaCritica" || st === "coberturaAtencao") {
     return `Cobertura de ${fmtCobertura(cob)} — abaixo dos ${policy.diasCobertura} dias desejados.`;
@@ -1670,7 +2084,9 @@ function recomendacao(s: SaldoRow, policy: EstoquePolicy): string | null {
 
   // Rotatividade: a quantidade sai do giro × cobertura desejada.
   if (policy.usaGiro) {
-    if (m <= 0) return null;
+    // Sem histórico bastante, sugerir quantidade é chutar — melhor calar,
+    // salvo se a cobertura já está crítica (aí a compra não pode esperar).
+    if (m <= 0 || st === "aprendendo") return null;
     const falta = necessidadeGiro({
       mediaDia: m,
       estoque: s.estoqueFechado,
@@ -1728,7 +2144,7 @@ function CodigoCopiavel({ valor, titulo }: { valor: string; titulo: string }) {
       className="-mx-1 inline-flex items-center gap-1 rounded px-1 font-mono text-[12px] text-muted transition-colors hover:bg-surface-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
     >
       {valor}
-      {copiado ? <Check size={12} className="text-ok" /> : <Copy size={12} className="text-faint" />}
+      {copiado ? <CheckIcon size={12} className="text-ok" /> : <Copy size={12} className="text-faint" />}
     </button>
   );
 }
@@ -1989,8 +2405,18 @@ function ResumoTab({
 
       {/* ── Indicadores: um único medidor, sem cards soltos ── */}
       {/* As metas exibidas seguem a estratégia da empresa; a última coluna é
-          sempre a cobertura, que faz sentido em qualquer modelo. */}
-      <div className={cn("grid divide-x divide-line rounded-xl border border-line bg-surface", policy.usaIdeal ? "grid-cols-4" : "grid-cols-3")}>
+          sempre a cobertura, que faz sentido em qualquer modelo. As colunas
+          contam a partir da própria estratégia — na rotatividade são quatro
+          (disponível, média, desejada, cobertura), não três. */}
+      <div
+        className={cn(
+          "grid divide-x divide-line rounded-xl border border-line bg-surface",
+          // 1 fixo (disponível) + 1 fixo (cobertura) + as metas da régua ativa
+          2 + (policy.usaMinimo ? 1 : 0) + (policy.usaIdeal ? 1 : 0) + (policy.usaGiro ? 2 : 0) === 4
+            ? "grid-cols-4"
+            : "grid-cols-3",
+        )}
+      >
         <Indicador label="Disponível" value={`${fmt(s.estoqueFechado)} ${un}`} />
         {policy.usaMinimo && (
           <Indicador

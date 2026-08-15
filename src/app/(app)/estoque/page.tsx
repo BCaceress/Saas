@@ -2,10 +2,9 @@ import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { loadSaldos, loadLocaisArmazenagem } from "./_data";
-import { SaldosView, type Filtro } from "./saldos/_client";
+import { filtroValido } from "./_filtros";
+import { SaldosView } from "./saldos/_client";
 import { EstoqueEmpty } from "./_empty";
-
-const FILTROS: readonly string[] = ["todos", "sem", "baixoMinimo", "repor", "quaseIdeal", "baixaCobertura", "aberto"];
 
 export default async function EstoquePage({
   searchParams,
@@ -26,8 +25,9 @@ export default async function EstoquePage({
 
   // Estado da lista vive na URL (compartilhável, sobrevive a refresh/troca de site).
   const sp = await searchParams;
-  const filtro =
-    typeof sp.filtro === "string" && FILTROS.includes(sp.filtro) ? (sp.filtro as Filtro) : "todos";
+  // Saneado pela estratégia: link com filtro de outra régua cai em "todos" em
+  // vez de devolver lista vazia sem explicação.
+  const filtro = filtroValido(sp.filtro, policy);
   const q = typeof sp.q === "string" ? sp.q : "";
   const pagina = Math.max(1, Math.floor(Number(typeof sp.pagina === "string" ? sp.pagina : "")) || 1);
 

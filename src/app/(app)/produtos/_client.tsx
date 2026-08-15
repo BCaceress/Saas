@@ -50,9 +50,9 @@ import {
 import { CardsSkeleton } from "./_skeleton";
 import {
   SelecaoProvider, useNovaSelecao, useQtdDaPagina, useQtdSelecionada, useSelecao, useSelecionado,
-} from "./_selecao";
+} from "@/components/app/selecao";
 import { useOpcoes } from "./_opcoes";
-import { baixarXlsx } from "./_export";
+import { baixarXlsx } from "@/lib/baixar-xlsx";
 import {
   SEM_MARCA, SEM_TAG,
   type LoteOpcoes,
