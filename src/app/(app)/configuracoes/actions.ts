@@ -24,6 +24,8 @@ import {
   FEATURES_COM_TOGGLE,
   PlanoInsuficienteError,
 } from "@/lib/planos";
+import { CATALOGO, type AlertKind } from "@/lib/alertas/catalogo";
+import { PCT_CRITICO_MAX, PCT_CRITICO_MIN } from "@/lib/estoque-estrategia";
 
 // ============================================================
 // Actions das telas de Configurações. Tenant/Membership/Invite são tabelas de
@@ -152,6 +154,9 @@ const estoqueConfigSchema = z.object({
   tipoControleEstoque: z.enum(["MINIMO", "MINIMO_IDEAL", "ROTATIVIDADE"]),
   periodoMediaDias: z.number().int().min(7).max(365),
   diasCobertura: z.number().int().min(1).max(90),
+  // Régua de severidade: abaixo de X% da meta de cobertura, o estoque é
+  // crítico e não só baixo. Vale para sino, dashboard e sugestão de compra.
+  coberturaCriticaPct: z.number().int().min(PCT_CRITICO_MIN).max(PCT_CRITICO_MAX),
   estoqueMinimoPadrao: z.number().int().min(0).max(9999),
   produtoParadoDias: z.number().int().min(7).max(365),
   validadeAlertaDias: z.number().int().min(1).max(365),
@@ -193,25 +198,52 @@ export async function updateCaixaConfig(input: z.input<typeof caixaConfigSchema>
 
 // ── Notificações (sino) ─────────────────────────────────────
 
-const ALERT_CATEGORIES = [
-  "criticos",
-  "operacao",
-  "consumo",
-  "financeiro",
-  "inventario",
-  "inteligencia",
-] as const;
+const ALERT_KINDS = Object.keys(CATALOGO) as [AlertKind, ...AlertKind[]];
+const PRIORIDADES = ["critico", "alto", "medio", "baixo", "info"] as const;
 
 const notifSchema = z.object({
-  alertasDesativados: z.array(z.enum(ALERT_CATEGORIES)).max(ALERT_CATEGORIES.length),
+  /**
+   * Preferência por TIPO de alerta. O que a tela manda é a verdade completa —
+   * ver `alertasDesativados` sendo zerado abaixo. A chave é validada contra o
+   * catálogo na hora de gravar: tipo desconhecido não entra no banco.
+   */
+  alertas: z.record(
+    z.string(),
+    z.object({
+      ligado: z.boolean(),
+      prioridade: z.enum(PRIORIDADES).optional(),
+    }),
+  ),
+  /** Limiares cujo dono é esta tela (ver `LIMIARES` no catálogo). */
+  inventarioAtrasoDias: z.number().int().min(1).max(60),
+  novoSemMovDias: z.number().int().min(1).max(90),
+  /** Janela de silêncio do push, em hora local. */
+  pushHoraInicio: z.number().int().min(0).max(23),
+  pushHoraFim: z.number().int().min(1).max(24),
 });
 
 export async function updateNotificacoes(input: z.input<typeof notifSchema>) {
   return txGestor(async ({ tenant }) => {
     const d = notifSchema.parse(input);
+    if (d.pushHoraFim <= d.pushHoraInicio) {
+      throw new Error("A janela de notificação precisa terminar depois de começar.");
+    }
+    const alertas = Object.fromEntries(
+      Object.entries(d.alertas).filter(([kind]) => ALERT_KINDS.includes(kind as AlertKind)),
+    );
     await db.tenant.update({
       where: { id: tenant.id },
-      data: { alertasDesativados: [...new Set(d.alertasDesativados)] },
+      data: {
+        alertasConfig: alertas,
+        // A escolha por tipo absorve a antiga por categoria: manter as duas
+        // deixaria um desligamento fantasma, invisível na tela e mandando no
+        // sino. Quem nunca salvou aqui continua lendo o array antigo.
+        alertasDesativados: [],
+        inventarioAtrasoDias: d.inventarioAtrasoDias,
+        novoSemMovDias: d.novoSemMovDias,
+        pushHoraInicio: d.pushHoraInicio,
+        pushHoraFim: d.pushHoraFim,
+      },
     });
     ok();
   });

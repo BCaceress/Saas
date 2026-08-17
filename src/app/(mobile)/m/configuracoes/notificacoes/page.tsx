@@ -8,7 +8,7 @@ export default function NotificacoesMobilePage() {
     <div className="space-y-4">
       <MobilePageHeader
         titulo="Notificações"
-        descricao="Quais grupos de alerta aparecem no sino."
+        descricao="Quais avisos aparecem no sino e a que horas o celular toca."
         voltar="/m/configuracoes"
       />
       <ConteudoNotificacoes />

@@ -36,7 +36,8 @@ export type AlertIcon =
   | "baixa"
   | "campeao"
   | "aniversario"
-  | "cliente-risco";
+  | "cliente-risco"
+  | "validade";
 
 export type AlertItem = {
   /** Estável entre recargas — usado para ocultar/resolver. Ex.: "sem-estoque:<productId>". */

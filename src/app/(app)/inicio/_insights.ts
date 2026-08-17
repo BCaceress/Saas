@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { pct as fmtPct, type Variacao } from "@/lib/periodo";
 import { brl } from "@/lib/utils";
+import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import type { ResumoVendas, RupturaRow, MixPagamento, PontoFinanceiro, CategoriaAgg } from "../relatorios/_data";
 import type { PedidoAndamento, ProdutoCrescimento, OportunidadeFornecedor, PrevisaoRuptura } from "./_data";
 
@@ -68,6 +69,8 @@ export type Insight = {
 };
 
 export type InsightsInput = {
+  /** Estratégia de controle da empresa — decide o texto e o link de ruptura. */
+  policy?: EstoquePolicy;
   resumo: ResumoVendas;
   resumoPrev: ResumoVendas;
   rupturaRows: RupturaRow[];
@@ -114,6 +117,13 @@ export function saudacao(agora = new Date()): string {
 
 export function buildInsights(input: InsightsInput): Insight[] {
   const insights: Insight[] = [];
+  const policy = input.policy ?? POLICY_PADRAO;
+
+  // Quem controla por giro não tem "mínimo": lá ruptura é prateleira vazia, e
+  // o link tem de cair num filtro que existe naquela estratégia (ver
+  // `estoque/_filtros.ts`) — senão o operador clica e chega numa lista vazia.
+  const rupturaMotivo = policy.usaGiro ? "sem estoque" : "abaixo do estoque mínimo";
+  const rupturaHref = `/estoque?filtro=${policy.usaGiro ? "sem" : "baixoMinimo"}`;
 
   // 1. Ruptura — alerta no assistente.
   if (input.rupturaRows.length > 0) {
@@ -125,9 +135,9 @@ export function buildInsights(input: InsightsInput): Insight[] {
       titulo: `${input.rupturaRows.length} produto${input.rupturaRows.length > 1 ? "s" : ""} em ruptura`,
       corpo:
         input.rupturaRows.length === 1
-          ? `${top.nome} está abaixo do estoque mínimo.`
-          : `${top.nome} e mais ${input.rupturaRows.length - 1} produto${input.rupturaRows.length > 2 ? "s" : ""} abaixo do estoque mínimo.`,
-      cta: { label: "Revisar estoque", href: "/estoque?filtro=baixoMinimo"},
+          ? `${top.nome} está ${rupturaMotivo}.`
+          : `${top.nome} e mais ${input.rupturaRows.length - 1} produto${input.rupturaRows.length > 2 ? "s" : ""} ${rupturaMotivo}.`,
+      cta: { label: "Revisar estoque", href: rupturaHref },
       escopo: "assistente",
       prioridade: 1,
     });
@@ -139,15 +149,17 @@ export function buildInsights(input: InsightsInput): Insight[] {
         icone: "ruptura-produto",
         titulo: `Restam apenas ${top.estoqueFechado.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} unidades de ${top.nome}`,
         corpo: "Reposição recomendada para hoje.",
-        cta: { label: "Ver estoque", href: "/estoque?filtro=baixoMinimo"},
+        cta: { label: "Ver estoque", href: rupturaHref },
         escopo: "cards",
         prioridade: 5,
       });
     }
   }
 
-  // 1b. Previsão de ruptura — ainda acima do mínimo, mas o ritmo de venda esgota em poucos dias.
-  const previsao = input.previsaoRuptura[0];
+  // 1b. Previsão de ruptura — ainda dentro da meta, mas o ritmo de venda esgota
+  // em poucos dias. Na rotatividade isso já é o alerta de cobertura do sino:
+  // repetir aqui seria o mesmo aviso com duas roupas.
+  const previsao = policy.usaGiro ? undefined : input.previsaoRuptura[0];
   if (previsao) {
     insights.push({
       id: "previsao-ruptura",

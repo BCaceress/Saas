@@ -138,6 +138,7 @@ const carregarInsights = cache(async (d: DashCtx): Promise<Insight[]> => {
     ]);
 
   return buildInsights({
+    policy: d.policy,
     resumo,
     resumoPrev,
     rupturaRows,

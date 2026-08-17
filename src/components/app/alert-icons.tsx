@@ -1,7 +1,7 @@
 import {
   PackageX, AlertTriangle, Tag, PackagePlus, ShoppingCart,
   ArrowLeftRight, Truck, ClipboardList, Sparkles, PauseCircle, Coins, Percent,
-  Wine, TrendingUp, TrendingDown, Flame, Cake, Gift, type LucideIcon,
+  Wine, TrendingUp, TrendingDown, Flame, Cake, Gift, CalendarClock, type LucideIcon,
 } from "lucide-react";
 import type { AlertIcon } from "@/lib/alerts-types";
 
@@ -33,4 +33,5 @@ export const ALERT_ICON: Record<AlertIcon, LucideIcon> = {
   campeao: Flame,
   aniversario: Cake,
   "cliente-risco": Gift,
+  validade: CalendarClock,
 };

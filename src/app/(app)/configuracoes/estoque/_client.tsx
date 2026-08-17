@@ -12,15 +12,15 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
 import {
   COBERTURAS,
+  PCTS_CRITICO,
   PERIODOS_MEDIA,
   TIPOS_CONTROLE,
   type TipoControleEstoque,
 } from "@/lib/estoque-estrategia";
-import { Switch } from "../_ui";
+import { BarraAcoes, CampoDias, SeloEstado, Switch } from "../_ui";
 import { updateEstoqueConfig } from "../actions";
 
 /**
@@ -40,6 +40,7 @@ type EstoqueConfig = {
   tipoControleEstoque: TipoControleEstoque;
   periodoMediaDias: number;
   diasCobertura: number;
+  coberturaCriticaPct: number;
   estoqueMinimoPadrao: number;
   produtoParadoDias: number;
   validadeAlertaDias: number;
@@ -86,6 +87,7 @@ export function EstoqueConfigClient({
   );
   const [periodo, setPeriodo] = useState(initial.periodoMediaDias);
   const [cobertura, setCobertura] = useState(initial.diasCobertura);
+  const [criticoPct, setCriticoPct] = useState(initial.coberturaCriticaPct);
   const [minimo, setMinimo] = useState(String(initial.estoqueMinimoPadrao));
   const [parado, setParado] = useState(String(initial.produtoParadoDias));
   const [validade, setValidade] = useState(String(initial.validadeAlertaDias));
@@ -109,6 +111,7 @@ export function EstoqueConfigClient({
     tipo !== base.tipoControleEstoque ||
     periodo !== base.periodoMediaDias ||
     cobertura !== base.diasCobertura ||
+    criticoPct !== base.coberturaCriticaPct ||
     Number(minimo) !== base.estoqueMinimoPadrao ||
     Number(parado) !== base.produtoParadoDias ||
     Number(validade) !== base.validadeAlertaDias ||
@@ -143,6 +146,7 @@ export function EstoqueConfigClient({
       tipoControleEstoque: tipo,
       periodoMediaDias: periodo,
       diasCobertura: cobertura,
+      coberturaCriticaPct: criticoPct,
       estoqueMinimoPadrao: min,
       produtoParadoDias: dias,
       validadeAlertaDias: vDias,
@@ -210,7 +214,7 @@ export function EstoqueConfigClient({
               </p>
 
               {usaGiro ? (
-                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   <SubCard
                     titulo="Período para calcular a média"
                     descricao="Define o período de histórico de vendas usado para calcular a média diária."
@@ -238,6 +242,20 @@ export function EstoqueConfigClient({
                       }))}
                       sufixo="dias"
                       onChange={setCobertura}
+                    />
+                  </SubCard>
+                  <SubCard
+                    titulo="Quando vira crítico"
+                    descricao="Abaixo desta fatia da cobertura desejada o aviso deixa de ser 'baixo' e passa a ser crítico."
+                  >
+                    <Segmented
+                      name="Corte de cobertura crítica"
+                      value={criticoPct}
+                      options={PCTS_CRITICO.map((p) => ({
+                        value: p,
+                        label: `${p}%`,
+                      }))}
+                      onChange={setCriticoPct}
                     />
                   </SubCard>
                 </div>
@@ -363,17 +381,16 @@ export function EstoqueConfigClient({
         </section>
       )}
 
-      {/* ── Barra de ação: fica sempre à vista, e só liga quando há o que
-          salvar — botão que some tira do operador a referência de onde
-          confirmar. ─────────────────────────────────────────────────── */}
-      <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-line-strong bg-surface/95 px-4 py-3 shadow-[var(--shadow-float)] backdrop-blur">
-        <p className={cn("text-sm", minInvalido ? "text-danger" : "text-muted")}>
-          {minInvalido
+      <BarraAcoes
+        tomAlerta={minInvalido}
+        estado={
+          minInvalido
             ? "Informe a quantidade do estoque mínimo padrão."
             : dirty
               ? "Alterações não salvas."
-              : "Tudo salvo."}
-        </p>
+              : "Tudo salvo."
+        }
+      >
         <Button
           size="sm"
           onClick={salvar}
@@ -381,7 +398,7 @@ export function EstoqueConfigClient({
         >
           {pending ? "Salvando…" : "Salvar configurações"}
         </Button>
-      </div>
+      </BarraAcoes>
     </div>
   );
 }
@@ -637,42 +654,6 @@ function OpcaoLinha({
   );
 }
 
-/** Campo numérico curto com unidade ao lado — número é dado, então vai em mono. */
-function CampoDias({
-  id,
-  value,
-  onChange,
-  min,
-  max,
-  sufixo,
-  placeholder,
-}: {
-  id: string;
-  value: string;
-  onChange: (v: string) => void;
-  min: number;
-  max: number;
-  sufixo: string;
-  placeholder?: string;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <Input
-        id={id}
-        type="number"
-        min={min}
-        max={max}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        inputMode="numeric"
-        className="h-10 w-24 px-3 text-center font-mono text-sm"
-      />
-      <span className="text-sm text-muted">{sufixo}</span>
-    </div>
-  );
-}
-
 /** Card compacto de um único número. Altura baixa, largura aproveitada. */
 function CardNumero({
   titulo,
@@ -701,23 +682,3 @@ function CardNumero({
   );
 }
 
-/** Estado do formulário no canto do card: pendente (âmbar) ou salvo (verde). */
-function SeloEstado({ dirty, salvo }: { dirty: boolean; salvo: boolean }) {
-  if (dirty) {
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] bg-warn-soft px-2.5 py-1 text-[12px] font-medium text-warn">
-        <span className="h-1.5 w-1.5 rounded-full bg-warn" aria-hidden />
-        Alterações não salvas
-      </span>
-    );
-  }
-  if (salvo) {
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] bg-ok-soft px-2.5 py-1 text-[12px] font-medium text-ok motion-safe:animate-[fade-up_0.22s_cubic-bezier(0.16,1,0.3,1)_both]">
-        <CheckCircle2 size={13} aria-hidden />
-        Configurações salvas
-      </span>
-    );
-  }
-  return null;
-}

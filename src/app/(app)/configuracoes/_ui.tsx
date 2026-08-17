@@ -1,5 +1,7 @@
 "use client";
 
+import { CheckCircle2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 /** Interruptor padrão das telas de Configurações (mesmo visual da Fidelização). */
@@ -76,6 +78,88 @@ export function SettingCard({
         </div>
         {right}
       </div>
+    </div>
+  );
+}
+
+/** Campo numérico curto com unidade ao lado — número é dado, então vai em mono. */
+export function CampoDias({
+  id,
+  value,
+  onChange,
+  min,
+  max,
+  sufixo,
+  placeholder,
+  disabled,
+}: {
+  id: string;
+  value: string;
+  onChange: (v: string) => void;
+  min: number;
+  max: number;
+  sufixo: string;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <Input
+        id={id}
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        placeholder={placeholder}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        inputMode="numeric"
+        className="h-10 w-24 px-3 text-center font-mono text-sm"
+      />
+      <span className="text-sm text-muted">{sufixo}</span>
+    </div>
+  );
+}
+
+/** Estado do formulário no canto do card: pendente (âmbar) ou salvo (verde). */
+export function SeloEstado({ dirty, salvo }: { dirty: boolean; salvo: boolean }) {
+  if (dirty) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] bg-warn-soft px-2.5 py-1 text-[12px] font-medium text-warn">
+        <span className="h-1.5 w-1.5 rounded-full bg-warn" aria-hidden />
+        Alterações não salvas
+      </span>
+    );
+  }
+  if (salvo) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] bg-ok-soft px-2.5 py-1 text-[12px] font-medium text-ok motion-safe:animate-[fade-up_0.22s_cubic-bezier(0.16,1,0.3,1)_both]">
+        <CheckCircle2 size={13} aria-hidden />
+        Configurações salvas
+      </span>
+    );
+  }
+  return null;
+}
+
+/**
+ * Barra de ação fixa no rodapé da tela de configuração. Fica sempre à vista e
+ * só liga quando há o que salvar — botão que some tira do operador a
+ * referência de onde confirmar.
+ */
+export function BarraAcoes({
+  estado,
+  tomAlerta,
+  children,
+}: {
+  estado: string;
+  tomAlerta?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-line-strong bg-surface/95 px-4 py-3 shadow-[var(--shadow-float)] backdrop-blur">
+      <p className={cn("text-sm", tomAlerta ? "text-danger" : "text-muted")}>{estado}</p>
+      {children}
     </div>
   );
 }

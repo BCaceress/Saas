@@ -162,6 +162,9 @@ model Tenant {
   periodoMediaDias    Int                 @default(30)
   /// Dias de venda que a compra deve cobrir no modo ROTATIVIDADE (7/14/21/30).
   diasCobertura       Int                 @default(7)
+  /// % da meta de cobertura abaixo da qual o estoque é "crítico" (e não só
+  /// "baixo"). Régua de severidade compartilhada por sino, dashboard e compras.
+  coberturaCriticaPct Int                 @default(30)
 
   estoqueMinimoPadrao Int                @default(0) // pré-preenche o mínimo ao cadastrar produto
   produtoParadoDias   Int                @default(45) // dias sem movimentação → alerta "parado"
@@ -172,8 +175,26 @@ model Tenant {
   caixaFundoTroco   Decimal? @db.Decimal(10, 2) // sugestão de abertura
   caixaLimiteGaveta Decimal? @db.Decimal(10, 2) // acima disso, sugere sangria
 
-  // Sino de alertas: categorias desligadas pelo operador (AlertCategory[])
+  // ── Sino de alertas ──────────────────────────────────────────
+  /// LEGADO: categorias desligadas pelo operador (AlertCategory[]). Só é lido
+  /// como fallback de quem ainda não salvou a preferência nova — a partir da
+  /// primeira gravação em `alertasConfig`, este array é esvaziado.
   alertasDesativados String[] @default([])
+
+  /// Preferência POR TIPO de alerta: `{ "<AlertKind>": { ligado, prioridade } }`.
+  /// Os tipos e seus padrões vivem em `src/lib/alertas/catalogo.ts`. É JSON e
+  /// não tabela porque são poucas chaves conhecidas, lidas inteiras a cada
+  /// abertura do sino — uma tabela cobraria um join sem entregar consulta.
+  alertasConfig Json?
+
+  /// Limiares cujo dono é o próprio alerta (os demais moram no ajuste que os
+  /// origina: `produtoParadoDias`, `cupomDiasRisco`, `diasCobertura`…).
+  inventarioAtrasoDias Int @default(3) // inventário aberto vira "atrasado"
+  novoSemMovDias       Int @default(7) // janela do aviso "recém cadastrado sem movimentação"
+
+  /// Janela civilizada do push, em hora local (fora dela o job não notifica).
+  pushHoraInicio Int @default(7)
+  pushHoraFim    Int @default(21)
 
   onboardingDone Boolean @default(false)
 

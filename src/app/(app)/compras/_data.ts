@@ -4,10 +4,11 @@ import { diasDeHistoricoVendas } from "@/lib/estoque-giro";
 import {
   POLICY_PADRAO,
   alvoReposicao,
-  coberturaDias as coberturaDe,
+  classificarNivel,
   estaAprendendo,
   mediaDiaria,
   type EstoquePolicy,
+  type NivelEstoque,
 } from "@/lib/estoque-estrategia";
 
 const n = (v: Decimal | null | undefined) => (v == null ? 0 : Number(v));
@@ -23,6 +24,20 @@ const n = (v: Decimal | null | undefined) => (v == null ? 0 : Number(v));
 //  · ROTATIVIDADE → média diária de venda × dias de cobertura desejados.
 
 export type SugestaoStatus = "ruptura" | "critico" | "abaixo" | "monitorar";
+
+/**
+ * Nível de estoque (régua única, `lib/estoque-estrategia`) → urgência de
+ * compra. `null` = não precisa comprar. Saldo negativo é tratado como ruptura:
+ * a prateleira está vazia de qualquer jeito, o acerto do saldo é outro assunto.
+ */
+const STATUS_DO_NIVEL: Record<NivelEstoque, SugestaoStatus | null> = {
+  negativo: "ruptura",
+  ruptura: "ruptura",
+  critico: "critico",
+  abaixo: "abaixo",
+  monitorar: "monitorar",
+  ok: null,
+};
 
 export type SugestaoRow = {
   productId: string;
@@ -257,36 +272,19 @@ export async function loadSugestoesReposicao(
         : consumo.d7 > 0
           ? consumo.d7 / 7
           : 0;
-    const cobertura = coberturaDe(estoque, mediaDia);
     const meta = policy.diasCobertura;
     const pendente = pendenteMap.get(s.productId) ?? 0;
 
-    // Classificação — só entra na lista quem precisa de ação, e o que conta
+    // Classificação — a mesma régua do sino e do dashboard
+    // (`classificarNivel`), para que "crítico" aqui e "crítico" lá signifiquem
+    // o mesmo estoque. Só entra na lista quem precisa de ação, e o que conta
     // como "precisa" muda com a estratégia escolhida pela empresa.
-    let status: SugestaoStatus | null = null;
-    if (policy.usaGiro) {
-      // Sem giro na janela não há o que projetar: o produto sai da lista.
-      if (mediaDia <= 0) continue;
-      if (estoque <= 0) status = "ruptura";
-      else if (cobertura != null && cobertura <= meta * 0.3) status = "critico";
-      else if (cobertura != null && cobertura < meta) status = "abaixo";
-      else if (cobertura != null && cobertura < meta * 1.5) status = "monitorar";
-    } else if (policy.tipo === "MINIMO") {
-      if (minimo <= 0 && mediaDia <= 0) continue;
-      if (estoque <= 0) status = "ruptura";
-      else if (minimo > 0 && estoque < minimo * 0.5) status = "critico";
-      else if (minimo > 0 && estoque <= minimo) status = "abaixo";
-      else if (cobertura != null && cobertura <= meta) status = "monitorar";
-    } else {
-      if (minimo <= 0 && ideal <= 0 && mediaDia <= 0) continue;
-      if (estoque <= 0) status = "ruptura";
-      else if ((minimo > 0 && estoque < minimo * 0.5) || (cobertura != null && cobertura <= 3)) status = "critico";
-      else if ((minimo > 0 && estoque < minimo) || (cobertura != null && cobertura <= 7)) status = "abaixo";
-      // Ainda acima do mínimo, mas abaixo do ideal ou com giro que projeta
-      // queda pra baixo do alvo dentro da janela de reposição — no radar,
-      // sem urgência de compra imediata.
-      else if ((ideal > 0 && estoque < ideal) || (cobertura != null && cobertura <= meta * 2)) status = "monitorar";
-    }
+    const c = classificarNivel(policy, { estoque, minimo, ideal, mediaDia });
+    const cobertura = c.cobertura;
+    // Sem meta configurada e sem giro não há o que projetar: fora da lista,
+    // mesmo zerado — comprar quanto, com base em quê?
+    if (c.semBase) continue;
+    const status = STATUS_DO_NIVEL[c.nivel];
     if (!status) continue;
 
     const alvo = alvoReposicao(policy, { minimo, ideal, mediaDia });

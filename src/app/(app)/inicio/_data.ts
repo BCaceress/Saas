@@ -129,13 +129,16 @@ export type AnaliseReposicao = {
   aprendendo: boolean;
 };
 
-const COBERTURA_CRITICA_DIAS = 3;
-
 export async function analiseReposicao(
   siteId: SiteFilter,
   policy: EstoquePolicy = POLICY_PADRAO,
 ): Promise<AnaliseReposicao> {
   const { grupos, aprendendo } = await loadSugestoesReposicao(siteId, policy);
+
+  // Corte da previsão: a mesma régua de "crítico" da empresa, não três dias
+  // fixos. Quem repõe a cada 30 dias quer o aviso muito antes de quem repõe
+  // toda semana.
+  const corteCritico = Math.max(1, Math.round(policy.diasCobertura * policy.fatorCritico));
 
   // Previsão: item ainda acima do mínimo (não é "ruptura" hoje) mas o ritmo de
   // venda esgota o estoque em poucos dias — alerta antecipado, não reativo.
@@ -144,7 +147,7 @@ export async function analiseReposicao(
   for (const g of grupos) {
     for (const item of g.itens) {
       if (policy.usaGiro && item.estoque > 0) {
-        const nivel = nivelCobertura(item.coberturaDias, item.metaCoberturaDias);
+        const nivel = nivelCobertura(item.coberturaDias, item.metaCoberturaDias, policy.fatorCritico);
         if (nivel === "muito-baixo" || nivel === "atencao") {
           baixaCobertura.push({
             productId: item.productId,
@@ -160,7 +163,7 @@ export async function analiseReposicao(
       }
       if (
         item.coberturaDias != null &&
-        item.coberturaDias <= COBERTURA_CRITICA_DIAS &&
+        item.coberturaDias <= corteCritico &&
         item.estoque > item.estoqueMinimo
       ) {
         previsaoRuptura.push({

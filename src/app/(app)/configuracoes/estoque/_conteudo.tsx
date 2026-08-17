@@ -12,6 +12,7 @@ export async function ConteudoEstoque() {
         tipoControleEstoque: policy.tipo,
         periodoMediaDias: policy.periodoMediaDias,
         diasCobertura: policy.diasCobertura,
+        coberturaCriticaPct: Math.round(policy.fatorCritico * 100),
         estoqueMinimoPadrao: tenant.estoqueMinimoPadrao,
         produtoParadoDias: tenant.produtoParadoDias,
         validadeAlertaDias: tenant.validadeAlertaDias,

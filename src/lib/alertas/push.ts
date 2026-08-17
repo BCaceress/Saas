@@ -30,7 +30,7 @@ const MAX_POR_APARELHO = 3;
 /** Falhas consecutivas antes de considerar o aparelho morto. */
 const MAX_FALHAS = 5;
 
-/** Janela civilizada, em hora local do fuso abaixo. */
+/** Janela civilizada padrão, em hora local — a empresa ajusta em Notificações. */
 const HORA_INICIO = 7;
 const HORA_FIM = 21;
 
@@ -127,9 +127,6 @@ export async function dispararAlertasPush(
   }
 
   const h = horaLocal();
-  if (!opcoes.ignorarHorario && (h < HORA_INICIO || h >= HORA_FIM)) {
-    return { ...vazio, puladoForaDeHora: true };
-  }
 
   // Mesmo recorte de `lib/snapshot.ts`. Conta suspensa ou cancelada não recebe
   // push: ela ainda consulta os próprios dados, mas não é hora de o sistema
@@ -142,6 +139,15 @@ export async function dispararAlertasPush(
   const agora = new Date();
 
   for (const tenant of tenants) {
+    // A janela de silêncio é de cada empresa (Configurações → Notificações):
+    // mercadinho de bairro e conveniência 24h não querem o mesmo horário.
+    const inicio = tenant.pushHoraInicio ?? HORA_INICIO;
+    const fim = tenant.pushHoraFim ?? HORA_FIM;
+    if (!opcoes.ignorarHorario && (h < inicio || h >= fim)) {
+      resumo.puladoForaDeHora = true;
+      continue;
+    }
+
     const inscricoes = (await comTenant(
       tenant.id,
       basePrisma.pushSubscription.findMany({
