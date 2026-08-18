@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   FileText,
+  FileUp,
   Image as ImageIcon,
   Loader2,
   PackageSearch,
@@ -23,6 +24,7 @@ import type { AcaoInicial } from "@/components/mobile/acoes-produto";
 import { classificarCodigo } from "@/lib/codigo-lido";
 import { interpretarComandoAction, type ComandoVoz } from "../acoes/actions";
 import { importarNotaPorChaveAction, type ResultadoNota } from "../nota/actions";
+import { importarXmlRecebimentoAction } from "@/app/(app)/compras/recebimento/actions";
 import {
   buscarPorCodigoAction,
   buscarPorNomeAction,
@@ -56,6 +58,8 @@ export function ScanClient() {
   const [estado, setEstado] = React.useState<Estado>({ tela: "lendo" });
   const [ocupado, setOcupado] = React.useState(false);
   const [manual, setManual] = React.useState("");
+  const [enviandoXml, setEnviandoXml] = React.useState(false);
+  const xmlInputRef = React.useRef<HTMLInputElement>(null);
 
   /** Abre a ficha de um produto pelo id/EAN/SKU já conhecido. */
   const abrirProduto = React.useCallback(
@@ -148,6 +152,51 @@ export function ScanClient() {
     setManual("");
   }
 
+  /**
+   * Quem já tem o XML no aparelho (mandado por WhatsApp, e-mail, pen drive do
+   * fornecedor) não precisa da chave nem da câmera — mesmo importador do
+   * desktop, só que o destino de sucesso é sempre a conferência: navegar sem
+   * fila intermediária, porque no celular não tem para onde "voltar e escolher
+   * outra depois".
+   */
+  async function enviarXml(files: FileList | null) {
+    const lista = Array.from(files ?? []);
+    if (lista.length === 0) return;
+
+    setEnviandoXml(true);
+    try {
+      const form = new FormData();
+      for (const f of lista) form.append("arquivos", f);
+      const resultados = await importarXmlRecebimentoAction(form);
+
+      for (const r of resultados.filter((r) => r.status === "ERRO")) toast.error(r.arquivo, r.motivo);
+      const duplicadas = resultados.filter((r) => r.status === "DUPLICADA");
+      if (duplicadas.length > 0) {
+        toast.info(
+          duplicadas.length === 1 ? "Nota já importada" : `${duplicadas.length} notas já importadas`,
+          "A chave de acesso já existe aqui — mercadoria não entra duas vezes.",
+        );
+      }
+
+      const importadas = resultados.filter((r) => r.status === "IMPORTADA" && r.inboundId);
+      if (importadas.length === 1) {
+        router.push(`/compras/recebimento/${importadas[0]!.inboundId}`);
+        return;
+      }
+      if (importadas.length > 1) {
+        toast.success(
+          `${importadas.length} notas importadas.`,
+          "Confira uma a uma em Compras > Recebimento.",
+        );
+      }
+    } catch (e) {
+      toast.error("Não foi possível ler o arquivo", e instanceof Error ? e.message : "Tente de novo.");
+    } finally {
+      setEnviandoXml(false);
+      if (xmlInputRef.current) xmlInputRef.current.value = "";
+    }
+  }
+
   if (estado.tela === "produto") {
     return (
       <div className="space-y-3">
@@ -215,6 +264,28 @@ export function ScanClient() {
         <ImageIcon className="h-4 w-4 text-ink-2" aria-hidden />
         Ler encarte ou tabela de preço
       </Link>
+
+      <input
+        ref={xmlInputRef}
+        type="file"
+        accept=".xml,.zip,text/xml,application/xml,application/zip"
+        multiple
+        className="hidden"
+        onChange={(e) => void enviarXml(e.target.files)}
+      />
+      <button
+        type="button"
+        disabled={enviandoXml}
+        onClick={() => xmlInputRef.current?.click()}
+        className="flex min-h-12 w-full items-center justify-center gap-2 rounded-full border border-line-button bg-surface text-sm font-medium text-ink disabled:opacity-60"
+      >
+        {enviandoXml ? (
+          <Loader2 className="h-4 w-4 animate-spin text-ink-2" aria-hidden />
+        ) : (
+          <FileUp className="h-4 w-4 text-ink-2" aria-hidden />
+        )}
+        {enviandoXml ? "Lendo a nota…" : "Selecionar XML da nota"}
+      </button>
 
       {estado.tela === "sem-produto" && <NaoEncontrado codigo={estado.codigo} />}
 
