@@ -264,6 +264,55 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
   };
 }
 
+// ── Referências de preço (para o resumo) ────────────────────
+
+/**
+ * Preço que cada fornecedor praticava em cada produto ANTES desta cotação,
+ * chaveado por `${supplierId}:${productId}`.
+ *
+ * É o que transforma "R$ 138" em "R$ 138, 8% acima da última vez" — a única
+ * informação do painel que não está na tela do comparativo. Sai do
+ * `SupplierPriceHistory`, alimentado tanto por tabela importada quanto pelas
+ * respostas de cotação (ver lib/compras/cotacao-precos).
+ *
+ * O corte por data é obrigatório: sem ele, a resposta desta cotação — que já
+ * gravou seu próprio ponto no histórico — viraria referência de si mesma e
+ * toda variação daria zero.
+ */
+export async function loadReferenciasPreco(
+  cotacao: CotacaoDetalhe,
+): Promise<Record<string, number>> {
+  const productIds = [...new Set(cotacao.itens.flatMap((i) => (i.productId ? [i.productId] : []))) ];
+  const supplierIds = [...new Set(cotacao.convites.map((c) => c.supplierId))];
+  if (productIds.length === 0 || supplierIds.length === 0) return {};
+
+  // Antes do primeiro envio da cotação: qualquer preço posterior já pode ser
+  // resposta dela.
+  const corte = cotacao.enviadaEm ? new Date(cotacao.enviadaEm) : new Date(cotacao.criadaEm);
+
+  const pontos = await db.supplierPriceHistory.findMany({
+    where: {
+      productId: { in: productIds },
+      supplierId: { in: supplierIds },
+      data: { lt: corte },
+    },
+    orderBy: { data: "desc" },
+    select: { supplierId: true, productId: true, preco: true, precoPromocional: true },
+    take: 2000,
+  });
+
+  const referencias: Record<string, number> = {};
+  for (const p of pontos) {
+    if (!p.productId) continue;
+    const chave = `${p.supplierId}:${p.productId}`;
+    // `orderBy` desc + primeiro a chegar vence = o ponto mais recente antes do corte.
+    if (referencias[chave] !== undefined) continue;
+    const promo = p.precoPromocional === null ? null : n(p.precoPromocional);
+    referencias[chave] = promo && promo > 0 && promo < n(p.preco) ? promo : n(p.preco);
+  }
+  return referencias;
+}
+
 // ── Opções dos formulários ──────────────────────────────────
 
 export async function loadOpcoes(): Promise<OpcoesCotacao> {

@@ -18,6 +18,7 @@ import {
   FileQuestion,
   FileUp,
   History,
+  Inbox,
   Settings,
   Building2,
   UserCog,
@@ -290,6 +291,24 @@ export const NAV_GROUPS: NavGroup[] = [
             enabled: true,
             permissao: "compras.ver",
             descricao: "Acompanhe cada pedido de compra do envio ao recebimento.",
+          },
+          {
+            href: "/compras/recebimento",
+            label: "Recebimento",
+            icon: PackageCheck,
+            enabled: true,
+            permissao: "compras.receber",
+            descricao:
+              "Suba o XML da nota: o pedido é encontrado sozinho e sobra só conferir a mercadoria.",
+          },
+          {
+            href: "/compras/respostas",
+            label: "Respostas",
+            icon: Inbox,
+            enabled: true,
+            permissao: "compras.ver",
+            descricao:
+              "Tudo que os fornecedores mandaram — cotação, arquivo ou integração — na ordem em que chegou.",
           },
           {
             href: "/compras/importacoes",

@@ -20,7 +20,7 @@ const FILTROS = [
   { valor: "CANCELADO", label: "Cancelados" },
 ];
 
-const ABERTOS = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"];
+const ABERTOS = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"];
 
 export function PedidosFornecedor({
   pedidos,

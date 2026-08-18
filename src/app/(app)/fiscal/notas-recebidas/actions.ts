@@ -15,6 +15,7 @@ import {
   descartarNota,
   type ResultadoImportacao,
 } from "@/lib/fiscal/entrada";
+import { buscarProdutosParaRelacionar } from "@/lib/compras/busca-produto";
 import {
   sincronizarDistribuicao,
   listarAguardandoManifestacao,
@@ -137,8 +138,11 @@ const relacionarSchema = z.object({
 export async function relacionarItemAction(input: z.input<typeof relacionarSchema>) {
   return tx("fiscal.importar", async (ctx) => {
     const d = relacionarSchema.parse(input);
-    await relacionarItemInbound({ tenantId: ctx.tenant.id, ...d });
+    const r = await relacionarItemInbound({ tenantId: ctx.tenant.id, ...d });
     ok();
+    // O cadastro do produto pode ter ganhado embalagem, EAN ou custo.
+    revalidatePath("/produtos");
+    return r;
   });
 }
 
@@ -178,39 +182,26 @@ export async function descartarNotaAction(input: z.input<typeof descartarSchema>
   });
 }
 
-/** Produtos para o seletor de de-para. Busca leve, por nome/SKU/EAN. */
-export async function buscarProdutosAction(termo: string) {
+/**
+ * Produtos para o seletor de de-para, por nome, SKU ou código de barras.
+ * A ordem é a relevância ao que foi digitado (ver `busca-produto.ts`) —
+ * alfabético com LIMIT chegava a esconder o produto certo.
+ */
+export async function buscarProdutosAction(termo: string, gtin?: string | null) {
   return tx("fiscal.ver", async () => {
-    const q = termo.trim();
-    if (q.length < 2) return [];
-    const produtos = await db.product.findMany({
-      where: {
-        ativo: true,
-        OR: [
-          { nome: { contains: q, mode: "insensitive" } },
-          { sku: { contains: q, mode: "insensitive" } },
-          { ean: { contains: q.replace(/\D/g, "") || "___" } },
-        ],
-      },
-      select: {
-        id: true,
-        nome: true,
-        sku: true,
-        ean: true,
-        packagings: { select: { id: true, nome: true, fatorConversao: true } },
-      },
-      orderBy: { nome: "asc" },
-      take: 20,
-    });
+    const produtos = await buscarProdutosParaRelacionar(termo, { gtin, limite: 20 });
     return produtos.map((p) => ({
       id: p.id,
       nome: p.nome,
       sku: p.sku,
       ean: p.ean,
-      packagings: p.packagings.map((pk) => ({
-        id: pk.id,
-        nome: pk.nome,
-        fatorConversao: Number(pk.fatorConversao),
+      imagemUrl: p.imagemUrl,
+      custoMedio: p.custoMedio,
+      packagings: p.embalagens.map((e) => ({
+        id: e.id,
+        nome: e.nome,
+        ean: e.ean,
+        fatorConversao: e.fator,
       })),
     }));
   });
@@ -222,7 +213,7 @@ export async function pedidosDoFornecedorAction(supplierId: string) {
     const pedidos = await db.purchaseOrder.findMany({
       where: {
         supplierId,
-        status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] },
+        status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] },
       },
       select: { id: true, numero: true, status: true, valorTotal: true },
       orderBy: { createdAt: "desc" },

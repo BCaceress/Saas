@@ -9,6 +9,9 @@ import {
   type NotaXml,
 } from "./nfe-xml";
 import { fatorDaNota } from "./fator";
+import { custoDoItem } from "./custo";
+import { enriquecerProdutoComNota, atualizarCustoDeReferencia } from "./enriquecer-produto";
+import { conciliarComPedidoSugerido } from "@/lib/compras/conciliacao";
 import type { FiscalInboundStatus } from "@/generated/prisma";
 
 // ============================================================
@@ -28,32 +31,17 @@ export type ResultadoImportacao = {
   arquivo: string;
   status: "IMPORTADA" | "DUPLICADA" | "ERRO";
   chave?: string;
+  /** Id da nota importada — leva direto ao recebimento inteligente. */
+  inboundId?: string;
   /** Itens que já nasceram relacionados pelo de-para. */
   itensResolvidos?: number;
   itensTotal?: number;
+  /** Pedido que a nota conciliou sozinha (quando um se destacou). */
+  pedidoNumero?: string | null;
+  /** Havia pedido candidato, mas nenhum se destacou — a tela pergunta. */
+  pedidosCandidatos?: number;
   motivo?: string;
 };
-
-/**
- * Custo real da mercadoria: o que entra no estoque não é só `vProd`.
- * ICMS-ST, FCP-ST, IPI e frete são pagos ao fornecedor e fazem parte do custo;
- * ignorá-los dá margem falsamente alta na venda. Bonificação entra com custo zero.
- */
-function custoDoItem(i: {
-  valorTotal: number;
-  valorDesconto: number;
-  valorIcmsSt: number;
-  valorFcpSt: number;
-  valorIpi: number;
-  valorFrete: number;
-  bonificacao: boolean;
-}): number {
-  if (i.bonificacao) return 0;
-  return Math.max(
-    0,
-    i.valorTotal - i.valorDesconto + i.valorIcmsSt + i.valorFcpSt + i.valorIpi + i.valorFrete,
-  );
-}
 
 /** Fornecedor do XML: acha pelo CNPJ ou cria com o que a nota já traz. */
 async function resolverFornecedor(tenantId: string, emit: NotaXml["emitente"]): Promise<string> {
@@ -243,7 +231,7 @@ async function importarUmXml(input: {
     nota.itens.map(async (item) => ({ item, resolucao: await resolverItem(supplierId, item) })),
   );
 
-  await db.fiscalInbound.create({
+  const criada = await db.fiscalInbound.create({
     data: {
       tenantId,
       siteId,
@@ -259,6 +247,9 @@ async function importarUmXml(input: {
       emitRazaoSocial: nota.emitente.razaoSocial,
       emitUf: nota.emitente.uf,
       importadoPor: userId ?? null,
+      // O XML cru fica guardado inteiro: é a prova do que o fornecedor cobrou,
+      // e a conciliação pode ser refeita a partir dele quando o de-para muda.
+      xmlArquivo: { create: { tenantId, nomeArquivo: xml.nome, conteudo: xml.conteudo } },
       items: {
         create: resolvidos.map(({ item, resolucao }) => ({
           tenantId,
@@ -280,6 +271,8 @@ async function importarUmXml(input: {
           valorIpi: item.valorIpi,
           valorFrete: item.valorFrete,
           bonificacao: item.bonificacao,
+          pedidoFornecedor: item.pedidoFornecedor,
+          itemPedidoNumero: item.itemPedidoNumero,
           productId: resolucao.productId,
           packagingId: resolucao.packagingId,
           fatorConversao: resolucao.fatorConversao,
@@ -289,12 +282,23 @@ async function importarUmXml(input: {
     select: { id: true },
   });
 
+  // Achar o pedido é trabalho do sistema, não do operador: quando um candidato
+  // se destaca com folga, a nota já nasce conciliada.
+  const vinculo = await conciliarComPedidoSugerido({
+    tenantId,
+    inboundId: criada.id,
+    userId,
+  });
+
   return {
     arquivo: xml.nome,
     status: "IMPORTADA",
     chave: nota.chave,
+    inboundId: criada.id,
     itensResolvidos: resolvidos.filter((r) => r.resolucao.productId).length,
     itensTotal: resolvidos.length,
+    pedidoNumero: vinculo.numero,
+    pedidosCandidatos: vinculo.sugestoes.length,
   };
 }
 
@@ -308,10 +312,9 @@ export async function relacionarItemInbound(input: {
   productId: string;
   packagingId?: string | null;
   fatorConversao?: number;
-}): Promise<void> {
+}): Promise<{ preenchidos: string[] }> {
   const { tenantId, itemId, productId } = input;
   const fatorConversao = input.fatorConversao && input.fatorConversao > 0 ? input.fatorConversao : 1;
-  const packagingId = input.packagingId || null;
 
   const item = await db.fiscalInboundItem.findFirst({
     where: { id: itemId },
@@ -319,6 +322,17 @@ export async function relacionarItemInbound(input: {
       id: true,
       codigoFornecedor: true,
       gtin: true,
+      unidade: true,
+      quantidade: true,
+      unidadeTributavel: true,
+      quantidadeTributavel: true,
+      valorTotal: true,
+      valorDesconto: true,
+      valorIcmsSt: true,
+      valorFcpSt: true,
+      valorIpi: true,
+      valorFrete: true,
+      bonificacao: true,
       inbound: { select: { id: true, status: true, supplierId: true } },
     },
   });
@@ -326,6 +340,34 @@ export async function relacionarItemInbound(input: {
   if (item.inbound.status === "RECEBIDO") {
     throw new Error("Esta nota já gerou entrada de estoque — não dá para trocar o produto.");
   }
+
+  // A nota sabe em que embalagem o fornecedor vende, com que código de barras
+  // e por quanto. Aproveitamos isso no cadastro ANTES de gravar o de-para: se
+  // a embalagem de compra nasce aqui, é o id dela que fica registrado.
+  const enriquecimento = await enriquecerProdutoComNota({
+    tenantId,
+    productId,
+    packagingId: input.packagingId || null,
+    fatorConversao,
+    supplierId: item.inbound.supplierId,
+    item: {
+      codigoFornecedor: item.codigoFornecedor,
+      gtin: item.gtin,
+      unidade: item.unidade,
+      quantidade: Number(item.quantidade),
+      unidadeTributavel: item.unidadeTributavel,
+      quantidadeTributavel:
+        item.quantidadeTributavel == null ? null : Number(item.quantidadeTributavel),
+      valorTotal: Number(item.valorTotal),
+      valorDesconto: Number(item.valorDesconto),
+      valorIcmsSt: Number(item.valorIcmsSt),
+      valorFcpSt: Number(item.valorFcpSt),
+      valorIpi: Number(item.valorIpi),
+      valorFrete: Number(item.valorFrete),
+      bonificacao: item.bonificacao,
+    },
+  });
+  const packagingId = enriquecimento.packagingId;
 
   await db.fiscalInboundItem.update({
     where: { id: itemId },
@@ -360,6 +402,8 @@ export async function relacionarItemInbound(input: {
     where: { id: item.inbound.id },
     data: { status: statusPorItens(itens) },
   });
+
+  return { preenchidos: enriquecimento.preenchidos };
 }
 
 /** Vincula (ou desvincula) a nota a um pedido de compra, para conferência. */
@@ -460,6 +504,16 @@ export async function gerarEntradaDaNota(input: {
     where: { id: inboundId },
     data: { status: "RECEBIDO", purchaseId },
   });
+
+  // O que a nota cobrou vira o custo de referência do produto — mesma regra do
+  // recebimento conciliado, para os dois caminhos deixarem o cadastro igual.
+  await atualizarCustoDeReferencia(
+    itens.map((i, idx) => ({
+      productId: i.productId,
+      custoUnitarioBase:
+        !nota.items[idx].bonificacao && i.quantidade > 0 ? i.custoTotal / i.quantidade : 0,
+    })),
+  );
 
   return purchaseId;
 }

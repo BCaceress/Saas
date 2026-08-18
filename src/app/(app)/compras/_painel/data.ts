@@ -99,7 +99,7 @@ export async function loadPainelCompras(
       db.product.count({ where: { ativo: true, suppliers: { none: {} } } }),
       db.purchaseOrder.findMany({
         where: {
-          status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] },
+          status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] },
           ...(siteId ? { siteId } : {}),
         },
         select: { valorTotal: true, previsaoEntrega: true },

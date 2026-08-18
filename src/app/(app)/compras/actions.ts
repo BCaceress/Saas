@@ -7,6 +7,7 @@ import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { criarPedidoCompra } from "@/lib/estoque";
 import { db } from "@/lib/prisma";
+import { listarEventos } from "@/lib/compras/eventos";
 import { loadHistoricoCompraProduto } from "./_data";
 
 /** Baseline de leitura do módulo. Escrita usa `txp` com a loja de destino. */
@@ -90,4 +91,41 @@ export async function criarPedidosReposicaoAction(input: z.input<typeof reposica
 
 export async function fetchHistoricoCompraProdutoAction(productId: string) {
   return tx(() => loadHistoricoCompraProduto(productId));
+}
+
+// ── Linha do tempo do pedido (lazy, p/ drawer) ────────────────
+
+export async function listarEventosPedidoAction(purchaseOrderId: string) {
+  return tx((tid) => listarEventos(tid, purchaseOrderId));
+}
+
+// ── Códigos de barras do pedido (p/ bipe no recebimento sem XML) ──
+// Um produto/embalagem por vez seria N idas ao banco; aqui é uma só,
+// batendo productId+packagingId de cada linha contra o catálogo.
+
+export async function buscarCodigosDeBarrasAction(
+  itens: { itemId: string; productId: string; packagingId: string | null }[],
+) {
+  return tx(async () => {
+    const productIds = [...new Set(itens.map((i) => i.productId))];
+    if (productIds.length === 0) return {};
+
+    const produtos = await db.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, ean: true, packagings: { select: { id: true, ean: true } } },
+    });
+    const porProduto = new Map(produtos.map((p) => [p.id, p]));
+
+    const mapa: Record<string, string[]> = {};
+    for (const it of itens) {
+      const p = porProduto.get(it.productId);
+      if (!p) continue;
+      const codigos: string[] = [];
+      if (p.ean) codigos.push(p.ean);
+      const pkg = it.packagingId ? p.packagings.find((pk) => pk.id === it.packagingId) : null;
+      if (pkg?.ean) codigos.push(pkg.ean);
+      if (codigos.length > 0) mapa[it.itemId] = codigos;
+    }
+    return mapa;
+  });
 }

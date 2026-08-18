@@ -203,6 +203,7 @@ model Tenant {
 
   memberships       Membership[]
   invites           Invite[]
+  quotationLinks    QuotationLink[]
   subscription      Subscription?
   brands            Brand[]
   categories        Category[]
@@ -588,6 +589,7 @@ enum PurchaseOrderStatus {
   ENVIADO // enviado ao fornecedor 🔵
   AGUARDANDO // confirmado pelo fornecedor, aguardando entrega 🟡
   EM_TRANSITO // mercadoria a caminho 🟣
+  CONFERENCIA // XML conciliado, conferência física em andamento 🔷
   RECEBIDO_PARCIAL // recebimento pendente (chegou em parte) 🟠
   RECEBIDO // concluído ✅
   CANCELADO // 🔴
@@ -623,6 +625,7 @@ enum SaleOrigin {
   PDV // operador no balcão
   TOTEM // self-service
   APP // app próprio (self-service)
+  IMPORTADA // histórico importado de outro sistema (não passou pelo PDV)
 }
 
 enum SaleStatus {
@@ -1339,11 +1342,13 @@ model PurchaseOrder {
   updatedAt        DateTime            @default(now()) @updatedAt // última mudança (status, itens…)
   createdBy        String?
 
-  site     Site                @relation(fields: [siteId], references: [id])
-  supplier Supplier            @relation(fields: [supplierId], references: [id])
-  items    PurchaseOrderItem[]
-  entradas Purchase[]
-  inbounds FiscalInbound[]
+  site        Site                         @relation(fields: [siteId], references: [id])
+  supplier    Supplier                     @relation(fields: [supplierId], references: [id])
+  items       PurchaseOrderItem[]
+  entradas    Purchase[]
+  inbounds    FiscalInbound[]
+  conciliacao PurchaseReconciliationItem[]
+  eventos     PurchaseEvent[]
 
   @@unique([tenantId, numero])
   @@index([tenantId])
@@ -1365,7 +1370,8 @@ model PurchaseOrderItem {
   qtdRecebida       Decimal            @default(0) @db.Decimal(12, 3) // acumulado conferido
   observacao        String? // nota do item ("trocar por validade longa", etc.)
 
-  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  purchaseOrder PurchaseOrder                @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  conciliacao   PurchaseReconciliationItem[]
 
   @@index([tenantId])
   @@index([purchaseOrderId])
@@ -2365,6 +2371,13 @@ model FiscalInbound {
   purchaseOrderId String? // pedido de compra conciliado
   purchaseId      String? @unique // entrada gerada
 
+  // Conciliação com o pedido: o vínculo foi sugerido pelo sistema (CNPJ + xPed
+  // + itens) ou escolhido à mão? `scoreVinculo` fica guardado para auditar por
+  // que aquele pedido foi escolhido sozinho.
+  vinculoAutomatico Boolean   @default(false)
+  scoreVinculo      Int?
+  conciliadoEm      DateTime?
+
   manifestacao  ManifestacaoTipo?
   manifestadoEm DateTime?
 
@@ -2374,11 +2387,14 @@ model FiscalInbound {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  site          Site                @relation(fields: [siteId], references: [id])
-  supplier      Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  purchaseOrder PurchaseOrder?      @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
-  purchase      Purchase?           @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  site          Site                         @relation(fields: [siteId], references: [id])
+  supplier      Supplier?                    @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  purchaseOrder PurchaseOrder?               @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  purchase      Purchase?                    @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
   items         FiscalInboundItem[]
+  xmlArquivo    FiscalInboundXml?
+  conciliacao   PurchaseReconciliationItem[]
+  eventos       PurchaseEvent[]
 
   @@unique([tenantId, chave])
   @@index([tenantId])
@@ -2396,24 +2412,30 @@ model FiscalInboundItem {
   ordem     Int
 
   // Como veio no XML.
-  codigoFornecedor String // cProd
-  gtin             String? // cEAN
-  descricao        String
-  ncm              String?
-  cfop             String?
-  unidade          String // uCom — como o fornecedor vende (cx, fardo, display)
-  quantidade       Decimal @db.Decimal(12, 4)
+  codigoFornecedor     String // cProd
+  gtin                 String? // cEAN
+  descricao            String
+  ncm                  String?
+  cfop                 String?
+  unidade              String // uCom — como o fornecedor vende (cx, fardo, display)
+  quantidade           Decimal  @db.Decimal(12, 4)
   // uTrib/qTrib — unidade tributável. Guardados como vieram: é a prova de
   // quantas unidades de prateleira o fornecedor diz que há em cada caixa.
   unidadeTributavel    String?
   quantidadeTributavel Decimal? @db.Decimal(12, 4)
-  valorUnitario    Decimal @db.Decimal(12, 4)
-  valorTotal       Decimal @db.Decimal(12, 2)
-  valorDesconto    Decimal @default(0) @db.Decimal(12, 2)
-  valorIcmsSt      Decimal @default(0) @db.Decimal(12, 2)
-  valorFcpSt       Decimal @default(0) @db.Decimal(12, 2) // FCP retido por ST
-  valorIpi         Decimal @default(0) @db.Decimal(12, 2)
-  valorFrete       Decimal @default(0) @db.Decimal(12, 2)
+  valorUnitario        Decimal  @db.Decimal(12, 4)
+  valorTotal           Decimal  @db.Decimal(12, 2)
+  valorDesconto        Decimal  @default(0) @db.Decimal(12, 2)
+  valorIcmsSt          Decimal  @default(0) @db.Decimal(12, 2)
+  valorFcpSt           Decimal  @default(0) @db.Decimal(12, 2) // FCP retido por ST
+  valorIpi             Decimal  @default(0) @db.Decimal(12, 2)
+  valorFrete           Decimal  @default(0) @db.Decimal(12, 2)
+
+  // xPed/nItemPed — número do pedido do comprador que o fornecedor digitou na
+  // nota. Quando vem preenchido, é a pista mais forte de qual pedido do NoHub
+  // esta nota fatura.
+  pedidoFornecedor String?
+  itemPedidoNumero Int?
 
   // Resolução no nosso catálogo.
   productId      String?
@@ -2422,12 +2444,142 @@ model FiscalInboundItem {
   fatorConversao Decimal @default(1) @db.Decimal(12, 4)
   bonificacao    Boolean @default(false) // CFOP de bonificação: entra sem custo
 
-  inbound FiscalInbound @relation(fields: [inboundId], references: [id], onDelete: Cascade)
+  inbound     FiscalInbound                @relation(fields: [inboundId], references: [id], onDelete: Cascade)
+  conciliacao PurchaseReconciliationItem[]
 
   @@unique([inboundId, ordem])
   @@index([tenantId])
   @@index([inboundId])
   @@index([productId])
+}
+
+// ============================================================
+// RECEBIMENTO INTELIGENTE — conciliação em três camadas
+//
+//   Pedido NoHub      → o que eu comprei
+//   XML da NF-e       → o que o fornecedor faturou
+//   Conferência física→ o que realmente entrou
+//
+// O estoque só se move na terceira camada. As duas primeiras existem para que
+// a terceira seja quase só confirmar: o operador confere mercadoria, não digita
+// nota. Tudo o que a conciliação decidiu fica gravado — inclusive o XML cru,
+// que é a prova do que o fornecedor cobrou.
+// ============================================================
+
+/// XML original da nota, guardado inteiro. Fica em tabela separada de propósito:
+/// é um texto grande que nenhuma listagem precisa carregar.
+model FiscalInboundXml {
+  id          String   @id @default(cuid())
+  tenantId    String
+  inboundId   String   @unique
+  nomeArquivo String
+  conteudo    String // XML cru, como chegou
+  createdAt   DateTime @default(now())
+
+  inbound FiscalInbound @relation(fields: [inboundId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+/// Veredito da linha na conciliação pedido × nota.
+enum ReconciliationStatus {
+  OK // quantidade e custo batem
+  FALTANDO // faturado a menos que o pedido
+  EXCEDENTE // faturado a mais que o pedido
+  NAO_FATURADO // está no pedido, não veio na nota
+  NAO_PEDIDO // veio na nota, não estava no pedido
+  PRECO_ALTERADO // quantidade bate, custo mudou
+}
+
+/// O que o operador decidiu sobre a divergência.
+enum ReconciliationResolucao {
+  ACEITO // segue como a nota diz (inclusive o custo novo)
+  IGNORADO // divergência conhecida, não trava o recebimento
+  AJUSTADO // operador corrigiu a quantidade na conferência
+}
+
+/// Uma linha da conciliação. Existe mesmo sem par dos dois lados: item do
+/// pedido que não veio na nota e item da nota fora do pedido também viram
+/// linha — é justamente isso que o painel de divergências mostra.
+///
+/// Quantidades e custos ficam em UNIDADE BASE do estoque. O pedido fala em
+/// caixa, a nota fala em fardo; comparar sem converter é o erro clássico que
+/// faz "10 caixas" parecer divergência de "120 unidades".
+model PurchaseReconciliationItem {
+  id                  String  @id @default(cuid())
+  tenantId            String
+  inboundId           String
+  purchaseOrderId     String
+  purchaseOrderItemId String?
+  inboundItemId       String?
+
+  productId        String?
+  codigoFornecedor String?
+  ean              String?
+  descricao        String // o nome que aparece na tela (nosso produto ou o xProd)
+
+  qtdPedida     Decimal  @default(0) @db.Decimal(12, 3)
+  qtdFaturada   Decimal  @default(0) @db.Decimal(12, 3)
+  qtdRecebida   Decimal? @db.Decimal(12, 3) // null = ainda não conferido
+  custoPedido   Decimal  @default(0) @db.Decimal(12, 4)
+  custoFaturado Decimal  @default(0) @db.Decimal(12, 4)
+  bonificacao   Boolean  @default(false)
+
+  status            ReconciliationStatus
+  resolucao         ReconciliationResolucao?
+  motivoDivergencia String?
+
+  // Conferência física: o único dado que só existe na porta.
+  lote     String?
+  validade DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  inbound       FiscalInbound      @relation(fields: [inboundId], references: [id], onDelete: Cascade)
+  purchaseOrder PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  orderItem     PurchaseOrderItem? @relation(fields: [purchaseOrderItemId], references: [id], onDelete: SetNull)
+  inboundItem   FiscalInboundItem? @relation(fields: [inboundItemId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([inboundId])
+  @@index([purchaseOrderId])
+  @@index([productId])
+}
+
+/// Marcos do pedido de compra — a timeline. Cada transição vira uma linha;
+/// nada aqui é derivado de status, porque status só guarda o "agora".
+enum PurchaseEventType {
+  PEDIDO_CRIADO
+  PEDIDO_ENVIADO
+  PEDIDO_CONFIRMADO
+  PEDIDO_EM_TRANSITO
+  XML_RECEBIDO
+  CONCILIACAO_CONCLUIDA
+  VINCULO_ALTERADO
+  DIVERGENCIA_RESOLVIDA
+  CUSTO_ACEITO
+  CONFERENCIA_CONCLUIDA
+  ESTOQUE_ATUALIZADO
+  PEDIDO_CANCELADO
+}
+
+model PurchaseEvent {
+  id              String            @id @default(cuid())
+  tenantId        String
+  purchaseOrderId String
+  inboundId       String?
+  tipo            PurchaseEventType
+  descricao       String
+  meta            Json? // detalhe da linha (item, quantidades, custos)
+  createdAt       DateTime          @default(now())
+  createdBy       String?
+
+  purchaseOrder PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  inbound       FiscalInbound? @relation(fields: [inboundId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([purchaseOrderId, createdAt])
 }
 
 // De-para persistido fornecedor↔catálogo. Escrito quando o operador relaciona
@@ -2789,6 +2941,14 @@ enum QuotationSupplierStatus {
   RECUSADA // fornecedor não vai cotar
 }
 
+/// Quem digitou a resposta. Muda o que a Central de Respostas mostra: o que
+/// veio pelo link já está no formato certo; o que o operador transcreveu de um
+/// áudio ou de uma foto merece um segundo olhar.
+enum QuotationResponseOrigem {
+  OPERADOR // alguém da loja registrou o que o fornecedor mandou
+  LINK // o fornecedor preencheu o link público
+}
+
 model Quotation {
   id       String          @id @default(cuid())
   tenantId String
@@ -2859,12 +3019,15 @@ model QuotationSupplier {
 
   purchaseOrderId String? // pedido gerado quando esta cotação foi escolhida
 
+  respondidaVia QuotationResponseOrigem?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   quotation Quotation           @relation(fields: [quotationId], references: [id], onDelete: Cascade)
   supplier  Supplier            @relation(fields: [supplierId], references: [id], onDelete: Cascade)
   responses QuotationResponse[]
+  link      QuotationLink?
 
   @@unique([quotationId, supplierId])
   @@index([tenantId])
@@ -2894,6 +3057,37 @@ model QuotationResponse {
   @@unique([quotationSupplierId, quotationItemId])
   @@index([tenantId])
   @@index([quotationItemId])
+}
+
+/// Link público de resposta (/cotacao/<token>, no domínio raiz). É o que tira a
+/// digitação da loja: o fornecedor abre no celular, preenche preço e prazo, e
+/// pronto — sem conta, sem senha, sem instalar nada. Fornecedor de bebida não
+/// cria login no ERP do cliente; esse é o fato que decide o desenho.
+///
+/// Tabela de CONTROLE, igual ao Invite: é lida ANTES de existir contexto de
+/// tenant (o token é que diz qual é), então sempre via `basePrisma` com
+/// tenantId explícito. Nada de negócio mora aqui — só o segredo do link.
+model QuotationLink {
+  id                  String @id @default(cuid())
+  tenantId            String
+  quotationSupplierId String @unique
+
+  /// Segredo do link. Trocado a cada reenvio — reenviar invalida o anterior.
+  token    String   @unique
+  expiraEm DateTime
+
+  /// Sinais de vida do fornecedor, sem depender de ele responder: abriu o link
+  /// (leu) e enviou (respondeu). É o que separa "ignorou" de "está pensando".
+  abertoEm     DateTime?
+  respondidoEm DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  quotationSupplier QuotationSupplier @relation(fields: [quotationSupplierId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
 }
 
 // ============================================================

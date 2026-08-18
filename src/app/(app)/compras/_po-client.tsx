@@ -13,7 +13,9 @@ import {
   marcarEmTransitoPedidoAction,
 } from "../estoque/actions";
 import { PedidoDrawer, PedidoFormSheet, type FormOptions, type PedidoView } from "./_pedidos";
-import { PedidoReceber, TransferReceber, type Transfer } from "./_recebimentos";
+import { TransferReceber, type Transfer } from "./_recebimentos";
+import { ReceberMercadoriaPanel } from "./_receber-mercadoria";
+import { useAbrirNovoPedido } from "./_novo-pedido";
 import { aplicarFiltros, filtrosAtivos, PurchaseOrderFilters, PO_FILTROS_VAZIO, type PoFiltros } from "./_po-filters";
 import { PurchaseOrderList, type PoAcoes } from "./_po-list";
 import { PurchaseOrderKanban } from "./_po-kanban";
@@ -63,7 +65,7 @@ export function PurchaseOrdersClient({
   const [duplicar, setDuplicar] = useState<PedidoView | null>(null);
   const [receber, setReceber] = useState<PedidoView | null>(null);
   const [receberTransfer, setReceberTransfer] = useState<Transfer | null>(null);
-  const [novo, setNovo] = useState(false);
+  const abrirNovoPedido = useAbrirNovoPedido();
 
   // Feedback do drag inválido / ações de status
   const [movendoId, setMovendoId] = useState<string | null>(null);
@@ -120,6 +122,7 @@ export function PurchaseOrdersClient({
     onVer: setDetalhe,
     onEditar: setEditar,
     onDuplicar: setDuplicar,
+    onReceber: setReceber,
     onCancelar: async (p) => {
       if (!window.confirm(`Cancelar o pedido ${p.numero}?`)) return;
       try {
@@ -188,7 +191,7 @@ export function PurchaseOrdersClient({
         <EmptyState
           comFiltro={temFiltro}
           onLimpar={() => setFiltros({ ...PO_FILTROS_VAZIO })}
-          onCriar={() => setNovo(true)}
+          onCriar={abrirNovoPedido}
         />
       ) : (
         <>
@@ -239,19 +242,11 @@ export function PurchaseOrdersClient({
         <PedidoFormSheet open onClose={() => setDuplicar(null)} mode="novo" pedido={duplicar} formOptions={formOptions} empresa={empresa} onDone={() => setDuplicar(null)} />
       )}
 
-      {novo && (
-        <PedidoFormSheet open onClose={() => setNovo(false)} mode="novo" formOptions={formOptions} empresa={empresa} onDone={() => setNovo(false)} />
-      )}
-
-      <Sheet
+      <ReceberMercadoriaPanel
+        pedido={receber}
         open={receber !== null}
         onClose={() => setReceber(null)}
-        title={receber ? `Receber ${receber.numero}` : ""}
-        description={receber ? `${receber.supplierNome} · confira o que chegou para gerar a entrada no estoque.` : ""}
-        width="2xl"
-      >
-        {receber && <PedidoReceber pedido={receber} onDone={() => setReceber(null)} />}
-      </Sheet>
+      />
 
       <Sheet
         open={receberTransfer !== null}

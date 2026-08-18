@@ -323,7 +323,11 @@ function ResultadoDaNota({
 
         {sucesso && (
           <Link
-            href="/fiscal/notas-recebidas"
+            href={
+              (resultado.tipo === "importada" || resultado.tipo === "ja-importada") && resultado.inboundId
+                ? `/compras/recebimento/${resultado.inboundId}`
+                : "/fiscal/notas-recebidas"
+            }
             className="flex min-h-12 items-center justify-center gap-2 rounded-full bg-brand text-sm font-semibold text-on-brand"
           >
             <FileText className="h-4 w-4" aria-hidden />

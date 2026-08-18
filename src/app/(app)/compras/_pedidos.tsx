@@ -30,11 +30,14 @@ import {
   Sparkles,
   Check,
   QrCode,
+  ClipboardCheck,
+  History,
 } from "lucide-react";
 import { cn, moneyToMask, parseMoney } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { toast } from "@/components/ui/toast";
+import type { EventoPedido } from "@/lib/compras/eventos";
 import {
   criarPedidoCompraAction,
   atualizarPedidoCompraAction,
@@ -46,6 +49,7 @@ import {
   excluirPedidoCompraAction,
   adicionarBonificacaoPedidoAction,
 } from "../estoque/actions";
+import { listarEventosPedidoAction } from "./actions";
 import { SolicitarSheet, type GrupoEnvio, copiarTexto } from "./_solicitar";
 import { ReenviarSheet } from "./_reenviar";
 import { QrPedidoSheet } from "@/components/app/qr-pedido";
@@ -118,7 +122,7 @@ type Product = {
   /** Itens em pedidos abertos (restante > 0) — aviso de duplicidade. */
   pendentes: { poId: string; numero: string; supplierId: string; qtd: number; packagingNome: string | null }[];
 };
-type Supplier = { id: string; razaoSocial: string; nomeFantasia: string | null; telefone: string | null; email: string | null; pedidoMinimo: number | null };
+type Supplier = { id: string; razaoSocial: string; nomeFantasia: string | null; telefone: string | null; email: string | null; pedidoMinimo: number | null; leadTimeDias: number | null };
 type Site = { id: string; nome: string; tipo: string };
 export type FormOptions = { suppliers: Supplier[]; sites: Site[]; products: Product[] };
 
@@ -156,6 +160,9 @@ export function PedidoDrawer({
   const [produtosAbertos, setProdutosAbertos] = useState(true);
   const [bonusAbertos, setBonusAbertos] = useState(true);
   const [stepAberto, setStepAberto] = useState<StepKey | null>(null);
+  const [verTimeline, setVerTimeline] = useState(false);
+  const [timeline, setTimeline] = useState<EventoPedido[]>([]);
+  const [timelineCarregada, setTimelineCarregada] = useState(false);
   const [isRefreshing, startTransition] = useTransition();
   const pendingIdRef = useRef<string | null>(null);
   const p = pedido;
@@ -177,7 +184,22 @@ export function PedidoDrawer({
     setQrOpen(false);
     setBonusOpen(false);
     setStepAberto(null);
+    setVerTimeline(false);
+    setTimeline([]);
+    setTimelineCarregada(false);
   }, [pedidoId]);
+
+  // Histórico é carregado só quando aberto — a maioria das visitas ao drawer
+  // nem chega a olhar, e é uma consulta a mais no PurchaseEvent.
+  useEffect(() => {
+    if (!pedidoId || !verTimeline || timelineCarregada) return;
+    listarEventosPedidoAction(pedidoId)
+      .then((ev) => {
+        setTimeline(ev);
+        setTimelineCarregada(true);
+      })
+      .catch(() => setTimelineCarregada(true));
+  }, [pedidoId, verTimeline, timelineCarregada]);
 
   // Some visível até o refresh (RSC) aplicar o novo status — não só a
   // resposta da action — porque a lista lê os dados do server.
@@ -315,7 +337,7 @@ export function PedidoDrawer({
           onClick={() => run("cancelar", () => cancelarPedidoCompraAction(p.id))}
         />,
       );
-    } else if (p.status === "AGUARDANDO" || p.status === "EM_TRANSITO") {
+    } else if (p.status === "AGUARDANDO" || p.status === "EM_TRANSITO" || p.status === "CONFERENCIA") {
       if (onReceber) {
         botoes.push(
           <AcaoBtn key="receber" tone="primary" icon={PackageCheck} label="Receber mercadoria" tooltip="Conferir os itens recebidos e gerar a entrada no estoque" onClick={() => onReceber(p)} />,
@@ -510,6 +532,47 @@ export function PedidoDrawer({
               )}
             </ItemSection>
           )}
+
+          {/* Histórico bruto de eventos — a timeline de cima já conta a
+              etapa atual; isto aqui é o "como chegou aqui" pra discussão de
+              divergência (quem vinculou a nota, quem aceitou o custo…). */}
+          <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line">
+            <button
+              type="button"
+              onClick={() => setVerTimeline((v) => !v)}
+              className="flex w-full items-center gap-2 px-3.5 py-3 text-left text-[13px] font-medium text-ink hover:bg-surface-2"
+            >
+              <History className="h-4 w-4 text-faint" aria-hidden />
+              Histórico
+              <span className="ml-auto text-[12px] text-muted">
+                {verTimeline ? "ocultar" : timelineCarregada ? `${timeline.length} eventos` : "ver"}
+              </span>
+            </button>
+            {verTimeline && (
+              <ol className="border-t border-line px-3.5 py-3">
+                {timeline.map((e) => (
+                  <li key={e.id} className="flex gap-3 py-1.5 text-[13px]">
+                    <span className="w-32 shrink-0 font-mono text-[12px] text-faint">
+                      {new Date(e.createdAt).toLocaleString("pt-BR", {
+                        day: "2-digit",
+                        month: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                    <span className="min-w-0 flex-1 text-ink-2">
+                      {e.descricao}
+                      {e.autor && <span className="text-faint"> · {e.autor}</span>}
+                    </span>
+                  </li>
+                ))}
+                {timelineCarregada && timeline.length === 0 && (
+                  <li className="py-2 text-[13px] text-muted">Sem eventos.</li>
+                )}
+                {!timelineCarregada && <li className="py-2 text-[13px] text-muted">Carregando…</li>}
+              </ol>
+            )}
+          </div>
         </div>
       )}
 
@@ -774,6 +837,14 @@ export function PedidoFormSheet({
     if (!valido) return;
     const supplier = suppliers.find((s) => s.id === supplierId);
     if (!supplier) return;
+    // Abaixo do mínimo o fornecedor costuma recusar — confirma em vez de
+    // deixar o operador descobrir isso só depois de já ter enviado.
+    if (faltaMinimo > 0) {
+      const confirmado = window.confirm(
+        `Este pedido está ${fmtMoney(faltaMinimo)} abaixo do mínimo de ${fmtMoney(pedidoMinimo ?? 0)} de ${supplierLabel(supplier)}. Enviar mesmo assim?`,
+      );
+      if (!confirmado) return;
+    }
     const itens = cart
       .filter((it) => it.qtd > 0)
       .map((it) => {
@@ -798,7 +869,7 @@ export function PedidoFormSheet({
         supplierNome: supplierLabel(supplier),
         telefone: supplier.telefone,
         email: supplier.email,
-        leadTimeDias: null,
+        leadTimeDias: supplier.leadTimeDias,
         previsaoEntrega: previsao || null,
         observacao: observacao || null,
         itens,
@@ -904,7 +975,16 @@ export function PedidoFormSheet({
             <span className="flex items-center gap-1"><Building2 size={12} /> Fornecedor</span>
             <select
               value={supplierId}
-              onChange={(e) => setSupplierId(e.target.value)}
+              onChange={(e) => {
+                const id = e.target.value;
+                setSupplierId(id);
+                // Sugere a previsão pelo histórico do fornecedor — só quando o
+                // operador ainda não escolheu uma data com a mão.
+                if (!previsao) {
+                  const lead = suppliers.find((s) => s.id === id)?.leadTimeDias;
+                  if (lead != null) setPrevisao(new Date(Date.now() + lead * 864e5).toISOString().slice(0, 10));
+                }
+              }}
               disabled={cart.length > 0}
               className={cn(selectCls, cart.length > 0 && "cursor-not-allowed opacity-60")}
             >
@@ -1121,7 +1201,7 @@ export function PedidoFormSheet({
 // global, só leitura de PedidoView. Mantidos fora do componente porque
 // não fecham sobre nada além dos props recebidos.
 
-type StepKey = "criado" | "enviado" | "confirmado" | "transito" | "recebido";
+type StepKey = "criado" | "enviado" | "confirmado" | "transito" | "conferencia" | "recebido";
 
 type PedidoStep = {
   key: StepKey;
@@ -1139,8 +1219,9 @@ const ORDEM_STATUS: Record<string, number> = {
   ENVIADO: 1,
   AGUARDANDO: 2,
   EM_TRANSITO: 3,
-  RECEBIDO_PARCIAL: 4,
-  RECEBIDO: 5,
+  CONFERENCIA: 4,
+  RECEBIDO_PARCIAL: 5,
+  RECEBIDO: 6,
   CANCELADO: -1,
 };
 
@@ -1152,7 +1233,8 @@ function pedidoSteps(p: PedidoView): PedidoStep[] {
     { key: "enviado", label: "Enviado", icon: Send, quando: p.enviadoEm, limiar: 1 },
     { key: "confirmado", label: "Confirmado", icon: CircleCheck, quando: p.confirmadoEm, limiar: 2 },
     { key: "transito", label: "Em trânsito", icon: Truck, quando: p.emTransitoEm, limiar: 3 },
-    { key: "recebido", label: "Recebido", icon: PackageCheck, quando: p.recebidoEm, limiar: 5 },
+    { key: "conferencia", label: "Conferência", icon: ClipboardCheck, quando: null, limiar: 4 },
+    { key: "recebido", label: "Recebido", icon: PackageCheck, quando: p.recebidoEm, limiar: 6 },
   ];
   let currentSet = false;
   return base.map((s) => {
@@ -1181,6 +1263,8 @@ function stepDetalhe(step: PedidoStep, p: PedidoView): string {
         return "Aguardando confirmação do fornecedor.";
       case "transito":
         return "Aguardando início do transporte.";
+      case "conferencia":
+        return "Aguardando o XML da nota para conciliar com o pedido.";
       case "recebido":
         return p.status === "RECEBIDO_PARCIAL"
           ? "Recebimento parcial registrado — aguardando o restante da mercadoria."
@@ -1208,6 +1292,7 @@ function assistenteMensagem(p: PedidoView, etapaAtual: PedidoStep | undefined): 
     ENVIADO: "Pedido enviado ao fornecedor. Assim que ele confirmar o recebimento do pedido, marque como “Confirmado”.",
     AGUARDANDO: "Pedido confirmado. A próxima etapa será marcar este pedido como “Em trânsito” quando o fornecedor informar o envio.",
     EM_TRANSITO: "Pedido em trânsito. Quando a mercadoria chegar, utilize “Receber mercadoria” para conferir os itens e gerar a entrada no estoque.",
+    CONFERENCIA: "Nota fiscal conciliada com o pedido. Confira a mercadoria na porta para dar entrada no estoque.",
     RECEBIDO_PARCIAL: "Recebimento parcial registrado. Utilize “Conferir recebimento” para lançar o restante assim que chegar.",
   };
   return { icon: etapaAtual?.icon ?? Sparkles, tom: "brand", texto: textos[p.status] ?? "Acompanhe o andamento do pedido pela linha do tempo." };

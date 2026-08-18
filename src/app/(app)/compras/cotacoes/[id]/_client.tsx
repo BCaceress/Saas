@@ -16,9 +16,11 @@ import {
   encerrarCotacaoAction,
   reabrirCotacaoAction,
 } from "../actions";
+import type { ResumoCotacao } from "@/lib/compras/cotacao-resumo";
 import { ItensCotacao } from "./_itens";
 import { ConvitesCotacao } from "./_convites";
 import { ComparativoCotacao } from "./_comparativo";
+import { ResumoCotacaoPainel } from "./_resumo";
 
 // ── Cotação, tela inteira ───────────────────────────────────
 // Três momentos, três painéis: o que eu quero (itens), a quem eu perguntei
@@ -39,11 +41,13 @@ export function CotacaoDetalheClient({
   cotacao,
   produtos,
   fornecedores,
+  resumo,
   podePedir,
 }: {
   cotacao: CotacaoDetalhe;
   produtos: ProdutoOpcao[];
   fornecedores: FornecedorOpcao[];
+  resumo: ResumoCotacao;
   podePedir: boolean;
 }) {
   const temResposta = cotacao.convites.some((c) => c.status === "RESPONDIDA");
@@ -107,7 +111,11 @@ export function CotacaoDetalheClient({
         />
       )}
       {painel === "comparativo" && (
-        <ComparativoCotacao cotacao={cotacao} podePedir={podePedir} />
+        <>
+          {/* Antes da tabela: a leitura vem primeiro, os números confirmam. */}
+          <ResumoCotacaoPainel resumo={resumo} />
+          <ComparativoCotacao cotacao={cotacao} podePedir={podePedir} />
+        </>
       )}
     </div>
   );

@@ -177,7 +177,7 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
       },
     }),
     db.purchaseOrder.findMany({
-      where: { status: { in: ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] } },
+      where: { status: { in: ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] } },
       select: {
         id: true,
         numero: true,
@@ -372,7 +372,7 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
   // ── Compras / recebimentos ─────────────────────────────────
   for (const pc of pedidos) {
     const fornecedor = pc.supplier.nomeFantasia ?? pc.supplier.razaoSocial;
-    if (pc.status === "AGUARDANDO" || pc.status === "EM_TRANSITO" || pc.status === "RECEBIDO_PARCIAL") {
+    if (pc.status === "AGUARDANDO" || pc.status === "EM_TRANSITO" || pc.status === "CONFERENCIA" || pc.status === "RECEBIDO_PARCIAL") {
       emitir(alerts, "recebimento", pc.id, {
         titulo: "Entrada aguardando conferência",
         descricao: `${pc.numero} · ${fornecedor}`,

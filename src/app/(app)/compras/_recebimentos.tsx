@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   CalendarClock,
+  Camera,
   CheckCheck,
   FileText,
   Loader2,
@@ -11,7 +12,11 @@ import {
   Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "@/components/ui/toast";
+import { Scanner } from "@/components/mobile/scanner";
+import { useLeitorTeclado } from "@/lib/hooks/use-leitor-teclado";
 import { receberTransferenciaAction, receberPedidoCompraAction } from "../estoque/actions";
+import { buscarCodigosDeBarrasAction } from "./actions";
 import { fmtMoney, fmtQtd, previsaoLabel, Thumb } from "./_ui";
 import { BonusBadge } from "./_bonus";
 import type { TipoItemPedido } from "./_types";
@@ -24,6 +29,7 @@ type PedidoItem = {
   nome: string;
   sku: string;
   imagemUrl: string | null;
+  packagingId?: string | null;
   packagingNome: string | null;
   tipo: TipoItemPedido;
   qtdPedida: number;
@@ -56,12 +62,23 @@ export type Transfer = {
 // Renderizada dentro de um Sheet: pedido × recebendo agora, diferença
 // em destaque, resumo e o botão único "Gerar entrada".
 
-export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () => void }) {
+export function PedidoReceber({
+  pedido,
+  onDone,
+  modoScan = false,
+}: {
+  pedido: Pedido;
+  onDone: () => void;
+  /** Liga o bipe (leitor USB/BT + câmera) — soma 1 na linha certa a cada leitura. */
+  modoScan?: boolean;
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [numeroNota, setNumeroNota] = useState("");
   const [gerarFinanceiro, setGerarFinanceiro] = useState(false);
+  const [codigos, setCodigos] = useState<Record<string, string[]>>({});
+  const [camera, setCamera] = useState(false);
   // itemId (linha do pedido, não productId — um produto pode ter linha de
   // compra e linha de bonificação separadas) -> recebido agora.
   const [recebido, setRecebido] = useState<Record<string, number>>(() =>
@@ -69,6 +86,46 @@ export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () =
   );
   const [validades, setValidades] = useState<Record<string, string>>({});
   const [lotes, setLotes] = useState<Record<string, string>>({});
+
+  // Bipe: EAN do produto e da embalagem escolhida na linha do pedido, uma
+  // consulta só (a linha é em unidade de compra — bipar sempre soma 1).
+  useEffect(() => {
+    if (!modoScan) return;
+    const itens = pedido.items.map((it) => ({
+      itemId: it.id,
+      productId: it.productId,
+      packagingId: it.packagingId ?? null,
+    }));
+    buscarCodigosDeBarrasAction(itens)
+      .then(setCodigos)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modoScan, pedido.id]);
+
+  const porCodigo = useMemo(() => {
+    const mapa = new Map<string, string>();
+    for (const [itemId, lista] of Object.entries(codigos)) {
+      for (const c of lista) mapa.set(c, itemId);
+    }
+    return mapa;
+  }, [codigos]);
+
+  const aoLerCodigo = useCallback(
+    (codigo: string) => {
+      const itemId = porCodigo.get(codigo) ?? porCodigo.get(codigo.toLowerCase());
+      if (!itemId) {
+        toast.error("Fora deste pedido", `O código ${codigo} não está entre os itens.`);
+        return;
+      }
+      const item = pedido.items.find((it) => it.id === itemId);
+      setRecebido((prev) => ({ ...prev, [itemId]: (prev[itemId] ?? 0) + 1 }));
+      if (item) toast.success(item.nome, `${(recebido[itemId] ?? 0) + 1} conferido`);
+    },
+    [porCodigo, pedido.items, recebido],
+  );
+
+  // Sem foco em campo nenhum — quem confere tem o leitor numa mão e a caixa na outra.
+  useLeitorTeclado(aoLerCodigo, { ativo: modoScan });
 
   const setQtd = (itemId: string, v: number) => setRecebido((p) => ({ ...p, [itemId]: Math.max(0, v) }));
   const setValidade = (itemId: string, v: string) => setValidades((p) => ({ ...p, [itemId]: v }));
@@ -121,20 +178,46 @@ export function PedidoReceber({ pedido, onDone }: { pedido: Pedido; onDone: () =
 
   return (
     <div className="flex flex-col gap-4">
+      {modoScan && camera && (
+        <Scanner
+          onCodigo={aoLerCodigo}
+          continuo
+          onFechar={() => setCamera(false)}
+          dica="Bipe a unidade ou a embalagem do pedido"
+        />
+      )}
+
       {/* Contexto do pedido */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-xs text-muted">
           <CalendarClock size={13} /> {previsaoLabel(pedido.previsaoEntrega)} · {pedido.siteNome}
           {parcial && <span className="rounded-full bg-brand-soft px-1.5 py-px text-[10px] font-semibold text-brand">parcial</span>}
         </span>
-        <button
-          type="button"
-          onClick={receberTudo}
-          className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-2"
-        >
-          <CheckCheck size={13} className="text-ok" /> Chegou tudo
-        </button>
+        <div className="flex items-center gap-2">
+          {modoScan && (
+            <button
+              type="button"
+              onClick={() => setCamera(true)}
+              className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-2"
+            >
+              <Camera size={13} /> Bipar com a câmera
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={receberTudo}
+            className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-2"
+          >
+            <CheckCheck size={13} className="text-ok" /> Chegou tudo
+          </button>
+        </div>
       </div>
+
+      {modoScan && (
+        <p className="rounded-lg bg-surface-2/60 px-3 py-2 text-[12px] text-muted">
+          Leitor USB/Bluetooth já está ativo — é só bipar. A câmera é a alternativa.
+        </p>
+      )}
 
       {/* Itens — produtos e bonificações conferidos separadamente, nunca misturados */}
       {produtos.length > 0 && (

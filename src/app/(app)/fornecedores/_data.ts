@@ -1,7 +1,7 @@
 import { db } from "@/lib/prisma";
 import type { SupplierIntegrationKind, SupplierIntegrationStatus } from "@/generated/prisma";
 
-const PEDIDOS_ATIVOS = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] as const;
+const PEDIDOS_ATIVOS = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] as const;
 const DIA_MS = 24 * 60 * 60 * 1000;
 
 /**

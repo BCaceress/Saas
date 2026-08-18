@@ -39,6 +39,10 @@ export type ItemNotaXml = {
   valorFrete: number;
   /** CFOP de bonificação/brinde/amostra: entra no estoque com custo zero. */
   bonificacao: boolean;
+  /** xPed — número do pedido do comprador, como o fornecedor digitou. */
+  pedidoFornecedor: string | null;
+  /** nItemPed — linha do pedido do comprador a que este item corresponde. */
+  itemPedidoNumero: number | null;
 };
 
 export type NotaXml = {
@@ -196,6 +200,11 @@ export function parseNotaXml(xml: string): NotaXml {
       valorIpi,
       valorFrete: num(prod.vFrete) + num(prod.vOutro),
       bonificacao: cfop ? CFOP_SEM_CUSTO.has(cfop) : false,
+      // xPed é opcional na NF-e, mas quando o fornecedor preenche é a resposta
+      // direta de "que pedido esta nota fatura" — vale mais que qualquer
+      // heurística de data ou similaridade de itens.
+      pedidoFornecedor: str(prod.xPed),
+      itemPedidoNumero: prod.nItemPed == null ? null : Number(prod.nItemPed) || null,
     };
   });
 

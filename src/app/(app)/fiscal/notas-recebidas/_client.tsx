@@ -1,10 +1,12 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   AlertTriangle,
   CheckCircle2,
+  ClipboardCheck,
   FileDown,
   Gift,
   Link2,
@@ -21,6 +23,7 @@ import { Badge, Field } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
 import { maskCnpj } from "@/lib/masks";
 import { fatorDaNota } from "@/lib/fiscal/fator";
+import { termoDeBuscaDoItem } from "@/lib/compras/conciliacao-regras";
 import { cn } from "@/lib/utils";
 import { fmtMoney, fmtQtd, relDia } from "../../compras/_ui";
 import {
@@ -567,7 +570,10 @@ function DetalheNota({
         onClose={onClose}
         title={`Nota ${nota.numero}/${nota.serie}`}
         description={nota.emitRazaoSocial}
-        width="xl"
+        // A nota é uma tabela larga (item do fornecedor, produto do catálogo,
+        // quantidade, fator, custo). Em 672px ela rolava na horizontal e o
+        // de-para — a coluna que o operador precisa ler — ficava fora da tela.
+        width="5xl"
         footer={
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs text-muted">
@@ -643,6 +649,19 @@ function DetalheNota({
                 Vincular ao pedido deixa a entrada rastreável em Compras.
               </p>
             </div>
+          )}
+
+          {editavel && nota.purchaseOrderId && (
+            // Com pedido vinculado, o caminho bom não é esta tabela: é a
+            // conferência que compara pedido × nota × mercadoria e cuida do
+            // recebido de cada item do pedido.
+            <Link
+              href={`/compras/recebimento/${nota.id}`}
+              className="flex items-center gap-2 rounded-[var(--radius-md)] border border-brand/30 bg-brand-soft px-3 py-2.5 text-[13px] font-medium text-brand-strong hover:bg-brand-softer"
+            >
+              <ClipboardCheck size={16} className="shrink-0" />
+              Conferir no recebimento inteligente — pedido {nota.pedidoNumero ?? "vinculado"}
+            </Link>
           )}
 
           {faltam > 0 && (
@@ -782,8 +801,21 @@ type ProdutoOpt = {
   nome: string;
   sku: string;
   ean: string | null;
-  packagings: { id: string; nome: string; fatorConversao: number }[];
+  imagemUrl: string | null;
+  custoMedio: number;
+  packagings: { id: string; nome: string; ean: string | null; fatorConversao: number }[];
 };
+
+/** "a, b e c" — lista curta em português, sem vírgula antes do "e". */
+const listarEmPortugues = (itens: string[]) =>
+  itens.length <= 1 ? (itens[0] ?? "") : `${itens.slice(0, -1).join(", ")} e ${itens.at(-1)}`;
+
+/** O GTIN da nota bate com algum código deste produto (unidade ou embalagem)? */
+function casaPorCodigo(p: ProdutoOpt, gtin: string | null): boolean {
+  if (!gtin) return false;
+  return p.ean === gtin || p.packagings.some((pk) => pk.ean === gtin);
+}
+
 
 function RelacionarItem({
   item,
@@ -795,40 +827,64 @@ function RelacionarItem({
   onSaved: () => void;
 }) {
   const [pending, start] = useTransition();
-  const [termo, setTermo] = useState(item.descricao.slice(0, 30));
+  const [termo, setTermo] = useState(termoDeBuscaDoItem(item.descricao));
   const [buscando, setBuscando] = useState(false);
   const [opcoes, setOpcoes] = useState<ProdutoOpt[]>([]);
   const [escolhido, setEscolhido] = useState<ProdutoOpt | null>(null);
   const [packagingId, setPackagingId] = useState<string>("");
   const [fator, setFator] = useState(String(item.fatorConversao));
 
-  async function buscar() {
-    setBuscando(true);
-    try {
-      setOpcoes(await buscarProdutosAction(termo));
-    } catch {
-      toast.error("Falha ao buscar produtos.");
-    } finally {
-      setBuscando(false);
-    }
-  }
+  // Busca enquanto digita: apertar um botão para ver resultado é um clique a
+  // mais em cima do trabalho que esta tela existe para eliminar.
+  useEffect(() => {
+    const alvo = termo.trim();
+    let vivo = true;
+    // Tudo dentro do timeout, inclusive limpar a lista: mexer no estado no
+    // corpo do efeito dispara render em cascata a cada tecla.
+    const t = setTimeout(async () => {
+      if (alvo.length < 2) {
+        setOpcoes([]);
+        return;
+      }
+      setBuscando(true);
+      try {
+        // A ordem vem pronta do servidor: relevância ao que foi digitado, com
+        // o código de barras do item como desempate. Reordenar aqui só
+        // brigaria com ela.
+        const r = await buscarProdutosAction(alvo, item.gtin);
+        if (!vivo) return;
+        setOpcoes(r);
+      } catch {
+        if (vivo) toast.error("Falha ao buscar produtos.");
+      } finally {
+        if (vivo) setBuscando(false);
+      }
+    }, 300);
+    return () => {
+      vivo = false;
+      clearTimeout(t);
+    };
+  }, [termo, item.gtin]);
 
   /** O que a nota declara em qTrib/qCom — usado como padrão e como aviso. */
   const sugerido = fatorDaNota(item);
 
   function escolher(p: ProdutoOpt) {
     setEscolhido(p);
-    setPackagingId("");
+    // Embalagem cujo código de barras é o da nota: o fornecedor bipou o fardo,
+    // então o fator do fardo é o certo — melhor palpite que existe.
+    const pelaEmbalagem = item.gtin ? p.packagings.find((pk) => pk.ean === item.gtin) : null;
+    setPackagingId(pelaEmbalagem?.id ?? "");
     // Voltar para 1 aqui era o que fazia a caixa de long neck entrar como 5
     // garrafas: o operador escolhia o produto e perdia o fator da nota.
-    setFator(String(sugerido ?? 1));
+    setFator(String(pelaEmbalagem?.fatorConversao ?? sugerido ?? 1));
   }
 
   function salvar() {
     if (!escolhido) return toast.error("Escolha um produto.");
     start(async () => {
       try {
-        await relacionarItemAction({
+        const r = await relacionarItemAction({
           itemId: item.id,
           productId: escolhido.id,
           packagingId: packagingId || null,
@@ -836,7 +892,11 @@ function RelacionarItem({
         });
         toast.success(
           "Item relacionado.",
-          "Nas próximas notas deste fornecedor ele entra sozinho.",
+          // O XML completa o cadastro (embalagem de compra, código de barras,
+          // custo, fornecedor) — dizer o que entrou evita o operador refazer.
+          r?.preenchidos.length
+            ? `Do XML veio ${listarEmPortugues(r.preenchidos)}. Nas próximas notas deste fornecedor ele entra sozinho.`
+            : "Nas próximas notas deste fornecedor ele entra sozinho.",
         );
         onSaved();
       } catch (e) {
@@ -851,47 +911,113 @@ function RelacionarItem({
       onClose={onClose}
       title="Relacionar item"
       description={`${item.codigoFornecedor} — ${item.descricao}`}
-      width="md"
+      width="2xl"
     >
       <div className="flex flex-col gap-4">
-        <Field label="Buscar no catálogo" htmlFor="busca" hint="Nome, SKU ou código de barras.">
-          <div className="flex gap-2">
+        {/* O que a nota diz sobre este item fica visível o tempo todo: é a
+            referência que o operador usa para escolher o produto certo. */}
+        <div className="flex flex-wrap gap-x-6 gap-y-2 rounded-[var(--radius-md)] border border-line bg-surface-2 px-4 py-3 text-[13px]">
+          <span className="text-muted">
+            Na nota:{" "}
+            <span className="text-ink-2">
+              {fmtQtd(item.quantidade)} {item.unidade}
+            </span>
+          </span>
+          {item.gtin && (
+            <span className="text-muted">
+              Código de barras: <span className="font-mono text-ink-2">{item.gtin}</span>
+            </span>
+          )}
+          <span className="text-muted">
+            Custo do item: <span className="font-mono text-ink-2">{fmtMoney(custoItem(item))}</span>
+          </span>
+        </div>
+
+        <Field
+          label="Buscar no catálogo"
+          htmlFor="busca"
+          hint="Nome, SKU ou código de barras — a lista responde enquanto você digita."
+        >
+          <div className="relative">
+            <Search
+              size={16}
+              className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-faint"
+            />
             <Input
               id="busca"
               value={termo}
               onChange={(e) => setTermo(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), buscar())}
+              className="pl-9"
               autoFocus
             />
-            <Button variant="outline" onClick={buscar} disabled={buscando}>
-              <Search size={16} /> {buscando ? "Buscando…" : "Buscar"}
-            </Button>
           </div>
         </Field>
 
         {opcoes.length > 0 && (
-          <div className="max-h-56 divide-y divide-line overflow-y-auto rounded-[var(--radius-md)] border border-line">
-            {opcoes.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => escolher(p)}
-                className={cn(
-                  "flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-colors hover:bg-surface-2",
-                  escolhido?.id === p.id && "bg-brand-soft",
-                )}
-              >
-                <span>
-                  <span className="block text-sm text-ink">{p.nome}</span>
-                  <span className="block font-mono text-[11px] text-faint">
-                    {p.sku}
-                    {p.ean ? ` · ${p.ean}` : ""}
+          <div className="max-h-72 divide-y divide-line overflow-y-auto rounded-[var(--radius-md)] border border-line">
+            {opcoes.map((p) => {
+              const casa = casaPorCodigo(p, item.gtin);
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => escolher(p)}
+                  className={cn(
+                    "flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-surface-2",
+                    escolhido?.id === p.id && "bg-brand-soft",
+                  )}
+                >
+                  {p.imagemUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={p.imagemUrl}
+                      alt=""
+                      className="h-10 w-10 shrink-0 rounded-[var(--radius-sm)] border border-line bg-surface object-contain"
+                    />
+                  ) : (
+                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line bg-surface-2 text-faint">
+                      <PackageCheck size={15} />
+                    </span>
+                  )}
+
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="truncate text-sm text-ink">{p.nome}</span>
+                      {casa && (
+                        <span className="shrink-0 rounded-full bg-ok-soft px-2 py-0.5 text-[10px] font-medium text-ok">
+                          mesmo código
+                        </span>
+                      )}
+                    </span>
+                    <span className="block truncate font-mono text-[11px] text-faint">
+                      {p.sku}
+                      {p.ean ? ` · ${p.ean}` : ""}
+                      {p.packagings.length > 0 &&
+                        ` · ${p.packagings.map((pk) => `${pk.nome} ×${fmtQtd(pk.fatorConversao)}`).join(", ")}`}
+                    </span>
                   </span>
-                </span>
-                {escolhido?.id === p.id && <CheckCircle2 size={16} className="text-brand" />}
-              </button>
-            ))}
+
+                  <span className="shrink-0 text-right">
+                    <span className="block font-mono text-[11px] text-muted">
+                      {p.custoMedio > 0 ? fmtMoney(p.custoMedio) : "sem custo"}
+                    </span>
+                    <span className="block text-[10px] text-faint">custo médio</span>
+                  </span>
+
+                  {escolhido?.id === p.id && (
+                    <CheckCircle2 size={16} className="shrink-0 text-brand" />
+                  )}
+                </button>
+              );
+            })}
           </div>
+        )}
+
+        {!buscando && termo.trim().length >= 2 && opcoes.length === 0 && (
+          <p className="rounded-[var(--radius-md)] border border-dashed border-line px-4 py-6 text-center text-[13px] text-muted">
+            Nenhum produto com “{termo.trim()}”. Tente outro termo — ou cadastre o produto e
+            volte aqui, a nota continua esperando.
+          </p>
         )}
 
         {escolhido && (

@@ -1,5 +1,6 @@
 import "server-only";
 import { basePrisma, comTenant } from "./prisma";
+import { registrarEvento } from "./compras/eventos";
 import type { MovementType } from "@/generated/prisma";
 
 // ============================================================
@@ -365,6 +366,24 @@ export async function criarPedidoCompra(
       },
     });
   });
+
+  await registrarEvento({
+    tenantId,
+    purchaseOrderId: po.id,
+    tipo: "PEDIDO_CRIADO",
+    descricao: `Pedido ${numero} criado com ${validos.length} ${validos.length === 1 ? "item" : "itens"}.`,
+    createdBy: opts.createdBy,
+  });
+  if (enviar) {
+    await registrarEvento({
+      tenantId,
+      purchaseOrderId: po.id,
+      tipo: "PEDIDO_ENVIADO",
+      descricao: `Pedido ${numero} enviado ao fornecedor.`,
+      createdBy: opts.createdBy,
+    });
+  }
+
   return po.id;
 }
 
@@ -463,7 +482,7 @@ export async function adicionarBonificacaoPedido(
 export async function enviarPedidoCompra(tenantId: string, pedidoId: string): Promise<void> {
   const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
-    select: { status: true },
+    select: { status: true, numero: true },
   }));
   if (!po) throw new Error("Pedido não encontrado.");
   if (po.status !== "RASCUNHO") throw new Error("Este pedido já foi enviado.");
@@ -474,13 +493,19 @@ export async function enviarPedidoCompra(tenantId: string, pedidoId: string): Pr
       data: { status: "ENVIADO", enviadoEm: new Date() },
     }),
   ]);
+  await registrarEvento({
+    tenantId,
+    purchaseOrderId: pedidoId,
+    tipo: "PEDIDO_ENVIADO",
+    descricao: `Pedido ${po.numero} enviado ao fornecedor.`,
+  });
 }
 
 /** Marca um pedido ENVIADO como AGUARDANDO entrega (confirmado pelo fornecedor). */
 export async function marcarAguardandoPedido(tenantId: string, pedidoId: string): Promise<void> {
   const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
-    select: { status: true },
+    select: { status: true, numero: true },
   }));
   if (!po) throw new Error("Pedido não encontrado.");
   if (po.status !== "ENVIADO") throw new Error("Só pedidos enviados podem aguardar entrega.");
@@ -491,13 +516,19 @@ export async function marcarAguardandoPedido(tenantId: string, pedidoId: string)
       data: { status: "AGUARDANDO", confirmadoEm: new Date() },
     }),
   ]);
+  await registrarEvento({
+    tenantId,
+    purchaseOrderId: pedidoId,
+    tipo: "PEDIDO_CONFIRMADO",
+    descricao: `Fornecedor confirmou o pedido ${po.numero}.`,
+  });
 }
 
 /** ENVIADO/AGUARDANDO → EM_TRANSITO (mercadoria a caminho). */
 export async function marcarEmTransitoPedido(tenantId: string, pedidoId: string): Promise<void> {
   const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
-    select: { status: true },
+    select: { status: true, numero: true },
   }));
   if (!po) throw new Error("Pedido não encontrado.");
   if (!["ENVIADO", "AGUARDANDO"].includes(po.status)) {
@@ -510,13 +541,19 @@ export async function marcarEmTransitoPedido(tenantId: string, pedidoId: string)
       data: { status: "EM_TRANSITO", emTransitoEm: new Date() },
     }),
   ]);
+  await registrarEvento({
+    tenantId,
+    purchaseOrderId: pedidoId,
+    tipo: "PEDIDO_EM_TRANSITO",
+    descricao: `Mercadoria do pedido ${po.numero} saiu para entrega.`,
+  });
 }
 
 /** Cancela um pedido que ainda não foi (totalmente) recebido. */
 export async function cancelarPedidoCompra(tenantId: string, pedidoId: string): Promise<void> {
   const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
-    select: { status: true },
+    select: { status: true, numero: true },
   }));
   if (!po) throw new Error("Pedido não encontrado.");
   if (po.status === "RECEBIDO") throw new Error("Pedido já recebido não pode ser cancelado.");
@@ -528,6 +565,12 @@ export async function cancelarPedidoCompra(tenantId: string, pedidoId: string): 
       data: { status: "CANCELADO", canceladoEm: new Date() },
     }),
   ]);
+  await registrarEvento({
+    tenantId,
+    purchaseOrderId: pedidoId,
+    tipo: "PEDIDO_CANCELADO",
+    descricao: `Pedido ${po.numero} cancelado.`,
+  });
 }
 
 /** Apaga um pedido ainda em RASCUNHO (itens somem em cascata). */
@@ -565,7 +608,7 @@ export async function receberPedidoCompra(
     include: { items: true },
   }));
   if (!po) throw new Error("Pedido não encontrado.");
-  if (!["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"].includes(po.status)) {
+  if (!["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"].includes(po.status)) {
     throw new Error("Este pedido não está aberto para recebimento.");
   }
 
@@ -663,6 +706,17 @@ export async function receberPedidoCompra(
         financeiroGerado: opts.gerarFinanceiro ? true : po.financeiroGerado,
       },
     });
+  });
+
+  await registrarEvento({
+    tenantId,
+    purchaseOrderId: pedidoId,
+    tipo: "ESTOQUE_ATUALIZADO",
+    descricao: completo
+      ? `Conferência concluída. Pedido ${po.numero} recebido integralmente.`
+      : `Conferência concluída. Pedido ${po.numero} segue com itens pendentes.`,
+    meta: { itens: recebidos.length, nota: opts.numeroNota ?? null },
+    createdBy: opts.createdBy,
   });
 }
 

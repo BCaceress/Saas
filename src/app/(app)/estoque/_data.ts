@@ -172,7 +172,7 @@ export async function loadSaldos(
           where: {
             productId: { in: productIds },
             purchaseOrder: {
-              status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] },
+              status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] },
               ...(siteId ? { siteId } : {}),
             },
           },
@@ -981,7 +981,7 @@ export async function loadPedidosCompra(
 }
 
 /** Status em que um pedido ainda espera mercadoria na porta. */
-const STATUS_A_RECEBER = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"];
+const STATUS_A_RECEBER = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"];
 
 /** Pedidos abertos para conferência/recebimento, opcionalmente do site ativo. */
 export async function loadPedidosAReceber(siteId: string | null): Promise<PedidoCompraView[]> {
@@ -1007,7 +1007,7 @@ export async function loadPedidoAReceber(
 }
 
 export async function loadComprasFormOptions() {
-  const [suppliers, products, sites, entradas, pendentes] = await Promise.all([
+  const [suppliers, products, sites, entradas, pendentes, pedidosLead] = await Promise.all([
     db.supplier.findMany({ where: { ativo: true }, orderBy: { razaoSocial: "asc" }, select: { id: true, razaoSocial: true, nomeFantasia: true, telefone: true, email: true, pedidoMinimo: true } }),
     db.product.findMany({
       where: { ativo: true, tipo: { in: ["SIMPLES", "INSUMO"] } },
@@ -1036,7 +1036,7 @@ export async function loadComprasFormOptions() {
     }),
     // Itens já pedidos e não recebidos — aviso de duplicidade no form.
     db.purchaseOrderItem.findMany({
-      where: { purchaseOrder: { status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] } } },
+      where: { purchaseOrder: { status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] } } },
       select: {
         productId: true,
         packagingId: true,
@@ -1045,7 +1045,28 @@ export async function loadComprasFormOptions() {
         purchaseOrder: { select: { id: true, numero: true, supplierId: true } },
       },
     }),
+    // Lead time médio por fornecedor (enviado→recebido) — sugere a previsão
+    // de entrega no pedido novo em vez de deixar a data em branco.
+    db.purchaseOrder.findMany({
+      where: { status: "RECEBIDO", enviadoEm: { not: null }, recebidoEm: { not: null } },
+      select: { supplierId: true, enviadoEm: true, recebidoEm: true },
+      orderBy: { createdAt: "desc" },
+      take: 300,
+    }),
   ]);
+
+  const leadAgg = new Map<string, { total: number; count: number }>();
+  for (const po of pedidosLead) {
+    if (!po.enviadoEm || !po.recebidoEm) continue;
+    const dias = (po.recebidoEm.getTime() - po.enviadoEm.getTime()) / 864e5;
+    if (dias < 0 || dias > 60) continue;
+    const a = leadAgg.get(po.supplierId) ?? { total: 0, count: 0 };
+    a.total += dias;
+    a.count += 1;
+    leadAgg.set(po.supplierId, a);
+  }
+  const leadTime = new Map<string, number>();
+  for (const [sid, a] of leadAgg) leadTime.set(sid, Math.max(1, Math.round(a.total / a.count)));
 
   // Resolve fornecedor das entradas via Purchase.
   const entradaPurchaseIds = [...new Set(entradas.flatMap((e) => (e.purchaseId ? [e.purchaseId] : [])))];
@@ -1093,6 +1114,7 @@ export async function loadComprasFormOptions() {
       telefone: s.telefone,
       email: s.email,
       pedidoMinimo: s.pedidoMinimo != null ? n(s.pedidoMinimo) : null,
+      leadTimeDias: leadTime.get(s.id) ?? null,
     })),
     sites,
     products: products.map((p) => ({

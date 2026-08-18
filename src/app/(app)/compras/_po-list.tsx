@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronLeft, ChevronRight, Gift, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Gift, Loader2, PackageCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { estadoEntrega, fmtMoney, previsaoLabel, relTempo, PurchaseOrderStatusBadge, SupplierAvatar, PEDIDO_A_RECEBER } from "./_ui";
 import type { PedidoView } from "./_pedidos";
@@ -14,6 +14,7 @@ export type PoAcoes = {
   onDuplicar: (p: PedidoView) => void;
   onCancelar: (p: PedidoView) => void;
   onExcluir: (p: PedidoView) => void;
+  onReceber: (p: PedidoView) => void;
 };
 
 const POR_PAGINA = 25;
@@ -64,6 +65,7 @@ export function PurchaseOrderList({
               <th className="px-4 py-2.5">Entrega prevista</th>
               <th className="px-4 py-2.5">Última atualização</th>
               <th className="px-4 py-2.5">Responsável</th>
+              <th className="px-4 py-2.5" />
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
@@ -126,6 +128,20 @@ export function PurchaseOrderRow({ pedido: p, acoes, statusPending = false }: { 
       </td>
       <td className="whitespace-nowrap px-4 py-2.5 text-muted">{relTempo(p.updatedAt)}</td>
       <td className="max-w-32 truncate px-4 py-2.5 text-muted">{p.operador ?? "—"}</td>
+      <td className="px-4 py-2.5 text-right">
+        {aberto && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              acoes.onReceber(p);
+            }}
+            className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-xs font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+          >
+            <PackageCheck size={13} /> Receber
+          </button>
+        )}
+      </td>
     </tr>
   );
 }
@@ -176,6 +192,18 @@ function PurchaseOrderCardRow({ pedido: p, acoes, statusPending = false }: { ped
         )}
         <span className="text-faint">{relTempo(p.updatedAt)}</span>
       </div>
+      {aberto && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            acoes.onReceber(p);
+          }}
+          className="flex items-center justify-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+        >
+          <PackageCheck size={14} /> Receber
+        </button>
+      )}
     </div>
   );
 }

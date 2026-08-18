@@ -4,6 +4,7 @@ import {
   CalendarClock,
   CircleCheck,
   CircleX,
+  ClipboardCheck,
   Clock3,
   FilePenLine,
   Minus,
@@ -27,18 +28,19 @@ export const PEDIDO_STATUS: Record<string, { label: string; icon: React.ElementT
   ENVIADO:          { label: "Enviado",               icon: Send,         cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500", soft: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400" },
   AGUARDANDO:       { label: "Confirmado",            icon: Clock3,       cls: "bg-warn-soft text-warn",   dot: "bg-warn",   soft: "bg-warn-soft",  text: "text-warn" },
   EM_TRANSITO:      { label: "Em trânsito",           icon: Truck,        cls: "bg-purple-500/10 text-purple-600 dark:text-purple-400", dot: "bg-purple-500", soft: "bg-purple-500/10", text: "text-purple-600 dark:text-purple-400" },
+  CONFERENCIA:      { label: "Em conferência",        icon: ClipboardCheck, cls: "bg-brand-soft text-brand", dot: "bg-brand", soft: "bg-brand-soft", text: "text-brand" },
   RECEBIDO_PARCIAL: { label: "Recebimento pendente",  icon: PackageCheck, cls: "bg-accent-soft text-accent", dot: "bg-accent", soft: "bg-accent-soft", text: "text-accent" },
   RECEBIDO:         { label: "Concluído",             icon: CircleCheck,  cls: "bg-ok-soft text-ok",       dot: "bg-ok",     soft: "bg-ok-soft",    text: "text-ok" },
   CANCELADO:        { label: "Cancelado",             icon: CircleX,      cls: "bg-danger-soft text-danger", dot: "bg-danger", soft: "bg-danger-soft", text: "text-danger" },
 };
 
 /** Pedidos que ainda vão gerar entrada no estoque (tudo menos concluído/cancelado). */
-export const PEDIDO_ABERTO = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"];
+export const PEDIDO_ABERTO = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"];
 /** Abertos já enviados (têm prazo de entrega relevante). */
-export const PEDIDO_A_RECEBER = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"];
+export const PEDIDO_A_RECEBER = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"];
 
 /** Ordem do fluxo — colunas do kanban. CANCELADO fica fora (só na lista). */
-export const PEDIDO_FLUXO = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL", "RECEBIDO"] as const;
+export const PEDIDO_FLUXO = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL", "RECEBIDO"] as const;
 
 /**
  * Transições permitidas por drag-and-drop no kanban. Avançar segue o fluxo;
@@ -126,6 +128,15 @@ export function estadoEntrega(iso: string | null): { label: string; icon: React.
   if (diff === 0) return { label: "Previsto para hoje", icon: Truck, cls: "bg-brand-soft text-brand" };
   if (diff === 1) return { label: "Previsto para amanhã", icon: CalendarClock, cls: "bg-surface-2 text-muted" };
   return null;
+}
+
+/** Só o booleano — usado para agregar contagem (resumo), sem montar label/ícone à toa. */
+export function pedidoAtrasado(iso: string | null): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  const hoje = new Date();
+  const dia = (x: Date) => Math.floor(new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime() / 86400000);
+  return dia(d) < dia(hoje);
 }
 
 /** 0 = atrasado, 1 = previsto p/ hoje, null = sem urgência de prazo — usado só para ordenar a fila de "Em andamento". */

@@ -1,0 +1,1016 @@
+import "server-only";
+import { db } from "@/lib/prisma";
+import { criarPedidoCompra, registrarEntrada, type EntradaItem } from "@/lib/estoque";
+import { custoDoItem } from "@/lib/fiscal/custo";
+import { atualizarCustoDeReferencia } from "@/lib/fiscal/enriquecer-produto";
+import { registrarEvento } from "./eventos";
+import { TOL_QTD, vereditoDaLinha } from "./conciliacao-regras";
+import type {
+  PurchaseOrderStatus,
+  ReconciliationResolucao,
+  ReconciliationStatus,
+} from "@/generated/prisma";
+
+// ============================================================
+// Conciliação em três camadas.
+//
+//   1. Pedido NoHub       — o que eu comprei
+//   2. XML da NF-e        — o que o fornecedor faturou
+//   3. Conferência física — o que realmente entrou
+//
+// O estoque só se move na camada 3. As duas primeiras existem para que a
+// terceira seja quase só confirmar: quem está na porta confere mercadoria,
+// não digita nota.
+//
+// TUDO aqui trabalha em UNIDADE BASE do estoque. O pedido fala em caixa, a
+// nota fala em fardo — comparar sem converter é o erro que faz "10 caixas"
+// virar uma divergência de "120 unidades". A conversão acontece uma vez, na
+// entrada desta camada, e nunca mais.
+//
+// Todas as funções assumem contexto de tenant ativo (runWithTenant no chamador).
+// ============================================================
+
+/** Status de pedido que ainda esperam mercadoria — candidatos a receber um XML. */
+const PEDIDOS_ABERTOS: PurchaseOrderStatus[] = [
+  "ENVIADO",
+  "AGUARDANDO",
+  "EM_TRANSITO",
+  "CONFERENCIA",
+  "RECEBIDO_PARCIAL",
+];
+
+// ── Sugestão de pedido ───────────────────────────────────────
+
+export type SugestaoPedido = {
+  purchaseOrderId: string;
+  numero: string;
+  status: PurchaseOrderStatus;
+  valorTotal: number;
+  itens: number;
+  criadoEm: Date;
+  score: number;
+  /** Por que este pedido foi sugerido — vai inteiro para a tela. */
+  motivos: string[];
+};
+
+/** Score mínimo para vincular sozinho, sem perguntar. */
+const SCORE_AUTOMATICO = 60;
+/** Distância mínima para o segundo colocado — empate técnico o operador decide. */
+const MARGEM_AUTOMATICA = 20;
+
+const soLetrasNumeros = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/**
+ * Ordena os pedidos em aberto do fornecedor por quanto cada um se parece com
+ * esta nota. Critérios, do mais forte ao mais fraco:
+ *
+ *   1. a própria nota cita o número do pedido (xPed) — resposta direta;
+ *   2. os produtos faturados são os produtos pedidos;
+ *   3. o valor da nota bate com o do pedido;
+ *   4. as datas são compatíveis (nota depois do pedido, dentro do prazo usual).
+ *
+ * Nada aqui inventa vínculo: quem decide se o topo da lista vira vínculo
+ * automático é `conciliarComPedidoSugerido`.
+ */
+export async function sugerirPedidos(inboundId: string): Promise<SugestaoPedido[]> {
+  const inbound = await db.fiscalInbound.findFirst({
+    where: { id: inboundId },
+    select: {
+      siteId: true,
+      supplierId: true,
+      dataEmissao: true,
+      valorTotal: true,
+      items: {
+        select: { productId: true, pedidoFornecedor: true, quantidade: true, fatorConversao: true },
+      },
+    },
+  });
+  if (!inbound?.supplierId) return [];
+
+  const candidatos = await db.purchaseOrder.findMany({
+    where: {
+      supplierId: inbound.supplierId,
+      siteId: inbound.siteId,
+      status: { in: PEDIDOS_ABERTOS },
+    },
+    select: {
+      id: true,
+      numero: true,
+      status: true,
+      valorTotal: true,
+      createdAt: true,
+      items: { select: { productId: true } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 25,
+  });
+  if (candidatos.length === 0) return [];
+
+  const citados = new Set(
+    inbound.items
+      .map((i) => i.pedidoFornecedor)
+      .filter((p): p is string => Boolean(p && p.trim()))
+      .map(soLetrasNumeros),
+  );
+  const produtosNota = new Set(
+    inbound.items.map((i) => i.productId).filter((p): p is string => Boolean(p)),
+  );
+  const valorNota = Number(inbound.valorTotal);
+
+  const sugestoes = candidatos.map((po): SugestaoPedido => {
+    const motivos: string[] = [];
+    let score = 0;
+
+    // 1. A nota cita o pedido. É a pista mais forte que existe.
+    const numeroLimpo = soLetrasNumeros(po.numero);
+    if (citados.has(numeroLimpo) || [...citados].some((c) => c.endsWith(numeroLimpo))) {
+      score += 60;
+      motivos.push(`A nota cita o pedido ${po.numero}`);
+    }
+
+    // 2. Produtos em comum, sobre o que a nota tem de resolvido no catálogo.
+    const produtosPedido = new Set(po.items.map((i) => i.productId));
+    if (produtosNota.size > 0) {
+      const comuns = [...produtosNota].filter((p) => produtosPedido.has(p)).length;
+      const fracao = comuns / produtosNota.size;
+      score += Math.round(fracao * 30);
+      if (comuns > 0) {
+        motivos.push(
+          `${comuns} de ${produtosNota.size} produtos da nota estão neste pedido`,
+        );
+      }
+    }
+
+    // 3. Valor. Fornecedor fatura parcial o tempo todo, então valor menor não
+    //    desqualifica — só deixa de somar.
+    const valorPedido = Number(po.valorTotal);
+    if (valorPedido > 0 && valorNota > 0) {
+      const desvio = Math.abs(valorNota - valorPedido) / valorPedido;
+      if (desvio <= 0.05) {
+        score += 10;
+        motivos.push("Valor da nota bate com o do pedido");
+      } else if (desvio <= 0.15) {
+        score += 5;
+      }
+    }
+
+    // 4. Data. Nota emitida antes do pedido é quase sempre outro pedido.
+    const dias = (inbound.dataEmissao.getTime() - po.createdAt.getTime()) / 86_400_000;
+    if (dias < -1) score -= 20;
+    else if (dias <= 30) score += 10;
+    else if (dias <= 60) score += 5;
+    else score -= 10;
+
+    return {
+      purchaseOrderId: po.id,
+      numero: po.numero,
+      status: po.status,
+      valorTotal: valorPedido,
+      itens: po.items.length,
+      criadoEm: po.createdAt,
+      score,
+      motivos,
+    };
+  });
+
+  return sugestoes.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Chamado logo depois de importar o XML: se um pedido se destaca com folga,
+ * concilia sozinho. Empate ou nada convincente → devolve as sugestões e a tela
+ * pergunta.
+ */
+export async function conciliarComPedidoSugerido(input: {
+  tenantId: string;
+  inboundId: string;
+  userId?: string | null;
+}): Promise<{ purchaseOrderId: string | null; numero: string | null; sugestoes: SugestaoPedido[] }> {
+  const sugestoes = await sugerirPedidos(input.inboundId);
+  const [melhor, segundo] = sugestoes;
+
+  const destaca =
+    melhor &&
+    melhor.score >= SCORE_AUTOMATICO &&
+    (!segundo || melhor.score - segundo.score >= MARGEM_AUTOMATICA);
+
+  if (!destaca) return { purchaseOrderId: null, numero: null, sugestoes };
+
+  await conciliar({
+    tenantId: input.tenantId,
+    inboundId: input.inboundId,
+    purchaseOrderId: melhor.purchaseOrderId,
+    userId: input.userId,
+    automatico: true,
+    score: melhor.score,
+  });
+
+  return { purchaseOrderId: melhor.purchaseOrderId, numero: melhor.numero, sugestoes };
+}
+
+// ── Conciliação ──────────────────────────────────────────────
+
+type LinhaNova = {
+  purchaseOrderItemId: string | null;
+  inboundItemId: string | null;
+  productId: string | null;
+  codigoFornecedor: string | null;
+  ean: string | null;
+  descricao: string;
+  qtdPedida: number;
+  qtdFaturada: number;
+  custoPedido: number;
+  custoFaturado: number;
+  bonificacao: boolean;
+  status: ReconciliationStatus;
+};
+
+/**
+ * Monta (ou refaz) a conciliação da nota contra um pedido.
+ *
+ * Casar item da nota com item do pedido é por produto, não por posição: o
+ * fornecedor reordena as linhas, quebra uma linha em duas e manda bonificação
+ * no meio. Linha do pedido pode ficar sem par (NAO_FATURADO) e linha da nota
+ * também (NAO_PEDIDO) — é exatamente isso que o painel de divergências mostra.
+ */
+export async function conciliar(input: {
+  tenantId: string;
+  inboundId: string;
+  purchaseOrderId: string;
+  userId?: string | null;
+  automatico?: boolean;
+  score?: number | null;
+}): Promise<void> {
+  const { tenantId, inboundId, purchaseOrderId, userId } = input;
+
+  const inbound = await db.fiscalInbound.findFirst({
+    where: { id: inboundId },
+    select: {
+      id: true,
+      status: true,
+      numero: true,
+      serie: true,
+      siteId: true,
+      supplierId: true,
+      items: {
+        select: {
+          id: true,
+          descricao: true,
+          codigoFornecedor: true,
+          gtin: true,
+          quantidade: true,
+          fatorConversao: true,
+          productId: true,
+          bonificacao: true,
+          valorTotal: true,
+          valorDesconto: true,
+          valorIcmsSt: true,
+          valorFcpSt: true,
+          valorIpi: true,
+          valorFrete: true,
+        },
+        orderBy: { ordem: "asc" },
+      },
+    },
+  });
+  if (!inbound) throw new Error("Nota não encontrada.");
+  if (inbound.status === "RECEBIDO") {
+    throw new Error("Esta nota já deu entrada no estoque — não dá para reconciliar.");
+  }
+
+  const pedido = await db.purchaseOrder.findFirst({
+    where: { id: purchaseOrderId },
+    select: {
+      id: true,
+      numero: true,
+      siteId: true,
+      status: true,
+      items: {
+        select: {
+          id: true,
+          productId: true,
+          packagingId: true,
+          tipo: true,
+          qtdPedida: true,
+          qtdRecebida: true,
+          custoUnitario: true,
+        },
+      },
+    },
+  });
+  if (!pedido) throw new Error("Pedido não encontrado.");
+  if (pedido.status === "CANCELADO") throw new Error("Este pedido está cancelado.");
+  if (pedido.siteId !== inbound.siteId) {
+    throw new Error("O pedido é de outra loja — a mercadoria entraria no lugar errado.");
+  }
+
+  // Fator de cada linha do pedido (caixa → unidade). Uma consulta só.
+  const packagingIds = [...new Set(pedido.items.map((i) => i.packagingId).filter(Boolean))];
+  const embalagens = packagingIds.length
+    ? await db.productPackaging.findMany({
+        where: { id: { in: packagingIds as string[] } },
+        select: { id: true, fatorConversao: true },
+      })
+    : [];
+  const fatorPacote = new Map(embalagens.map((e) => [e.id, Number(e.fatorConversao)]));
+
+  const nomes = await nomesDeProdutos([
+    ...pedido.items.map((i) => i.productId),
+    ...inbound.items.map((i) => i.productId),
+  ]);
+
+  // Lado do pedido, já em unidade base.
+  const doPedido = pedido.items.map((i) => {
+    const fator = (i.packagingId ? fatorPacote.get(i.packagingId) : null) ?? 1;
+    return {
+      id: i.id,
+      productId: i.productId,
+      compra: i.tipo === "COMPRA",
+      qtdBase: Number(i.qtdPedida) * fator,
+      custoBase: fator > 0 ? Number(i.custoUnitario) / fator : 0,
+      usado: false,
+    };
+  });
+
+  const linhas: LinhaNova[] = [];
+
+  for (const item of inbound.items) {
+    const fator = Number(item.fatorConversao) || 1;
+    const qtdBase = Number(item.quantidade) * fator;
+    const custoTotal = custoDoItem({
+      valorTotal: Number(item.valorTotal),
+      valorDesconto: Number(item.valorDesconto),
+      valorIcmsSt: Number(item.valorIcmsSt),
+      valorFcpSt: Number(item.valorFcpSt),
+      valorIpi: Number(item.valorIpi),
+      valorFrete: Number(item.valorFrete),
+      bonificacao: item.bonificacao,
+    });
+    const custoBase = qtdBase > 0 ? custoTotal / qtdBase : 0;
+
+    // Par do pedido: mesmo produto, ainda livre. Bonificação da nota procura
+    // primeiro uma linha de bonificação do pedido — senão uma caixa de brinde
+    // consumiria a linha comprada e o preço "cairia" para zero.
+    const candidatos = item.productId
+      ? doPedido.filter((p) => !p.usado && p.productId === item.productId)
+      : [];
+    const par =
+      candidatos.find((p) => p.compra !== item.bonificacao) ?? candidatos[0] ?? null;
+    if (par) par.usado = true;
+
+    const qtdPedida = par?.qtdBase ?? 0;
+    const custoPedido = par?.custoBase ?? 0;
+    const status: ReconciliationStatus = par
+      ? vereditoDaLinha({ qtdPedida, qtdFaturada: qtdBase, custoPedido, custoFaturado: custoBase })
+      : "NAO_PEDIDO";
+
+    linhas.push({
+      purchaseOrderItemId: par?.id ?? null,
+      inboundItemId: item.id,
+      productId: item.productId,
+      codigoFornecedor: item.codigoFornecedor,
+      ean: item.gtin,
+      descricao: (item.productId && nomes.get(item.productId)) || item.descricao,
+      qtdPedida,
+      qtdFaturada: qtdBase,
+      custoPedido,
+      custoFaturado: custoBase,
+      bonificacao: item.bonificacao,
+      status,
+    });
+  }
+
+  // Sobrou linha do pedido sem par: o fornecedor não faturou.
+  for (const p of doPedido) {
+    if (p.usado) continue;
+    // Já recebido em conferência anterior não é falta desta nota.
+    const pendente = p.qtdBase - restanteRecebido(pedido.items, p.id, fatorPacote);
+    linhas.push({
+      purchaseOrderItemId: p.id,
+      inboundItemId: null,
+      productId: p.productId,
+      codigoFornecedor: null,
+      ean: null,
+      descricao: nomes.get(p.productId) ?? "Produto do pedido",
+      qtdPedida: p.qtdBase,
+      qtdFaturada: 0,
+      custoPedido: p.custoBase,
+      custoFaturado: 0,
+      bonificacao: !p.compra,
+      status: pendente > TOL_QTD ? "NAO_FATURADO" : "OK",
+    });
+  }
+
+  await db.purchaseReconciliationItem.deleteMany({ where: { inboundId } });
+  await db.purchaseReconciliationItem.createMany({
+    data: linhas.map((l) => ({ tenantId, inboundId, purchaseOrderId, ...l })),
+  });
+
+  await db.fiscalInbound.update({
+    where: { id: inboundId },
+    data: {
+      purchaseOrderId,
+      vinculoAutomatico: input.automatico ?? false,
+      scoreVinculo: input.score ?? null,
+      conciliadoEm: new Date(),
+    },
+  });
+
+  // Pedido entra em conferência. RECEBIDO_PARCIAL fica como está: já houve
+  // entrada, e voltar para CONFERENCIA esconderia isso das listas.
+  if (["ENVIADO", "AGUARDANDO", "EM_TRANSITO"].includes(pedido.status)) {
+    await db.purchaseOrder.update({
+      where: { id: purchaseOrderId },
+      data: { status: "CONFERENCIA" },
+    });
+  }
+
+  const divergentes = linhas.filter((l) => l.status !== "OK").length;
+  await registrarEvento({
+    tenantId,
+    purchaseOrderId,
+    inboundId,
+    tipo: "XML_RECEBIDO",
+    descricao: `Nota ${inbound.numero}/${inbound.serie} vinculada ${
+      input.automatico ? "automaticamente" : "manualmente"
+    } ao pedido ${pedido.numero}.`,
+    createdBy: userId,
+  });
+  await registrarEvento({
+    tenantId,
+    purchaseOrderId,
+    inboundId,
+    tipo: "CONCILIACAO_CONCLUIDA",
+    descricao:
+      divergentes === 0
+        ? `Conciliação concluída: ${linhas.length} itens sem divergência.`
+        : `Conciliação concluída: ${divergentes} de ${linhas.length} itens com divergência.`,
+    meta: { itens: linhas.length, divergentes },
+    createdBy: userId,
+  });
+}
+
+/** Quanto desta linha do pedido já entrou em conferências anteriores (base). */
+function restanteRecebido(
+  items: { id: string; packagingId: string | null; qtdRecebida: unknown }[],
+  itemId: string,
+  fatores: Map<string, number>,
+): number {
+  const it = items.find((i) => i.id === itemId);
+  if (!it) return 0;
+  const fator = (it.packagingId ? fatores.get(it.packagingId) : null) ?? 1;
+  return Number(it.qtdRecebida) * fator;
+}
+
+async function nomesDeProdutos(ids: (string | null)[]): Promise<Map<string, string>> {
+  const unicos = [...new Set(ids.filter((i): i is string => Boolean(i)))];
+  if (unicos.length === 0) return new Map();
+  const produtos = await db.product.findMany({
+    where: { id: { in: unicos } },
+    select: { id: true, nome: true },
+  });
+  return new Map(produtos.map((p) => [p.id, p.nome]));
+}
+
+/** Desfaz o vínculo — a nota volta a ser uma nota sem pedido. */
+export async function desvincularPedido(input: {
+  tenantId: string;
+  inboundId: string;
+  userId?: string | null;
+}): Promise<void> {
+  const inbound = await db.fiscalInbound.findFirst({
+    where: { id: input.inboundId },
+    select: { status: true, purchaseOrderId: true, numero: true, serie: true },
+  });
+  if (!inbound) throw new Error("Nota não encontrada.");
+  if (inbound.status === "RECEBIDO") {
+    throw new Error("Esta nota já deu entrada no estoque — o vínculo não pode ser desfeito.");
+  }
+
+  if (inbound.purchaseOrderId) {
+    await registrarEvento({
+      tenantId: input.tenantId,
+      purchaseOrderId: inbound.purchaseOrderId,
+      tipo: "VINCULO_ALTERADO",
+      descricao: `Nota ${inbound.numero}/${inbound.serie} desvinculada do pedido.`,
+      createdBy: input.userId,
+    });
+  }
+
+  await db.purchaseReconciliationItem.deleteMany({ where: { inboundId: input.inboundId } });
+  await db.fiscalInbound.update({
+    where: { id: input.inboundId },
+    data: {
+      purchaseOrderId: null,
+      vinculoAutomatico: false,
+      scoreVinculo: null,
+      conciliadoEm: null,
+    },
+  });
+}
+
+// ── Pedido criado a partir da nota ───────────────────────────
+
+/**
+ * Cria o pedido que espelha esta nota e já o concilia.
+ *
+ * Existe porque metade das compras do mercadinho não nasce de pedido nenhum:
+ * o representante passa, deixa a mercadoria e a nota. Sem isto, essa compra
+ * ficaria fora do histórico do fornecedor e do controle de recebimento — e o
+ * operador teria de digitar à mão um pedido que o XML já descreve inteiro.
+ *
+ * O pedido nasce em CONFERENCIA, não em RASCUNHO: a mercadoria já está na
+ * porta, não há o que enviar ao fornecedor.
+ */
+export async function criarPedidoDaNota(input: {
+  tenantId: string;
+  inboundId: string;
+  userId?: string | null;
+}): Promise<string> {
+  const { tenantId, inboundId, userId } = input;
+
+  const inbound = await db.fiscalInbound.findFirst({
+    where: { id: inboundId },
+    select: {
+      id: true,
+      siteId: true,
+      status: true,
+      numero: true,
+      serie: true,
+      supplierId: true,
+      purchaseOrderId: true,
+      dataEmissao: true,
+      items: {
+        select: {
+          descricao: true,
+          productId: true,
+          packagingId: true,
+          fatorConversao: true,
+          quantidade: true,
+          bonificacao: true,
+          valorTotal: true,
+          valorDesconto: true,
+          valorIcmsSt: true,
+          valorFcpSt: true,
+          valorIpi: true,
+          valorFrete: true,
+        },
+      },
+    },
+  });
+  if (!inbound) throw new Error("Nota não encontrada.");
+  if (inbound.purchaseOrderId) throw new Error("Esta nota já está vinculada a um pedido.");
+  if (inbound.status === "RECEBIDO") throw new Error("Esta nota já deu entrada no estoque.");
+  if (inbound.status === "DESCARTADO") throw new Error("Esta nota foi descartada.");
+  if (!inbound.supplierId) {
+    throw new Error("A nota não tem fornecedor no cadastro — não dá para abrir um pedido.");
+  }
+
+  const semProduto = inbound.items.filter((i) => !i.productId);
+  if (semProduto.length > 0) {
+    throw new Error(
+      `Relacione os itens ao catálogo antes de gerar o pedido. Faltam ${semProduto.length}: ${semProduto
+        .slice(0, 3)
+        .map((i) => i.descricao)
+        .join(", ")}${semProduto.length > 3 ? "…" : ""}`,
+    );
+  }
+
+  // Só mantém a embalagem quando o fator do de-para é o mesmo do cadastro.
+  // Se divergirem, o pedido nasceria em "caixas" de tamanho diferente do que a
+  // nota faturou e a conciliação seguinte acusaria divergência que não existe.
+  const fatores = await fatoresDe(inbound.items.map((i) => i.packagingId));
+
+  const items = inbound.items.map((i) => {
+    const fatorNota = Number(i.fatorConversao) || 1;
+    const fatorCadastro = i.packagingId ? fatores.get(i.packagingId) : null;
+    const manterEmbalagem = i.packagingId != null && fatorCadastro === fatorNota;
+
+    const qtdPedida = manterEmbalagem
+      ? Number(i.quantidade)
+      : Number(i.quantidade) * fatorNota;
+    const custoTotal = custoDoItem({
+      valorTotal: Number(i.valorTotal),
+      valorDesconto: Number(i.valorDesconto),
+      valorIcmsSt: Number(i.valorIcmsSt),
+      valorFcpSt: Number(i.valorFcpSt),
+      valorIpi: Number(i.valorIpi),
+      valorFrete: Number(i.valorFrete),
+      bonificacao: i.bonificacao,
+    });
+
+    return {
+      productId: i.productId as string,
+      packagingId: manterEmbalagem ? i.packagingId : null,
+      tipo: i.bonificacao ? ("BONIFICACAO" as const) : ("COMPRA" as const),
+      motivoBonificacao: i.bonificacao ? ("COMERCIAL" as const) : null,
+      qtdPedida,
+      custoUnitario: qtdPedida > 0 ? custoTotal / qtdPedida : 0,
+    };
+  });
+
+  const purchaseOrderId = await criarPedidoCompra(
+    tenantId,
+    {
+      siteId: inbound.siteId,
+      supplierId: inbound.supplierId,
+      previsaoEntrega: inbound.dataEmissao,
+      observacao: `Pedido gerado a partir da nota ${inbound.numero}/${inbound.serie}.`,
+      items,
+    },
+    { createdBy: userId ?? undefined },
+  );
+
+  await db.purchaseOrder.update({
+    where: { id: purchaseOrderId },
+    data: { status: "CONFERENCIA", confirmadoEm: new Date() },
+  });
+
+  // Score 100: não houve palpite nenhum — o pedido É a nota.
+  await conciliar({ tenantId, inboundId, purchaseOrderId, userId, automatico: true, score: 100 });
+
+  return purchaseOrderId;
+}
+
+// ── Conferência física ───────────────────────────────────────
+
+/**
+ * O que o operador contou na porta. Quantidade em unidade base — a tela
+ * converte quando o item é bipado por embalagem.
+ */
+export async function conferirItem(input: {
+  tenantId: string;
+  reconciliationItemId: string;
+  qtdRecebida?: number | null;
+  lote?: string | null;
+  validade?: string | null;
+}): Promise<void> {
+  const linha = await db.purchaseReconciliationItem.findFirst({
+    where: { id: input.reconciliationItemId },
+    select: { id: true, qtdFaturada: true, status: true, inbound: { select: { status: true } } },
+  });
+  if (!linha) throw new Error("Item não encontrado.");
+  if (linha.inbound.status === "RECEBIDO") {
+    throw new Error("Esta nota já deu entrada — a conferência está encerrada.");
+  }
+
+  const qtd = input.qtdRecebida == null ? null : Math.max(0, input.qtdRecebida);
+  const ajustou = qtd != null && Math.abs(qtd - Number(linha.qtdFaturada)) > TOL_QTD;
+
+  await db.purchaseReconciliationItem.update({
+    where: { id: linha.id },
+    data: {
+      qtdRecebida: qtd,
+      lote: input.lote?.trim() || null,
+      validade: input.validade ? new Date(`${input.validade}T00:00:00`) : null,
+      // Divergir da nota na contagem é uma decisão do operador, e ela precisa
+      // sobreviver ao recarregamento da tela.
+      resolucao: ajustou ? "AJUSTADO" : undefined,
+    },
+  });
+}
+
+/** "Conferi tudo como está na nota" — o caminho de 90% dos recebimentos. */
+export async function conferirTudoConformeNota(input: {
+  tenantId: string;
+  inboundId: string;
+}): Promise<number> {
+  const linhas = await db.purchaseReconciliationItem.findMany({
+    where: { inboundId: input.inboundId },
+    select: { id: true, qtdFaturada: true },
+  });
+  for (const l of linhas) {
+    await db.purchaseReconciliationItem.update({
+      where: { id: l.id },
+      data: { qtdRecebida: l.qtdFaturada },
+    });
+  }
+  return linhas.length;
+}
+
+/** Divergência vista e decidida. Fica no histórico com quem decidiu. */
+export async function resolverDivergencia(input: {
+  tenantId: string;
+  reconciliationItemId: string;
+  resolucao: ReconciliationResolucao;
+  motivo?: string | null;
+  userId?: string | null;
+}): Promise<void> {
+  const linha = await db.purchaseReconciliationItem.findFirst({
+    where: { id: input.reconciliationItemId },
+    select: { id: true, descricao: true, purchaseOrderId: true, inboundId: true, status: true },
+  });
+  if (!linha) throw new Error("Item não encontrado.");
+
+  await db.purchaseReconciliationItem.update({
+    where: { id: linha.id },
+    data: { resolucao: input.resolucao, motivoDivergencia: input.motivo?.trim() || null },
+  });
+
+  await registrarEvento({
+    tenantId: input.tenantId,
+    purchaseOrderId: linha.purchaseOrderId,
+    inboundId: linha.inboundId,
+    tipo: "DIVERGENCIA_RESOLVIDA",
+    descricao: `${linha.descricao}: ${LABEL_RESOLUCAO[input.resolucao]}${
+      input.motivo?.trim() ? ` — ${input.motivo.trim()}` : ""
+    }`,
+    meta: { status: linha.status, resolucao: input.resolucao },
+    createdBy: input.userId,
+  });
+}
+
+const LABEL_RESOLUCAO: Record<ReconciliationResolucao, string> = {
+  ACEITO: "aceito como está na nota",
+  IGNORADO: "divergência ignorada",
+  AJUSTADO: "quantidade ajustada na conferência",
+};
+
+/**
+ * Aceita o custo da nota como o novo custo negociado: reescreve o custo do
+ * item no pedido (em unidade de compra) e o total do pedido.
+ *
+ * O estoque entra pelo custo da NOTA de qualquer jeito — é o que foi pago.
+ * Aceitar aqui é sobre o pedido e sobre a próxima compra, não sobre esta.
+ */
+export async function aceitarCustoDaNota(input: {
+  tenantId: string;
+  reconciliationItemId: string;
+  userId?: string | null;
+}): Promise<void> {
+  const linha = await db.purchaseReconciliationItem.findFirst({
+    where: { id: input.reconciliationItemId },
+    select: {
+      id: true,
+      descricao: true,
+      custoPedido: true,
+      custoFaturado: true,
+      purchaseOrderId: true,
+      purchaseOrderItemId: true,
+      inboundId: true,
+    },
+  });
+  if (!linha) throw new Error("Item não encontrado.");
+  if (!linha.purchaseOrderItemId) {
+    throw new Error("Este item não está no pedido — não há custo negociado para atualizar.");
+  }
+
+  const item = await db.purchaseOrderItem.findFirst({
+    where: { id: linha.purchaseOrderItemId },
+    select: { id: true, packagingId: true, qtdPedida: true },
+  });
+  if (!item) throw new Error("Item do pedido não encontrado.");
+
+  const fator = item.packagingId
+    ? Number(
+        (
+          await db.productPackaging.findFirst({
+            where: { id: item.packagingId },
+            select: { fatorConversao: true },
+          })
+        )?.fatorConversao ?? 1,
+      )
+    : 1;
+
+  const novoCusto = Number(linha.custoFaturado) * fator;
+  await db.purchaseOrderItem.update({
+    where: { id: item.id },
+    data: { custoUnitario: novoCusto },
+  });
+
+  // valorTotal do pedido é soma cacheada — recalcula com o custo novo.
+  const itens = await db.purchaseOrderItem.findMany({
+    where: { purchaseOrderId: linha.purchaseOrderId },
+    select: { qtdPedida: true, custoUnitario: true },
+  });
+  const total = itens.reduce((s, i) => s + Number(i.qtdPedida) * Number(i.custoUnitario), 0);
+  await db.purchaseOrder.update({
+    where: { id: linha.purchaseOrderId },
+    data: { valorTotal: total },
+  });
+
+  await db.purchaseReconciliationItem.update({
+    where: { id: linha.id },
+    data: { resolucao: "ACEITO", custoPedido: linha.custoFaturado },
+  });
+
+  await registrarEvento({
+    tenantId: input.tenantId,
+    purchaseOrderId: linha.purchaseOrderId,
+    inboundId: linha.inboundId,
+    tipo: "CUSTO_ACEITO",
+    descricao: `${linha.descricao}: custo do pedido atualizado para o da nota.`,
+    meta: {
+      de: Number(linha.custoPedido),
+      para: Number(linha.custoFaturado),
+      unidade: "base",
+    },
+    createdBy: input.userId,
+  });
+}
+
+// ── Entrada no estoque ───────────────────────────────────────
+
+/**
+ * Camada 3. Fecha o recebimento: move o estoque, acumula o recebido no pedido,
+ * marca a nota e escreve a timeline. É a ÚNICA função daqui que mexe em saldo.
+ *
+ * Linha sem conferência (`qtdRecebida` nulo) entra pelo que a nota diz — a tela
+ * mostra quantas são antes de confirmar. Item da nota sem produto relacionado
+ * trava tudo: entrar com mercadoria sem cadastro é perder o rastro dela.
+ */
+export async function confirmarEntradaConciliada(input: {
+  tenantId: string;
+  inboundId: string;
+  userId?: string | null;
+}): Promise<string> {
+  const { tenantId, inboundId, userId } = input;
+
+  const inbound = await db.fiscalInbound.findFirst({
+    where: { id: inboundId },
+    select: {
+      id: true,
+      siteId: true,
+      status: true,
+      numero: true,
+      serie: true,
+      supplierId: true,
+      purchaseOrderId: true,
+      emitRazaoSocial: true,
+    },
+  });
+  if (!inbound) throw new Error("Nota não encontrada.");
+  if (inbound.status === "RECEBIDO") throw new Error("Esta nota já gerou entrada de estoque.");
+  if (inbound.status === "DESCARTADO") throw new Error("Esta nota foi descartada.");
+  if (!inbound.purchaseOrderId) {
+    throw new Error("Vincule a nota a um pedido antes de dar entrada.");
+  }
+
+  const pedido = await db.purchaseOrder.findFirst({
+    where: { id: inbound.purchaseOrderId },
+    select: { id: true, numero: true, status: true, financeiroGerado: true },
+  });
+  if (!pedido) throw new Error("Pedido não encontrado.");
+
+  const linhas = await db.purchaseReconciliationItem.findMany({
+    where: { inboundId },
+    select: {
+      id: true,
+      productId: true,
+      descricao: true,
+      qtdFaturada: true,
+      qtdRecebida: true,
+      custoFaturado: true,
+      bonificacao: true,
+      lote: true,
+      validade: true,
+      purchaseOrderItemId: true,
+      inboundItemId: true,
+    },
+  });
+  if (linhas.length === 0) throw new Error("Nada conciliado para receber.");
+
+  const entrando = linhas
+    .map((l) => ({
+      ...l,
+      qtd: l.qtdRecebida == null ? Number(l.qtdFaturada) : Number(l.qtdRecebida),
+    }))
+    .filter((l) => l.qtd > TOL_QTD);
+
+  if (entrando.length === 0) throw new Error("Nenhum item foi recebido — nada a dar entrada.");
+
+  const semProduto = entrando.filter((l) => !l.productId);
+  if (semProduto.length > 0) {
+    throw new Error(
+      `Relacione ao produto antes de receber. Faltam ${semProduto.length}: ${semProduto
+        .slice(0, 3)
+        .map((l) => l.descricao)
+        .join(", ")}${semProduto.length > 3 ? "…" : ""}`,
+    );
+  }
+
+  const paraEntrada = (l: (typeof entrando)[number]): EntradaItem => ({
+    productId: l.productId as string,
+    // Quantidade JÁ em unidade base — packagingId null de propósito, senão
+    // `registrarEntrada` converteria de novo e dobraria o fardo.
+    quantidade: l.qtd,
+    custoTotal: l.bonificacao ? 0 : l.qtd * Number(l.custoFaturado),
+    packagingId: null,
+    lote: l.lote,
+    validade: l.validade ? l.validade.toISOString().slice(0, 10) : null,
+  });
+
+  const comprados = entrando.filter((l) => !l.bonificacao);
+  const bonificados = entrando.filter((l) => l.bonificacao);
+
+  let purchaseId = "";
+  if (comprados.length > 0) {
+    purchaseId = await registrarEntrada(tenantId, inbound.siteId, comprados.map(paraEntrada), {
+      tipo: "FORNECEDOR",
+      supplierId: inbound.supplierId,
+      purchaseOrderId: pedido.id,
+      numeroNota: `${inbound.numero}/${inbound.serie}`,
+      observacao: `Recebimento do pedido ${pedido.numero} — nota ${inbound.numero}`,
+      createdBy: userId ?? undefined,
+    });
+  }
+  if (bonificados.length > 0) {
+    const idBonus = await registrarEntrada(
+      tenantId,
+      inbound.siteId,
+      bonificados.map(paraEntrada),
+      {
+        tipo: "FORNECEDOR",
+        motivo: "BONIFICACAO",
+        supplierId: inbound.supplierId,
+        purchaseOrderId: pedido.id,
+        numeroNota: `${inbound.numero}/${inbound.serie}`,
+        observacao: `Bonificação do pedido ${pedido.numero} — nota ${inbound.numero}`,
+        createdBy: userId ?? undefined,
+      },
+    );
+    purchaseId ||= idBonus;
+  }
+
+  // Acumula o recebido em cada linha do pedido, de volta em unidade de compra.
+  const itensPedido = await db.purchaseOrderItem.findMany({
+    where: { purchaseOrderId: pedido.id },
+    select: { id: true, packagingId: true, qtdPedida: true, qtdRecebida: true },
+  });
+  const fatores = await fatoresDe(itensPedido.map((i) => i.packagingId));
+
+  const recebidoPorItem = new Map<string, number>();
+  for (const l of entrando) {
+    if (!l.purchaseOrderItemId) continue; // item fora do pedido não tem onde somar
+    recebidoPorItem.set(
+      l.purchaseOrderItemId,
+      (recebidoPorItem.get(l.purchaseOrderItemId) ?? 0) + l.qtd,
+    );
+  }
+
+  let completo = true;
+  for (const it of itensPedido) {
+    const fator = (it.packagingId ? fatores.get(it.packagingId) : null) ?? 1;
+    const novo =
+      Number(it.qtdRecebida) + (recebidoPorItem.get(it.id) ?? 0) / (fator > 0 ? fator : 1);
+    if (recebidoPorItem.has(it.id)) {
+      await db.purchaseOrderItem.update({ where: { id: it.id }, data: { qtdRecebida: novo } });
+    }
+    if (novo < Number(it.qtdPedida) - TOL_QTD) completo = false;
+  }
+
+  await db.purchaseOrder.update({
+    where: { id: pedido.id },
+    data: {
+      status: completo ? "RECEBIDO" : "RECEBIDO_PARCIAL",
+      recebidoEm: completo ? new Date() : null,
+    },
+  });
+
+  await db.fiscalInbound.update({
+    where: { id: inboundId },
+    data: { status: "RECEBIDO", purchaseId: purchaseId || null },
+  });
+
+  // Custo de referência do produto: agora o dinheiro é real, então o que a
+  // nota cobrou vira o custo do cadastro. (Custo médio quem move é o serviço
+  // de estoque; este é o "quanto custou da última vez" que a tela mostra.)
+  await atualizarCustoDeReferencia(
+    comprados.map((l) => ({
+      productId: l.productId as string,
+      custoUnitarioBase: Number(l.custoFaturado),
+    })),
+  );
+
+  await registrarEvento({
+    tenantId,
+    purchaseOrderId: pedido.id,
+    inboundId,
+    tipo: "CONFERENCIA_CONCLUIDA",
+    descricao: `Conferência física concluída: ${entrando.length} itens recebidos.`,
+    createdBy: userId,
+  });
+  await registrarEvento({
+    tenantId,
+    purchaseOrderId: pedido.id,
+    inboundId,
+    tipo: "ESTOQUE_ATUALIZADO",
+    descricao: completo
+      ? `Estoque atualizado. Pedido ${pedido.numero} recebido integralmente.`
+      : `Estoque atualizado. Pedido ${pedido.numero} segue com itens pendentes.`,
+    meta: { purchaseId, itens: entrando.length },
+    createdBy: userId,
+  });
+
+  return purchaseId;
+}
+
+async function fatoresDe(ids: (string | null)[]): Promise<Map<string, number>> {
+  const unicos = [...new Set(ids.filter((i): i is string => Boolean(i)))];
+  if (unicos.length === 0) return new Map();
+  const pacotes = await db.productPackaging.findMany({
+    where: { id: { in: unicos } },
+    select: { id: true, fatorConversao: true },
+  });
+  return new Map(pacotes.map((p) => [p.id, Number(p.fatorConversao)]));
+}

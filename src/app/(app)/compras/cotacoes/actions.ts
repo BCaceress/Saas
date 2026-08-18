@@ -6,6 +6,8 @@ import { guardAction } from "@/lib/guard";
 import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { criarPedidoCompra } from "@/lib/estoque";
+import { emitirLinkCotacao, linkVigente } from "@/lib/compras/cotacao-link";
+import { registrarPrecosDaCotacao } from "@/lib/compras/cotacao-precos";
 import { db } from "@/lib/prisma";
 
 // ============================================================
@@ -258,25 +260,33 @@ export async function removerConviteAction(id: string) {
 // ── Envio ───────────────────────────────────────────────────
 
 /** Texto que o operador manda ao fornecedor — mesma ideia do cupom: sem
- *  gateway de mensageria, devolvemos a mensagem pronta e o link wa.me. */
+ *  gateway de mensageria, devolvemos a mensagem pronta e o link wa.me.
+ *
+ *  O link de resposta vai junto e é o ponto da mensagem: preenchido por ele,
+ *  a proposta entra no comparador sozinha. Quem preferir responder por áudio
+ *  continua podendo — a lista fica na mensagem de propósito. */
 function montarMensagem(
   empresa: string,
   numero: string,
   titulo: string,
   prazo: Date | null,
   itens: { descricao: string; quantidade: number }[],
+  linkResposta: string | null,
 ): string {
   const linhas = itens.map((i) => `• ${i.descricao} — ${i.quantidade.toLocaleString("pt-BR")}`);
   const prazoTexto = prazo
     ? `\nPreciso da resposta até ${prazo.toLocaleDateString("pt-BR")}.`
     : "";
+  const fecho = linkResposta
+    ? `\nÉ só preencher os preços aqui (não precisa cadastro):\n${linkResposta}`
+    : "\nPode me passar preço, prazo de entrega e condição de pagamento?";
   return [
     `Olá! Aqui é da ${empresa}.`,
     `Pedido de cotação ${numero} — ${titulo}:`,
     "",
     ...linhas,
     prazoTexto,
-    "\nPode me passar preço, prazo de entrega e condição de pagamento?",
+    fecho,
   ].join("\n");
 }
 
@@ -330,25 +340,65 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
       },
     });
 
-    const mensagem = montarMensagem(
-      ctx.tenant.nome,
-      cotacao.numero,
-      cotacao.titulo,
-      cotacao.prazoResposta,
-      cotacao.items.map((i) => ({ descricao: i.descricao, quantidade: Number(i.quantidade) })),
-    );
+    // Um link por convite: o token identifica QUEM está respondendo, então
+    // dois fornecedores nunca compartilham endereço (e ninguém vê a proposta
+    // do outro). Reenviar troca o token — o link antigo morre na hora.
+    const links = new Map<string, string>();
+    for (const alvo of alvos) {
+      const { url } = await emitirLinkCotacao(ctx.tenant.id, alvo.id, cotacao.prazoResposta);
+      links.set(alvo.id, url);
+    }
 
     ok();
     return alvos.map((a) => {
+      const link = links.get(a.id) ?? null;
+      const mensagem = montarMensagem(
+        ctx.tenant.nome,
+        cotacao.numero,
+        cotacao.titulo,
+        cotacao.prazoResposta,
+        cotacao.items.map((i) => ({ descricao: i.descricao, quantidade: Number(i.quantidade) })),
+        link,
+      );
       const tel = a.supplier.telefone?.replace(/\D/g, "") ?? "";
       const numeroWa = tel.length && tel.length <= 11 ? `55${tel}` : tel;
       return {
         conviteId: a.id,
         fornecedor: a.supplier.nomeFantasia || a.supplier.razaoSocial,
         mensagem,
+        link,
         waLink: numeroWa ? `https://wa.me/${numeroWa}?text=${encodeURIComponent(mensagem)}` : null,
       };
     });
+  });
+}
+
+/**
+ * Devolve o link de resposta de um convite já enviado — para mandar de novo
+ * por outro canal. Só gera token novo quando não existe ou já venceu: renovar
+ * à toa mataria o endereço que o fornecedor já tem aberto no celular.
+ */
+export async function linkDoConviteAction(conviteId: string): Promise<{ url: string }> {
+  const ctx = await guardAction("compras.pedir");
+  return runWithTenant(ctx.tenant.id, async () => {
+    const convite = await db.quotationSupplier.findFirst({
+      where: { id: conviteId },
+      select: { id: true, quotation: { select: { prazoResposta: true, status: true } } },
+    });
+    if (!convite) throw new Error("Convite não encontrado.");
+    if (convite.quotation.status !== "ABERTA") {
+      throw new Error("O link só funciona enquanto a cotação está aberta.");
+    }
+
+    const vigente = await linkVigente(conviteId);
+    if (vigente) return { url: vigente.url };
+
+    const novo = await emitirLinkCotacao(
+      ctx.tenant.id,
+      conviteId,
+      convite.quotation.prazoResposta,
+    );
+    return { url: novo.url };
   });
 }
 
@@ -404,12 +454,18 @@ export async function registrarRespostaAction(input: z.input<typeof respostaSche
       data: {
         status: "RESPONDIDA",
         respondidaEm: new Date(),
+        // Registrada pela loja: a Central de Respostas marca essa como
+        // transcrição (áudio, foto, telefone), que merece um segundo olhar.
+        respondidaVia: "OPERADOR",
         prazoEntregaDias: d.prazoEntregaDias ?? null,
         condicaoPagamento: d.condicaoPagamento ?? null,
         frete: d.frete ?? null,
         observacao: d.observacao ?? null,
       },
     });
+    // Mesmo destino da resposta que vem pelo link: preço cotado é preço, e o
+    // comparador/histórico não deveriam saber por qual porta ele entrou.
+    await registrarPrecosDaCotacao(d.conviteId);
     ok();
   });
 }

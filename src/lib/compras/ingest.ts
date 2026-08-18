@@ -31,8 +31,15 @@ export type ParametrosIngestao = {
   supplierId: string;
   kind: SupplierIntegrationKind;
   fonte: Fonte;
-  /** manual (upload/digitação) | api (sincronizar agora) | agendado (job). */
-  origem?: "manual" | "api" | "agendado";
+  /**
+   * manual (upload/digitação) | api (sincronizar agora) | agendado (job) |
+   * cotacao (resposta de RFQ virando preço vigente).
+   *
+   * `cotacao` existe para a Central de Respostas não mostrar o mesmo fato duas
+   * vezes: a linha da cotação já conta essa história, a importação é só o
+   * rastro de como o preço entrou no catálogo.
+   */
+  origem?: "manual" | "api" | "agendado" | "cotacao";
   /** Tabela do fornecedor. Só quem manda tabela por região usa outra. */
   referencia?: string;
   arquivo?: { nome: string; tamanho: number; mimeType: string } | null;

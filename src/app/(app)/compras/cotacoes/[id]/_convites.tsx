@@ -8,6 +8,7 @@ import {
   Users,
   MessageCircle,
   Copy,
+  Link as LinkIcon,
   X,
   ThumbsDown,
   PencilLine,
@@ -18,6 +19,7 @@ import type { ConviteCotacao, CotacaoDetalhe, FornecedorOpcao } from "../_types"
 import {
   convidarFornecedoresAction,
   enviarCotacaoAction,
+  linkDoConviteAction,
   recusarConviteAction,
   registrarRespostaAction,
   removerConviteAction,
@@ -25,8 +27,10 @@ import {
 
 // ── Fornecedores convidados ─────────────────────────────────
 // Enviar aqui é dar o recado pronto ao operador: sem gateway de mensageria,
-// o sistema monta a mensagem e abre o WhatsApp. Quem responde é o fornecedor,
-// pelo canal dele; quem registra a resposta é o operador, nesta tela.
+// o sistema monta a mensagem e abre o WhatsApp. A mensagem leva o LINK de
+// resposta — o fornecedor preenche os preços lá e a proposta entra sozinha.
+// "Registrar resposta" continua existindo para quem responde por áudio, foto
+// ou telefone: o link é o caminho curto, não uma exigência.
 
 const STATUS: Record<
   ConviteCotacao["status"],
@@ -42,6 +46,8 @@ type Envio = {
   conviteId: string;
   fornecedor: string;
   mensagem: string;
+  /** Endereço público onde o fornecedor preenche os preços (um por convite). */
+  link: string | null;
   waLink: string | null;
 };
 
@@ -62,6 +68,7 @@ export function ConvitesCotacao({
   const [convidando, setConvidando] = useState(false);
   const [respondendo, setRespondendo] = useState<ConviteCotacao | null>(null);
   const [envios, setEnvios] = useState<Envio[] | null>(null);
+  const [linkCopiado, setLinkCopiado] = useState<string | null>(null);
 
   function rodar(fn: () => Promise<unknown>) {
     setErro(null);
@@ -204,6 +211,23 @@ export function ConvitesCotacao({
                           Ver no comparativo
                         </button>
                       </>
+                    )}
+                    {c.status === "ENVIADA" && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          rodar(async () => {
+                            const { url } = await linkDoConviteAction(c.id);
+                            await navigator.clipboard.writeText(url);
+                            setLinkCopiado(c.id);
+                          })
+                        }
+                        disabled={pendente}
+                        className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
+                      >
+                        <LinkIcon size={13} />
+                        {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
+                      </button>
                     )}
                     {c.status === "ENVIADA" && (
                       <button
@@ -573,41 +597,59 @@ function RespostaSheet({
 
 function EnviosSheet({ envios, onFechar }: { envios: Envio[]; onFechar: () => void }) {
   const [copiado, setCopiado] = useState<string | null>(null);
+  const [linkCopiado, setLinkCopiado] = useState<string | null>(null);
 
   return (
     <Modal
       titulo="Mensagem pronta"
-      descricao="Abra o WhatsApp de cada fornecedor ou copie o texto e mande pelo canal que você usa."
+      descricao="A mensagem já leva o link onde o fornecedor preenche os preços — sem cadastro, direto do celular dele. Mande pelo WhatsApp ou pelo canal que vocês usam."
       onFechar={onFechar}
     >
       <ul className="flex flex-col gap-2">
         {envios.map((e) => (
           <li
             key={e.conviteId}
-            className="flex items-center gap-3 rounded-[var(--radius)] border border-line px-3 py-2.5"
+            className="flex flex-col gap-2 rounded-[var(--radius)] border border-line px-3 py-2.5"
           >
-            <span className="min-w-0 flex-1 truncate text-sm text-ink">{e.fornecedor}</span>
-            <button
-              type="button"
-              onClick={() => {
-                void navigator.clipboard.writeText(e.mensagem);
-                setCopiado(e.conviteId);
-              }}
-              className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
-            >
-              <Copy size={13} />
-              {copiado === e.conviteId ? "Copiado" : "Copiar"}
-            </button>
-            {e.waLink && (
-              <a
-                href={e.waLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+            <div className="flex items-center gap-3">
+              <span className="min-w-0 flex-1 truncate text-sm text-ink">{e.fornecedor}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(e.mensagem);
+                  setCopiado(e.conviteId);
+                }}
+                className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
               >
-                <MessageCircle size={13} />
-                WhatsApp
-              </a>
+                <Copy size={13} />
+                {copiado === e.conviteId ? "Copiado" : "Copiar"}
+              </button>
+              {e.waLink && (
+                <a
+                  href={e.waLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+                >
+                  <MessageCircle size={13} />
+                  WhatsApp
+                </a>
+              )}
+            </div>
+
+            {e.link && (
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(e.link!);
+                  setLinkCopiado(e.conviteId);
+                }}
+                title={e.link}
+                className="flex items-center gap-1.5 self-start rounded-full bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-muted transition-colors hover:text-ink"
+              >
+                <LinkIcon size={12} />
+                {linkCopiado === e.conviteId ? "Link copiado" : "Copiar só o link"}
+              </button>
             )}
           </li>
         ))}

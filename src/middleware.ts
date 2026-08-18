@@ -20,6 +20,12 @@ export default auth((req) => {
   const { pathname } = req.nextUrl;
   const isLoggedIn = !!req.auth;
 
+  // Resposta pública de cotação: quem abre é o FORNECEDOR, que não tem conta.
+  // Vale em qualquer host — o token do link é que diz de qual tenant é a
+  // cotação. Sem esta linha, o link colado num grupo de WhatsApp que preserve
+  // o subdomínio cairia no gate abaixo e viraria uma tela de login.
+  if (pathname.startsWith("/cotacao/")) return NextResponse.next();
+
   // Domínio raiz: landing + auth. Sem gate.
   if (!sub) return NextResponse.next();
 
