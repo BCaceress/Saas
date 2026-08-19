@@ -71,6 +71,7 @@ export type ConfigFiscal = {
   apiToken: string | null;
   emissaoAutomaticaNfce: boolean;
   prazoCancelamentoMin: number;
+  manifestacaoAutomatica: boolean;
 };
 
 /** Config do tenant, ou null quando o módulo fiscal nunca foi configurado. */
@@ -86,6 +87,7 @@ export async function carregarConfigFiscal(tenantId: string): Promise<ConfigFisc
         apiToken: true,
         emissaoAutomaticaNfce: true,
         prazoCancelamentoMin: true,
+        manifestacaoAutomatica: true,
       },
     }),
   ]);

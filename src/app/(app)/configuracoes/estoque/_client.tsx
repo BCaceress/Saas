@@ -45,6 +45,7 @@ type EstoqueConfig = {
   produtoParadoDias: number;
   validadeAlertaDias: number;
   recebimentoExigeContagem: boolean;
+  conferenciaCega: boolean;
 };
 
 /** Rótulo curto de cada estratégia — versão de escolha, não de documentação. */
@@ -92,6 +93,7 @@ export function EstoqueConfigClient({
   const [parado, setParado] = useState(String(initial.produtoParadoDias));
   const [validade, setValidade] = useState(String(initial.validadeAlertaDias));
   const [contagem, setContagem] = useState(initial.recebimentoExigeContagem);
+  const [cega, setCega] = useState(initial.conferenciaCega);
   const [salvoAgora, setSalvoAgora] = useState(false);
   // Padronizar é a pergunta; a quantidade é só a resposta de quem disse sim.
   // Guardado à parte do número porque "0" e "ainda não digitei" não são a mesma
@@ -115,7 +117,8 @@ export function EstoqueConfigClient({
     Number(minimo) !== base.estoqueMinimoPadrao ||
     Number(parado) !== base.produtoParadoDias ||
     Number(validade) !== base.validadeAlertaDias ||
-    contagem !== base.recebimentoExigeContagem;
+    contagem !== base.recebimentoExigeContagem ||
+    cega !== base.conferenciaCega;
 
   // O selo "salvo" é confirmação, não estado — some sozinho.
   useEffect(() => {
@@ -151,6 +154,7 @@ export function EstoqueConfigClient({
       produtoParadoDias: dias,
       validadeAlertaDias: vDias,
       recebimentoExigeContagem: contagem,
+      conferenciaCega: cega,
     };
     start(async () => {
       try {
@@ -342,6 +346,32 @@ export function EstoqueConfigClient({
           />
         </CardNumero>
       </div>
+
+      {/* ── Conferência cega: vale para toda operação, com uma loja ou dez.
+          Fica antes do card de contagem porque é a decisão mais forte sobre
+          COMO se confere; a contagem no destino é sobre transferência. ── */}
+      <section className="rounded-[var(--radius-lg)] border border-line bg-surface p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-semibold text-ink">Conferência cega</h2>
+            <p className="mt-0.5 max-w-xl text-sm text-muted">
+              Esconde o que o pedido e a nota dizem até a pessoa contar e digitar. É o que
+              separa conferir de confirmar.
+            </p>
+          </div>
+          <Switch checked={cega} onChange={setCega} label="Conferência cega" />
+        </div>
+        <p className="mt-4 flex items-center gap-1.5 border-t border-line pt-3 text-[13px] text-muted">
+          {cega ? (
+            <>
+              <CheckCircle2 size={14} className="shrink-0 text-ok" aria-hidden />
+              O botão &quot;conferi tudo conforme a nota&quot; some — cada item passa a ser contado.
+            </>
+          ) : (
+            "Com o esperado à vista, falta e avaria tendem a passar batido na conferência."
+          )}
+        </p>
+      </section>
 
       {/* ── Recebimento: só existe com mais de um ponto. Com um estoque só
           não há transferência entre lojas, então a chave não decide nada e

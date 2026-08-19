@@ -10,6 +10,7 @@ import {
 } from "./nfe-xml";
 import { fatorDaNota } from "./fator";
 import { custoDoItem } from "./custo";
+import { ratearTotaisDaNota } from "./rateio";
 import { enriquecerProdutoComNota, atualizarCustoDeReferencia } from "./enriquecer-produto";
 import { conciliarComPedidoSugerido } from "@/lib/compras/conciliacao";
 import type { FiscalInboundStatus } from "@/generated/prisma";
@@ -227,8 +228,21 @@ async function importarUmXml(input: {
 
   const supplierId = await resolverFornecedor(tenantId, nota.emitente);
 
+  // Frete e desconto que o emitente lançou só no total da nota são rateados
+  // pelos itens agora: o custo médio nasce do que foi PAGO, e reconstruir isso
+  // depois exigiria reprocessar nota velha. O XML cru continua guardado inteiro
+  // — a fidelidade ao documento mora lá, não nesta coluna.
+  const rateio = ratearTotaisDaNota(nota.itens, {
+    frete: nota.valorFrete,
+    desconto: nota.valorDesconto,
+  });
+
   const resolvidos = await Promise.all(
-    nota.itens.map(async (item) => ({ item, resolucao: await resolverItem(supplierId, item) })),
+    nota.itens.map(async (item, i) => ({
+      item,
+      encargos: rateio[i],
+      resolucao: await resolverItem(supplierId, item),
+    })),
   );
 
   const criada = await db.fiscalInbound.create({
@@ -243,6 +257,8 @@ async function importarUmXml(input: {
       serie: nota.serie,
       dataEmissao: nota.dataEmissao,
       valorTotal: nota.valorTotal,
+      valorFrete: nota.valorFrete,
+      valorDesconto: nota.valorDesconto,
       emitCnpj: nota.emitente.cnpj,
       emitRazaoSocial: nota.emitente.razaoSocial,
       emitUf: nota.emitente.uf,
@@ -250,14 +266,25 @@ async function importarUmXml(input: {
       // O XML cru fica guardado inteiro: é a prova do que o fornecedor cobrou,
       // e a conciliação pode ser refeita a partir dele quando o de-para muda.
       xmlArquivo: { create: { tenantId, nomeArquivo: xml.nome, conteudo: xml.conteudo } },
+      // Parcelas do boleto. Hoje só informativas na tela; é o que faz contas a
+      // pagar nascer pronto quando o financeiro existir, sem reler nota velha.
+      duplicatas: {
+        create: nota.duplicatas.map((d) => ({
+          tenantId,
+          numero: d.numero,
+          vencimento: d.vencimento,
+          valor: d.valor,
+        })),
+      },
       items: {
-        create: resolvidos.map(({ item, resolucao }) => ({
+        create: resolvidos.map(({ item, encargos, resolucao }) => ({
           tenantId,
           ordem: item.ordem,
           codigoFornecedor: item.codigoFornecedor,
           gtin: item.gtin,
           descricao: item.descricao,
           ncm: item.ncm,
+          cest: item.cest,
           cfop: item.cfop,
           unidade: item.unidade,
           quantidade: item.quantidade,
@@ -265,11 +292,11 @@ async function importarUmXml(input: {
           quantidadeTributavel: item.quantidadeTributavel,
           valorUnitario: item.valorUnitario,
           valorTotal: item.valorTotal,
-          valorDesconto: item.valorDesconto,
+          valorDesconto: encargos.valorDesconto,
           valorIcmsSt: item.valorIcmsSt,
           valorFcpSt: item.valorFcpSt,
           valorIpi: item.valorIpi,
-          valorFrete: item.valorFrete,
+          valorFrete: encargos.valorFrete,
           bonificacao: item.bonificacao,
           pedidoFornecedor: item.pedidoFornecedor,
           itemPedidoNumero: item.itemPedidoNumero,

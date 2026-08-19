@@ -48,7 +48,10 @@ export type AlertKind =
   | "recebimento"
   | "compra"
   | "aniversario"
-  | "cliente-risco";
+  | "cliente-risco"
+  | "nota-parada"
+  | "canal-nfe"
+  | "certificado";
 
 /** Ajuste do Tenant que o alerta lê. Serve de rastro na tela de configuração. */
 export type ChaveConfig =
@@ -312,6 +315,37 @@ export const CATALOGO: Record<AlertKind, DefAlerta> = {
     rotulo: "Cliente em risco",
     ajuda: "Cliente fidelizado que parou de comprar há muitos dias.",
     config: ["cupomDiasRisco"],
+  },
+  // ── Saúde da entrada de NF-e ───────────────────────────────
+  // Automação que quebra em silêncio é pior que canal manual: o operador para
+  // de conferir a caixa de e-mail porque "o sistema pega", e ninguém descobre
+  // até faltar mercadoria na prateleira.
+  "nota-parada": {
+    kind: "nota-parada",
+    categoria: "operacao",
+    prioridade: "alto",
+    icone: "recebimento",
+    estrategias: "todas",
+    rotulo: "Nota importada sem conferência",
+    ajuda: "XML do fornecedor entrou há dias e a mercadoria nunca foi conferida.",
+  },
+  "canal-nfe": {
+    kind: "canal-nfe",
+    categoria: "operacao",
+    prioridade: "alto",
+    icone: "canal-nfe",
+    estrategias: "todas",
+    rotulo: "Canal de nota com falha",
+    ajuda: "Caixa de e-mail monitorada parou de conectar (senha revogada, OAuth expirado).",
+  },
+  certificado: {
+    kind: "certificado",
+    categoria: "operacao",
+    prioridade: "alto",
+    icone: "certificado",
+    estrategias: "todas",
+    rotulo: "Certificado A1 vencendo",
+    ajuda: "Certificado digital perto do vencimento — sem ele para a emissão e a consulta à SEFAZ.",
   },
 };
 

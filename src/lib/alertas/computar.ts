@@ -84,6 +84,11 @@ const podeVerCategoria = (acessos: Acesso[], c: AlertCategory) =>
 
 const DIA = 86_400_000;
 
+/** Nota importada e não conferida por mais que isso vira alerta. */
+const NOTA_PARADA_MS = 2 * DIA;
+/** Antecedência do aviso de vencimento do certificado A1. */
+const CERTIFICADO_AVISO_DIAS = 30;
+
 /** Janela de carência após o cadastro — não incomoda o operador com alertas
  *  de estoque/preço/custo enquanto ele ainda está terminando de configurar. */
 const GRACA_NOVO = DIA;
@@ -136,7 +141,18 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
   const janelaValidade = new Date(agora + (tenant.validadeAlertaDias || 30) * DIA);
   const olhaValidade = prefs["validade-vencida"].ligado || prefs["validade-proxima"].ligado;
 
-  const [produtos, movs, inventarios, transferencias, pedidos, sites, lotes] = await Promise.all([
+  const [
+    produtos,
+    movs,
+    inventarios,
+    transferencias,
+    pedidos,
+    sites,
+    lotes,
+    notasParadas,
+    caixasComFalha,
+    certificados,
+  ] = await Promise.all([
     db.product.findMany({
       where: { ativo: true },
       select: {
@@ -200,6 +216,32 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
           },
         })
       : Promise.resolve([]),
+    // Nota que entrou e ninguém conferiu. O XML sozinho não move estoque —
+    // até a conferência, o saldo do sistema está mentindo para menos.
+    db.fiscalInbound.findMany({
+      where: {
+        status: { in: ["PENDENTE", "CONCILIADO"] },
+        createdAt: { lt: new Date(agora - NOTA_PARADA_MS) },
+      },
+      orderBy: { createdAt: "asc" },
+      take: 20,
+      select: {
+        id: true,
+        numero: true,
+        emitRazaoSocial: true,
+        valorTotal: true,
+        createdAt: true,
+        siteId: true,
+      },
+    }),
+    db.fiscalEmailInbox.findMany({
+      where: { ativo: true, ultimoErro: { not: null } },
+      select: { id: true, nome: true, email: true, ultimoErro: true, ultimaSincronizacao: true },
+    }),
+    db.fiscalEmitente.findMany({
+      where: { certificadoValidade: { not: null } },
+      select: { siteId: true, certificadoValidade: true, site: { select: { nome: true } } },
+    }),
   ]);
 
   // Com uma loja só, dizer o nome dela em todo alerta é ruído; com duas, é a
@@ -391,6 +433,52 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
         acaoLabel: "Abrir",
       });
     }
+  }
+
+  // ── Entrada de NF-e: a automação está viva? ────────────────
+  for (const nota of notasParadas) {
+    const dias = Math.floor((agora - new Date(nota.createdAt).getTime()) / DIA);
+    emitir(alerts, "nota-parada", nota.id, {
+      titulo: "Nota esperando conferência",
+      descricao: comLocal(
+        nota.siteId,
+        `NF ${nota.numero} · ${nota.emitRazaoSocial} — importada há ${dias} dias e ainda sem entrada.`,
+      ),
+      at: new Date(nota.createdAt).toISOString(),
+      href: `/compras/recebimento/${nota.id}`,
+      acaoLabel: "Conferir",
+    });
+  }
+
+  for (const caixa of caixasComFalha) {
+    emitir(alerts, "canal-nfe", caixa.id, {
+      titulo: "Caixa de e-mail sem conectar",
+      descricao: `${caixa.nome} (${caixa.email}) — ${caixa.ultimoErro ?? "falha na última verificação"}`,
+      at: caixa.ultimaSincronizacao?.toISOString(),
+      href: "/configuracoes/notas-fiscais",
+      acaoLabel: "Revisar conta",
+    });
+  }
+
+  for (const cert of certificados) {
+    const validade = cert.certificadoValidade;
+    if (!validade) continue;
+    const dias = Math.ceil((validade.getTime() - agora) / DIA);
+    if (dias > CERTIFICADO_AVISO_DIAS) continue;
+
+    emitir(alerts, "certificado", cert.siteId, {
+      // Vencido não é aviso, é parada de operação: nada é emitido nem consultado.
+      prioridade: dias <= 0 ? "critico" : undefined,
+      titulo: dias <= 0 ? "Certificado A1 vencido" : "Certificado A1 vencendo",
+      descricao: comLocal(
+        cert.siteId,
+        dias <= 0
+          ? "Sem certificado válido não há emissão nem consulta de notas na SEFAZ."
+          : `Vence em ${dias} dia(s) — renove antes de parar a emissão.`,
+      ),
+      href: "/configuracoes/notas-fiscais",
+      acaoLabel: "Ver certificado",
+    });
   }
 
   // ── Fidelização: cupons sugeridos (risco / aniversário) ────

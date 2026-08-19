@@ -403,6 +403,8 @@ export type SituacaoFiscal = {
   /** Dias até o certificado A1 mais próximo do vencimento. */
   certificadoDias: number | null;
   certificadoLoja: string | null;
+  /** Notas importadas no período e quantas entraram sem ninguém subir arquivo. */
+  automacao: { total: number; automaticas: number; pct: number };
 };
 
 /**
@@ -413,7 +415,7 @@ export type SituacaoFiscal = {
 export async function situacaoFiscal(range: Range, siteId: SiteFilter): Promise<SituacaoFiscal> {
   const doSite = siteId ? { siteId } : {};
 
-  const [porStatus, entradasPendentes, emitentes] = await Promise.all([
+  const [porStatus, entradasPendentes, emitentes, importacoes] = await Promise.all([
     db.fiscalDocument.groupBy({
       by: ["status"],
       where: { ...doSite, direcao: "SAIDA", createdAt: { gte: range.inicio, lt: range.fim } },
@@ -426,7 +428,23 @@ export async function situacaoFiscal(range: Range, siteId: SiteFilter): Promise<
       orderBy: { certificadoValidade: "asc" },
       take: 1,
     }),
+    // "Quanto disso já é automático" — o número que decide se vale investir
+    // mais em e-mail/SEFAZ ou se o operador continua arrastando arquivo.
+    db.fiscalImportLog.groupBy({
+      by: ["origem"],
+      where: {
+        status: "IMPORTADA",
+        processadoEm: { gte: range.inicio, lt: range.fim },
+        ...(siteId ? { siteId } : {}),
+      },
+      _count: { _all: true },
+    }),
   ]);
+
+  const importadas = importacoes.reduce((s, g) => s + g._count._all, 0);
+  const semToque = importacoes
+    .filter((g) => g.origem !== "UPLOAD")
+    .reduce((s, g) => s + g._count._all, 0);
 
   const total = (...alvos: string[]) =>
     porStatus.filter((g) => alvos.includes(g.status)).reduce((s, g) => s + g._count._all, 0);
@@ -441,5 +459,10 @@ export async function situacaoFiscal(range: Range, siteId: SiteFilter): Promise<
     certificadoDias:
       validade == null ? null : Math.floor((validade.getTime() - Date.now()) / DIA),
     certificadoLoja: emitentes[0]?.site.nome ?? null,
+    automacao: {
+      total: importadas,
+      automaticas: semToque,
+      pct: importadas > 0 ? Math.round((semToque / importadas) * 100) : 0,
+    },
   };
 }

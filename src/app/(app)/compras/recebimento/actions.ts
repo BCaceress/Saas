@@ -7,6 +7,7 @@ import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { getActiveSiteId, getOrCreateDefaultSite } from "@/lib/sites";
 import { importarNotasXml, relacionarItemInbound, type ResultadoImportacao } from "@/lib/fiscal/entrada";
+import { registrarImportacoes } from "@/lib/fiscal/import-log";
 import { buscarProdutosParaRelacionar } from "@/lib/compras/busca-produto";
 import { createProduct } from "@/app/(app)/produtos/actions";
 import {
@@ -18,6 +19,8 @@ import {
   resolverDivergencia,
   aceitarCustoDaNota,
   confirmarEntradaConciliada,
+  devolverItemDivergente,
+  resumoDivergenciasParaFornecedor,
 } from "@/lib/compras/conciliacao";
 import type { ActiveTenant } from "@/lib/current-tenant";
 
@@ -65,6 +68,11 @@ export async function importarXmlRecebimentoAction(
       userId: ctx.user.id,
       cnpjDestino: emitente?.cnpj ?? null,
     });
+
+    await registrarImportacoes(
+      { origem: "UPLOAD", siteId, usuarioId: ctx.user.id },
+      resultado,
+    );
 
     revalidar();
     revalidatePath("/fiscal/notas-recebidas");
@@ -173,7 +181,9 @@ const resolverSchema = z.object({
   inboundId: z.string().min(1),
   itemId: z.string().min(1),
   resolucao: z.enum(["ACEITO", "IGNORADO", "AJUSTADO"]),
-  motivo: z.string().trim().max(200).optional(),
+  // Obrigatório: divergência resolvida sem justificativa vira discussão com o
+  // fornecedor sem prova, semanas depois, quando ninguém lembra o que chegou.
+  motivo: z.string().trim().min(3, "Explique a divergência em uma frase.").max(240),
 });
 
 export async function resolverDivergenciaAction(input: z.input<typeof resolverSchema>) {
@@ -188,6 +198,40 @@ export async function resolverDivergenciaAction(input: z.input<typeof resolverSc
     });
     revalidar(d.inboundId);
   });
+}
+
+const devolucaoSchema = z.object({
+  inboundId: z.string().min(1),
+  itemId: z.string().min(1),
+  quantidade: z.coerce.number().positive("Informe a quantidade devolvida."),
+  motivo: z.string().trim().min(3, "Explique o motivo da devolução.").max(240),
+});
+
+/** Devolve ao fornecedor o excedente/avaria que já entrou no estoque. */
+export async function devolverDivergenciaAction(input: z.input<typeof devolucaoSchema>) {
+  return tx(async (ctx) => {
+    const d = devolucaoSchema.parse(input);
+    await devolverItemDivergente({
+      tenantId: ctx.tenant.id,
+      reconciliationItemId: d.itemId,
+      quantidade: d.quantidade,
+      motivo: d.motivo,
+      userId: ctx.user.id,
+    });
+    revalidar(d.inboundId);
+    revalidatePath("/estoque/saldos");
+  });
+}
+
+/** Texto pronto da reclamação — o desfecho acontece no WhatsApp do vendedor. */
+export async function resumoDivergenciasAction(inboundId: string) {
+  return tx((ctx) =>
+    resumoDivergenciasParaFornecedor({
+      tenantId: ctx.tenant.id,
+      inboundId,
+      empresa: ctx.tenant.nome,
+    }),
+  );
 }
 
 export async function aceitarCustoAction(input: { inboundId: string; itemId: string }) {

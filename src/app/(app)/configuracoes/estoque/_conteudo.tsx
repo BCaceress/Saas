@@ -17,6 +17,7 @@ export async function ConteudoEstoque() {
         produtoParadoDias: tenant.produtoParadoDias,
         validadeAlertaDias: tenant.validadeAlertaDias,
         recebimentoExigeContagem: tenant.recebimentoExigeContagem,
+        conferenciaCega: tenant.conferenciaCega,
       }}
       multiPonto={(tenant.numPontos ?? 1) > 1}
     />

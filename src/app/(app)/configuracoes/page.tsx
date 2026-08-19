@@ -7,6 +7,7 @@ import {
   Building2,
   UserCog,
   Blocks,
+  FileInput,
   Warehouse,
   Wallet,
   Bell,
@@ -92,6 +93,12 @@ const CARDS: {
     icon: Blocks,
     title: "Módulos",
     description: "Ligue PDV, fiscal, comodato e rota conforme a operação.",
+  },
+  {
+    href: "/configuracoes/notas-fiscais",
+    icon: FileInput,
+    title: "Notas fiscais",
+    description: "Como o XML do fornecedor entra: arquivo, e-mail ou consulta à SEFAZ.",
   },
   {
     href: "/configuracoes/plano",

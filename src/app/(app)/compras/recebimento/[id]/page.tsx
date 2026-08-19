@@ -27,5 +27,12 @@ export default async function RecebimentoDetalhePage({
   );
   if (!dados) notFound();
 
-  return <RecebimentoClient dados={dados} podeCriarProduto={podeCriarProduto} subcategorias={subcategorias} />;
+  return (
+    <RecebimentoClient
+      dados={dados}
+      podeCriarProduto={podeCriarProduto}
+      cega={ctx.tenant.conferenciaCega}
+      subcategorias={subcategorias}
+    />
+  );
 }

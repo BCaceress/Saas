@@ -1,6 +1,11 @@
 import "server-only";
 import { db } from "@/lib/prisma";
-import { criarPedidoCompra, registrarEntrada, type EntradaItem } from "@/lib/estoque";
+import {
+  criarPedidoCompra,
+  registrarDevolucao,
+  registrarEntrada,
+  type EntradaItem,
+} from "@/lib/estoque";
 import { custoDoItem } from "@/lib/fiscal/custo";
 import { atualizarCustoDeReferencia } from "@/lib/fiscal/enriquecer-produto";
 import { registrarEvento } from "./eventos";
@@ -718,6 +723,167 @@ export async function resolverDivergencia(input: {
     meta: { status: linha.status, resolucao: input.resolucao },
     createdBy: input.userId,
   });
+}
+
+/**
+ * Devolve ao fornecedor o que veio a mais (ou avariado) e já entrou no estoque.
+ *
+ * Só depois da entrada, de propósito: antes dela, o excedente se resolve
+ * baixando a quantidade recebida na conferência — criar movimento de devolução
+ * de mercadoria que nunca entrou deixaria a razão contando duas vezes.
+ *
+ * O movimento sai pelo mesmo `registrarDevolucao` do resto do sistema: o
+ * histórico do produto não pode ter duas versões de "saiu por devolução".
+ */
+export async function devolverItemDivergente(input: {
+  tenantId: string;
+  reconciliationItemId: string;
+  quantidade: number;
+  motivo: string;
+  userId?: string | null;
+}): Promise<void> {
+  const { tenantId, quantidade, motivo, userId } = input;
+  if (!(quantidade > 0)) throw new Error("Informe a quantidade devolvida.");
+  if (motivo.trim().length < 3) throw new Error("Explique o motivo da devolução.");
+
+  const linha = await db.purchaseReconciliationItem.findFirst({
+    where: { id: input.reconciliationItemId },
+    select: {
+      id: true,
+      productId: true,
+      descricao: true,
+      custoFaturado: true,
+      qtdFaturada: true,
+      purchaseOrderId: true,
+      inboundId: true,
+      inbound: { select: { siteId: true, status: true, numero: true, purchaseId: true } },
+    },
+  });
+  if (!linha) throw new Error("Item não encontrado.");
+  if (!linha.productId) throw new Error("Relacione o item a um produto antes de devolver.");
+  if (linha.inbound.status !== "RECEBIDO") {
+    throw new Error(
+      "A nota ainda não deu entrada. Antes da entrada, corrija a quantidade na conferência " +
+        "em vez de devolver.",
+    );
+  }
+
+  const unitario = Number(linha.qtdFaturada) > 0
+    ? Number(linha.custoFaturado) / Number(linha.qtdFaturada)
+    : 0;
+
+  await registrarDevolucao(
+    tenantId,
+    linha.inbound.siteId,
+    linha.productId,
+    "FORNECEDOR",
+    { fechado: quantidade },
+    `NF ${linha.inbound.numero} — ${motivo.trim()}`,
+    {
+      custoUnitario: unitario,
+      purchaseId: linha.inbound.purchaseId ?? undefined,
+      createdBy: userId ?? undefined,
+    },
+  );
+
+  await db.purchaseReconciliationItem.update({
+    where: { id: linha.id },
+    data: { resolucao: "AJUSTADO", motivoDivergencia: `Devolvido ao fornecedor: ${motivo.trim()}` },
+  });
+
+  await registrarEvento({
+    tenantId,
+    purchaseOrderId: linha.purchaseOrderId,
+    inboundId: linha.inboundId,
+    tipo: "DIVERGENCIA_RESOLVIDA",
+    descricao: `${linha.descricao}: ${quantidade} devolvido(s) ao fornecedor — ${motivo.trim()}`,
+    meta: { quantidade, motivo: motivo.trim() },
+    createdBy: userId,
+  });
+}
+
+/**
+ * Texto pronto da reclamação, com os números da nota. Existe porque o desfecho
+ * real de uma divergência acontece FORA do sistema — no WhatsApp do
+ * representante — e reescrever isso à mão, item a item, é o que faz o operador
+ * desistir e "deixar passar".
+ */
+export async function resumoDivergenciasParaFornecedor(input: {
+  tenantId: string;
+  inboundId: string;
+  empresa: string;
+}): Promise<{ texto: string; fornecedor: string; telefone: string | null; email: string | null }> {
+  const inbound = await db.fiscalInbound.findFirst({
+    where: { id: input.inboundId },
+    select: {
+      numero: true,
+      serie: true,
+      dataEmissao: true,
+      emitRazaoSocial: true,
+      purchaseOrder: { select: { numero: true } },
+      supplier: { select: { razaoSocial: true, nomeFantasia: true, telefone: true, email: true } },
+    },
+  });
+  if (!inbound) throw new Error("Nota não encontrada.");
+
+  const linhas = await db.purchaseReconciliationItem.findMany({
+    where: { inboundId: input.inboundId, status: { not: "OK" } },
+    orderBy: { descricao: "asc" },
+    select: {
+      descricao: true,
+      status: true,
+      qtdPedida: true,
+      qtdFaturada: true,
+      qtdRecebida: true,
+      custoPedido: true,
+      custoFaturado: true,
+      motivoDivergencia: true,
+    },
+  });
+  if (linhas.length === 0) throw new Error("Esta nota não tem divergência para relatar.");
+
+  const n = (v: unknown) => Number(v ?? 0);
+  const qtd = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
+  const moeda = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+  const itens = linhas.map((l) => {
+    const recebido = l.qtdRecebida == null ? n(l.qtdFaturada) : n(l.qtdRecebida);
+    switch (l.status) {
+      case "FALTANDO":
+      case "NAO_FATURADO":
+        return `• ${l.descricao}: pedimos ${qtd(n(l.qtdPedida))}, veio ${qtd(n(l.qtdFaturada))}`;
+      case "EXCEDENTE":
+      case "NAO_PEDIDO":
+        return `• ${l.descricao}: veio ${qtd(n(l.qtdFaturada))} e o pedido era de ${qtd(n(l.qtdPedida))}`;
+      case "PRECO_ALTERADO":
+        return `• ${l.descricao}: preço combinado ${moeda(n(l.custoPedido))}, faturado ${moeda(n(l.custoFaturado))}`;
+      default:
+        return `• ${l.descricao}: conferido ${qtd(recebido)} de ${qtd(n(l.qtdFaturada))}`;
+    }
+  });
+
+  const comMotivo = linhas.filter((l) => l.motivoDivergencia);
+  const texto = [
+    `Olá! Sobre a NF ${inbound.numero}/${inbound.serie} de ${new Date(inbound.dataEmissao).toLocaleDateString("pt-BR")}` +
+      (inbound.purchaseOrder ? ` (nosso pedido ${inbound.purchaseOrder.numero})` : "") +
+      ":",
+    "",
+    ...itens,
+    ...(comMotivo.length > 0
+      ? ["", "Observações da conferência:", ...comMotivo.map((l) => `• ${l.descricao}: ${l.motivoDivergencia}`)]
+      : []),
+    "",
+    "Podem confirmar como resolvemos? Obrigado.",
+    input.empresa,
+  ].join("\n");
+
+  const s = inbound.supplier;
+  return {
+    texto,
+    fornecedor: s?.nomeFantasia ?? s?.razaoSocial ?? inbound.emitRazaoSocial,
+    telefone: s?.telefone ?? null,
+    email: s?.email ?? null,
+  };
 }
 
 const LABEL_RESOLUCAO: Record<ReconciliationResolucao, string> = {

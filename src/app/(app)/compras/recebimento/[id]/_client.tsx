@@ -16,6 +16,8 @@ import {
   PackageOpen,
   ScanLine,
   Search,
+  Send,
+  Undo2,
   TrendingDown,
   TrendingUp,
   TriangleAlert,
@@ -31,6 +33,8 @@ import { Metrica, MetricaGrid, fmtMoney, fmtQtd, fmtQuando } from "../../_catalo
 import {
   aceitarCustoAction,
   buscarProdutoAction,
+  devolverDivergenciaAction,
+  resumoDivergenciasAction,
   confirmarEntradaAction,
   conferirItemAction,
   conferirTudoAction,
@@ -91,16 +95,26 @@ const paraRelacionar = (l: LinhaRecebimento): ItemParaRelacionar => ({
 export function RecebimentoClient({
   dados,
   podeCriarProduto,
+  cega,
   subcategorias,
 }: {
   dados: RecebimentoView;
   podeCriarProduto: boolean;
+  /** Conferência cega: esconde pedido e NF até a pessoa contar. */
+  cega: boolean;
   subcategorias: SubcategoriaCadastro[];
 }) {
   if (!dados.pedido) {
     return <EscolherPedido dados={dados} podeCriarProduto={podeCriarProduto} subcategorias={subcategorias} />;
   }
-  return <Conferencia dados={dados} podeCriarProduto={podeCriarProduto} subcategorias={subcategorias} />;
+  return (
+    <Conferencia
+      dados={dados}
+      podeCriarProduto={podeCriarProduto}
+      cega={cega}
+      subcategorias={subcategorias}
+    />
+  );
 }
 
 // ── Sem pedido vinculado ────────────────────────────────────
@@ -308,10 +322,12 @@ function EscolherPedido({
 function Conferencia({
   dados,
   podeCriarProduto,
+  cega,
   subcategorias,
 }: {
   dados: RecebimentoView;
   podeCriarProduto: boolean;
+  cega: boolean;
   subcategorias: SubcategoriaCadastro[];
 }) {
   const router = useRouter();
@@ -389,9 +405,12 @@ function Conferencia({
       const nova = atual + achado.incremento;
       aplicarLocal(achado.linha.id, { qtdRecebida: nova });
       void salvar(achado.linha.id, { qtdRecebida: nova });
-      toast.success(achado.linha.descricao, `${fmtQtd(nova)} de ${fmtQtd(achado.linha.qtdFaturada)}`);
+      toast.success(
+        achado.linha.descricao,
+        cega ? `${fmtQtd(nova)} contado(s)` : `${fmtQtd(nova)} de ${fmtQtd(achado.linha.qtdFaturada)}`,
+      );
     },
-    [porCodigo, aplicarLocal, salvar, encerrada],
+    [porCodigo, aplicarLocal, salvar, encerrada, cega],
   );
 
   // Leitor USB/Bluetooth funciona sem foco em campo nenhum — quem está na
@@ -480,13 +499,24 @@ function Conferencia({
         />
       </MetricaGrid>
 
-      {divergentes.length > 0 && (
+      {/* Conferência cega: mostrar as divergências antes da contagem entregaria
+          justamente o número que a pessoa não pode ver. O painel espera todo
+          mundo ser contado. */}
+      {divergentes.length > 0 && (!cega || conferidos === linhas.length) && (
         <PainelDivergencias
           inboundId={nota.id}
           linhas={divergentes}
           bloqueado={encerrada}
           onRelacionar={(l) => setRelacionar(paraRelacionar(l))}
         />
+      )}
+
+      {cega && conferidos < linhas.length && (
+        <p className="rounded-[var(--radius)] bg-surface-2 px-4 py-3 text-[13px] text-muted">
+          Conferência cega ligada: as quantidades do pedido e da nota aparecem depois que você
+          contar. Conte {linhas.length - conferidos} de {linhas.length}{" "}
+          {linhas.length === 1 ? "item" : "itens"} para ver o comparativo.
+        </p>
       )}
 
       {encerrada ? (
@@ -513,10 +543,12 @@ function Conferencia({
             <ScanLine className="h-4 w-4" aria-hidden />
             Bipar
           </Button>
-          <Button variant="secondary" onClick={() => void conferirTudo()}>
-            <CheckCheck className="h-4 w-4" aria-hidden />
-            Conferi tudo conforme a nota
-          </Button>
+          {!cega && (
+            <Button variant="secondary" onClick={() => void conferirTudo()}>
+              <CheckCheck className="h-4 w-4" aria-hidden />
+              Conferi tudo conforme a nota
+            </Button>
+          )}
         </div>
       )}
 
@@ -526,6 +558,7 @@ function Conferencia({
             key={l.id}
             linha={l}
             bloqueado={encerrada}
+            cega={cega}
             onAlterar={(patch) => {
               aplicarLocal(l.id, patch);
               void salvar(l.id, patch);
@@ -699,14 +732,30 @@ function Cabecalho({
             Pedido {pedidoNumero} encontrado automaticamente pela nota.
           </p>
         )}
+        {nota.duplicatas.length > 0 && (
+          <p className="mt-1 text-[12px] text-muted">
+            {nota.duplicatas.length === 1 ? "Vencimento" : `${nota.duplicatas.length} parcelas`}:{" "}
+            {nota.duplicatas
+              .map(
+                (d) =>
+                  `${new Date(d.vencimento).toLocaleDateString("pt-BR")} ${fmtMoney(d.valor)}`,
+              )
+              .join(" · ")}
+          </p>
+        )}
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
         {nota.temXml && (
-          <span className="hidden items-center gap-1.5 rounded-full bg-surface-2 px-3 py-1.5 text-[12px] text-muted sm:inline-flex">
+          // O contador pede o XML, e sem isto o operador volta ao e-mail do
+          // fornecedor procurar o anexo que já está guardado aqui.
+          <a
+            href={`/api/fiscal/entrada/${nota.id}/xml`}
+            className="hidden items-center gap-1.5 rounded-full bg-surface-2 px-3 py-1.5 text-[12px] text-muted transition-colors hover:bg-line hover:text-ink sm:inline-flex"
+          >
             <FileText className="h-3.5 w-3.5" aria-hidden />
-            XML guardado
-          </span>
+            Baixar XML
+          </a>
         )}
         {onDesvincular && pedidoNumero && (
           <Button variant="ghost" size="sm" onClick={onDesvincular}>
@@ -735,6 +784,12 @@ function PainelDivergencias({
 }) {
   const router = useRouter();
   const [ocupado, setOcupado] = React.useState<string | null>(null);
+  const [decisao, setDecisao] = React.useState<{
+    linha: LinhaRecebimento;
+    resolucao: "ACEITO" | "IGNORADO";
+  } | null>(null);
+  const [avisar, setAvisar] = React.useState(false);
+  const [devolver, setDevolver] = React.useState<LinhaRecebimento | null>(null);
 
   async function agir(id: string, fn: () => Promise<unknown>, msg: string) {
     setOcupado(id);
@@ -751,11 +806,22 @@ function PainelDivergencias({
 
   return (
     <div className="overflow-hidden rounded-[var(--radius-lg)] border border-accent/30 bg-accent-soft/40">
-      <div className="flex items-center gap-2 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
         <TriangleAlert className="h-4 w-4 text-accent" aria-hidden />
         <h2 className="font-display text-[14px] font-semibold text-ink">
           {linhas.length === 1 ? "1 divergência encontrada" : `${linhas.length} divergências encontradas`}
         </h2>
+        {/* O desfecho de verdade acontece com o representante — o sistema só
+            precisa entregar o texto pronto, com os números certos. */}
+        <Button
+          size="sm"
+          variant="secondary"
+          className="ml-auto"
+          onClick={() => setAvisar(true)}
+        >
+          <Send className="h-3.5 w-3.5" aria-hidden />
+          Avisar fornecedor
+        </Button>
       </div>
 
       <ul className="divide-y divide-line border-t border-line bg-surface">
@@ -767,6 +833,12 @@ function PainelDivergencias({
                 <p className="truncate text-[13px] font-medium text-ink">{l.descricao}</p>
                 <p className="truncate text-[12px] text-muted">{explicacao(l, v)}</p>
               </div>
+
+              {bloqueado && l.productId && (
+                <Button size="sm" variant="secondary" onClick={() => setDevolver(l)}>
+                  Devolver ao fornecedor
+                </Button>
+              )}
 
               {!bloqueado && (
                 <div className="flex shrink-0 flex-wrap items-center gap-1.5">
@@ -798,18 +870,7 @@ function PainelDivergencias({
                         size="sm"
                         variant="secondary"
                         disabled={ocupado === l.id}
-                        onClick={() =>
-                          void agir(
-                            l.id,
-                            () =>
-                              resolverDivergenciaAction({
-                                inboundId,
-                                itemId: l.id,
-                                resolucao: "ACEITO",
-                              }),
-                            "Divergência aceita como está na nota.",
-                          )
-                        }
+                        onClick={() => setDecisao({ linha: l, resolucao: "ACEITO" })}
                       >
                         Aceitar
                       </Button>
@@ -817,18 +878,7 @@ function PainelDivergencias({
                         size="sm"
                         variant="ghost"
                         disabled={ocupado === l.id}
-                        onClick={() =>
-                          void agir(
-                            l.id,
-                            () =>
-                              resolverDivergenciaAction({
-                                inboundId,
-                                itemId: l.id,
-                                resolucao: "IGNORADO",
-                              }),
-                            "Divergência ignorada — fica no histórico.",
-                          )
-                        }
+                        onClick={() => setDecisao({ linha: l, resolucao: "IGNORADO" })}
                       >
                         Ignorar
                       </Button>
@@ -840,8 +890,367 @@ function PainelDivergencias({
           );
         })}
       </ul>
+
+      {avisar && <SheetAvisarFornecedor inboundId={inboundId} onClose={() => setAvisar(false)} />}
+
+      {devolver && (
+        <SheetDevolver
+          inboundId={inboundId}
+          linha={devolver}
+          onClose={() => setDevolver(null)}
+          onFeito={() => {
+            setDevolver(null);
+            router.refresh();
+          }}
+        />
+      )}
+
+      {decisao && (
+        <SheetMotivoDivergencia
+          linha={decisao.linha}
+          resolucao={decisao.resolucao}
+          salvando={ocupado === decisao.linha.id}
+          onClose={() => setDecisao(null)}
+          onConfirmar={(motivo) => {
+            const alvo = decisao;
+            setDecisao(null);
+            void agir(
+              alvo.linha.id,
+              () =>
+                resolverDivergenciaAction({
+                  inboundId,
+                  itemId: alvo.linha.id,
+                  resolucao: alvo.resolucao,
+                  motivo,
+                }),
+              alvo.resolucao === "ACEITO"
+                ? "Divergência aceita como está na nota."
+                : "Divergência ignorada — fica no histórico.",
+            );
+          }}
+        />
+      )}
     </div>
   );
+}
+
+// ── Avisar o fornecedor ─────────────────────────────────────
+
+function SheetAvisarFornecedor({
+  inboundId,
+  onClose,
+}: {
+  inboundId: string;
+  onClose: () => void;
+}) {
+  const [dados, setDados] = React.useState<{
+    texto: string;
+    fornecedor: string;
+    telefone: string | null;
+    email: string | null;
+  } | null>(null);
+  const [erro, setErro] = React.useState<string | null>(null);
+  const [texto, setTexto] = React.useState("");
+
+  // Carrega uma vez, ao montar. O texto vem do servidor porque ele tem os
+  // números da nota e do pedido — remontar isso no cliente duplicaria a regra.
+  React.useEffect(() => {
+    let vivo = true;
+    void (async () => {
+      try {
+        const r = await resumoDivergenciasAction(inboundId);
+        if (!vivo) return;
+        setDados(r);
+        setTexto(r.texto);
+      } catch (e) {
+        if (vivo) setErro(e instanceof Error ? e.message : "Falha ao montar o resumo.");
+      }
+    })();
+    return () => {
+      vivo = false;
+    };
+  }, [inboundId]);
+
+  const digitos = (dados?.telefone ?? "").replace(/D/g, "");
+  const zap = digitos.length >= 10 ? `https://wa.me/${digitos.length <= 11 ? "55" : ""}${digitos}?text=${encodeURIComponent(texto)}` : null;
+  const email = dados?.email
+    ? `mailto:${dados.email}?subject=${encodeURIComponent("Divergência na entrega")}&body=${encodeURIComponent(texto)}`
+    : null;
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      width="lg"
+      title="Avisar o fornecedor"
+      description={dados ? dados.fornecedor : "Montando o resumo da divergência…"}
+      footer={
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              void navigator.clipboard.writeText(texto);
+              toast.success("Resumo copiado.");
+            }}
+          >
+            Copiar
+          </Button>
+          {email && (
+            <a href={email}>
+              <Button size="sm" variant="secondary">
+                E-mail
+              </Button>
+            </a>
+          )}
+          {zap && (
+            <a href={zap} target="_blank" rel="noreferrer">
+              <Button size="sm">WhatsApp</Button>
+            </a>
+          )}
+        </div>
+      }
+    >
+      {erro ? (
+        <p className="rounded-[var(--radius)] bg-danger-soft px-4 py-3 text-[13px] text-danger">
+          {erro}
+        </p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <p className="text-[13px] text-muted">
+            Revise antes de mandar — o texto sai com os números da nota e do pedido.
+          </p>
+          <textarea
+            value={texto}
+            onChange={(e) => setTexto(e.target.value)}
+            rows={14}
+            className="w-full rounded-[var(--radius)] border border-line-strong bg-surface px-3.5 py-2.5 font-mono text-[12px] text-ink focus-visible:border-brand/70 focus-visible:ring-1 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          />
+          {dados && !dados.telefone && !dados.email && (
+            <p className="text-[12px] text-muted">
+              Este fornecedor não tem telefone nem e-mail cadastrado — copie o texto e mande
+              pelo canal que você usa com ele.
+            </p>
+          )}
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
+// ── Devolver ao fornecedor ──────────────────────────────────
+
+function SheetDevolver({
+  inboundId,
+  linha,
+  onClose,
+  onFeito,
+}: {
+  inboundId: string;
+  linha: LinhaRecebimento;
+  onClose: () => void;
+  onFeito: () => void;
+}) {
+  const sugerida = Math.max(0, linha.qtdFaturada - linha.qtdPedida);
+  const [quantidade, setQuantidade] = React.useState(String(sugerida > 0 ? sugerida : ""));
+  const [motivo, setMotivo] = React.useState("");
+  const [enviando, setEnviando] = React.useState(false);
+
+  const qtd = Number(quantidade.replace(",", "."));
+  const podeEnviar = qtd > 0 && motivo.trim().length >= 3 && !enviando;
+
+  function enviar() {
+    setEnviando(true);
+    void (async () => {
+      try {
+        await devolverDivergenciaAction({
+          inboundId,
+          itemId: linha.id,
+          quantidade: qtd,
+          motivo: motivo.trim(),
+        });
+        toast.success("Devolução registrada.", "O estoque já foi ajustado.");
+        onFeito();
+      } catch (e) {
+        toast.error("Não deu para devolver", e instanceof Error ? e.message : "Tente de novo.");
+        setEnviando(false);
+      }
+    })();
+  }
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      width="md"
+      title="Devolver ao fornecedor"
+      description={linha.descricao}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button size="sm" disabled={!podeEnviar} onClick={enviar}>
+            <Undo2 className="h-4 w-4" aria-hidden />
+            {enviando ? "Registrando…" : "Registrar devolução"}
+          </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <p className="rounded-[var(--radius)] bg-surface-2 px-3.5 py-2.5 text-[13px] text-muted">
+          Sai do estoque como devolução ao fornecedor, com o custo desta nota. Só use para
+          mercadoria que já entrou — o que ainda não entrou se resolve na conferência.
+        </p>
+
+        <Campo label="Quantidade devolvida">
+          <input
+            type="number"
+            step="0.001"
+            min={0}
+            value={quantidade}
+            onChange={(e) => setQuantidade(e.target.value)}
+            placeholder={sugerida > 0 ? fmtQtd(sugerida) : "0"}
+            className="h-10 w-32 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink tabular-nums focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          />
+        </Campo>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[13px] font-medium text-ink">
+            Motivo <span className="text-muted">(obrigatório)</span>
+          </span>
+          <textarea
+            value={motivo}
+            onChange={(e) => setMotivo(e.target.value)}
+            rows={3}
+            maxLength={240}
+            placeholder="Ex.: 2 caixas avariadas, recolhidas pelo motorista."
+            className="w-full rounded-[var(--radius)] border border-line-strong bg-surface px-3.5 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand/70 focus-visible:ring-1 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          />
+        </label>
+      </div>
+    </Sheet>
+  );
+}
+
+// ── Motivo da divergência ───────────────────────────────────
+// Divergência sem motivo vira discussão com o fornecedor sem prova. O motivo
+// é obrigatório justamente aqui, onde alguém ainda lembra o que aconteceu na
+// porta — não no dia da cobrança.
+
+const MOTIVOS_DIVERGENCIA = [
+  { id: "FALTOU", label: "Faltou produto" },
+  { id: "AVARIA", label: "Avaria no transporte" },
+  { id: "RECUSADO", label: "Produto recusado" },
+  { id: "QUANTIDADE", label: "Quantidade diferente" },
+  { id: "PRECO", label: "Preço diferente do combinado" },
+  { id: "OUTRO", label: "Outro" },
+] as const;
+
+function SheetMotivoDivergencia({
+  linha,
+  resolucao,
+  salvando,
+  onClose,
+  onConfirmar,
+}: {
+  linha: LinhaRecebimento;
+  resolucao: "ACEITO" | "IGNORADO";
+  salvando: boolean;
+  onClose: () => void;
+  onConfirmar: (motivo: string) => void;
+}) {
+  const [motivo, setMotivo] = React.useState<string>(sugestaoDeMotivo(linha.status));
+  const [observacao, setObservacao] = React.useState("");
+
+  const rotulo = MOTIVOS_DIVERGENCIA.find((m) => m.id === motivo)?.label ?? "Outro";
+  const texto = observacao.trim();
+  const podeConfirmar = texto.length >= 3 && !salvando;
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      width="md"
+      title={resolucao === "ACEITO" ? "Aceitar divergência" : "Ignorar divergência"}
+      description={linha.descricao}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button
+            size="sm"
+            disabled={!podeConfirmar}
+            onClick={() => onConfirmar(`${rotulo}: ${texto}`)}
+          >
+            {salvando ? "Registrando…" : "Registrar decisão"}
+          </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <p className="rounded-[var(--radius)] bg-surface-2 px-3.5 py-2.5 text-[13px] text-muted">
+          {explicacao(linha, variacaoDaLinha(linha))}
+        </p>
+
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-1 text-[13px] font-medium text-ink">O que aconteceu?</legend>
+          {MOTIVOS_DIVERGENCIA.map((m) => (
+            <label
+              key={m.id}
+              className={cn(
+                "flex cursor-pointer items-center gap-2.5 rounded-[var(--radius)] border px-3.5 py-2.5 text-[13px] transition-colors",
+                motivo === m.id ? "border-brand bg-brand-soft text-ink" : "border-line hover:bg-surface-2",
+              )}
+            >
+              <input
+                type="radio"
+                name="motivo-divergencia"
+                className="accent-[var(--brand)]"
+                checked={motivo === m.id}
+                onChange={() => setMotivo(m.id)}
+              />
+              {m.label}
+            </label>
+          ))}
+        </fieldset>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[13px] font-medium text-ink">
+            Observação <span className="text-muted">(obrigatória)</span>
+          </span>
+          <textarea
+            value={observacao}
+            onChange={(e) => setObservacao(e.target.value)}
+            rows={3}
+            maxLength={200}
+            placeholder="Ex.: 2 caixas chegaram amassadas, motorista levou de volta."
+            className="w-full rounded-[var(--radius)] border border-line-strong bg-surface px-3.5 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand/70 focus-visible:ring-1 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          />
+          <span className="text-[12px] text-muted">
+            Fica na timeline do pedido, com seu nome e a hora.
+          </span>
+        </label>
+      </div>
+    </Sheet>
+  );
+}
+
+/** Chute do motivo pelo tipo da divergência — quase sempre acerta. */
+function sugestaoDeMotivo(status: ReconciliationStatus): string {
+  switch (status) {
+    case "FALTANDO":
+    case "NAO_FATURADO":
+      return "FALTOU";
+    case "EXCEDENTE":
+    case "NAO_PEDIDO":
+      return "QUANTIDADE";
+    case "PRECO_ALTERADO":
+      return "PRECO";
+    default:
+      return "OUTRO";
+  }
 }
 
 function explicacao(l: LinhaRecebimento, v: number | null): string {
@@ -869,11 +1278,14 @@ function explicacao(l: LinhaRecebimento, v: number | null): string {
 function ItemCard({
   linha,
   bloqueado,
+  cega,
   onAlterar,
   onRelacionar,
 }: {
   linha: LinhaRecebimento;
   bloqueado: boolean;
+  /** Esconde pedido/NF enquanto a linha não foi contada. */
+  cega?: boolean;
   onAlterar: (patch: { qtdRecebida?: number | null; lote?: string | null; validade?: string | null }) => void;
   onRelacionar: () => void;
 }) {
@@ -881,6 +1293,8 @@ function ItemCard({
   const v = variacaoDaLinha(linha);
   const [aberto, setAberto] = React.useState(false);
   const recebido = linha.qtdRecebida;
+  /** Contou? Então pode ver. Antes disso, o número do pedido enviesa a contagem. */
+  const oculto = Boolean(cega) && recebido == null && !bloqueado;
 
   return (
     <li
@@ -919,7 +1333,7 @@ function ItemCard({
           <span className="block truncate font-mono text-[11px] text-muted">
             {linha.sku ?? linha.codigoFornecedor ?? "sem código"}
           </span>
-          {v != null && (
+          {v != null && !oculto && (
             <span
               className={cn(
                 "mt-0.5 inline-flex items-center gap-1 text-[11px]",
@@ -933,8 +1347,14 @@ function ItemCard({
         </span>
 
         <span className="hidden shrink-0 items-center gap-5 sm:flex">
-          <Coluna titulo="Pedido" valor={fmtQtd(linha.qtdPedida)} />
-          <Coluna titulo="NF" valor={fmtQtd(linha.qtdFaturada)} />
+          {oculto ? (
+            <Coluna titulo="Pedido / NF" valor="•••" />
+          ) : (
+            <>
+              <Coluna titulo="Pedido" valor={fmtQtd(linha.qtdPedida)} />
+              <Coluna titulo="NF" valor={fmtQtd(linha.qtdFaturada)} />
+            </>
+          )}
           <Coluna
             titulo="Recebido"
             valor={recebido == null ? "—" : fmtQtd(recebido)}
@@ -945,10 +1365,10 @@ function ItemCard({
         <span
           className={cn(
             "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium",
-            linha.resolucao ? "bg-surface-2 text-muted" : info.classe,
+            linha.resolucao || oculto ? "bg-surface-2 text-muted" : info.classe,
           )}
         >
-          {linha.resolucao ? "Resolvido" : info.label}
+          {linha.resolucao ? "Resolvido" : oculto ? "A conferir" : info.label}
         </span>
       </button>
 
@@ -969,7 +1389,7 @@ function ItemCard({
                   step="0.001"
                   min={0}
                   defaultValue={recebido ?? ""}
-                  placeholder={fmtQtd(linha.qtdFaturada)}
+                  placeholder={oculto ? "conte e digite" : fmtQtd(linha.qtdFaturada)}
                   onBlur={(e) => {
                     const bruto = e.target.value.trim();
                     onAlterar({ qtdRecebida: bruto === "" ? null : Number(bruto) });

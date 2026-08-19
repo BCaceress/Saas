@@ -15,6 +15,7 @@ import {
   descartarNota,
   type ResultadoImportacao,
 } from "@/lib/fiscal/entrada";
+import { registrarImportacoes } from "@/lib/fiscal/import-log";
 import { buscarProdutosParaRelacionar } from "@/lib/compras/busca-produto";
 import {
   sincronizarDistribuicao,
@@ -74,6 +75,11 @@ export async function importarXmlAction(form: FormData): Promise<ResultadoImport
       userId: ctx.user.id,
       cnpjDestino: emitente?.cnpj ?? null,
     });
+
+    await registrarImportacoes(
+      { origem: "UPLOAD", siteId, usuarioId: ctx.user.id },
+      resultado,
+    );
 
     ok();
     return resultado;

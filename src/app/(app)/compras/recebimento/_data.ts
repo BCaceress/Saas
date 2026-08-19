@@ -61,6 +61,8 @@ export type NotaRecebimento = {
   vinculoAutomatico: boolean;
   conciliadoEm: string | null;
   temXml: boolean;
+  /** cobr/dup do XML: o parcelamento que o fornecedor cobrou. */
+  duplicatas: { numero: string; vencimento: string; valor: number }[];
 };
 
 export type PedidoRecebimento = {
@@ -133,6 +135,10 @@ export async function carregarRecebimento(
       conciliadoEm: true,
       site: { select: { nome: true } },
       xmlArquivo: { select: { id: true } },
+      duplicatas: {
+        orderBy: { vencimento: "asc" },
+        select: { numero: true, vencimento: true, valor: true },
+      },
     },
   });
   if (!inbound) return null;
@@ -260,6 +266,11 @@ export async function carregarRecebimento(
       vinculoAutomatico: inbound.vinculoAutomatico,
       conciliadoEm: iso(inbound.conciliadoEm),
       temXml: Boolean(inbound.xmlArquivo),
+      duplicatas: inbound.duplicatas.map((d) => ({
+        numero: d.numero,
+        vencimento: d.vencimento.toISOString(),
+        valor: Number(d.valor),
+      })),
     },
     pedido: pedido
       ? {

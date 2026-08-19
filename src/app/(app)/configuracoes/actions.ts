@@ -161,6 +161,7 @@ const estoqueConfigSchema = z.object({
   produtoParadoDias: z.number().int().min(7).max(365),
   validadeAlertaDias: z.number().int().min(1).max(365),
   recebimentoExigeContagem: z.boolean(),
+  conferenciaCega: z.boolean(),
 });
 
 export async function updateEstoqueConfig(input: z.input<typeof estoqueConfigSchema>) {

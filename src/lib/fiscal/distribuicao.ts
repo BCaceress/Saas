@@ -1,8 +1,12 @@
 import "server-only";
-import { txComTenant } from "@/lib/prisma";
+import { basePrisma, txComTenant } from "@/lib/prisma";
+import { runWithTenant } from "@/lib/tenant-context";
+import { whereFeature } from "@/lib/planos";
+import { logErro } from "@/lib/log";
 import { carregarConfigFiscal, providerDoTenant } from "./index";
 import { distribuicaoNuvemFiscal, type DocumentoDistribuido } from "./nuvem-fiscal";
 import { importarNotasXml } from "./entrada";
+import { registrarImportacoes } from "./import-log";
 import type { ManifestacaoTipo } from "@/generated/prisma";
 
 // ============================================================
@@ -81,6 +85,8 @@ export type ResultadoSincronizacao = {
   consultadas: number;
   importadas: number;
   aguardandoManifestacao: number;
+  /** Notas em que demos ciência sozinhos para liberar o XML completo. */
+  manifestadas: number;
 };
 
 /**
@@ -113,10 +119,14 @@ export async function sincronizarDistribuicao(input: {
     if (importada) importadas += 1;
   }
 
+  const resumos = novos.filter((d) => d.resumo);
+  const manifestadas = await darCienciaAutomatica({ tenantId, siteId, userId }, resumos);
+
   return {
     consultadas: documentos.length,
-    importadas,
-    aguardandoManifestacao: novos.filter((d) => d.resumo).length,
+    importadas: importadas + manifestadas,
+    aguardandoManifestacao: resumos.length - manifestadas,
+    manifestadas,
   };
 }
 
@@ -240,6 +250,104 @@ export function rotuloManifestacao(tipo: ManifestacaoTipo): string {
   return ROTULOS[tipo];
 }
 
+/**
+ * Ciência automática — a nota chega completa sem ninguém clicar.
+ *
+ * Três limites, todos deliberados:
+ *   1. só com `manifestacaoAutomatica` ligado (padrão desligado): manifestação
+ *      NÃO tem desfazer na SEFAZ;
+ *   2. só CIÊNCIA. "Confirmação da operação" declara que a mercadoria chegou —
+ *      isso é a conferência física dizendo, nunca um job;
+ *   3. só de CNPJ que já é fornecedor cadastrado. Nota de desconhecido é
+ *      exatamente o caso em que alguém precisa olhar antes de dar ciência.
+ *
+ * Falha de uma nota não derruba as outras: SEFAZ fora do ar é rotina.
+ */
+async function darCienciaAutomatica(
+  alvo: { tenantId: string; siteId: string; userId?: string | null },
+  resumos: DocumentoDistribuido[],
+): Promise<number> {
+  if (resumos.length === 0) return 0;
+
+  const cfg = await carregarConfigFiscal(alvo.tenantId);
+  if (!cfg?.manifestacaoAutomatica) return 0;
+
+  const cnpjs = [...new Set(resumos.map((d) => d.emitCnpj))];
+  const fornecedores = await txComTenant(alvo.tenantId, (tx) =>
+    tx.supplier.findMany({ where: { cnpj: { in: cnpjs } }, select: { cnpj: true } }),
+  );
+  const conhecido = new Set(fornecedores.map((f) => f.cnpj));
+
+  let manifestadas = 0;
+  for (const d of resumos.filter((r) => conhecido.has(r.emitCnpj))) {
+    try {
+      const r = await manifestarNota({
+        tenantId: alvo.tenantId,
+        siteId: alvo.siteId,
+        chave: d.chave,
+        tipo: "CIENCIA",
+        userId: alvo.userId,
+      });
+      if (r.importada) manifestadas += 1;
+    } catch (e) {
+      logErro("fiscal.distribuicao.ciencia-automatica", e, { chave: d.chave });
+    }
+  }
+  return manifestadas;
+}
+
+/**
+ * Job: puxa a SEFAZ de todos os tenants com distribuição configurada.
+ *
+ * Cross-tenant sob RLS — a lista sai de `Tenant` (tabela sem policy) e cada
+ * tenant é processado dentro de `runWithTenant`. Filtrar por relação aqui
+ * devolveria zero linha em silêncio.
+ */
+export async function sincronizarDistribuicaoTodos(): Promise<{
+  tenants: number;
+  lojas: number;
+  importadas: number;
+  erros: number;
+}> {
+  const tenants = await basePrisma.tenant.findMany({
+    where: { moduloFiscal: true, ...whereFeature("fiscal") },
+    select: { id: true },
+  });
+
+  let lojas = 0;
+  let importadas = 0;
+  let erros = 0;
+
+  for (const t of tenants) {
+    try {
+      const emitentes = await txComTenant(t.id, (tx) =>
+        tx.fiscalEmitente.findMany({
+          where: { certificadoId: { not: null } },
+          select: { siteId: true },
+        }),
+      );
+
+      for (const e of emitentes) {
+        try {
+          const r = await runWithTenant(t.id, () =>
+            sincronizarDistribuicao({ tenantId: t.id, siteId: e.siteId }),
+          );
+          lojas += 1;
+          importadas += r.importadas;
+        } catch (err) {
+          erros += 1;
+          logErro("fiscal.distribuicao.job", err, { tenantId: t.id, siteId: e.siteId });
+        }
+      }
+    } catch (err) {
+      erros += 1;
+      logErro("fiscal.distribuicao.job", err, { tenantId: t.id });
+    }
+  }
+
+  return { tenants: tenants.length, lojas, importadas, erros };
+}
+
 // ── Internos ────────────────────────────────────────────────
 
 async function filtrarNaoImportados(
@@ -272,5 +380,11 @@ async function importarDoProvedor(
     userId: alvo.userId ?? null,
     cnpjDestino: ctx.cnpj,
   });
+
+  await registrarImportacoes(
+    { origem: "SEFAZ", siteId: alvo.siteId, usuarioId: alvo.userId ?? null },
+    resultado,
+  );
+
   return resultado.some((r) => r.status === "IMPORTADA");
 }

@@ -13,6 +13,10 @@ const nextConfig: NextConfig = {
     serverActions: { bodySizeLimit: "12mb" },
   },
 
+  // IMAP fala TLS cru e carrega tabelas de charset por require dinâmico — o
+  // bundler quebra os dois. Fica fora do bundle, resolvido em runtime no Node.
+  serverExternalPackages: ["imapflow"],
+
   images: {
     // Allowlist do otimizador (hoje: miniaturas do Cosmos Bluesoft, do
     // enriquecimento por EAN). Vem de `src/lib/imagem.ts` porque o cliente usa a

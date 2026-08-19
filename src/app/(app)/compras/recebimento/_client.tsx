@@ -229,6 +229,17 @@ function Upload() {
       >
         {enviando ? "Lendo a nota…" : "Escolher arquivo"}
       </Button>
+
+      <p className="text-[12px] text-muted">
+        Cansou de arrastar arquivo?{" "}
+        <Link
+          href="/configuracoes/notas-fiscais"
+          className="font-medium text-brand underline underline-offset-2"
+        >
+          Receba as notas por e-mail ou direto da SEFAZ
+        </Link>
+        .
+      </p>
     </div>
   );
 }

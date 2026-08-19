@@ -142,6 +142,11 @@ model Tenant {
   // estoque em trânsito); se false, expedição auto-confirma o recebimento.
   recebimentoExigeContagem Boolean @default(false)
 
+  // Conferência cega: a tela do recebimento esconde a quantidade esperada até
+  // o conferente digitar a dele. Mostrar o esperado transforma conferência em
+  // "confirmar" — é assim que furto e erro de separação passam batido.
+  conferenciaCega Boolean @default(false)
+
   // Fidelização / CRM: envio automático de cupom (risco + aniversário) via
   // WhatsApp. Desligado por padrão — o operador liga em Configurações.
   cupomAutomatico Boolean @default(false)
@@ -1218,6 +1223,7 @@ model Site {
   fiscalInbounds     FiscalInbound[]
   quotations         Quotation[]
   promotions         ProductPromotion[]
+  fiscalEmailInboxes FiscalEmailInbox[]
 
   @@unique([tenantId, nome])
   @@index([tenantId])
@@ -2125,6 +2131,12 @@ model FiscalConfig {
   // botão que vai falhar.
   prazoCancelamentoMin Int @default(30)
 
+  // Dá ciência automática nas notas que a SEFAZ mostra, liberando o XML
+  // completo sem clique. Só CIÊNCIA (não confirma recebimento de mercadoria) e
+  // só de fornecedor já cadastrado. Desligado por padrão: manifestação não tem
+  // desfazer na SEFAZ.
+  manifestacaoAutomatica Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -2354,12 +2366,14 @@ model FiscalInbound {
   siteId   String // loja onde a mercadoria entra
   status   FiscalInboundStatus @default(PENDENTE)
 
-  chave       String // 44 dígitos — trava contra importar a mesma nota duas vezes
-  modelo      String   @default("55")
-  numero      Int
-  serie       Int
-  dataEmissao DateTime
-  valorTotal  Decimal  @db.Decimal(12, 2)
+  chave         String // 44 dígitos — trava contra importar a mesma nota duas vezes
+  modelo        String   @default("55")
+  numero        Int
+  serie         Int
+  dataEmissao   DateTime
+  valorTotal    Decimal  @db.Decimal(12, 2)
+  valorFrete    Decimal  @default(0) @db.Decimal(12, 2) // vFrete do total da nota
+  valorDesconto Decimal  @default(0) @db.Decimal(12, 2) // vDesc do total da nota
 
   // Emitente do XML, guardado cru: o Supplier pode ainda não existir no
   // cadastro, e a importação não pode travar por causa disso.
@@ -2393,6 +2407,7 @@ model FiscalInbound {
   purchase      Purchase?                    @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
   items         FiscalInboundItem[]
   xmlArquivo    FiscalInboundXml?
+  duplicatas    FiscalInboundDuplicata[]
   conciliacao   PurchaseReconciliationItem[]
   eventos       PurchaseEvent[]
 
@@ -2416,6 +2431,7 @@ model FiscalInboundItem {
   gtin                 String? // cEAN
   descricao            String
   ncm                  String?
+  cest                 String? // só em produto sujeito a ST
   cfop                 String?
   unidade              String // uCom — como o fornecedor vende (cx, fardo, display)
   quantidade           Decimal  @db.Decimal(12, 4)
@@ -2603,6 +2619,162 @@ model SupplierItemMap {
   @@unique([supplierId, codigoFornecedor])
   @@index([tenantId])
   @@index([productId])
+}
+
+// ============================================================
+// ENTRADA DE NF-e — canais de importação e trilha de auditoria
+//
+// O XML chega por três portas (upload, e-mail do fornecedor, distribuição da
+// SEFAZ) e todas terminam no mesmo `importarNotasXml`. O que muda é só quem
+// trouxe o arquivo — e é isso que estas tabelas guardam: a caixa de e-mail
+// monitorada, a mensagem já processada (para não importar duas vezes) e o log
+// do que entrou, foi ignorado ou falhou.
+// ============================================================
+
+/// Porta de entrada do XML. Serve à auditoria ("de onde veio esta nota?") e a
+/// medir quanto da operação já é automática.
+enum FiscalImportOrigem {
+  UPLOAD // arquivo enviado à mão na tela
+  EMAIL // anexo capturado na caixa monitorada
+  SEFAZ // distribuição DF-e com certificado A1
+}
+
+enum FiscalImportStatus {
+  IMPORTADA
+  DUPLICADA // a chave já existia — trava proposital, não é erro
+  IGNORADA // arquivo sem NF-e (PDF, boleto, assinatura de e-mail)
+  ERRO
+}
+
+/// Caixa de e-mail monitorada. Uma por conta; o fornecedor manda o XML e o job
+/// varre a pasta. A senha é de aplicativo (Gmail exige) e fica cifrada —
+/// vazamento de dump não pode entregar a caixa de entrada do lojista.
+model FiscalEmailInbox {
+  id       String @id @default(cuid())
+  tenantId String
+  siteId   String // loja onde a mercadoria desta caixa entra
+
+  nome    String // "Compras — matriz"
+  email   String
+  host    String
+  porta   Int     @default(993)
+  ssl     Boolean @default(true)
+  usuario String
+  senha   String  @default("") // cifrada (lib/crypto) — vazia quando a conta usa OAuth
+  pasta   String  @default("INBOX")
+  ativo   Boolean @default(true)
+
+  // Google e Microsoft estão desligando senha de aplicativo no IMAP. OAuth2
+  // guarda o refresh token (cifrado) e troca por access token a cada varredura
+  // — o app do cliente, não um app do NoHub: quem responde pela caixa é ele.
+  autenticacao      FiscalEmailAuth @default(SENHA)
+  oauthClientId     String?
+  oauthClientSecret String? // cifrado
+  oauthRefreshToken String? // cifrado
+  oauthTenantId     String? // Microsoft: "common" ou o id do diretório
+
+  // Só diagnóstico da última varredura: a tela precisa dizer se a automação
+  // está viva sem obrigar o operador a abrir log.
+  ultimaSincronizacao DateTime?
+  ultimoErro          String?
+  mensagensLidas      Int       @default(0) // diagnóstico: total já processado
+
+  // Trava de varredura: dois workers na mesma caixa baixam o mesmo anexo duas
+  // vezes. Guardado com hora para destravar sozinho se o processo morrer.
+  sincronizandoEm DateTime?
+
+  // Backoff: caixa com senha revogada seria reconectada a cada 20 min para
+  // sempre — é assim que o provedor bloqueia o IP.
+  falhasSeguidas   Int       @default(0)
+  proximaTentativa DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  site      Site                 @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  mensagens FiscalEmailMessage[]
+  logs      FiscalImportLog[]
+
+  @@unique([tenantId, email, pasta])
+  @@index([tenantId])
+  @@index([siteId])
+}
+
+/// Como a caixa se autentica. Senha de aplicativo ainda funciona no Gmail; o
+/// Microsoft 365 já desligou autenticação básica em boa parte dos tenants.
+enum FiscalEmailAuth {
+  SENHA
+  OAUTH2_GOOGLE
+  OAUTH2_MICROSOFT
+}
+
+/// Duplicatas (cobr/dup) da NF-e: o parcelamento que o fornecedor cobrou.
+/// Guardadas na importação porque o XML é a única fonte — quando o financeiro
+/// existir, contas a pagar nasce daqui sem reprocessar nota velha.
+model FiscalInboundDuplicata {
+  id         String   @id @default(cuid())
+  tenantId   String
+  inboundId  String
+  numero     String // nDup — "001", "002"
+  vencimento DateTime
+  valor      Decimal  @db.Decimal(12, 2)
+
+  inbound FiscalInbound @relation(fields: [inboundId], references: [id], onDelete: Cascade)
+
+  @@unique([inboundId, numero])
+  @@index([tenantId])
+  @@index([tenantId, vencimento])
+}
+
+/// Mensagem já processada. Existe para a idempotência não depender da flag
+/// \Seen do IMAP: o operador abre o e-mail no celular e a caixa toda voltaria
+/// a ser reprocessada.
+model FiscalEmailMessage {
+  id        String @id @default(cuid())
+  tenantId  String
+  inboxId   String
+  uid       Int
+  messageId String // Message-ID do cabeçalho; sem ele, "uid:<n>"
+
+  assunto      String?
+  remetente    String?
+  recebidoEm   DateTime?
+  anexos       Int       @default(0)
+  importados   Int       @default(0)
+  processadoEm DateTime  @default(now())
+
+  inbox FiscalEmailInbox @relation(fields: [inboxId], references: [id], onDelete: Cascade)
+
+  @@unique([inboxId, messageId])
+  @@index([tenantId])
+  @@index([inboxId, uid])
+}
+
+/// Trilha de importação — uma linha por arquivo visto, em qualquer canal.
+/// Duplicada e ignorada também entram: a pergunta que a tela responde é "por
+/// que esta nota não apareceu?", e silêncio nunca responde isso.
+model FiscalImportLog {
+  id       String             @id @default(cuid())
+  tenantId String
+  siteId   String?
+  origem   FiscalImportOrigem
+  status   FiscalImportStatus
+
+  arquivo   String?
+  chave     String?
+  mensagem  String?
+  remetente String? // quem mandou o e-mail
+  inboxId   String?
+  inboundId String? // nota gerada, quando houve
+
+  usuarioId    String?
+  processadoEm DateTime @default(now())
+
+  inbox FiscalEmailInbox? @relation(fields: [inboxId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, processadoEm])
+  @@index([tenantId, chave])
+  @@index([inboxId])
 }
 
 // ============================================================

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ShieldCheck, Sparkles } from "lucide-react";
 import { ChartCard } from "@/components/charts/chart-card";
 import { cn } from "@/lib/utils";
 import type { SituacaoFiscal } from "./_data";
@@ -45,6 +45,8 @@ export function FiscalStatus({ s, periodoLabel }: { s: SituacaoFiscal; periodoLa
   const certificadoVencendo =
     s.certificadoDias != null && s.certificadoDias <= AVISO_CERTIFICADO_DIAS;
 
+  const automacao = s.automacao;
+
   return (
     <ChartCard title="Situação fiscal" subtitle={periodoLabel}>
       <div className="grid grid-cols-2 divide-x divide-y divide-line border-t border-l border-line sm:grid-cols-4 sm:divide-y-0">
@@ -68,6 +70,24 @@ export function FiscalStatus({ s, periodoLabel }: { s: SituacaoFiscal; periodoLa
           </Link>
         ))}
       </div>
+
+      {automacao.total > 0 && (
+        <p className="mt-3 flex items-start gap-2 text-sm text-ink-2">
+          <Sparkles size={16} className="mt-0.5 shrink-0 text-brand" />
+          <span>
+            <span className="font-medium text-ink">{automacao.pct}%</span> das{" "}
+            {automacao.total} notas de entrada chegaram sozinhas (e-mail ou SEFAZ).{" "}
+            {automacao.pct < 60 && (
+              <Link
+                href="/configuracoes/notas-fiscais"
+                className="font-medium text-brand hover:underline"
+              >
+                ligue os canais automáticos
+              </Link>
+            )}
+          </span>
+        </p>
+      )}
 
       {s.travadas > 0 && (
         <p className="mt-3 flex items-start gap-2 text-sm text-ink-2">

@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { sincronizarCatalogosDevidos } from "@/lib/compras/sync";
 import { autorizarCron } from "@/lib/cron";
 import { processarFilaFiscalTodos } from "@/lib/fiscal/emissao";
+import { sincronizarCaixasTodos } from "@/lib/fiscal/email-inbox";
+import { sincronizarDistribuicaoTodos } from "@/lib/fiscal/distribuicao";
 import { avaliarAssinaturas } from "@/lib/assinatura";
 import { logErro } from "@/lib/log";
 import { limparExpirados } from "@/lib/rate-limit";
@@ -11,12 +13,12 @@ import { snapshotEstoqueTodos } from "@/lib/snapshot";
 /**
  * Dispatcher diário — existe por causa do plano.
  *
- * O plano Hobby do Vercel aceita 2 crons por projeto e só 1×/dia. Os cinco jobs
- * do sistema não cabem nesse orçamento, então esta rota roda quatro deles em uma
+ * O plano Hobby do Vercel aceita 2 crons por projeto e só 1×/dia. Os sete jobs
+ * do sistema não cabem nesse orçamento, então esta rota roda seis deles em uma
  * passada única. É perda de granularidade consciente, não desenho ideal: a fila
  * fiscal deveria rodar a cada 10 min e o catálogo de hora em hora.
  *
- * Quando o projeto virar Pro, apague este arquivo e devolva os cinco crons de
+ * Quando o projeto virar Pro, apague este arquivo e devolva os sete crons de
  * `vercel.crons.pro.json` ao `vercel.json` (ver `docs/crons.md`).
  *
  * Cada job é isolado: falha de um não impede os outros, e o resultado sai por
@@ -42,7 +44,7 @@ async function executar(req: Request) {
   const negado = autorizarCron(req);
   if (negado) return negado;
 
-  // Sequencial de propósito: quatro jobs pesados em paralelo brigam pelas
+  // Sequencial de propósito: seis jobs pesados em paralelo brigam pelas
   // mesmas conexões do pool do Neon.
   const resultados: Resultado[] = [];
 
@@ -59,11 +61,13 @@ async function executar(req: Request) {
     }),
   );
   resultados.push(await passo("sincronizar-catalogos", () => sincronizarCatalogosDevidos(50)));
+  resultados.push(await passo("importar-nfe-email", () => sincronizarCaixasTodos()));
+  resultados.push(await passo("distribuicao-sefaz", () => sincronizarDistribuicaoTodos()));
 
   const falhas = resultados.filter((r) => !r.ok);
 
   // 200 mesmo com falha parcial: o cron não deve ser marcado como quebrado
-  // quando 3 de 4 jobs rodaram. O `falhas` no corpo é o sinal.
+  // quando 5 de 6 jobs rodaram. O `falhas` no corpo é o sinal.
   return NextResponse.json({ ok: falhas.length === 0, falhas: falhas.length, resultados });
 }
 

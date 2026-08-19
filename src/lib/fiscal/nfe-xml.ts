@@ -20,6 +20,8 @@ export type ItemNotaXml = {
   gtin: string | null;
   descricao: string;
   ncm: string | null;
+  /** CEST — só existe em produto sujeito a ST. Guardado para o cadastro. */
+  cest: string | null;
   cfop: string | null;
   /** uCom — unidade em que o fornecedor VENDE (caixa, fardo, display). */
   unidade: string;
@@ -52,6 +54,10 @@ export type NotaXml = {
   serie: number;
   dataEmissao: Date;
   valorTotal: number;
+  /** vFrete do total da nota — frete cobrado na própria NF-e. */
+  valorFrete: number;
+  /** vDesc do total da nota. */
+  valorDesconto: number;
   emitente: {
     cnpj: string;
     razaoSocial: string;
@@ -70,6 +76,15 @@ export type NotaXml = {
   /** CNPJ do destinatário — usado para conferir se a nota é mesmo nossa. */
   destinatarioCnpj: string | null;
   itens: ItemNotaXml[];
+  /** cobr/dup — o parcelamento que o fornecedor cobrou. Vazio em nota à vista. */
+  duplicatas: DuplicataXml[];
+};
+
+/** Uma parcela do boleto/duplicata da nota. */
+export type DuplicataXml = {
+  numero: string;
+  vencimento: Date;
+  valor: number;
 };
 
 export class XmlInvalidoError extends Error {
@@ -187,6 +202,7 @@ export function parseNotaXml(xml: string): NotaXml {
       gtin: gtinValido(prod.cEAN) ?? gtinValido(prod.cEANTrib),
       descricao: String(prod.xProd ?? "").trim() || `Item ${ordem}`,
       ncm: str(prod.NCM),
+      cest: str(prod.CEST),
       cfop,
       unidade: String(prod.uCom ?? "UN").trim().toUpperCase(),
       quantidade: num(prod.qCom),
@@ -219,6 +235,8 @@ export function parseNotaXml(xml: string): NotaXml {
     serie: Number(ide.serie ?? 0),
     dataEmissao,
     valorTotal: num(total.vNF),
+    valorFrete: num(total.vFrete),
+    valorDesconto: num(total.vDesc),
     emitente: {
       cnpj: digits(emit.CNPJ ?? emit.CPF),
       razaoSocial: String(emit.xNome ?? "").trim() || "Fornecedor sem nome no XML",
@@ -236,7 +254,28 @@ export function parseNotaXml(xml: string): NotaXml {
     },
     destinatarioCnpj: dest.CNPJ ? digits(dest.CNPJ) : null,
     itens,
+    duplicatas: lerDuplicatas(inf),
   };
+}
+
+/**
+ * Parcelas da nota. Sem `cobr` a venda foi à vista — ausência é resposta, não
+ * erro. Parcela sem data legível é descartada: um vencimento inventado viraria
+ * cobrança errada no dia em que o financeiro ligar nisto.
+ */
+function lerDuplicatas(inf: Qualquer): DuplicataXml[] {
+  const cobr = (inf.cobr ?? {}) as Qualquer;
+  return asArray(cobr.dup as Qualquer | Qualquer[])
+    .map((d, i): DuplicataXml | null => {
+      const vencimento = new Date(String(d.dVenc ?? ""));
+      if (Number.isNaN(vencimento.getTime())) return null;
+      return {
+        numero: (str(d.nDup) ?? String(i + 1).padStart(3, "0")).slice(0, 20),
+        vencimento,
+        valor: num(d.vDup),
+      };
+    })
+    .filter((d): d is DuplicataXml => d !== null);
 }
 
 export type ArquivoXml = { nome: string; conteudo: string };
