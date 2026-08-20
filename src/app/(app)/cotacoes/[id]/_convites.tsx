@@ -15,6 +15,7 @@ import {
   PencilLine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { copiarTexto } from "@/lib/clipboard";
 import { EstadoVazio, SupplierAvatar, fmtMoney, fmtQuando } from "../_catalogo/ui";
 import type { ConviteCotacao, CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
 import { CanalPicker, type Canal } from "./_canal";
@@ -169,7 +170,7 @@ export function ConvitesCotacao({
       {cotacao.convites.length === 0 ? (
         <EstadoVazio
           icon={<Users size={20} />}
-          titulo="Ninguém foi convidado ainda"
+          titulo="Nenhum fornecedor na cotação"
           descricao="Escolha os fornecedores que vão receber a lista. Quanto mais gente na disputa, melhor o preço."
           acao={
             editavel ? (
@@ -264,7 +265,11 @@ export function ConvitesCotacao({
                         onClick={() =>
                           rodar(async () => {
                             const { url } = await linkDoConviteAction(c.id);
-                            await navigator.clipboard.writeText(url);
+                            if (!(await copiarTexto(url))) {
+                              throw new Error(
+                                "O navegador bloqueou a cópia. Abra o link e copie da barra de endereço.",
+                              );
+                            }
                             setLinkCopiado(c.id);
                           })
                         }
@@ -284,7 +289,9 @@ export function ConvitesCotacao({
                         onClick={() =>
                           rodar(async () => {
                             const { mensagem } = await mensagemDoConviteAction(c.id);
-                            await navigator.clipboard.writeText(mensagem);
+                            if (!(await copiarTexto(mensagem))) {
+                              throw new Error("O navegador bloqueou a cópia. Tente pelo WhatsApp.");
+                            }
                             setTextoCopiado(c.id);
                           })
                         }
@@ -801,8 +808,7 @@ export function EnviosSheet({ envios, onFechar }: { envios: Envio[]; onFechar: (
               <button
                 type="button"
                 onClick={() => {
-                  void navigator.clipboard.writeText(e.mensagem);
-                  setCopiado(e.conviteId);
+                  void copiarTexto(e.mensagem).then((ok) => setCopiado(ok ? e.conviteId : null));
                 }}
                 className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
               >
@@ -841,8 +847,7 @@ export function EnviosSheet({ envios, onFechar }: { envios: Envio[]; onFechar: (
               <button
                 type="button"
                 onClick={() => {
-                  void navigator.clipboard.writeText(e.link!);
-                  setLinkCopiado(e.conviteId);
+                  void copiarTexto(e.link!).then((ok) => setLinkCopiado(ok ? e.conviteId : null));
                 }}
                 title={e.link}
                 className="flex items-center gap-1.5 self-start rounded-full bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-muted transition-colors hover:text-ink"

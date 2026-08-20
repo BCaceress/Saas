@@ -54,6 +54,7 @@ export function CotacaoDetalheClient({
   cotacao: CotacaoDetalhe;
   produtos: ProdutoOpcao[];
   fornecedores: FornecedorOpcao[];
+  /** Lojas ativas: com uma só, o nome dela não informa nada e some da tela. */
   sites: { id: string; nome: string }[];
   resumo: ResumoCotacao;
   podePedir: boolean;
@@ -92,7 +93,7 @@ export function CotacaoDetalheClient({
 
   return (
     <div className="flex flex-col gap-5">
-      <Cabecalho cotacao={cotacao} podePedir={podePedir} />
+      <Cabecalho cotacao={cotacao} podePedir={podePedir} multiSite={sites.length > 1} />
 
       {rascunho ? (
         <Trilho
@@ -294,9 +295,11 @@ function Navegacao({
 function Cabecalho({
   cotacao,
   podePedir,
+  multiSite,
 }: {
   cotacao: CotacaoDetalhe;
   podePedir: boolean;
+  multiSite: boolean;
 }) {
   const router = useRouter();
   const [pendente, startTransition] = useTransition();
@@ -379,8 +382,9 @@ function Cabecalho({
               {cotacao.titulo}
             </h2>
             <p className="mt-0.5 truncate text-[13px] text-muted">
-              Entrega em {cotacao.siteNome}
-              {prazo && ` · resposta até ${prazo}`}
+              {multiSite && `Entrega em ${cotacao.siteNome}`}
+              {multiSite && prazo && " · "}
+              {prazo && `Resposta até ${prazo}`}
               {cotacao.status === "ABERTA" &&
                 ` · ${andamento(cotacao.convites.length, respondidos)}`}
             </p>

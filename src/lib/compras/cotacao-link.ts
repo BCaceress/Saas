@@ -246,10 +246,17 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
     const embalagens = packagingIds.length
       ? await db.productPackaging.findMany({
           where: { id: { in: packagingIds } },
-          select: { id: true, nome: true },
+          select: { id: true, nome: true, fatorConversao: true },
         })
       : [];
-    const nomePorEmbalagem = new Map(embalagens.map((e) => [e.id, e.nome]));
+    // "Caixa (12 un.)" e não só "Caixa": o fornecedor precisa saber quantas
+    // unidades vêm dentro, senão o preço que ele manda é de outra coisa.
+    const nomePorEmbalagem = new Map(
+      embalagens.map((e) => {
+        const fator = n(e.fatorConversao);
+        return [e.id, fator > 1 ? `${e.nome} (${fator} un.)` : e.nome] as const;
+      }),
+    );
 
     // Foto do produto: uma consulta para a lista inteira. Só o que a tela do
     // fornecedor mostra sai daqui — nada de preço, custo ou saldo do cliente.
@@ -263,10 +270,15 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
     const produtos = productIds.length
       ? await db.product.findMany({
           where: { id: { in: productIds } },
-          select: { id: true, imagemUrl: true },
+          select: { id: true, imagemUrl: true, unidadeBase: true },
         })
       : [];
     const imagemPorProduto = new Map(produtos.map((p) => [p.id, p.imagemUrl]));
+    // Sem embalagem escolhida, a unidade é a do cadastro (KG, L, CX…). Só "UN"
+    // vira null, porque aí a tela já escreve "unidades" por extenso.
+    const unidadePorProduto = new Map(
+      produtos.map((p) => [p.id, p.unidadeBase === "UN" ? null : p.unidadeBase.toLowerCase()]),
+    );
 
     return {
       estado: "valido",
@@ -284,7 +296,11 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
           id: i.id,
           descricao: i.descricao,
           quantidade: n(i.quantidade),
-          unidade: i.packagingId ? (nomePorEmbalagem.get(i.packagingId) ?? null) : null,
+          unidade: i.packagingId
+            ? (nomePorEmbalagem.get(i.packagingId) ?? null)
+            : i.productId
+              ? (unidadePorProduto.get(i.productId) ?? null)
+              : null,
           observacao: i.observacao,
           imagemUrl: i.productId ? (imagemPorProduto.get(i.productId) ?? null) : null,
         })),

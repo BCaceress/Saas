@@ -122,8 +122,8 @@ export function RevisarCotacao({
             />
           </label>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="flex flex-col gap-1">
+          <div className={cn("grid gap-3", sites.length > 1 && "sm:grid-cols-2")}>
+            <label className={cn("flex flex-col gap-1", sites.length <= 1 && "hidden")}>
               <span className="flex items-center gap-1.5 text-[12px] font-medium text-ink-2">
                 <Store size={12} className="text-faint" />
                 Entregar em
@@ -208,7 +208,7 @@ export function RevisarCotacao({
         <Bloco
           icone={<Users size={15} />}
           titulo={`${cotacao.convites.length} ${cotacao.convites.length === 1 ? "fornecedor" : "fornecedores"}`}
-          vazio={semFornecedores ? "Ninguém foi convidado ainda." : null}
+          vazio={semFornecedores ? "Nenhum fornecedor escolhido ainda." : null}
           acao={
             editavel
               ? { label: "Editar fornecedores", onClick: () => onIrPara("fornecedores") }
@@ -254,7 +254,7 @@ export function RevisarCotacao({
             : semFornecedores
               ? "Convide ao menos um fornecedor para enviar."
               : pendentes.length === 0
-                ? "Todos os convidados já receberam esta cotação."
+                ? "Todos os fornecedores já receberam esta cotação."
                 : `${pendentes.length} ${pendentes.length === 1 ? "fornecedor recebe" : "fornecedores recebem"} o link agora.`}
         </p>
         <div className="flex flex-wrap items-center gap-3">

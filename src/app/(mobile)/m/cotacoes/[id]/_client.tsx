@@ -21,6 +21,7 @@ import {
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { copiarTexto } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
@@ -216,9 +217,17 @@ function RascunhoTrilho({
   onEnviado: (e: Envio[]) => void;
 }) {
   const i = PASSOS.findIndex((p) => p.id === passo);
+
+  // A seleção de fornecedor mora AQUI, e não dentro do passo, porque o botão
+  // "Continuar" depende dela: preso à lista do servidor, ele só destravava
+  // depois do refresh — meio segundo depois do toque, parecendo travado.
+  const [toques, setToques] = React.useState<Record<string, boolean>>({});
+  const convidados = new Set(cotacao.convites.map((c) => c.supplierId));
+  const escolhidos = fornecedores.filter((f) => toques[f.id] ?? convidados.has(f.id)).length;
+
   const feito = {
     produtos: cotacao.itens.length > 0,
-    fornecedores: cotacao.convites.length > 0,
+    fornecedores: escolhidos > 0,
     enviar: false,
   } as Record<Passo, boolean>;
 
@@ -256,7 +265,13 @@ function RascunhoTrilho({
 
       {passo === "produtos" && <PassoProdutos cotacao={cotacao} editavel={podePedir} />}
       {passo === "fornecedores" && (
-        <PassoFornecedores cotacao={cotacao} fornecedores={fornecedores} editavel={podePedir} />
+        <PassoFornecedores
+          cotacao={cotacao}
+          fornecedores={fornecedores}
+          editavel={podePedir}
+          toques={toques}
+          onToques={setToques}
+        />
       )}
       {passo === "enviar" && (
         <PassoEnviar cotacao={cotacao} editavel={podePedir} onEnviado={onEnviado} />
@@ -756,10 +771,15 @@ function PassoFornecedores({
   cotacao,
   fornecedores,
   editavel,
+  toques,
+  onToques,
 }: {
   cotacao: CotacaoDetalhe;
   fornecedores: FornecedorOpcao[];
   editavel: boolean;
+  /** O que o dedo já disse, por fornecedor — estado do trilho, não do passo. */
+  toques: Record<string, boolean>;
+  onToques: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
 }) {
   const router = useRouter();
   const [busca, setBusca] = React.useState("");
@@ -773,7 +793,6 @@ function PassoFornecedores({
   // `toques` guarda só o que o dedo disse. O servidor continua sendo a verdade:
   // quando a lista volta com o convite gravado, a marca local passa a dizer o
   // mesmo e deixa de ter efeito — nada para limpar depois.
-  const [toques, setToques] = React.useState<Record<string, boolean>>({});
   const estaMarcado = (id: string) => toques[id] ?? convitePorFornecedor.has(id);
 
   // Uma fila por fornecedor: toques rápidos no mesmo cartão viram chamadas em
@@ -788,7 +807,7 @@ function PassoFornecedores({
     if (!editavel) return;
     const estava = estaMarcado(f.id);
     const desejado = !estava;
-    setToques((atual) => ({ ...atual, [f.id]: desejado }));
+    onToques((atual) => ({ ...atual, [f.id]: desejado }));
 
     const anterior = filas.current.get(f.id) ?? Promise.resolve();
     const proxima = anterior
@@ -802,7 +821,7 @@ function PassoFornecedores({
           });
           router.refresh();
         } catch (e) {
-          setToques((atual) => ({ ...atual, [f.id]: estava }));
+          onToques((atual) => ({ ...atual, [f.id]: estava }));
           toast.error(
             "Não deu para mudar o convite",
             e instanceof Error ? e.message : "Tente de novo em instantes.",
@@ -1032,7 +1051,7 @@ function PassoEnviar({
         </div>
         {semEmail && canais.includes("email") && (
           <p className="mt-1.5 text-[12px] text-accent">
-            Nenhum dos convidados tem e-mail cadastrado — vai só pelo WhatsApp.
+            Nenhum dos fornecedores tem e-mail cadastrado — vai só pelo WhatsApp.
           </p>
         )}
       </div>
@@ -1079,7 +1098,10 @@ function Acompanhamento({
     setOcupado(conviteId);
     try {
       const { url } = await linkDoConviteAction(conviteId);
-      await navigator.clipboard.writeText(url);
+      if (!(await copiarTexto(url))) {
+        toast.info("Copie manualmente", url);
+        return;
+      }
       setCopiado(conviteId);
       toast.success("Link copiado", "Cole na conversa com o fornecedor.");
     } catch (e) {
@@ -1097,7 +1119,10 @@ function Acompanhamento({
     setOcupado(conviteId);
     try {
       const { mensagem } = await mensagemDoConviteAction(conviteId);
-      await navigator.clipboard.writeText(mensagem);
+      if (!(await copiarTexto(mensagem))) {
+        toast.info("Copie manualmente", mensagem);
+        return;
+      }
       setCopiado(conviteId);
       toast.success("Mensagem copiada", "Cole onde quiser mandar.");
     } catch (e) {
@@ -1300,8 +1325,7 @@ function EnviosSheetMobile({
                 <button
                   type="button"
                   onClick={() => {
-                    void navigator.clipboard.writeText(e.mensagem);
-                    setCopiado(e.conviteId);
+                    void copiarTexto(e.mensagem).then((ok) => setCopiado(ok ? e.conviteId : null));
                   }}
                   className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2"
                 >

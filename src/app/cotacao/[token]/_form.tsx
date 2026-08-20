@@ -103,7 +103,10 @@ const CampoPreco = forwardRef<
         onChange={(e) => onValor(mascaraMoeda(e.target.value))}
         onKeyDown={onKeyDown}
         onFocus={(e) => e.currentTarget.select()}
-        className={cn("pl-9 font-mono", alinharDireita && "text-right")}
+        className={cn(
+          "pl-9 font-mono text-base md:text-sm",
+          alinharDireita && "text-right",
+        )}
       />
     </div>
   );
@@ -343,6 +346,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
               placeholder="0"
               value={prazoEntrega}
               onChange={(e) => setPrazoEntrega(e.target.value.replace(/\D/g, "").slice(0, 3))}
+              className="text-base md:text-sm"
             />
           </Field>
           <Field label="Pagamento" htmlFor="condicao">
@@ -351,6 +355,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
               placeholder="28 dias"
               value={condicao}
               onChange={(e) => setCondicao(e.target.value)}
+              className="text-base md:text-sm"
             />
           </Field>
           <Field label="Frete" htmlFor="frete">
@@ -365,6 +370,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
               placeholder="Opcional: pedido mínimo, promoção, prazo especial…"
               value={observacao}
               onChange={(e) => setObservacao(e.target.value)}
+              className="text-base md:text-sm"
             />
           </Field>
         </div>
@@ -379,6 +385,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
               placeholder="Motivo (opcional)"
               value={motivo}
               onChange={(e) => setMotivo(e.target.value)}
+              className="text-base md:text-sm"
             />
             <div className="flex gap-2">
               <Button variant="secondary" size="sm" onClick={() => setRecusando(false)}>
@@ -651,7 +658,7 @@ function CartaoItem({
                 placeholder={fmtQtd(item.quantidade)}
                 value={linha.qtd}
                 onChange={(e) => onAlterar({ qtd: e.target.value })}
-                className="font-mono"
+                className="font-mono text-base md:text-sm"
               />
             </Field>
           )}
@@ -741,7 +748,7 @@ function LinhaItem({
             placeholder={`tenho ${fmtQtd(item.quantidade)}`}
             value={linha.qtd}
             onChange={(e) => onAlterar({ qtd: e.target.value })}
-            className="font-mono"
+            className="font-mono text-base md:text-sm"
           />
         )}
       </div>

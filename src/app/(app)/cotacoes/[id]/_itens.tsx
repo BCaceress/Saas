@@ -171,7 +171,9 @@ function NovoItem({
 
   const sugestoes = useMemo(() => {
     const q = busca.trim().toLowerCase();
-    if (q.length < 2) return [];
+    // Menos de três letras devolve meio catálogo: a lista fica inútil e o
+    // operador precisa ler dez linhas para achar a que ele já sabia qual era.
+    if (q.length < 3) return [];
     return produtos
       .filter((p) => `${p.nome} ${p.sku}`.toLowerCase().includes(q))
       .slice(0, 6);

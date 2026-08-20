@@ -219,6 +219,89 @@ export async function reabrirCotacaoAction(id: string) {
 }
 
 /**
+ * Nova cotação com os mesmos produtos e os mesmos fornecedores.
+ *
+ * Compra de mercado é repetitiva: a lista de cerveja da semana passada é quase
+ * a desta semana. Duplicar copia a PERGUNTA (itens, quantidades, convidados) e
+ * nunca a RESPOSTA — preço de terça não vale quinta, e trazer junto o que o
+ * fornecedor cotou daria ao comprador a sensação de já ter proposta quando
+ * ninguém foi consultado ainda.
+ *
+ * Nasce em RASCUNHO, com prazo em branco: a data velha já passou.
+ */
+export async function duplicarCotacaoAction(id: string) {
+  const ctx = await guardAction("compras.pedir");
+  return runWithTenant(ctx.tenant.id, async () => {
+    const origem = await db.quotation.findFirst({
+      where: { id },
+      select: {
+        titulo: true,
+        siteId: true,
+        observacao: true,
+        items: {
+          orderBy: { ordem: "asc" },
+          select: {
+            productId: true,
+            packagingId: true,
+            descricao: true,
+            quantidade: true,
+            observacao: true,
+            ordem: true,
+          },
+        },
+        suppliers: { select: { supplierId: true } },
+      },
+    });
+    if (!origem) throw new Error("Cotação não encontrada.");
+    assertSite(ctx, "compras.pedir", origem.siteId);
+
+    const tid = ctx.tenant.id;
+    const numero = await proximoNumero();
+    const nova = await db.quotation.create({
+      data: {
+        tenantId: tid,
+        siteId: origem.siteId,
+        numero,
+        // "Cópia de Cópia de…" não ajuda ninguém a achar nada.
+        titulo: origem.titulo.startsWith("Cópia de ")
+          ? origem.titulo
+          : `Cópia de ${origem.titulo}`,
+        observacao: origem.observacao,
+        createdBy: ctx.user.id ?? null,
+      },
+      select: { id: true, numero: true },
+    });
+
+    if (origem.items.length > 0) {
+      await db.quotationItem.createMany({
+        data: origem.items.map((i) => ({
+          tenantId: tid,
+          quotationId: nova.id,
+          productId: i.productId,
+          packagingId: i.packagingId,
+          descricao: i.descricao,
+          quantidade: i.quantidade,
+          observacao: i.observacao,
+          ordem: i.ordem,
+        })),
+      });
+    }
+    if (origem.suppliers.length > 0) {
+      await db.quotationSupplier.createMany({
+        data: origem.suppliers.map((sup) => ({
+          tenantId: tid,
+          quotationId: nova.id,
+          supplierId: sup.supplierId,
+        })),
+      });
+    }
+
+    ok();
+    return nova;
+  });
+}
+
+/**
  * Apaga a cotação de vez. Só RASCUNHO: depois de enviada existe promessa feita
  * a fornecedor, e apagar isso apagaria também a resposta que ele deu — para
  * esse caso existe cancelar, que deixa rastro.
