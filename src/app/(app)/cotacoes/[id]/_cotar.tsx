@@ -24,21 +24,27 @@ export function CotarCatalogo({
   editavel: boolean;
 }) {
   const router = useRouter();
-  const [carregando, setCarregando] = useState(true);
-  const [ofertas, setOfertas] = useState<Record<string, Oferta[]>>({});
+  // Carregamento em UM estado, com o id da cotação dentro: trocar de cotação
+  // muda a chave, e a lista antiga nunca aparece como se fosse da nova.
+  const [dados, setDados] = useState<{ chave: string; ofertas: Record<string, Oferta[]> } | null>(
+    null,
+  );
+  const carregando = dados?.chave !== cotacao.id;
+  const ofertas = dados?.chave === cotacao.id ? dados.ofertas : {};
   const [escolhas, setEscolhas] = useState<Record<string, string>>({});
   const [pendente, startTransition] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
 
   useEffect(() => {
     let vivo = true;
-    setCarregando(true);
     carregarOfertasCotacaoAction(cotacao.id)
       .then((r) => {
-        if (vivo) setOfertas(r);
+        if (vivo) setDados({ chave: cotacao.id, ofertas: r });
       })
-      .finally(() => {
-        if (vivo) setCarregando(false);
+      // Falhar calado deixaria a aba girando para sempre; sem oferta é o mesmo
+      // que catálogo vazio, e o estado vazio já explica o que fazer.
+      .catch(() => {
+        if (vivo) setDados({ chave: cotacao.id, ofertas: {} });
       });
     return () => {
       vivo = false;

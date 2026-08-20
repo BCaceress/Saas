@@ -479,6 +479,49 @@ export async function convidarFornecedoresAction(input: z.input<typeof convidarS
   });
 }
 
+const definirConviteSchema = z.object({
+  quotationId: z.string().min(1),
+  supplierId: z.string().min(1),
+  convidado: z.boolean(),
+});
+
+/**
+ * Liga/desliga um fornecedor da cotação pelo ESTADO desejado, não pelo id do
+ * convite.
+ *
+ * A diferença importa no celular: com marcação otimista, o operador toca duas
+ * vezes antes da primeira chamada voltar, e a segunda ainda não conhece o id
+ * que a primeira criou. Mandando "quero convidado / não quero", quem resolve é
+ * o servidor, que sabe o estado atual — e chamada repetida vira no-op em vez
+ * de erro.
+ */
+export async function definirConviteAction(input: z.input<typeof definirConviteSchema>) {
+  const d = definirConviteSchema.parse(input);
+  return tx(async (tid) => {
+    await exigirEditavel(d.quotationId);
+    const atual = await db.quotationSupplier.findFirst({
+      where: { quotationId: d.quotationId, supplierId: d.supplierId },
+      select: { id: true, status: true },
+    });
+
+    if (d.convidado) {
+      if (atual) return;
+      await db.quotationSupplier.create({
+        data: { tenantId: tid, quotationId: d.quotationId, supplierId: d.supplierId },
+      });
+      ok();
+      return;
+    }
+
+    if (!atual) return;
+    if (atual.status === "RESPONDIDA") {
+      throw new Error("Este fornecedor já respondeu — a proposta dele sairia junto.");
+    }
+    await db.quotationSupplier.deleteMany({ where: { id: atual.id } });
+    ok();
+  });
+}
+
 export async function removerConviteAction(id: string) {
   return tx(async () => {
     const convite = await db.quotationSupplier.findFirst({

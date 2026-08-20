@@ -38,14 +38,13 @@ import {
   adicionarItemAction,
   buscarProdutoPorCodigoCotacaoAction,
   buscarProdutosCotacaoAction,
-  convidarFornecedoresAction,
+  definirConviteAction,
   descartarSeVaziaAction,
   editarCotacaoAction,
   editarItemAction,
   enviarCotacaoAction,
   linkDoConviteAction,
   mensagemDoConviteAction,
-  removerConviteAction,
   removerItemAction,
   type ProdutoCotacao,
 } from "@/app/(app)/cotacoes/_compra-actions";
@@ -554,40 +553,50 @@ function PassoFornecedores({
 
   const convitePorFornecedor = new Map(cotacao.convites.map((c) => [c.supplierId, c]));
 
-  // Marcação OTIMISTA. Antes, cada toque esperava a ida ao servidor e o
-  // `router.refresh()` inteiro para pintar o check — na rede do mercado isso é
-  // meio segundo de nada acontecendo, e o operador toca de novo achando que
-  // falhou. Agora a tela responde na hora e o servidor corre atrás; se der
-  // errado, a marca volta e o toast diz por quê.
-  // Guarda só o que o TOQUE disse, por fornecedor. O servidor continua sendo a
-  // verdade: assim que a lista chega com o convite gravado, a marca local vira
-  // igual à do servidor e deixa de ter efeito — sem efeito colateral para
-  // limpar, e sem o risco de sobrescrever quem mexeu na mesma cotação.
+  // Marcação OTIMISTA. Antes, cada toque esperava a chamada ao servidor E o
+  // `router.refresh()` para pintar o check — na rede do mercado isso é meio
+  // segundo de nada acontecendo, e o operador toca de novo achando que falhou.
+  //
+  // `toques` guarda só o que o dedo disse. O servidor continua sendo a verdade:
+  // quando a lista volta com o convite gravado, a marca local passa a dizer o
+  // mesmo e deixa de ter efeito — nada para limpar depois.
   const [toques, setToques] = React.useState<Record<string, boolean>>({});
   const estaMarcado = (id: string) => toques[id] ?? convitePorFornecedor.has(id);
+
+  // Uma fila por fornecedor: toques rápidos no mesmo cartão viram chamadas em
+  // ordem, e a última é a que fica valendo.
+  const filas = React.useRef(new Map<string, Promise<unknown>>());
 
   const visiveis = fornecedores.filter((f) =>
     f.nome.toLowerCase().includes(busca.trim().toLowerCase()),
   );
 
-  async function alternar(f: FornecedorOpcao) {
+  function alternar(f: FornecedorOpcao) {
     if (!editavel) return;
     const estava = estaMarcado(f.id);
-    setToques((atual) => ({ ...atual, [f.id]: !estava }));
-    try {
-      const convite = convitePorFornecedor.get(f.id);
-      if (estava && convite) await removerConviteAction(convite.id);
-      else if (!estava) {
-        await convidarFornecedoresAction({ quotationId: cotacao.id, supplierIds: [f.id] });
-      }
-      router.refresh();
-    } catch (e) {
-      setToques((atual) => ({ ...atual, [f.id]: estava }));
-      toast.error(
-        "Não deu para mudar o convite",
-        e instanceof Error ? e.message : "Tente de novo em instantes.",
-      );
-    }
+    const desejado = !estava;
+    setToques((atual) => ({ ...atual, [f.id]: desejado }));
+
+    const anterior = filas.current.get(f.id) ?? Promise.resolve();
+    const proxima = anterior
+      .catch(() => {})
+      .then(async () => {
+        try {
+          await definirConviteAction({
+            quotationId: cotacao.id,
+            supplierId: f.id,
+            convidado: desejado,
+          });
+          router.refresh();
+        } catch (e) {
+          setToques((atual) => ({ ...atual, [f.id]: estava }));
+          toast.error(
+            "Não deu para mudar o convite",
+            e instanceof Error ? e.message : "Tente de novo em instantes.",
+          );
+        }
+      });
+    filas.current.set(f.id, proxima);
   }
 
   return (
