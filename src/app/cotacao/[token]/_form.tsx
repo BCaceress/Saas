@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { forwardRef, useMemo, useRef, useState, useTransition } from "react";
 import {
   CalendarClock,
   CheckCircle2,
@@ -52,6 +52,63 @@ function paraNumero(texto: string): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
+/**
+ * Máscara de centavos: cada dígito entra pela direita, como em maquininha e
+ * caixa. Sem ela, "5" fica ambíguo (cinco reais? cinco centavos?) e o
+ * fornecedor precisa lembrar de digitar a vírgula — que no teclado numérico do
+ * celular nem sempre está à mão.
+ */
+function mascaraMoeda(texto: string): string {
+  const digitos = texto.replace(/\D/g, "").replace(/^0+(?=\d)/, "").slice(0, 11);
+  if (!digitos) return "";
+  return (Number(digitos) / 100).toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+/** Valor já gravado (5.89) de volta para o formato da máscara ("5,89"). */
+function paraMascara(valor: number): string {
+  if (!valor) return "";
+  return mascaraMoeda(String(Math.round(valor * 100)));
+}
+
+/** Campo de dinheiro: R$ fixo à esquerda, máscara no que o dedo digita. */
+const CampoPreco = forwardRef<
+  HTMLInputElement,
+  {
+    id?: string;
+    valor: string;
+    onValor: (v: string) => void;
+    rotulo?: string;
+    alinharDireita?: boolean;
+    onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>;
+  }
+>(function CampoPreco({ id, valor, onValor, rotulo, alinharDireita, onKeyDown }, ref) {
+  return (
+    <div className="relative">
+      <span
+        aria-hidden
+        className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-[13px] text-faint"
+      >
+        R$
+      </span>
+      <Input
+        id={id}
+        ref={ref}
+        aria-label={rotulo}
+        inputMode="decimal"
+        placeholder="0,00"
+        value={valor}
+        onChange={(e) => onValor(mascaraMoeda(e.target.value))}
+        onKeyDown={onKeyDown}
+        onFocus={(e) => e.currentTarget.select()}
+        className={cn("pl-9 font-mono", alinharDireita && "text-right")}
+      />
+    </div>
+  );
+});
+
 /** Dias que faltam para o prazo — vira a etiqueta de urgência do cabeçalho. */
 function faltam(iso: string | null): { texto: string; urgente: boolean } | null {
   if (!iso) return null;
@@ -95,7 +152,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
       return {
         itemId: i.id,
         situacao: r ? (r.disponivel ? (parcial ? "parcial" : "tem") : "nao") : "tem",
-        preco: r && r.precoUnitario > 0 ? String(r.precoUnitario).replace(".", ",") : "",
+        preco: r ? paraMascara(r.precoUnitario) : "",
         qtd: parcial ? String(r!.quantidadeOfertada).replace(".", ",") : "",
       };
     }),
@@ -106,7 +163,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   );
   const [condicao, setCondicao] = useState(cotacao.cabecalho.condicaoPagamento ?? "");
   const [frete, setFrete] = useState(
-    cotacao.cabecalho.frete === null ? "" : String(cotacao.cabecalho.frete).replace(".", ","),
+    cotacao.cabecalho.frete === null ? "" : paraMascara(cotacao.cabecalho.frete),
   );
   const [observacao, setObservacao] = useState(cotacao.cabecalho.observacao ?? "");
 
@@ -114,6 +171,20 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
     () => new Map(linhas.map((l) => [l.itemId, l])),
     [linhas],
   );
+
+  // Na mesa, quem digita uma lista de 30 preços usa Tab — e o Tab natural cai
+  // nos botões de disponibilidade da linha seguinte, o que faz a digitação
+  // parar a cada item. Aqui ele pula direto para o próximo preço.
+  const camposPreco = useRef<(HTMLInputElement | null)[]>([]);
+
+  function aoTabularPreco(e: React.KeyboardEvent<HTMLInputElement>, indice: number) {
+    if (e.key !== "Tab") return;
+    const alvo = camposPreco.current[indice + (e.shiftKey ? -1 : 1)];
+    if (!alvo) return; // primeiro/último: deixa o Tab seguir seu caminho normal
+    e.preventDefault();
+    alvo.focus();
+    alvo.select();
+  }
 
   function alterar(itemId: string, campo: Partial<LinhaForm>) {
     setLinhas((atual) => atual.map((l) => (l.itemId === itemId ? { ...l, ...campo } : l)));
@@ -241,13 +312,17 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
             <span className="text-right">Preço unitário</span>
           </div>
           <ul className="divide-y divide-line">
-            {cotacao.itens.map((item) => (
+            {cotacao.itens.map((item, indice) => (
               <LinhaItem
                 key={item.id}
                 item={item}
                 linha={porItem.get(item.id)!}
                 total={totalDaLinha(item)}
                 onAlterar={(campo) => alterar(item.id, campo)}
+                refPreco={(el) => {
+                  camposPreco.current[indice] = el;
+                }}
+                onKeyDownPreco={(e) => aoTabularPreco(e, indice)}
               />
             ))}
           </ul>
@@ -279,14 +354,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
             />
           </Field>
           <Field label="Frete" htmlFor="frete">
-            <Input
-              id="frete"
-              inputMode="decimal"
-              placeholder="0,00"
-              value={frete}
-              onChange={(e) => setFrete(e.target.value)}
-              className="font-mono"
-            />
+            <CampoPreco id="frete" valor={frete} onValor={setFrete} />
           </Field>
         </div>
         <div className="mt-3">
@@ -413,50 +481,57 @@ function Cabecalho({
       <div>
         <h1 className="font-display text-2xl font-semibold text-ink">{cotacao.titulo}</h1>
         <p className="mt-1 text-sm text-muted">
-          Olá, {cotacao.fornecedor}. Informe seus preços abaixo — sem cadastro e sem senha.
+          Olá, {cotacao.fornecedor}. Informe seus preços abaixo.
+          {/* A promessa de "sem cadastro" tranquiliza quem abre no computador e
+              tem tempo de ler; no celular ela empurra a lista para baixo. */}
+          <span className="hidden md:inline"> Sem cadastro e sem senha.</span>
         </p>
       </div>
 
-      {cotacao.prazoResposta && (
-        <p
+      {/* Prazo e andamento dividem a linha: são as duas perguntas de quem
+          abre a página ("até quando?" e "falta muito?"), e juntas ocupam uma
+          faixa em vez de duas. A urgência continua na cor, não em mais texto. */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {cotacao.prazoResposta ? (
+          <p
+            className={cn(
+              "inline-flex w-fit items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-medium",
+              prazo?.urgente ? "bg-accent-soft text-accent" : "bg-surface-2 text-ink-2",
+            )}
+          >
+            <CalendarClock className="size-3.5" aria-hidden />
+            Responder até {fmtData(cotacao.prazoResposta)}
+          </p>
+        ) : (
+          <span />
+        )}
+        <span className="shrink-0 text-[13px] font-medium text-muted tabular-nums">
+          {respondidos} de {totalLinhas} respondidos
+        </span>
+      </div>
+
+      <div
+        className="h-1.5 overflow-hidden rounded-full bg-surface-2"
+        role="progressbar"
+        aria-valuenow={progresso}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Itens respondidos"
+      >
+        <div
           className={cn(
-            "inline-flex w-fit items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-medium",
-            prazo?.urgente ? "bg-accent-soft text-accent" : "bg-surface-2 text-ink-2",
+            "h-full rounded-full transition-all",
+            progresso === 100 ? "bg-ok" : "bg-brand",
           )}
-        >
-          <CalendarClock className="size-3.5" aria-hidden />
-          Responder até {fmtData(cotacao.prazoResposta)}
-          {prazo && ` · ${prazo.texto}`}
-        </p>
-      )}
+          style={{ width: `${progresso}%` }}
+        />
+      </div>
 
       {cotacao.observacao && (
         <p className="rounded-[var(--radius)] border border-line bg-surface-2 px-3.5 py-2.5 text-sm text-ink-2">
           {cotacao.observacao}
         </p>
       )}
-
-      <div className="flex items-center gap-3">
-        <div
-          className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-2"
-          role="progressbar"
-          aria-valuenow={progresso}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-label="Itens respondidos"
-        >
-          <div
-            className={cn(
-              "h-full rounded-full transition-all",
-              progresso === 100 ? "bg-ok" : "bg-brand",
-            )}
-            style={{ width: `${progresso}%` }}
-          />
-        </div>
-        <span className="shrink-0 text-[12px] text-muted tabular-nums">
-          {respondidos} de {totalLinhas}
-        </span>
-      </div>
 
       {cotacao.respondida && (
         <p className="text-xs text-ok">
@@ -562,13 +637,10 @@ function CartaoItem({
       {!indisponivel && (
         <div className="mt-3 grid grid-cols-2 gap-2.5">
           <Field label="Preço unitário" htmlFor={`preco-${item.id}`}>
-            <Input
+            <CampoPreco
               id={`preco-${item.id}`}
-              inputMode="decimal"
-              placeholder="0,00"
-              value={linha.preco}
-              onChange={(e) => onAlterar({ preco: e.target.value })}
-              className="font-mono"
+              valor={linha.preco}
+              onValor={(v) => onAlterar({ preco: v })}
             />
           </Field>
           {linha.situacao === "parcial" && (
@@ -608,11 +680,15 @@ function LinhaItem({
   linha,
   total,
   onAlterar,
+  refPreco,
+  onKeyDownPreco,
 }: {
   item: ItemPublico;
   linha: LinhaForm;
   total: number;
   onAlterar: (campo: Partial<LinhaForm>) => void;
+  refPreco: (el: HTMLInputElement | null) => void;
+  onKeyDownPreco: React.KeyboardEventHandler<HTMLInputElement>;
 }) {
   const indisponivel = linha.situacao === "nao";
   return (
@@ -675,13 +751,13 @@ function LinhaItem({
           <span className="text-[13px] text-faint">não cotado</span>
         ) : (
           <>
-            <Input
-              aria-label={`Preço unitário de ${item.descricao}`}
-              inputMode="decimal"
-              placeholder="0,00"
-              value={linha.preco}
-              onChange={(e) => onAlterar({ preco: e.target.value })}
-              className="text-right font-mono"
+            <CampoPreco
+              ref={refPreco}
+              rotulo={`Preço unitário de ${item.descricao}`}
+              valor={linha.preco}
+              onValor={(v) => onAlterar({ preco: v })}
+              onKeyDown={onKeyDownPreco}
+              alinharDireita
             />
             {total > 0 && (
               <p className="mt-1 font-mono text-[12px] text-muted">{fmtMoeda(total)}</p>
