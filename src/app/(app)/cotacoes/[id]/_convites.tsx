@@ -3,6 +3,8 @@
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
+  History,
+  MoreVertical,
   RotateCcw,
   Send,
   Trash2,
@@ -17,6 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 import { copiarTexto } from "@/lib/clipboard";
 import { mascaraMoeda, paraMascara, paraNumero } from "@/lib/moeda";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import { EstadoVazio, SupplierAvatar, fmtMoney, fmtQtd, fmtQuando } from "../_catalogo/ui";
 import { Thumb } from "../_ui";
 import type { ConviteCotacao, CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
@@ -196,7 +199,7 @@ export function ConvitesCotacao({
           }
         />
       ) : (
-        <ul className="grid gap-2.5 lg:grid-cols-2">
+        <ul className="grid gap-2.5 md:grid-cols-2 xl:grid-cols-3">
           {cotacao.convites.map((c) => (
             <li
               key={c.id}
@@ -205,11 +208,14 @@ export function ConvitesCotacao({
               <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={38} />
 
               <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center justify-between gap-2">
                   <p className="truncate text-sm font-semibold text-ink">{c.supplierNome}</p>
+                  {/* Etiqueta encostada na direita: em cartão de largura fixa
+                      ela vira coluna, e o olho varre uma coluna de estados
+                      sem reler nome por nome. */}
                   <span
                     className={cn(
-                      "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                      "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
                       rotulo(c).classe,
                     )}
                   >
@@ -241,113 +247,137 @@ export function ConvitesCotacao({
                 )}
 
                 {editavel && (
-                  <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                    {c.status !== "RESPONDIDA" && cotacao.itens.length > 0 && (
+                  <div className="mt-2.5 flex flex-wrap items-center justify-end gap-1.5">
+                    {/* Uma ação principal por cartão. Cinco botões iguais
+                        obrigavam a ler todos antes de agir; aqui a ação que
+                        move a cotação adiante é a única com peso visual, o
+                        apoio fica em contorno e o resto some no menu. */}
+                    {c.status === "RESPONDIDA" ? (
                       <button
                         type="button"
-                        onClick={() => setRespondendo(c)}
-                        className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
+                        onClick={onVerComparativo}
+                        className="rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
                       >
-                        <PencilLine size={13} />
-                        Registrar resposta
+                        Ver no comparativo
                       </button>
-                    )}
-                    {c.status === "RESPONDIDA" && (
-                      <>
+                    ) : (
+                      cotacao.itens.length > 0 && (
                         <button
                           type="button"
                           onClick={() => setRespondendo(c)}
-                          className="rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
+                          className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
                         >
-                          Corrigir preços
+                          <PencilLine size={13} />
+                          Registrar resposta
+                        </button>
+                      )
+                    )}
+
+                    {c.status === "RESPONDIDA" && (
+                      <button
+                        type="button"
+                        onClick={() => setRespondendo(c)}
+                        className="rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
+                      >
+                        Corrigir preços
+                      </button>
+                    )}
+
+                    {c.status === "ENVIADA" && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setReenviando(c)}
+                          className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
+                        >
+                          <RotateCcw size={13} />
+                          Reenviar
                         </button>
                         <button
                           type="button"
-                          onClick={onVerComparativo}
-                          className="rounded-full px-3 py-1.5 text-[12px] font-medium text-brand transition-colors hover:bg-brand-soft"
+                          onClick={() =>
+                            rodar(async () => {
+                              const { url } = await linkDoConviteAction(c.id);
+                              if (!(await copiarTexto(url))) {
+                                throw new Error(
+                                  "O navegador bloqueou a cópia. Abra o link e copie da barra de endereço.",
+                                );
+                              }
+                              setLinkCopiado(c.id);
+                            })
+                          }
+                          disabled={pendente}
+                          className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
                         >
-                          Ver no comparativo
+                          <LinkIcon size={13} />
+                          {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
                         </button>
                       </>
                     )}
-                    {c.status === "ENVIADA" && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          rodar(async () => {
-                            const { url } = await linkDoConviteAction(c.id);
-                            if (!(await copiarTexto(url))) {
-                              throw new Error(
-                                "O navegador bloqueou a cópia. Abra o link e copie da barra de endereço.",
-                              );
-                            }
-                            setLinkCopiado(c.id);
-                          })
-                        }
-                        disabled={pendente}
-                        className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
+
+                    <Menu
+                      trigger={
+                        <button
+                          type="button"
+                          aria-label={`Mais ações de ${c.supplierNome}`}
+                          aria-haspopup="menu"
+                          className="grid h-7 w-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+                        >
+                          <MoreVertical size={15} />
+                        </button>
+                      }
+                    >
+                      {/* O texto inteiro, com o link dentro: o operador manda
+                          pelo canal que ele já usa com aquele vendedor — outro
+                          número de WhatsApp, e-mail pessoal, o que for. */}
+                      {c.status === "ENVIADA" && (
+                        <MenuItem
+                          icon={<Copy size={14} />}
+                          disabled={pendente}
+                          onClick={() =>
+                            rodar(async () => {
+                              const { mensagem } = await mensagemDoConviteAction(c.id);
+                              if (!(await copiarTexto(mensagem))) {
+                                throw new Error(
+                                  "O navegador bloqueou a cópia. Tente pelo WhatsApp.",
+                                );
+                              }
+                              setTextoCopiado(c.id);
+                            })
+                          }
+                        >
+                          {textoCopiado === c.id ? "Mensagem copiada" : "Copiar mensagem"}
+                        </MenuItem>
+                      )}
+                      {c.status === "ENVIADA" && (
+                        <MenuItem
+                          icon={<ThumbsDown size={14} />}
+                          disabled={pendente}
+                          onClick={() => rodar(() => recusarConviteAction(c.id))}
+                        >
+                          {'Marcar "Não vai cotar"'}
+                        </MenuItem>
+                      )}
+                      <MenuItem
+                        icon={<History size={14} />}
+                        onClick={() => router.push(`/fornecedores/${c.supplierId}/precos`)}
                       >
-                        <LinkIcon size={13} />
-                        {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
-                      </button>
-                    )}
-                    {/* O texto inteiro, com o link dentro: o operador manda
-                        pelo canal que ele já usa com aquele vendedor — outro
-                        número de WhatsApp, e-mail pessoal, o que for. */}
-                    {c.status === "ENVIADA" && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          rodar(async () => {
-                            const { mensagem } = await mensagemDoConviteAction(c.id);
-                            if (!(await copiarTexto(mensagem))) {
-                              throw new Error("O navegador bloqueou a cópia. Tente pelo WhatsApp.");
-                            }
-                            setTextoCopiado(c.id);
-                          })
-                        }
-                        disabled={pendente}
-                        className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
-                      >
-                        <Copy size={13} />
-                        {textoCopiado === c.id ? "Mensagem copiada" : "Copiar mensagem"}
-                      </button>
-                    )}
-                    {c.status === "ENVIADA" && (
-                      <button
-                        type="button"
-                        onClick={() => setReenviando(c)}
-                        className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
-                      >
-                        <RotateCcw size={13} />
-                        Reenviar
-                      </button>
-                    )}
-                    {c.status === "ENVIADA" && (
-                      <button
-                        type="button"
-                        onClick={() => rodar(() => recusarConviteAction(c.id))}
-                        disabled={pendente}
-                        className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-medium text-muted transition-colors hover:text-ink disabled:opacity-50"
-                      >
-                        <ThumbsDown size={13} />
-                        Não vai cotar
-                      </button>
-                    )}
-                    {/* Sair da cotação só antes do envio: depois disso o
-                        fornecedor já foi incomodado, e apagar o convite some
-                        com o link que ele pode estar preenchendo agora. */}
-                    {podeRemover && c.status !== "RESPONDIDA" && (
-                      <button
-                        type="button"
-                        onClick={() => rodar(() => removerConviteAction(c.id))}
-                        disabled={pendente}
-                        aria-label={`Remover ${c.supplierNome}`}
-                        className="grid h-7 w-7 place-items-center rounded-full text-faint transition-colors hover:bg-danger-soft hover:text-danger disabled:opacity-50"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
+                        Ver histórico
+                      </MenuItem>
+                      {/* Sair da cotação só antes do envio: depois disso o
+                          fornecedor já foi incomodado, e apagar o convite some
+                          com o link que ele pode estar preenchendo agora. */}
+                      {podeRemover && c.status !== "RESPONDIDA" && (
+                        <MenuItem
+                          danger
+                          icon={<Trash2 size={14} />}
+                          disabled={pendente}
+                          onClick={() => rodar(() => removerConviteAction(c.id))}
+                        >
+                          Remover da cotação
+                        </MenuItem>
+                      )}
+                    </Menu>
                   </div>
                 )}
               </div>

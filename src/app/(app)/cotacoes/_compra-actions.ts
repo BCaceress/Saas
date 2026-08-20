@@ -9,6 +9,7 @@ import { criarPedidoCompra } from "@/lib/estoque";
 import { emitirLinkCotacao, linkVigente } from "@/lib/compras/cotacao-link";
 import { registrarPrecosDaCotacao } from "@/lib/compras/cotacao-precos";
 import { regrasDaCotacao } from "@/lib/compras/cotacao-regras";
+import { quantidadeComUnidade, unidadesDosItens } from "@/lib/compras/cotacao-unidades";
 import { db } from "@/lib/prisma";
 import { enviarEmail } from "@/lib/email";
 import { emailCotacao } from "@/lib/email/templates";
@@ -666,10 +667,12 @@ function montarMensagem(
   numero: string,
   titulo: string,
   prazo: Date | null,
-  itens: { descricao: string; quantidade: number }[],
+  itens: { descricao: string; quantidade: string }[],
   linkResposta: string | null,
 ): string {
-  const linhas = itens.map((i) => `• ${i.descricao} — ${i.quantidade.toLocaleString("pt-BR")}`);
+  // A quantidade chega pronta com a unidade ("2 × Caixa (12 un.)"): número solto
+  // faz o fornecedor precificar outra coisa. Ver lib/compras/cotacao-unidades.
+  const linhas = itens.map((i) => `• ${i.descricao} — ${i.quantidade}`);
   const prazoTexto = prazo
     ? `\nPreciso da resposta até ${prazo.toLocaleDateString("pt-BR")}.`
     : "";
@@ -724,7 +727,16 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
         status: true,
         prazoResposta: true,
         observacao: true,
-        items: { select: { descricao: true, quantidade: true }, orderBy: { ordem: "asc" } },
+        items: {
+          select: {
+            id: true,
+            descricao: true,
+            quantidade: true,
+            packagingId: true,
+            productId: true,
+          },
+          orderBy: { ordem: "asc" },
+        },
         suppliers: {
           select: {
             id: true,
@@ -791,6 +803,11 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
     ok();
 
     const prazoTexto = prazo ? prazo.toLocaleDateString("pt-BR") : null;
+    const unidades = await unidadesDosItens(cotacao.items);
+    const itensDoTexto = cotacao.items.map((i) => ({
+      descricao: i.descricao,
+      quantidade: quantidadeComUnidade(Number(i.quantidade), unidades.get(i.id)),
+    }));
 
     return Promise.all(
       alvos.map(async (a) => {
@@ -801,10 +818,7 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
           cotacao.numero,
           cotacao.titulo,
           prazo,
-          cotacao.items.map((i) => ({
-            descricao: i.descricao,
-            quantidade: Number(i.quantidade),
-          })),
+          itensDoTexto,
           link,
         );
         const tel = a.supplier.telefone?.replace(/\D/g, "") ?? "";
@@ -826,12 +840,7 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
                 titulo: cotacao.titulo,
                 url: link,
                 prazo: prazoTexto,
-                itens: cotacao.items.map((i) => ({
-                  descricao: i.descricao,
-                  quantidade: Number(i.quantidade).toLocaleString("pt-BR", {
-                    maximumFractionDigits: 3,
-                  }),
-                })),
+                itens: itensDoTexto,
                 observacao: cotacao.observacao,
               }),
             );
@@ -883,7 +892,13 @@ export async function mensagemDoConviteAction(conviteId: string): Promise<{
             status: true,
             prazoResposta: true,
             items: {
-              select: { descricao: true, quantidade: true },
+              select: {
+                id: true,
+                descricao: true,
+                quantidade: true,
+                packagingId: true,
+                productId: true,
+              },
               orderBy: { ordem: "asc" },
             },
           },
@@ -900,6 +915,7 @@ export async function mensagemDoConviteAction(conviteId: string): Promise<{
       vigente?.url ??
       (await emitirLinkCotacao(ctx.tenant.id, conviteId, convite.quotation.prazoResposta)).url;
 
+    const unidades = await unidadesDosItens(convite.quotation.items);
     const mensagem = montarMensagem(
       ctx.tenant.nome,
       convite.quotation.numero,
@@ -907,7 +923,7 @@ export async function mensagemDoConviteAction(conviteId: string): Promise<{
       convite.quotation.prazoResposta,
       convite.quotation.items.map((i) => ({
         descricao: i.descricao,
-        quantidade: Number(i.quantidade),
+        quantidade: quantidadeComUnidade(Number(i.quantidade), unidades.get(i.id)),
       })),
       link,
     );

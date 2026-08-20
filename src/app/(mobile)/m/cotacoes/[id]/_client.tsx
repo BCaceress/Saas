@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import {
   Check,
   Copy,
-  Eye,
   Mail,
   Package,
   Link as LinkIcon,
@@ -117,13 +116,15 @@ export function CotacaoMobileDetalhe({
     cotacao.itens.length === 0 &&
     cotacao.convites.length === 0;
   const [passo, setPasso] = React.useState<Passo>("produtos");
-  const [aba, setAba] = React.useState<"fornecedores" | "comparar">(
+  const [aba, setAba] = React.useState<"itens" | "fornecedores" | "comparar">(
     cotacao.convites.some((c) => c.status === "RESPONDIDA") ? "comparar" : "fornecedores",
   );
   const [envios, setEnvios] = React.useState<Envio[] | null>(null);
 
   const respondidos = cotacao.convites.filter((c) => c.status === "RESPONDIDA").length;
   const recusados = cotacao.convites.filter((c) => c.status === "RECUSADA").length;
+  // Mesma régua do servidor: depois da primeira resposta a lista congela.
+  const regras = regrasDaCotacao(cotacao.status, cotacao.convites);
   const rotulo = statusVisivel(
     cotacao.status,
     cotacao.convites.length,
@@ -175,7 +176,13 @@ export function CotacaoMobileDetalhe({
         />
       ) : (
         <div className="space-y-4">
-          <div className="flex gap-2">
+          {/* A lista de itens some depois do envio, e ela é justamente o que
+              o operador quer conferir no corredor ("o que foi que eu pedi?").
+              Fica como aba, com a mesma régua de edição do servidor. */}
+          <div className="flex gap-2 overflow-x-auto">
+            <Chip ativo={aba === "itens"} onClick={() => setAba("itens")}>
+              Itens ({cotacao.itens.length})
+            </Chip>
             <Chip ativo={aba === "fornecedores"} onClick={() => setAba("fornecedores")}>
               Fornecedores ({cotacao.convites.length})
             </Chip>
@@ -184,13 +191,21 @@ export function CotacaoMobileDetalhe({
             </Chip>
           </div>
 
-          {aba === "fornecedores" ? (
+          {aba === "itens" && (
+            <PassoProdutos
+              cotacao={cotacao}
+              editavel={podePedir && regras.itens.pode}
+              travado={podePedir && !regras.itens.pode ? regras.itens.motivo : null}
+            />
+          )}
+          {aba === "fornecedores" && (
             <Acompanhamento
               cotacao={cotacao}
               podePedir={podePedir}
               onEnviado={setEnvios}
             />
-          ) : (
+          )}
+          {aba === "comparar" && (
             <ComparativoCotacao cotacao={cotacao} podePedir={podePedir} />
           )}
         </div>
@@ -727,6 +742,12 @@ function PassoProdutos({
                     )}
                   </p>
                 </div>
+
+                {!editavel && (
+                  <span className="shrink-0 font-display text-base font-semibold text-ink tabular-nums">
+                    {fmtQtd(item.quantidade)}
+                  </span>
+                )}
 
                 {editavel && (
                   <div className="flex shrink-0 items-center gap-1">
@@ -1274,9 +1295,8 @@ function SinalConvite({ convite }: { convite: ConviteCotacao }) {
   }
   if (convite.abertoEm) {
     return (
-      <span className="flex shrink-0 items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[10px] font-semibold text-accent uppercase">
-        <Eye className="size-3" aria-hidden />
-        Viu
+      <span className="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 text-[10px] font-semibold text-accent uppercase">
+        Visualizou
       </span>
     );
   }

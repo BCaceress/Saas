@@ -108,6 +108,8 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   const [pendente, startTransition] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
   const [enviado, setEnviado] = useState(false);
+  /** Já mandou alguma resposta — na carga ou agora, nesta mesma sessão. */
+  const [jaRespondeu, setJaRespondeu] = useState(cotacao.respondida);
   const [recusando, setRecusando] = useState(false);
   const [confirmando, setConfirmando] = useState(false);
   const [motivo, setMotivo] = useState("");
@@ -223,8 +225,10 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
           };
         }),
       });
-      if (r.ok) setEnviado(true);
-      else setErro(r.erro);
+      if (r.ok) {
+        setJaRespondeu(true);
+        setEnviado(true);
+      } else setErro(r.erro);
     });
   }
 
@@ -246,8 +250,18 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
         <h1 className="font-display text-xl font-semibold text-ink">Resposta enviada</h1>
         <p className="text-sm leading-relaxed text-muted">
           A {cotacao.empresa} já recebeu sua proposta da cotação {cotacao.numero}. Pode fechar
-          esta página — se precisar corrigir algo, é só abrir o link de novo.
+          esta página — enquanto a cotação estiver aberta, este mesmo link continua valendo para
+          corrigir o que precisar.
         </p>
+        {/* Errar um preço e não ter como voltar é o que faz o fornecedor
+            telefonar. O caminho de volta fica aqui, não escondido no link. */}
+        <button
+          type="button"
+          onClick={() => setEnviado(false)}
+          className="rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+        >
+          Corrigir resposta
+        </button>
       </main>
     );
   }
@@ -258,6 +272,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
     <main className="mx-auto max-w-5xl px-4 pt-5 pb-44 sm:px-6 md:pb-32">
       <Cabecalho
         cotacao={cotacao}
+        jaRespondeu={jaRespondeu}
         prazo={prazo}
         respondidos={respondidos}
         totalLinhas={linhas.length}
@@ -403,7 +418,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
           </div>
           <Button onClick={revisar} disabled={pendente} size="lg">
             <Send className="size-4" aria-hidden />
-            {pendente ? "Enviando…" : cotacao.respondida ? "Reenviar" : "Enviar cotação"}
+            {pendente ? "Enviando…" : jaRespondeu ? "Reenviar" : "Enviar cotação"}
           </Button>
         </div>
         {erro && (
@@ -423,12 +438,14 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
 
 function Cabecalho({
   cotacao,
+  jaRespondeu,
   prazo,
   respondidos,
   totalLinhas,
   progresso,
 }: {
   cotacao: CotacaoPublica;
+  jaRespondeu: boolean;
   prazo: { texto: string; urgente: boolean } | null;
   respondidos: number;
   totalLinhas: number;
@@ -510,7 +527,7 @@ function Cabecalho({
         </p>
       )}
 
-      {cotacao.respondida && (
+      {jaRespondeu && (
         <p className="text-xs text-ok">
           Você já respondeu — pode ajustar o que quiser e enviar de novo.
         </p>

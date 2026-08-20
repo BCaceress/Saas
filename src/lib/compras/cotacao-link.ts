@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { basePrisma, db } from "@/lib/prisma";
 import { runWithTenant } from "@/lib/tenant-context";
 import { rootUrl } from "@/lib/urls";
+import { rotuloEmbalagem } from "@/lib/compras/cotacao-unidades";
 
 // ============================================================
 // Link público de resposta da cotação (/cotacao/<token>).
@@ -250,12 +251,10 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
         })
       : [];
     // "Caixa (12 un.)" e não só "Caixa": o fornecedor precisa saber quantas
-    // unidades vêm dentro, senão o preço que ele manda é de outra coisa.
+    // unidades vêm dentro, senão o preço que ele manda é de outra coisa. O
+    // rótulo é o MESMO da mensagem de WhatsApp — uma fonte só (cotacao-unidades).
     const nomePorEmbalagem = new Map(
-      embalagens.map((e) => {
-        const fator = n(e.fatorConversao);
-        return [e.id, fator > 1 ? `${e.nome} (${fator} un.)` : e.nome] as const;
-      }),
+      embalagens.map((e) => [e.id, rotuloEmbalagem(e.nome, n(e.fatorConversao))] as const),
     );
 
     // Foto do produto: uma consulta para a lista inteira. Só o que a tela do
