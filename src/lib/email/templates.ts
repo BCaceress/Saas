@@ -239,3 +239,66 @@ export function emailContaSuspensa(input: { para: string; loja: string; url: str
     }),
   };
 }
+
+// ── Cotação (público de fora: o fornecedor) ─────────────────
+
+/**
+ * O único template que sai para quem não é cliente do NoHub. Vale a mesma
+ * regra do link no WhatsApp: uma ação só (informar preço), nenhum cadastro,
+ * e o link é o mesmo dos dois canais — o que muda é o carteiro.
+ *
+ * A lista de itens vem no corpo de propósito: o fornecedor decide se abre o
+ * link pelo que ele já enxerga na caixa de entrada.
+ */
+export function emailCotacao(input: {
+  para: string;
+  fornecedor: string;
+  mercado: string;
+  numero: string;
+  titulo: string;
+  url: string;
+  prazo: string | null;
+  itens: { descricao: string; quantidade: string }[];
+  observacao?: string | null;
+}): Mensagem {
+  const MOSTRAR = 12;
+  const linhas = input.itens
+    .slice(0, MOSTRAR)
+    .map(
+      (i) =>
+        `<tr>
+           <td style="padding:7px 0;border-bottom:1px solid ${LINHA};font-size:14px;color:${TINTA};">${escape(i.descricao)}</td>
+           <td style="padding:7px 0;border-bottom:1px solid ${LINHA};font-size:14px;color:${MUDO};text-align:right;white-space:nowrap;">${escape(i.quantidade)}</td>
+         </tr>`,
+    )
+    .join("");
+  const resto = input.itens.length - MOSTRAR;
+
+  const tabela = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:4px 0 8px;">
+      ${linhas}
+      ${
+        resto > 0
+          ? `<tr><td colspan="2" style="padding:7px 0;font-size:13px;color:${MUDO};">e mais ${resto} ${resto === 1 ? "item" : "itens"} no link.</td></tr>`
+          : ""
+      }
+    </table>`;
+
+  return {
+    para: input.para,
+    assunto: `Solicitação de cotação ${input.numero} — ${input.mercado}`,
+    html: envelope({
+      titulo: `${input.mercado} pediu uma cotação`,
+      corpo: [
+        `Olá, ${escape(input.fornecedor)}.`,
+        `A ${b(input.mercado)} quer saber seu preço para os itens abaixo (${escape(input.titulo)}).`,
+        tabela,
+        ...(input.observacao ? [escape(input.observacao)] : []),
+        "Informe preço, prazo e disponibilidade direto no link — sem cadastro e sem senha, funciona pelo celular.",
+      ],
+      cta: { rotulo: "Informar meus preços", url: input.url },
+      nota: input.prazo
+        ? `Prazo para responder: ${input.prazo}. O link é só seu — outros fornecedores não veem sua proposta.`
+        : "O link é só seu — outros fornecedores não veem sua proposta.",
+    }),
+  };
+}

@@ -47,6 +47,8 @@ export type AlertKind =
   | "transferencia"
   | "recebimento"
   | "compra"
+  | "cotacao-resposta"
+  | "cotacao-prazo"
   | "aniversario"
   | "cliente-risco"
   | "nota-parada"
@@ -296,6 +298,27 @@ export const CATALOGO: Record<AlertKind, DefAlerta> = {
     estrategias: "todas",
     rotulo: "Compra pendente",
     ajuda: "Pedido enviado ao fornecedor, ou rascunho que ninguém finalizou.",
+  },
+  // ── Cotações ───────────────────────────────────────────────
+  // Cotação é pergunta com data de validade: resposta que ninguém compara
+  // vira preço velho, e prazo que vence sem cobrança vira compra no susto.
+  "cotacao-resposta": {
+    kind: "cotacao-resposta",
+    categoria: "operacao",
+    prioridade: "alto",
+    icone: "compra",
+    estrategias: "todas",
+    rotulo: "Cotação pronta para comparar",
+    ajuda: "Todos os fornecedores convidados já responderam — falta escolher.",
+  },
+  "cotacao-prazo": {
+    kind: "cotacao-prazo",
+    categoria: "operacao",
+    prioridade: "medio",
+    icone: "compra",
+    estrategias: "todas",
+    rotulo: "Cotação vencendo sem resposta",
+    ajuda: "O prazo termina (ou já terminou) e algum fornecedor não respondeu.",
   },
   aniversario: {
     kind: "aniversario",

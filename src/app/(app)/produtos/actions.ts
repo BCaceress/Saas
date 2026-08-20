@@ -315,7 +315,8 @@ async function txFornecedor<T>(fn: (tid: string) => Promise<T>): Promise<T> {
 function okFornecedor(tid: string) {
   revalidatePath("/fornecedores", "layout");
   revalidatePath("/produtos");
-  revalidatePath("/compras", "layout");
+  revalidatePath("/cotacoes", "layout");
+  revalidatePath("/pedidos", "layout");
   // O picker de fornecedor do cadastro de produto vem de cache.
   invalidarOpcoesFormulario(tid);
 }

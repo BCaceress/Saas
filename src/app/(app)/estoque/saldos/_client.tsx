@@ -79,7 +79,7 @@ import { baixarXlsx } from "@/lib/baixar-xlsx";
 import {
   SelecaoProvider, useNovaSelecao, useQtdDaPagina, useQtdSelecionada, useSelecao, useSelecionado,
 } from "@/components/app/selecao";
-import { PEDIDO_STATUS } from "../../compras/_ui";
+import { PEDIDO_STATUS } from "../../cotacoes/_ui";
 import type { SaldoRow, LocalArmazenagemRow } from "../_data";
 import {
   fetchHistoricoProductAction,
@@ -1834,8 +1834,8 @@ function AbertaCell({ s }: { s: SaldoRow }) {
  * Coluna factual: mostra apenas pedidos de compra em aberto (o que já foi
  * decidido pelo operador), com o status real do pedido (enviado, confirmado,
  * em trânsito, recebimento pendente) e a previsão de entrega. Clicar leva
- * para o pedido em Compras. Recomendações de compra vivem na Reposição
- * Inteligente (/compras/reposicao-inteligente) — nunca aqui.
+ * para o pedido em Pedidos. Recomendações de compra vivem na Reposição
+ * Inteligente (/cotacoes/reposicao-inteligente) — nunca aqui.
  */
 function ReposicaoStatusCell({ s }: { s: SaldoRow }) {
   if (s.reposEstado === "nenhuma" || !s.reposNumero) {
@@ -1848,7 +1848,7 @@ function ReposicaoStatusCell({ s }: { s: SaldoRow }) {
   const outros = s.reposOrdersCount - 1;
   return (
     <Link
-      href={`/compras?q=${encodeURIComponent(s.reposNumero)}`}
+      href={`/pedidos?q=${encodeURIComponent(s.reposNumero)}`}
       onClick={(e) => e.stopPropagation()}
       title={`${meta.label} · ${s.reposNumero}${s.reposSupplierNome ? ` · ${s.reposSupplierNome}` : ""} — ver pedido em Compras`}
       className="-mx-1.5 -my-1 inline-flex flex-col gap-0.5 rounded-lg px-1.5 py-1 transition-colors hover:bg-surface-2"

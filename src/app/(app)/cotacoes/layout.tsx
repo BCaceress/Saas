@@ -1,12 +1,12 @@
 import { requirePermissao } from "@/lib/guard";
-import { ComprasHeader } from "./_header";
+import { CotacoesHeader } from "./_header";
 
 /** Guard do módulo: sem a permissão, nem a URL direta abre a tela. */
-export default async function ComprasLayout({ children }: { children: React.ReactNode }) {
+export default async function CotacoesLayout({ children }: { children: React.ReactNode }) {
   await requirePermissao("compras.ver");
   return (
     <div className="flex flex-col gap-5">
-      <ComprasHeader />
+      <CotacoesHeader />
       {children}
     </div>
   );

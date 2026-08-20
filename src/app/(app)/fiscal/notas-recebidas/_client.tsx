@@ -25,7 +25,7 @@ import { maskCnpj } from "@/lib/masks";
 import { fatorDaNota } from "@/lib/fiscal/fator";
 import { termoDeBuscaDoItem } from "@/lib/compras/conciliacao-regras";
 import { cn } from "@/lib/utils";
-import { fmtMoney, fmtQtd, relDia } from "../../compras/_ui";
+import { fmtMoney, fmtQtd, relDia } from "../../cotacoes/_ui";
 import {
   buscarProdutosAction,
   descartarNotaAction,
@@ -656,7 +656,7 @@ function DetalheNota({
             // conferência que compara pedido × nota × mercadoria e cuida do
             // recebido de cada item do pedido.
             <Link
-              href={`/compras/recebimento/${nota.id}`}
+              href={`/recebimento/${nota.id}`}
               className="flex items-center gap-2 rounded-[var(--radius-md)] border border-brand/30 bg-brand-soft px-3 py-2.5 text-[13px] font-medium text-brand-strong hover:bg-brand-softer"
             >
               <ClipboardCheck size={16} className="shrink-0" />

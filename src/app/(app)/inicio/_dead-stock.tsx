@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ChartCard, ChartEmpty } from "@/components/charts/chart-card";
 import { brl } from "@/lib/utils";
-import { Thumb } from "../compras/_ui";
+import { Thumb } from "../cotacoes/_ui";
 import type { ProdutoSemGiro } from "./_data";
 
 /** Produtos sem giro — dinheiro parado em estoque que não anda. */

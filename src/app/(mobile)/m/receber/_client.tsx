@@ -14,7 +14,7 @@ import {
 import { brl, cn } from "@/lib/utils";
 import { Card } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
-import { StatusBadge, SupplierAvatar } from "@/app/(app)/compras/_ui";
+import { StatusBadge, SupplierAvatar } from "@/app/(app)/cotacoes/_ui";
 import {
   cancelarPedidoCompraAction,
   marcarAguardandoPedidoAction,
@@ -91,7 +91,7 @@ export function ReceberClient({
             <Card className="overflow-hidden">
               {/* Logo à esquerda: na porta, quem confere reconhece o fornecedor
                   pela marca do caminhão antes de ler a razão social. O selo de
-                  status usa o MESMO componente do /compras/pedidos — cor e
+                  status usa o MESMO componente do /pedidos — cor e
                   ícone de "em trânsito" não podem mudar de significado entre as
                   duas superfícies. */}
               <Link

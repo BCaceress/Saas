@@ -5,7 +5,6 @@ import {
   Users,
   ShoppingCart,
   ShoppingBag,
-  ShoppingBasket,
   ClipboardList,
   ClipboardCheck,
   BarChart3,
@@ -14,8 +13,6 @@ import {
   Factory,
   MonitorSmartphone,
   ReceiptText,
-  Scale,
-  FileQuestion,
   FileUp,
   History,
   Inbox,
@@ -266,89 +263,53 @@ export const NAV_GROUPS: NavGroup[] = [
     title: "Comprar",
     items: [
       {
-        href: "/compras",
-        label: "Compras",
+        href: "/cotacoes",
+        label: "Cotações",
         icon: ShoppingBag,
         enabled: true,
         mobile: true,
-        // Compras é operação pura: o que comprar, de quem e por quanto. A
+        // Cotações é o planejamento: o que comprar, de quem e por quanto. A
         // configuração de cada fornecedor (integração, catálogo, condições)
-        // mora em /fornecedores/[id] — por isso o menu tem só três linhas.
+        // mora em /fornecedores/[id]. Pedidos e Recebimentos já foram um
+        // submenu daqui — agora são módulos irmãos, cada um destino final por
+        // si, sem pai em comum.
         children: [
           {
-            href: "/compras",
-            label: "Painel",
+            href: "/cotacoes",
+            label: "Planejamento",
             icon: LayoutDashboard,
             enabled: true,
+            // Mesmo href do pai (a gaveta também é tela). `ocultoNoMenu`: com
+            // toda filha oculta, `NavGrupo` renderiza o pai como item comum
+            // (sem seta/gaveta) — só "Cotações", sem submenu — e o próprio
+            // href do pai vira o candidato de rota ativa (`acharAtivo`).
+            semAbas: true,
+            ocultoNoMenu: true,
             permissao: "compras.ver",
             descricao:
-              "O que comprar, de quem comprar e quanto dá para economizar hoje.",
+              "Planeje reposições antes de enviar pedidos aos fornecedores.",
           },
           {
-            href: "/compras/pedidos",
-            label: "Pedidos",
-            icon: ClipboardList,
-            enabled: true,
-            permissao: "compras.ver",
-            descricao: "Acompanhe cada pedido de compra do envio ao recebimento.",
-          },
-          {
-            href: "/compras/recebimento",
-            label: "Recebimento",
-            icon: PackageCheck,
-            enabled: true,
-            permissao: "compras.receber",
-            descricao:
-              "Suba o XML da nota: o pedido é encontrado sozinho e sobra só conferir a mercadoria.",
-          },
-          {
-            href: "/compras/respostas",
+            href: "/cotacoes/respostas",
             label: "Respostas",
             icon: Inbox,
             enabled: true,
+            ocultoNoMenu: true,
             permissao: "compras.ver",
             descricao:
               "Tudo que os fornecedores mandaram — cotação, arquivo ou integração — na ordem em que chegou.",
           },
           {
-            href: "/compras/importacoes",
+            href: "/cotacoes/importacoes",
             label: "Importações",
             icon: FileUp,
             enabled: true,
+            ocultoNoMenu: true,
             permissao: "compras.ver",
             descricao: "Todo arquivo e sincronização que já alimentou uma tabela de preço.",
           },
           {
-            href: "/compras/cotacoes",
-            label: "Cotações",
-            icon: FileQuestion,
-            enabled: true,
-            ocultoNoMenu: true,
-            permissao: "compras.ver",
-            descricao:
-              "Peça preço a vários fornecedores de uma vez e compare as respostas lado a lado.",
-          },
-          {
-            href: "/compras/comparador",
-            label: "Comparador",
-            icon: Scale,
-            enabled: true,
-            ocultoNoMenu: true,
-            permissao: "compras.ver",
-            descricao:
-              "Monte a cesta e veja qual fornecedor sai mais barato item a item.",
-          },
-          {
-            href: "/compras/carrinho",
-            label: "Cesta",
-            icon: ShoppingBasket,
-            enabled: true,
-            ocultoNoMenu: true,
-            permissao: "compras.ver",
-            descricao: "Revise o que foi escolhido e feche o pedido de cada fornecedor.",
-          },
-          {
-            href: "/compras/historico",
+            href: "/cotacoes/historico",
             label: "Histórico",
             icon: History,
             enabled: true,
@@ -358,7 +319,7 @@ export const NAV_GROUPS: NavGroup[] = [
               "Como o preço de cada item se moveu e quanto isso já economizou.",
           },
           {
-            href: "/compras/reposicao-inteligente",
+            href: "/cotacoes/reposicao-inteligente",
             label: "Reposição inteligente",
             icon: Recycle,
             enabled: true,
@@ -368,6 +329,23 @@ export const NAV_GROUPS: NavGroup[] = [
             descricao: "Sugestões de compra a partir do giro e da previsão de ruptura.",
           },
         ],
+      },
+      {
+        href: "/pedidos",
+        label: "Pedidos",
+        icon: ClipboardList,
+        enabled: true,
+        permissao: "compras.ver",
+        descricao: "Acompanhe cada pedido de compra do envio ao recebimento.",
+      },
+      {
+        href: "/recebimento",
+        label: "Recebimentos",
+        icon: PackageCheck,
+        enabled: true,
+        permissao: "compras.receber",
+        descricao:
+          "Suba o XML da nota: o pedido é encontrado sozinho e sobra só conferir a mercadoria.",
       },
       {
         href: "/fornecedores",
@@ -688,6 +666,15 @@ export function navIcon(href: string): LucideIcon | undefined {
 }
 
 /**
+ * Frase de apoio de um item do mapa — pai, filha ou item sem gaveta (ex.:
+ * Pedidos, Recebimentos). Existe para telas que não têm barra de abas: elas
+ * pegam a descrição direto do item, em vez de repeti-la à mão.
+ */
+export function navDescricao(href: string): string | undefined {
+  return NAV_ITEMS_FLAT.find((i) => i.href === href)?.descricao;
+}
+
+/**
  * Abas de um módulo — TODAS as filhas, inclusive as que a sidebar esconde.
  * É daqui que os cabeçalhos de módulo tiram a barra de abas, em vez de
  * reescreverem a lista à mão (e divergirem do menu).
@@ -756,7 +743,7 @@ const PRIORIDADE_INICIAL = [
   "/inicio",
   "/vendas",
   "/estoque",
-  "/compras",
+  "/cotacoes",
   "/produtos",
   "/clientes",
   "/fornecedores",

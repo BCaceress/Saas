@@ -3,7 +3,7 @@ import { ArrowUpRight, ArrowDownRight } from "lucide-react";
 import { cn, brl } from "@/lib/utils";
 import { pct as fmtPct } from "@/lib/periodo";
 import { ChartCard, ChartEmpty } from "@/components/charts/chart-card";
-import { Thumb } from "../compras/_ui";
+import { Thumb } from "../cotacoes/_ui";
 import type { ProdutoCrescimento } from "./_data";
 
 const AMOSTRA = 5;

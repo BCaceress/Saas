@@ -15,7 +15,7 @@ import { LineChart } from "@/components/charts/line-chart";
 import { Badge } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
 import { loadFinanceiroFornecedor } from "../_data";
-import { EstadoVazio, Metrica, MetricaGrid, fmtMoney } from "../../../compras/_catalogo/ui";
+import { EstadoVazio, Metrica, MetricaGrid, fmtMoney } from "../../../cotacoes/_catalogo/ui";
 
 // Aba Financeiro — o peso deste fornecedor no bolso da loja. Só números
 // deste parceiro; o consolidado de compras vive em Relatórios.
@@ -36,7 +36,7 @@ export default async function FinanceiroFornecedorPage({
         titulo="Ainda não há histórico financeiro"
         descricao="Os indicadores nascem do primeiro pedido fechado com este fornecedor."
         acao={
-          <Link href="/compras">
+          <Link href="/cotacoes">
             <Button size="sm" variant="secondary">
               Abrir compras
             </Button>

@@ -38,7 +38,8 @@ async function tx<T>(
 }
 
 function ok() {
-  revalidatePath("/compras", "layout");
+  revalidatePath("/cotacoes", "layout");
+  revalidatePath("/pedidos", "layout");
   // O catálogo também é uma aba do fornecedor — as duas telas leem a mesma tabela.
   revalidatePath("/fornecedores", "layout");
 }
@@ -444,6 +445,5 @@ export async function gerarPedidosAction(input: z.input<typeof fecharSchema>) {
   });
 
   ok();
-  revalidatePath("/compras", "layout");
   return resultado;
 }

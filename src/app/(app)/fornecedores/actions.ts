@@ -32,7 +32,8 @@ async function tx<T>(
 function ok(supplierId?: string) {
   revalidatePath("/fornecedores", "layout");
   if (supplierId) revalidatePath(`/fornecedores/${supplierId}`, "layout");
-  revalidatePath("/compras", "layout");
+  revalidatePath("/cotacoes", "layout");
+  revalidatePath("/pedidos", "layout");
 }
 
 // ── Integração ──────────────────────────────────────────────

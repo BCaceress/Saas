@@ -1,15 +1,8 @@
-import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
-import { podeEmAlguma, SemPermissaoError } from "@/lib/permissoes";
-import { listarNotasPendentes } from "./_data";
-import { FilaRecebimento } from "./_client";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "Recebimento inteligente" };
+// Recebimentos virou módulo irmão de Compras, na raiz `/recebimento`. Este
+// redirect preserva links e favoritos antigos.
 
-export default async function RecebimentoPage() {
-  const ctx = await requireActiveTenant();
-  if (!podeEmAlguma(ctx.acessos, "compras.receber")) throw new SemPermissaoError();
-
-  const notas = await withTenant(ctx, listarNotasPendentes);
-
-  return <FilaRecebimento notas={notas} />;
+export default function RecebimentoRedirect() {
+  redirect("/recebimento");
 }

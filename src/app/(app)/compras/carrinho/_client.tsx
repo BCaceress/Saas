@@ -19,15 +19,15 @@ import { Input, Select } from "@/components/ui/input";
 import { Badge, Field } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import type { CarrinhoPorFornecedor } from "../_catalogo/types";
-import { EstadoVazio, SupplierAvatar, fmtMoney, fmtPreco, fmtQtd } from "../_catalogo/ui";
+import type { CarrinhoPorFornecedor } from "../../cotacoes/_catalogo/types";
+import { EstadoVazio, SupplierAvatar, fmtMoney, fmtPreco, fmtQtd } from "../../cotacoes/_catalogo/ui";
 import {
   atualizarItemCarrinhoAction,
   gerarPedidosAction,
   limparCarrinhoAction,
   removerItemCarrinhoAction,
   trocarPorMelhorPrecoAction,
-} from "../_catalogo/actions";
+} from "../../cotacoes/_catalogo/actions";
 
 /**
  * Carrinho — um bloco por fornecedor, porque é assim que ele vira pedido:
@@ -84,7 +84,7 @@ export function CarrinhoCompras({
             ? `${r.semVinculo} item(ns) sem produto ficaram no carrinho para revisão.`
             : r.criados.map((c) => c.supplierNome).join(", "),
         );
-        router.push("/compras/pedidos");
+        router.push("/pedidos");
       } catch (e) {
         toast.error("Não deu para fechar", e instanceof Error ? e.message : undefined);
       }
@@ -106,7 +106,7 @@ export function CarrinhoCompras({
         titulo="Carrinho vazio"
         descricao="Escolha as ofertas no comparador ou direto no catálogo do fornecedor. Aqui elas viram um pedido por fornecedor."
         acao={
-          <Link href="/compras/comparador">
+          <Link href="/cotacoes/comparador">
             <Button size="sm">Abrir comparador</Button>
           </Link>
         }

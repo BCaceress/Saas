@@ -1171,7 +1171,7 @@ export async function loadEntradaFormOptions() {
 }
 
 // A reposição (sugestão de quanto comprar) vive só em
-// /compras/reposicao-inteligente, que calcula pelo `alvoReposicao` da
+// /cotacoes/reposicao-inteligente, que calcula pelo `alvoReposicao` da
 // estratégia ativa. Não recriar aqui uma versão com mínimo/ideal cravado.
 
 // ── Produtos personalizados para produção ─────────────────────

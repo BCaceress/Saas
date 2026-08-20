@@ -25,7 +25,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import type { SupplierIntegrationKind } from "@/generated/prisma";
-import { KIND_LABEL, Metrica, MetricaGrid, fmtQuando } from "../../../compras/_catalogo/ui";
+import { KIND_LABEL, Metrica, MetricaGrid, fmtQuando } from "../../../cotacoes/_catalogo/ui";
 import {
   salvarIntegracaoAction,
   sincronizarFornecedorAction,

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeftRight,
   ClipboardList,
+  FileQuestion,
   Image as ImageIcon,
   ScanLine,
   ShoppingCart,
@@ -92,6 +93,13 @@ const OPERACOES: Operacao[] = [
     label: "Pedido de compra",
     descricao: "Bipar o que falta",
     icone: ShoppingCart,
+    permissao: "compras.pedir",
+  },
+  {
+    href: "/m/cotacoes",
+    label: "Cotação",
+    descricao: "Pedir preço a vários fornecedores",
+    icone: FileQuestion,
     permissao: "compras.pedir",
   },
 ];

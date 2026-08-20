@@ -133,14 +133,25 @@ export function rotaInicialMobile(acessos: Acesso[], toggles: NavToggles): strin
  * equivalente, abre a tela de desktop mesmo — melhor um layout apertado do que
  * um botão que não leva a lugar nenhum.
  */
-const EQUIVALENTE: Array<[prefixo: string, destino: string]> = [
+/**
+ * Terceiro elemento: quando o mobile tem a MESMA rota profunda, o resto do
+ * caminho (o id) sobrevive à tradução. O regex existe para não mandar
+ * `/cotacoes/respostas` — que só existe no desktop — para uma rota mobile
+ * inexistente: só passa o que tem cara de id.
+ */
+const ID = /^\/[a-z0-9]{16,}$/i;
+
+const EQUIVALENTE: Array<[prefixo: string, destino: string, resto?: RegExp]> = [
   // Validade fica de fora: o `/m/estoque` lista saldo, não lote — mandar para
   // lá um alerta de vencimento trocaria a informação certa por outra.
   ["/estoque/inventarios", "/m/estoque/contagem"],
   ["/estoque/movimentacoes", "/m/movimentacoes"],
   // Pedido de compra cai em `/m/receber`: sem a tela de aprovações, é lá que o
-  // mobile move status e cancela. Cotação não tem equivalente — abre a de mesa.
-  ["/compras/pedidos", "/m/receber"],
+  // mobile move status e cancela.
+  ["/pedidos", "/m/receber"],
+  // Cotação tem a mesma tela profunda no mobile, então o alerta abre a cotação
+  // certa — não a lista.
+  ["/cotacoes", "/m/cotacoes", ID],
   ["/estoque", "/m/estoque"],
   ["/produtos", "/m/produtos"],
   // Caixa não tem equivalente mobile de propósito: abrir/fechar caixa é
@@ -151,12 +162,14 @@ const EQUIVALENTE: Array<[prefixo: string, destino: string]> = [
 /** Converte um href de alerta para o destino mobile, quando houver. */
 export function hrefMobile(href: string): string {
   const [caminho, query = ""] = href.split(/(?=[?#])/, 2);
-  for (const [prefixo, destino] of EQUIVALENTE) {
-    if (caminho === prefixo || caminho.startsWith(`${prefixo}/`)) {
-      // O destino já pode trazer query própria; nesse caso a do alerta se perde
-      // de propósito (os filtros não são os mesmos nas duas superfícies).
-      return destino.includes("?") ? destino : `${destino}${query}`;
-    }
+  for (const [prefixo, destino, resto] of EQUIVALENTE) {
+    if (caminho !== prefixo && !caminho.startsWith(`${prefixo}/`)) continue;
+    const sufixo = caminho.slice(prefixo.length);
+    // Rota profunda equivalente: mantém o id em vez de cair na lista.
+    if (resto && sufixo && resto.test(sufixo)) return `${destino}${sufixo}${query}`;
+    // O destino já pode trazer query própria; nesse caso a do alerta se perde
+    // de propósito (os filtros não são os mesmos nas duas superfícies).
+    return destino.includes("?") ? destino : `${destino}${query}`;
   }
   return href;
 }

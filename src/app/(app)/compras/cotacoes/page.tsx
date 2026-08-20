@@ -1,21 +1,8 @@
-import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
-import { podeEmAlguma } from "@/lib/permissoes";
-import { loadCotacoes, loadOpcoes } from "./_data";
-import { ListaCotacoes } from "./_client";
+import { redirect } from "next/navigation";
 
-export default async function CotacoesPage() {
-  const ctx = await requireActiveTenant();
-  const { linhas, resumo, opcoes } = await withTenant(ctx, async () => {
-    const [lista, opcoes] = await Promise.all([loadCotacoes(), loadOpcoes()]);
-    return { ...lista, opcoes };
-  });
+// Cotações virou a tela "Compras" (planejamento), na raiz do módulo. Este
+// redirect preserva links e favoritos antigos; o código vive em `compras/`.
 
-  return (
-    <ListaCotacoes
-      linhas={linhas}
-      resumo={resumo}
-      sites={opcoes.sites}
-      podePedir={podeEmAlguma(ctx.acessos, "compras.pedir")}
-    />
-  );
+export default function CotacoesRedirect() {
+  redirect("/cotacoes");
 }

@@ -136,7 +136,7 @@ async function linhasDeCotacao(): Promise<RespostaRow[]> {
       titulo: `Cotação ${c.quotation.numero} — ${c.quotation.titulo}`,
       detalhe,
       quando: (c.respondidaEm ?? c.enviadaEm ?? new Date()).toISOString(),
-      href: `/compras/cotacoes/${c.quotation.id}`,
+      href: `/cotacoes/${c.quotation.id}`,
       pendencias: c.status === "RESPONDIDA" ? naoCotados : 0,
       valor: c.status === "RESPONDIDA" ? total : null,
     };

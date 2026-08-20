@@ -6,7 +6,7 @@ import { normalizeSkuPrefix } from "@/lib/normalize";
 import { FormProduto } from "../../_form/despachante";
 import type { ProductPrefill } from "../../_form/product-form";
 import { loadProductFormOptions, loadComponentCandidates } from "../../_data";
-import { carregarItemParaNovoProdutoAction } from "../../../compras/_catalogo/actions";
+import { carregarItemParaNovoProdutoAction } from "../../../cotacoes/_catalogo/actions";
 import type { SubcategoryOpt } from "../../_types";
 
 export const metadata = { title: "Novo produto — NoHub Market" };

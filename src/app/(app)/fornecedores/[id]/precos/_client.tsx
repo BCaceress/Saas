@@ -9,9 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/misc";
 import { LineChart } from "@/components/charts/line-chart";
 import { cn } from "@/lib/utils";
-import { EstadoVazio, fmtPreco } from "../../../compras/_catalogo/ui";
-import { historicoPrecoAction } from "../../../compras/_catalogo/actions";
-import type { PontoPreco } from "../../../compras/_catalogo/types";
+import { EstadoVazio, fmtPreco } from "../../../cotacoes/_catalogo/ui";
+import { historicoPrecoAction } from "../../../cotacoes/_catalogo/actions";
+import type { PontoPreco } from "../../../cotacoes/_catalogo/types";
 import type { ItemComHistorico, MovimentoPreco } from "../_data";
 
 // ============================================================

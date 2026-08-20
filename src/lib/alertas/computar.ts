@@ -152,6 +152,7 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
     notasParadas,
     caixasComFalha,
     certificados,
+    cotacoes,
   ] = await Promise.all([
     db.product.findMany({
       where: { ativo: true },
@@ -241,6 +242,20 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
     db.fiscalEmitente.findMany({
       where: { certificadoValidade: { not: null } },
       select: { siteId: true, certificadoValidade: true, site: { select: { nome: true } } },
+    }),
+    // Cotações abertas: o alerta nasce da CONTAGEM de convites, a mesma régua
+    // que a tela usa para dizer "2 de 4 responderam".
+    db.quotation.findMany({
+      where: { status: "ABERTA" },
+      select: {
+        id: true,
+        numero: true,
+        prazoResposta: true,
+        enviadaEm: true,
+        createdAt: true,
+        siteId: true,
+        suppliers: { select: { status: true } },
+      },
     }),
   ]);
 
@@ -419,7 +434,7 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
         titulo: "Entrada aguardando conferência",
         descricao: `${pc.numero} · ${fornecedor}`,
         at: new Date(pc.createdAt).toISOString(),
-        href: "/compras/pedidos",
+        href: "/pedidos",
         acaoLabel: "Conferir",
       });
     } else {
@@ -429,9 +444,54 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
         titulo: pc.status === "ENVIADO" ? "Compra pendente" : "Pedido em rascunho",
         descricao: `${pc.numero} · ${fornecedor}`,
         at: new Date(pc.createdAt).toISOString(),
-        href: "/compras/pedidos",
+        href: "/pedidos",
         acaoLabel: "Abrir",
       });
+    }
+  }
+
+  // ── Cotações abertas ───────────────────────────────────────
+  for (const c of cotacoes) {
+    const total = c.suppliers.length;
+    if (total === 0) continue;
+    const respondidos = c.suppliers.filter((s) => s.status === "RESPONDIDA").length;
+    const pendentes = c.suppliers.filter(
+      (s) => s.status === "PENDENTE" || s.status === "ENVIADA",
+    ).length;
+    const href = `/cotacoes/${c.id}`;
+    const quando = new Date(c.enviadaEm ?? c.createdAt).toISOString();
+
+    // Todo mundo já falou: o trabalho agora é decidir, não esperar.
+    if (pendentes === 0 && respondidos > 0) {
+      emitir(alerts, "cotacao-resposta", c.id, {
+        titulo: "Cotação pronta para comparar",
+        descricao: comLocal(
+          c.siteId,
+          `${c.numero} · ${respondidos} ${respondidos === 1 ? "fornecedor respondeu" : "fornecedores responderam"} — escolha o melhor preço.`,
+        ),
+        at: quando,
+        href,
+        acaoLabel: "Comparar",
+      });
+      continue;
+    }
+
+    // Prazo no fim com gente devendo resposta: dá tempo de cobrar hoje.
+    if (pendentes > 0 && c.prazoResposta) {
+      const faltaMs = new Date(c.prazoResposta).getTime() - agora;
+      if (faltaMs < DIA) {
+        emitir(alerts, "cotacao-prazo", c.id, {
+          prioridade: faltaMs < 0 ? "alto" : undefined,
+          titulo: faltaMs < 0 ? "Prazo da cotação venceu" : "Cotação termina hoje",
+          descricao: comLocal(
+            c.siteId,
+            `${c.numero} · ${pendentes} ${pendentes === 1 ? "fornecedor ainda não respondeu" : "fornecedores ainda não responderam"}.`,
+          ),
+          at: new Date(c.prazoResposta).toISOString(),
+          href,
+          acaoLabel: "Cobrar",
+        });
+      }
     }
   }
 
@@ -445,7 +505,7 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
         `NF ${nota.numero} · ${nota.emitRazaoSocial} — importada há ${dias} dias e ainda sem entrada.`,
       ),
       at: new Date(nota.createdAt).toISOString(),
-      href: `/compras/recebimento/${nota.id}`,
+      href: `/recebimento/${nota.id}`,
       acaoLabel: "Conferir",
     });
   }

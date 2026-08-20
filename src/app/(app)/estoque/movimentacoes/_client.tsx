@@ -589,7 +589,7 @@ function FragmentRow({
 // Destino navegável do registro vinculado, quando existe tela para ele.
 function linkVinculo(row: MovimentacaoRow): { href: string; label: string } | null {
   if (row.origem === "Entrada por pedido de compra" && row.documento) {
-    return { href: `/compras?q=${encodeURIComponent(row.documento)}`, label: "Ver pedido de compra" };
+    return { href: `/pedidos?q=${encodeURIComponent(row.documento)}`, label: "Ver pedido de compra" };
   }
   if (row.tipo === "TRANSFERENCIA") {
     return { href: "/estoque/transferencias", label: "Ver transferências" };

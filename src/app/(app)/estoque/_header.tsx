@@ -29,7 +29,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { NovaEntradaForm, MOTIVO_OPTIONS, type Motivo } from "./entradas/nova/_client";
 import { TransferenciaForm } from "./transferencias/_client";
-import { PedidoFormSheet } from "../compras/_pedidos";
+import { PedidoFormSheet } from "../pedidos/_pedidos";
 
 type SiteRow = { id: string; nome: string; tipo: string; ativo: boolean };
 type EntradaPanelId = `entrada:${Motivo}`;

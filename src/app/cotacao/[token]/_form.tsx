@@ -34,7 +34,10 @@ type LinhaForm = {
   itemId: string;
   disponivel: boolean;
   preco: string;
+  /** Vazio = tem tudo o que foi pedido. Só se preenche quando falta. */
+  qtd: string;
   marca: string;
+  observacao: string;
 };
 
 export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
@@ -42,6 +45,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   const [erro, setErro] = useState<string | null>(null);
   const [enviado, setEnviado] = useState(false);
   const [recusando, setRecusando] = useState(false);
+  const [confirmando, setConfirmando] = useState(false);
   const [motivo, setMotivo] = useState("");
 
   const respostaPorItem = useMemo(
@@ -56,7 +60,12 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
         itemId: i.id,
         disponivel: r ? r.disponivel : true,
         preco: r && r.precoUnitario > 0 ? String(r.precoUnitario).replace(".", ",") : "",
+        qtd:
+          r?.quantidadeOfertada != null && r.quantidadeOfertada !== i.quantidade
+            ? String(r.quantidadeOfertada).replace(".", ",")
+            : "",
         marca: r?.marca ?? "",
+        observacao: r?.observacao ?? "",
       };
     }),
   );
@@ -84,7 +93,11 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
       if (!l.disponivel) return acc;
       const preco = paraNumero(l.preco);
       if (preco === null) return acc;
-      return acc + preco * (qtdPorItem.get(l.itemId) ?? 0);
+      // Conta pelo que ele REALMENTE tem: prometer o total de 100 quando só
+      // há 70 na mão engana os dois lados.
+      const pedida = qtdPorItem.get(l.itemId) ?? 0;
+      const ofertada = paraNumero(l.qtd);
+      return acc + preco * (ofertada ?? pedida);
     }, 0);
     return itens + (paraNumero(frete) ?? 0);
   }, [linhas, frete, cotacao.itens]);
@@ -92,13 +105,20 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   const preenchidos = linhas.filter((l) => !l.disponivel || paraNumero(l.preco) !== null).length;
   const faltam = linhas.length - preenchidos;
 
-  function enviar() {
+  /** Abre a confirmação — só depois de checar o que impediria o envio. */
+  function revisar() {
     setErro(null);
     const semPreco = linhas.filter((l) => l.disponivel && paraNumero(l.preco) === null);
     if (semPreco.length === linhas.length) {
       setErro("Preencha ao menos um preço, ou marque os itens que você não tem.");
       return;
     }
+    setConfirmando(true);
+  }
+
+  function enviar() {
+    setErro(null);
+    setConfirmando(false);
     startTransition(async () => {
       const r = await responderPeloLinkAction({
         token: cotacao.token,
@@ -112,7 +132,10 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
           // comparador do outro lado, e silêncio não é informação.
           disponivel: l.disponivel && paraNumero(l.preco) !== null,
           precoUnitario: paraNumero(l.preco) ?? 0,
+          // Só viaja quando ele digitou: vazio significa "tenho tudo".
+          quantidadeOfertada: paraNumero(l.qtd),
           marca: l.marca || null,
+          observacao: l.observacao || null,
         })),
       });
       if (r.ok) setEnviado(true);
@@ -202,25 +225,56 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
               </div>
 
               {linha.disponivel && (
-                <div className="grid grid-cols-[1fr_1fr] gap-2.5">
-                  <Field label="Preço unitário" htmlFor={`preco-${item.id}`}>
-                    <Input
-                      id={`preco-${item.id}`}
-                      inputMode="decimal"
-                      placeholder="0,00"
-                      value={linha.preco}
-                      onChange={(e) => alterar(item.id, { preco: e.target.value })}
-                      className="font-mono"
-                    />
-                  </Field>
-                  <Field label="Marca (se for outra)" htmlFor={`marca-${item.id}`}>
-                    <Input
-                      id={`marca-${item.id}`}
-                      placeholder="opcional"
-                      value={linha.marca}
-                      onChange={(e) => alterar(item.id, { marca: e.target.value })}
-                    />
-                  </Field>
+                <div className="flex flex-col gap-2.5">
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <Field label="Preço unitário" htmlFor={`preco-${item.id}`}>
+                      <Input
+                        id={`preco-${item.id}`}
+                        inputMode="decimal"
+                        placeholder="0,00"
+                        value={linha.preco}
+                        onChange={(e) => alterar(item.id, { preco: e.target.value })}
+                        className="font-mono"
+                      />
+                    </Field>
+                    {/* Quantidade só se pergunta para quem tem MENOS do que foi
+                        pedido — por isso o vazio já quer dizer "tenho tudo". */}
+                    <Field label="Se tiver menos" htmlFor={`qtd-${item.id}`}>
+                      <Input
+                        id={`qtd-${item.id}`}
+                        inputMode="decimal"
+                        placeholder={`tenho ${fmtQtd(item.quantidade)}`}
+                        value={linha.qtd}
+                        onChange={(e) => alterar(item.id, { qtd: e.target.value })}
+                        className="font-mono"
+                      />
+                    </Field>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <Field label="Marca (se for outra)" htmlFor={`marca-${item.id}`}>
+                      <Input
+                        id={`marca-${item.id}`}
+                        placeholder="opcional"
+                        value={linha.marca}
+                        onChange={(e) => alterar(item.id, { marca: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="Observação" htmlFor={`obs-${item.id}`}>
+                      <Input
+                        id={`obs-${item.id}`}
+                        placeholder="opcional"
+                        value={linha.observacao}
+                        onChange={(e) => alterar(item.id, { observacao: e.target.value })}
+                      />
+                    </Field>
+                  </div>
+                  {paraNumero(linha.qtd) !== null &&
+                    (paraNumero(linha.qtd) ?? 0) < item.quantidade && (
+                      <p className="text-xs text-accent">
+                        Você atende {fmtQtd(paraNumero(linha.qtd) ?? 0)} dos{" "}
+                        {fmtQtd(item.quantidade)} pedidos — o comprador vê essa diferença.
+                      </p>
+                    )}
                 </div>
               )}
             </div>
@@ -302,6 +356,41 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
         )}
       </section>
 
+      {/* Confirmação: o fornecedor manda preço uma vez e some da tela; vale
+          avisar, em uma frase, o que acontece depois do toque. */}
+      {confirmando && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 sm:items-center sm:p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirmar-titulo"
+            className="w-full max-w-md rounded-t-[var(--radius-xl)] border border-line bg-surface p-5 sm:rounded-[var(--radius-xl)]"
+          >
+            <h2 id="confirmar-titulo" className="font-display text-lg font-semibold text-ink">
+              Confirmar envio
+            </h2>
+            <p className="mt-1.5 text-sm leading-relaxed text-muted">
+              Você está enviando sua cotação para a {cotacao.empresa}. Os preços informados
+              ficam registrados nesta solicitação — dá para abrir o link de novo e corrigir
+              enquanto a cotação estiver aberta.
+            </p>
+            <p className="mt-3 font-mono text-lg font-semibold text-ink">{fmtMoeda(total)}</p>
+            <p className="text-xs text-muted">
+              {faltam > 0 ? `${faltam} item(s) sem preço` : "Todos os itens preenchidos"}
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setConfirmando(false)}>
+                Voltar
+              </Button>
+              <Button onClick={enviar} disabled={pendente}>
+                <Send className="size-4" aria-hidden />
+                {pendente ? "Enviando…" : "Confirmar e enviar"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Barra fixa: o total e o botão acompanham a rolagem — em lista de 30
           itens, botão no rodapé é botão que ninguém acha. */}
       <div className="fixed inset-x-0 bottom-0 border-t border-line bg-surface/95 backdrop-blur">
@@ -312,7 +401,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
               {faltam > 0 ? `${faltam} item(s) sem preço` : "Tudo preenchido"}
             </p>
           </div>
-          <Button onClick={enviar} disabled={pendente} size="lg">
+          <Button onClick={revisar} disabled={pendente} size="lg">
             <Send className="size-4" aria-hidden />
             {pendente ? "Enviando…" : cotacao.respondida ? "Reenviar" : "Enviar resposta"}
           </Button>

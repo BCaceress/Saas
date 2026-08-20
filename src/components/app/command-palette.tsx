@@ -87,7 +87,7 @@ const ACOES: Acao[] = [
     label: "Novo pedido de compra",
     descricao: "Pedir mercadoria a um fornecedor.",
     icon: Plus,
-    href: "/compras/pedidos",
+    href: "/pedidos",
     permissao: "compras.pedir",
   },
   {

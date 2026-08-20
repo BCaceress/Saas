@@ -26,8 +26,8 @@ import {
   adicionarLoteAoCarrinhoAction,
   buscarOfertasAction,
   compararCestaAction,
-} from "../_catalogo/actions";
-import { EstadoVazio, ReguaPreco, SupplierAvatar, fmtMoney, fmtPreco, fmtQuando } from "../_catalogo/ui";
+} from "../../cotacoes/_catalogo/actions";
+import { EstadoVazio, ReguaPreco, SupplierAvatar, fmtMoney, fmtPreco, fmtQuando } from "../../cotacoes/_catalogo/ui";
 
 type Grupo = {
   chave: string;
@@ -189,7 +189,7 @@ export function Comparador({ podePedir }: { podePedir: boolean }) {
             titulo="Nenhuma oferta encontrada"
             descricao="Nenhum fornecedor tem esse produto nas tabelas importadas. Importe uma tabela nova ou revise os itens sem vínculo."
             acao={
-              <Link href="/compras/importacoes">
+              <Link href="/cotacoes/importacoes">
                 <Button size="sm" variant="secondary">
                   Importar tabela
                 </Button>

@@ -22,7 +22,7 @@ import { maskCpf, maskDate, maskPhone, maskCnpj } from "@/lib/masks";
 import { createCustomer } from "@/app/(app)/clientes/actions";
 import { createSupplier } from "@/app/(app)/produtos/actions";
 import { loadComprasFormOptionsAction } from "@/app/(app)/estoque/actions";
-import { PedidoFormSheet, type FormOptions } from "@/app/(app)/compras/_pedidos";
+import { PedidoFormSheet, type FormOptions } from "@/app/(app)/pedidos/_pedidos";
 import type { Sexo } from "@/generated/prisma";
 
 type Panel = "cliente" | "fornecedor" | "pedido" | null;

@@ -1,27 +1,9 @@
-import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
-import { podeEmAlguma } from "@/lib/permissoes";
-import { getActiveSiteId, listSites } from "@/lib/sites";
-import { loadCarrinho } from "../_catalogo/data";
-import { CarrinhoCompras } from "./_client";
+import { redirect } from "next/navigation";
 
-export default async function PedidosPage() {
-  const ctx = await requireActiveTenant();
+// A Cesta virou a ação "Cotar" dentro do detalhe da Compra. Este redirect
+// preserva links e favoritos antigos; o código continua intacto em
+// `_client.tsx` (rota dormente, sem entrada no menu).
 
-  const dados = await withTenant(ctx, async () => {
-    const [grupos, sites, activeSiteId] = await Promise.all([
-      loadCarrinho(ctx.user.id),
-      listSites(),
-      getActiveSiteId(),
-    ]);
-    return { grupos, sites, activeSiteId };
-  });
-
-  return (
-    <CarrinhoCompras
-      grupos={dados.grupos}
-      sites={dados.sites.map((s) => ({ id: s.id, nome: s.nome }))}
-      siteInicial={dados.activeSiteId ?? dados.sites[0]?.id ?? ""}
-      podePedir={podeEmAlguma(ctx.acessos, "compras.pedir")}
-    />
-  );
+export default function CarrinhoRedirect() {
+  redirect("/cotacoes");
 }

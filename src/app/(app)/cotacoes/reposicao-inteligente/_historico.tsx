@@ -5,7 +5,7 @@ import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
 import type { HistoricoCompraProduto } from "../_data";
-import { fetchHistoricoCompraProdutoAction } from "../actions";
+import { fetchHistoricoCompraProdutoAction } from "../../pedidos/actions";
 import { fmtCobertura } from "@/lib/estoque-estrategia";
 import { fmtMoney, fmtQtd, relDia, Thumb } from "../_ui";
 import { usePolicy, type Linha } from "./_shared";

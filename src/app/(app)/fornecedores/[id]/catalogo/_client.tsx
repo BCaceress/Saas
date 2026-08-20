@@ -23,15 +23,15 @@ import { Sheet } from "@/components/ui/sheet";
 import { toast } from "@/components/ui/toast";
 import { LineChart } from "@/components/charts/line-chart";
 import { cn } from "@/lib/utils";
-import type { FornecedorCard, ItemCatalogo, PontoPreco } from "../../../compras/_catalogo/types";
-import { EstadoVazio, PromoBadge, fmtPreco, fmtQtd, fmtQuando } from "../../../compras/_catalogo/ui";
+import type { FornecedorCard, ItemCatalogo, PontoPreco } from "../../../cotacoes/_catalogo/types";
+import { EstadoVazio, PromoBadge, fmtPreco, fmtQtd, fmtQuando } from "../../../cotacoes/_catalogo/ui";
 import {
   adicionarAoCarrinhoAction,
   buscarProdutosAction,
   historicoPrecoAction,
   ignorarItemAction,
   vincularItemAction,
-} from "../../../compras/_catalogo/actions";
+} from "../../../cotacoes/_catalogo/actions";
 
 // ============================================================
 // Aba Catálogo — a tabela de preços deste fornecedor, do jeito que ele mandou.
@@ -148,7 +148,7 @@ export function CatalogoFornecedor({
           </Pilula>
         )}
 
-        <Link href="/compras/comparador" className="ml-auto">
+        <Link href="/cotacoes/comparador" className="ml-auto">
           <Button size="sm" variant="secondary">
             <Scale size={14} />
             Comparar preços

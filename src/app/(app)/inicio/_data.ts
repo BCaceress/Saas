@@ -15,14 +15,14 @@ import {
   type EstoquePolicy,
   type NivelCobertura,
 } from "@/lib/estoque-estrategia";
-import { loadSugestoesReposicao } from "../compras/_data";
+import { loadSugestoesReposicao } from "../cotacoes/_data";
 
 const DIA = 86_400_000;
 
 /**
  * Camada de dados exclusiva do /inicio (Centro de Operações Inteligente).
  * Tudo aqui é composição sobre leituras já existentes em relatorios/_data.ts
- * e compras/_data.ts — nenhuma tabela nova, nenhuma query duplicada.
+ * e cotacoes/_data.ts — nenhuma tabela nova, nenhuma query duplicada.
  */
 
 const n = (v: unknown): number => (v == null ? 0 : Number(v));

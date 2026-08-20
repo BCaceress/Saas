@@ -251,7 +251,7 @@ export function PedidoClient({
 
           <p className="px-1 text-xs text-muted">
             Sai como rascunho, um por fornecedor. Revise e envie em{" "}
-            <Link href="/compras/pedidos" className="underline">
+            <Link href="/pedidos" className="underline">
               Compras
             </Link>
             .

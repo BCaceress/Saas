@@ -160,7 +160,7 @@ export async function verificarCaixasAction(inboxId?: string | null) {
       : await sincronizarCaixasDoTenant(ctx.tenant.id, { forcar: true });
 
     revalidatePath(ROTA);
-    revalidatePath("/compras/recebimento");
+    revalidatePath("/recebimento");
     revalidatePath("/fiscal/notas-recebidas");
     return r;
   });
@@ -185,7 +185,7 @@ export async function consultarSefazAction() {
     });
 
     revalidatePath(ROTA);
-    revalidatePath("/compras/recebimento");
+    revalidatePath("/recebimento");
     revalidatePath("/fiscal/notas-recebidas");
     return r;
   });

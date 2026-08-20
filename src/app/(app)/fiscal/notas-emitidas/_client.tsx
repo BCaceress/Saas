@@ -22,7 +22,7 @@ import { Badge, Field } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { maskCnpj, maskCpf } from "@/lib/masks";
-import { fmtMoney, relDia } from "../../compras/_ui";
+import { fmtMoney, relDia } from "../../cotacoes/_ui";
 import {
   cancelarNotaAction,
   cartaCorrecaoAction,

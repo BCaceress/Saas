@@ -70,7 +70,7 @@ import {
   sugerirMargemSubcategoria,
   sugerirDescricaoOnline,
 } from "../actions";
-import { vincularItemAction } from "../../compras/_catalogo/actions";
+import { vincularItemAction } from "../../cotacoes/_catalogo/actions";
 import type { SalesChannel } from "@/generated/prisma";
 import type {
   BrandOpt,

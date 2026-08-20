@@ -197,7 +197,7 @@ function AbaUpload() {
         </ul>
 
         <div className="mt-5 flex flex-wrap gap-2">
-          <Link href="/compras/recebimento">
+          <Link href="/recebimento">
             <Button size="sm">
               <FileUp size={15} /> Importar XML agora
             </Button>
@@ -1247,7 +1247,7 @@ function AbaHistorico({ inicial }: { inicial: LinhaHistorico[] }) {
                       <span className="line-clamp-2">{l.mensagem ?? "—"}</span>
                       {l.inboundId && (
                         <Link
-                          href={`/compras/recebimento/${l.inboundId}`}
+                          href={`/recebimento/${l.inboundId}`}
                           className="mt-0.5 block text-[12px] text-brand underline"
                         >
                           Abrir recebimento

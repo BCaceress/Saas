@@ -167,7 +167,7 @@ export function buildInsights(input: InsightsInput): Insight[] {
       icone: "previsao",
       titulo: `${previsao.nome} esgota em ${previsao.coberturaDias} dia${previsao.coberturaDias === 1 ? "" : "s"}`,
       corpo: `No ritmo atual de venda, o estoque (${previsao.estoque.toLocaleString("pt-BR")} un) não chega na próxima semana.`,
-      cta: { label: "Ver reposição", href: "/compras/reposicao-inteligente" },
+      cta: { label: "Ver reposição", href: "/cotacoes/reposicao-inteligente" },
       escopo: "cards",
       prioridade: 4,
     });
@@ -208,7 +208,7 @@ export function buildInsights(input: InsightsInput): Insight[] {
       icone: "pedido",
       titulo: "Pedido previsto para entrega hoje",
       corpo: `${pedidoHoje.numero} · ${pedidoHoje.supplierNome} · ${brl(pedidoHoje.valorTotal)}.`,
-      cta: { label: "Ver pedido", href: "/compras/pedidos" },
+      cta: { label: "Ver pedido", href: "/pedidos" },
       escopo: "assistente",
       prioridade: 2,
     });
@@ -270,7 +270,7 @@ export function buildInsights(input: InsightsInput): Insight[] {
       icone: "compra",
       titulo: `Perto do pedido mínimo de ${oportunidade.supplierNome}`,
       corpo: `Faltam ${brl(oportunidade.falta)} para atingir o mínimo de ${brl(oportunidade.minimo)}.`,
-      cta: { label: "Criar pedido", href: "/compras/pedidos" },
+      cta: { label: "Criar pedido", href: "/pedidos" },
       escopo: "cards",
       prioridade: 7,
       impacto: oportunidade.atual,

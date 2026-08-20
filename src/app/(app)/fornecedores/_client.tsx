@@ -23,8 +23,8 @@ import { maskCnpj, maskPhone } from "@/lib/masks";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import { ViewToggle, useViewMode } from "@/components/app/view-toggle";
-import { IntegracaoStatus, fmtQuando } from "../compras/_catalogo/ui";
-import { fmtMoney } from "../compras/_ui";
+import { IntegracaoStatus, fmtQuando } from "../cotacoes/_catalogo/ui";
+import { fmtMoney } from "../cotacoes/_ui";
 import { createSupplier } from "../produtos/actions";
 import type { FornecedorListaRow } from "./_data";
 

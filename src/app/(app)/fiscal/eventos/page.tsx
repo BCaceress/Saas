@@ -3,7 +3,7 @@ import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db, basePrisma, comTenant } from "@/lib/prisma";
 import { Badge } from "@/components/ui/misc";
-import { fmtMoney } from "../../compras/_ui";
+import { fmtMoney } from "../../cotacoes/_ui";
 import type { FiscalEventoTipo } from "@/generated/prisma";
 
 export const metadata = { title: "Eventos fiscais — NoHub Market" };

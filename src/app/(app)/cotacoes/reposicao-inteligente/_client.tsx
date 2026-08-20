@@ -6,8 +6,8 @@ import { CircleAlert, Hourglass, PackageCheck, PartyPopper, TriangleAlert } from
 import { toast } from "@/components/ui/toast";
 import { MSG_APRENDIZADO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import type { GrupoReposicao } from "../_data";
-import { criarPedidosReposicaoAction } from "../actions";
-import { SolicitarSheet, type GrupoEnvio } from "../_solicitar";
+import { criarCompraDaReposicaoAction } from "../_compra-actions";
+import { SolicitarSheet, type GrupoEnvio } from "../../pedidos/_solicitar";
 import { fmtQtd, previsaoLabel, Thumb } from "../_ui";
 import {
   achatar,
@@ -29,8 +29,6 @@ import { HistoricoDrawer } from "./_historico";
 // O sistema já analisou estoque, consumo e fornecedores; aqui o operador
 // só revisa, ajusta e aprova. Hierarquia: resumo → prioridade →
 // fornecedor → produto → quantidade → justificativa.
-
-const hojeMais = (dias: number) => new Date(Date.now() + dias * 864e5).toISOString().slice(0, 10);
 
 export function ReposicaoInteligenteClient({
   grupos,
@@ -172,34 +170,32 @@ export function ReposicaoInteligenteClient({
     if (envio.length > 0) setSolicitar({ escopo: "todos", grupos: envio });
   };
 
-  // Salvar revisão: cria os pedidos como rascunho, sem enviar nada.
+  // Salvar revisão: nunca pula direto pro pedido — cai numa Compra em
+  // Planejamento (funil único). Fornecedor por item continua guardado na
+  // seleção da tela, mas o vínculo formal (convite + preço) fica pra aba
+  // "Cotar"/Fornecedores da Compra, não é decidido aqui.
   async function salvarRevisao() {
     if (!siteId || salvando) return;
     const envio = montarEnvio();
     if (envio.length === 0) return;
     setSalvando(true);
     try {
-      const criados = await criarPedidosReposicaoAction({
+      const { id } = await criarCompraDaReposicaoAction({
         siteId,
-        enviar: false,
-        pedidos: envio.map((g) => ({
-          supplierId: g.supplierId,
-          previsaoEntrega: g.leadTimeDias != null ? hojeMais(g.leadTimeDias) : null,
-          observacao: null,
-          items: g.itens.map((it) => ({
+        itens: envio.flatMap((g) =>
+          g.itens.map((it) => ({
             productId: it.productId,
             packagingId: it.packagingId,
-            qtdPedida: it.qtd,
-            custoUnitario: it.custoUnitCompra ?? 0,
+            descricao: it.nome,
+            quantidade: it.qtd,
           })),
-        })),
+        ),
       });
       toast.success(
-        criados.length === 1 ? "Revisão salva como rascunho" : `Revisão salva — ${criados.length} rascunhos`,
-        "Retome quando quiser na aba Pedidos. Nada foi enviado aos fornecedores.",
+        "Revisão salva em uma Compra",
+        "Retome quando quiser em Compras. Nada foi enviado aos fornecedores.",
       );
-      router.push("/compras/pedidos");
-      router.refresh();
+      router.push(`/cotacoes/${id}`);
     } catch (e) {
       toast.error("Não foi possível salvar", e instanceof Error ? e.message : "Tente de novo.");
       setSalvando(false);
@@ -214,7 +210,7 @@ export function ReposicaoInteligenteClient({
     if (!concluido || !atual) return;
     setConcluido(false);
     if (atual.escopo === "todos") {
-      router.push("/compras/pedidos");
+      router.push("/pedidos");
       router.refresh();
     } else {
       setMuitos(atual.grupos.flatMap((g) => g.itens.map((i) => i.productId)), false);
@@ -363,7 +359,7 @@ export function ReposicaoInteligenteClient({
                           </span>
                         )}
                         <a
-                          href={`/compras?q=${encodeURIComponent(pedido?.numero ?? l.supplierNome)}`}
+                          href={`/pedidos?q=${encodeURIComponent(pedido?.numero ?? l.supplierNome)}`}
                           className="shrink-0 text-xs font-semibold text-brand hover:underline"
                         >
                           Ver pedido →

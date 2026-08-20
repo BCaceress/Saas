@@ -19,7 +19,7 @@ import { Badge } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
 import { maskCnpj, maskPhone } from "@/lib/masks";
-import { IntegracaoStatus, fmtQuando } from "../../compras/_catalogo/ui";
+import { IntegracaoStatus, fmtQuando } from "../../cotacoes/_catalogo/ui";
 import { setSupplierActive } from "../../produtos/actions";
 import type { FornecedorHeader } from "./_data";
 
@@ -156,7 +156,7 @@ export function FornecedorShell({
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
-            <Link href={`/compras/pedidos?q=${encodeURIComponent(header.nome)}`}>
+            <Link href={`/pedidos?q=${encodeURIComponent(header.nome)}`}>
               <Button size="sm" variant="secondary">
                 <ShoppingCart size={14} />
                 <span className="hidden sm:inline">Comprar</span>

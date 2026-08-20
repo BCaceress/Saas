@@ -4,7 +4,7 @@
 // O operador escolhe exatamente o que comprar: quais produtos entram
 // (checkbox), de qual fornecedor, quanto e por qual valor. Nenhuma
 // quantidade é sugerida e nenhuma decisão é tomada pelo sistema — a
-// inteligência de reposição vive exclusivamente em Reposições (/compras).
+// inteligência de reposição vive exclusivamente em Reposições (/cotacoes).
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -13,8 +13,8 @@ import { Loader2, ShoppingCart, CheckCircle2, ArrowRight, Building2, Store } fro
 import { cn, maskMoney, parseMoney, moneyToMask } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
 import { loadComprasFormOptionsAction } from "../actions";
-import { criarPedidosReposicaoAction } from "../../compras/actions";
-import { fmtMoney, fmtQtd, Thumb } from "../../compras/_ui";
+import { criarPedidosReposicaoAction } from "../../pedidos/actions";
+import { fmtMoney, fmtQtd, Thumb } from "../../cotacoes/_ui";
 
 type Options = Awaited<ReturnType<typeof loadComprasFormOptionsAction>>;
 type Produto = Options["products"][number];
@@ -235,7 +235,7 @@ export function AdicionarCompraSheet({
               Fechar
             </button>
             <Link
-              href="/compras/pedidos"
+              href="/pedidos"
               className="flex items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
             >
               Ir para Reposições <ArrowRight size={14} />

@@ -331,7 +331,8 @@ export async function criarPedidoDoScannerAction(
       });
     }
 
-    revalidatePath("/compras", "layout");
+    revalidatePath("/cotacoes", "layout");
+    revalidatePath("/pedidos", "layout");
     ok();
     return { criados, semFornecedor };
   });

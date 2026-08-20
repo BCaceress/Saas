@@ -6,12 +6,12 @@ import { ClipboardList, Search, Eye } from "lucide-react";
 import { Input, Select } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { EstadoVazio, fmtMoney } from "../../../compras/_catalogo/ui";
-import { PEDIDO_STATUS, StatusBadge, relDia, previsaoLabel } from "../../../compras/_ui";
+import { EstadoVazio, fmtMoney } from "../../../cotacoes/_catalogo/ui";
+import { PEDIDO_STATUS, StatusBadge, relDia, previsaoLabel } from "../../../cotacoes/_ui";
 import type { PedidoFornecedor } from "../_data";
 
 // Aba Pedidos — só o que foi pedido A ESTE fornecedor. A visão de todos os
-// pedidos, com kanban e ações de fluxo, continua em Compras › Pedidos.
+// pedidos, com kanban e ações de fluxo, continua em Pedidos.
 
 const FILTROS = [
   { valor: "", label: "Todos os status" },
@@ -53,7 +53,7 @@ export function PedidosFornecedor({
         titulo={`Nenhum pedido para ${nome}`}
         descricao="Quando um pedido for gerado para este fornecedor — pela cesta, pela reposição inteligente ou à mão — ele aparece aqui."
         acao={
-          <Link href="/compras/reposicao-inteligente">
+          <Link href="/cotacoes/reposicao-inteligente">
             <Button size="sm" variant="secondary">
               Ver o que comprar
             </Button>
@@ -137,8 +137,8 @@ export function PedidosFornecedor({
                     <StatusBadge status={p.status} />
                   </td>
                   <td className="px-3 py-2.5 text-right">
-                    <Link href={`/compras/pedidos?q=${encodeURIComponent(p.numero)}`}>
-                      <Button size="sm" variant="ghost" title="Abrir em Compras › Pedidos">
+                    <Link href={`/pedidos?q=${encodeURIComponent(p.numero)}`}>
+                      <Button size="sm" variant="ghost" title="Abrir em Pedidos">
                         <Eye size={14} />
                         Visualizar
                       </Button>

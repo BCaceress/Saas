@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { podeEmAlguma } from "@/lib/permissoes";
-import { loadCatalogo, type FiltroCatalogo } from "../../../compras/_catalogo/data";
+import { loadCatalogo, type FiltroCatalogo } from "../../../cotacoes/_catalogo/data";
 import { CatalogoFornecedor } from "./_client";
 
 export default async function CatalogoFornecedorPage({

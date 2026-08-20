@@ -145,7 +145,7 @@ export function CentralRespostas({
           descricao="Assim que um fornecedor responder uma cotação ou uma tabela de preço for importada, a resposta aparece nesta lista — não importa por qual canal ela chegou."
           acao={
             <Link
-              href="/compras/cotacoes"
+              href="/cotacoes"
               className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
             >
               Pedir uma cotação
