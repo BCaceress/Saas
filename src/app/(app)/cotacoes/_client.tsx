@@ -3,8 +3,22 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Plus, Copy, FileQuestion, MoreVertical, Trash2, Sparkles } from "lucide-react";
+import {
+  CalendarClock,
+  Copy,
+  FileQuestion,
+  LayoutGrid,
+  List,
+  MoreVertical,
+  Package,
+  Plus,
+  Sparkles,
+  Trash2,
+  Truck,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/app/page-header";
+import { navIcon } from "@/components/app/nav-config";
 import { EstadoVazio, fmtMoney } from "./_catalogo/ui";
 import {
   criarCotacaoAction,
@@ -12,16 +26,23 @@ import {
   excluirCotacaoAction,
 } from "./_compra-actions";
 import type { CotacaoRow, CotacaoStatus } from "./_compra-types";
-import { andamento, statusVisivel } from "./_status";
+import { statusVisivel } from "./_status";
 
 // ── Lista de cotações ───────────────────────────────────────
-// A cotação é uma pergunta que envelhece: o que importa na lista é quantos
-// fornecedores já responderam e quanto tempo resta. O rótulo de status vem de
-// `_status.ts` — derivado da contagem de convites, não do enum cru.
+// A cotação é uma pergunta que envelhece: o que importa na lista é o tamanho
+// dela (itens), quem foi consultado (fornecedores) e quanto tempo resta. Esses
+// três viram ícone + número, porque em lista longa a pessoa varre a coluna, não
+// lê a frase.
 //
-// "Nova cotação" não abre formulário: cria o rascunho e leva direto para os
-// produtos. Nome e loja saem de padrão e ficam editáveis na revisão — pedir
-// título antes da lista é cobrar uma decisão que o operador ainda não tem.
+// Duas visões porque são dois usos: LISTA para varrer muitas cotações
+// (densidade), CARTÕES para olhar poucas com calma (o número grande da melhor
+// proposta aparece inteiro). CARTÕES é o padrão — quem tem poucas cotações é a
+// maioria. A escolha fica guardada em cookie e volta na próxima visita.
+
+export type Visao = "lista" | "cards";
+
+/** Nome do cookie que guarda o formato escolhido. Lido em `page.tsx`. */
+export const COOKIE_VISAO = "nohub-cotacoes-visao";
 
 const FILTROS: { id: "ativas" | "todas" | CotacaoStatus; label: string }[] = [
   { id: "ativas", label: "Ativas" },
@@ -31,6 +52,7 @@ const FILTROS: { id: "ativas" | "todas" | CotacaoStatus; label: string }[] = [
   { id: "todas", label: "Todas" },
 ];
 
+/** Quanto tempo resta — o que decide se dá para esperar mais um dia. */
 function prazoTexto(iso: string | null): { texto: string; urgente: boolean } | null {
   if (!iso) return null;
   const dias = Math.ceil((new Date(iso).getTime() - Date.now()) / (24 * 60 * 60 * 1000));
@@ -45,6 +67,8 @@ export function ListaCotacoes({
   produtosSugeridos,
   multiSite,
   podePedir,
+  descricao,
+  visaoInicial,
 }: {
   linhas: CotacaoRow[];
   /** Contagem ao vivo de `loadSugestoesReposicao` — mesma fonte da Reposição Inteligente. */
@@ -52,13 +76,43 @@ export function ListaCotacoes({
   /** Mais de uma loja no tenant. Com uma só, dizer o nome dela é ruído. */
   multiSite: boolean;
   podePedir: boolean;
+  descricao?: string;
+  /** Formato que a pessoa escolheu da última vez (cookie, lido no servidor). */
+  visaoInicial: Visao;
 }) {
   const router = useRouter();
   const [pendente, startTransition] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
   const [filtro, setFiltro] = useState<(typeof FILTROS)[number]["id"]>("ativas");
+  const [visao, setVisao] = useState<Visao>(visaoInicial);
   const [menuAberto, setMenuAberto] = useState<string | null>(null);
   const [aExcluir, setAExcluir] = useState<CotacaoRow | null>(null);
+
+  // Guardar em COOKIE e não em localStorage: assim o servidor já renderiza no
+  // formato certo. Com localStorage, a primeira pintura viria sempre em lista e
+  // trocaria na frente da pessoa (ou quebraria a hidratação).
+  function escolherVisao(nova: Visao) {
+    setVisao(nova);
+    document.cookie = `${COOKIE_VISAO}=${nova}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
+  }
+
+  const visiveis = linhas.filter((l) => {
+    if (filtro === "todas") return true;
+    if (filtro === "ativas") return l.status === "RASCUNHO" || l.status === "ABERTA";
+    return l.status === filtro;
+  });
+
+  function novaCotacao() {
+    setErro(null);
+    startTransition(async () => {
+      try {
+        const criada = await criarCotacaoAction({});
+        router.push(`/cotacoes/${criada.id}`);
+      } catch (e) {
+        setErro(e instanceof Error ? e.message : "Não foi possível abrir a cotação.");
+      }
+    });
+  }
 
   function excluir(id: string) {
     setErro(null);
@@ -86,26 +140,42 @@ export function ListaCotacoes({
     });
   }
 
-  function novaCotacao() {
-    setErro(null);
-    startTransition(async () => {
-      try {
-        const criada = await criarCotacaoAction({});
-        router.push(`/cotacoes/${criada.id}`);
-      } catch (e) {
-        setErro(e instanceof Error ? e.message : "Não foi possível abrir a cotação.");
-      }
-    });
-  }
-
-  const visiveis = linhas.filter((l) => {
-    if (filtro === "todas") return true;
-    if (filtro === "ativas") return l.status === "RASCUNHO" || l.status === "ABERTA";
-    return l.status === filtro;
-  });
-
   return (
     <div className="flex flex-col gap-5">
+      <PageHeader
+        title="Cotações"
+        icon={navIcon("/cotacoes")}
+        description={descricao}
+        innerClassName="max-w-none"
+        actions={
+          podePedir ? (
+            <div className="flex items-center gap-2">
+              <Link
+                href="/cotacoes/reposicao-inteligente"
+                className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+              >
+                <Sparkles size={15} className="text-muted" />
+                <span className="hidden sm:inline">Sugestão de reposição</span>
+                {produtosSugeridos > 0 && (
+                  <span className="rounded-full bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-accent">
+                    {produtosSugeridos}
+                  </span>
+                )}
+              </Link>
+              <button
+                type="button"
+                onClick={novaCotacao}
+                disabled={pendente}
+                className="flex items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
+              >
+                <Plus size={15} />
+                {pendente ? "Abrindo…" : "Nova cotação"}
+              </button>
+            </div>
+          ) : undefined
+        }
+      />
+
       {erro && <p className="text-[13px] text-danger">{erro}</p>}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -128,33 +198,26 @@ export function ListaCotacoes({
           ))}
         </div>
 
-        {podePedir && (
-          <div className="flex items-center gap-2">
-            <Link
-              href="/cotacoes/reposicao-inteligente"
-              className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-            >
-              <Sparkles size={15} className="text-muted" />
-              <span className="hidden sm:inline">Sugestão de reposição</span>
-              {/* O card de totalizador saiu, mas o número continua valendo:
-                  vive no botão que leva justamente para ele. */}
-              {produtosSugeridos > 0 && (
-                <span className="rounded-full bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-semibold text-accent tabular-nums">
-                  {produtosSugeridos}
-                </span>
-              )}
-            </Link>
-            <button
-              type="button"
-              onClick={novaCotacao}
-              disabled={pendente}
-              className="flex items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
-            >
-              <Plus size={15} />
-              {pendente ? "Abrindo…" : "Nova cotação"}
-            </button>
-          </div>
-        )}
+        <div
+          role="group"
+          aria-label="Formato da lista"
+          className="flex gap-0.5 rounded-full border border-line bg-surface p-0.5"
+        >
+          <BotaoVisao
+            ativo={visao === "lista"}
+            onClick={() => escolherVisao("lista")}
+            rotulo="Ver em lista"
+          >
+            <List size={15} />
+          </BotaoVisao>
+          <BotaoVisao
+            ativo={visao === "cards"}
+            onClick={() => escolherVisao("cards")}
+            rotulo="Ver em cartões"
+          >
+            <LayoutGrid size={15} />
+          </BotaoVisao>
+        </div>
       </div>
 
       {visiveis.length === 0 ? (
@@ -176,109 +239,46 @@ export function ListaCotacoes({
           }
         />
       ) : (
-        <ul className="flex flex-col gap-2">
-          {visiveis.map((l, indice) => {
-            const prazo = l.status === "ABERTA" ? prazoTexto(l.prazoResposta) : null;
-            const rotulo = statusVisivel(
-              l.status,
-              l.totalConvidados,
-              l.totalRespondidos,
-              l.totalRecusados,
-            );
-            const respondeuTudo = rotulo.id === "RESPONDIDA";
-            return (
-              <li key={l.id} className="group relative">
-                <Link
-                  href={`/cotacoes/${l.id}`}
-                  className="flex items-center gap-4 rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-3.5 transition-colors hover:border-brand"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-[12px] font-semibold text-muted">
-                        {l.numero}
-                      </span>
-                      <span
-                        className={cn(
-                          "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                          rotulo.classe,
-                        )}
-                      >
-                        {rotulo.label}
-                      </span>
-                      {prazo && (
-                        <span
-                          className={cn(
-                            "text-[11px] font-medium",
-                            prazo.urgente ? "text-accent" : "text-faint",
-                          )}
-                        >
-                          {prazo.texto}
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 truncate font-display text-[15px] font-semibold text-ink">
-                      {l.titulo}
-                    </p>
-                    <p className="mt-0.5 truncate text-[12px] text-muted">
-                      {l.totalItens} {l.totalItens === 1 ? "item" : "itens"}
-                      {multiSite && ` · ${l.siteNome}`}
-                      {l.status === "ABERTA" &&
-                        ` · ${andamento(l.totalConvidados, l.totalRespondidos)}`}
-                    </p>
-                  </div>
+        <ul
+          className={cn(
+            visao === "lista"
+              ? "flex flex-col gap-2"
+              : "grid gap-3 sm:grid-cols-2 xl:grid-cols-3",
+          )}
+        >
+          {visiveis.map((l, indice) => (
+            <li key={l.id} className="group relative">
+              {visao === "lista" ? (
+                <LinhaCotacao linha={l} multiSite={multiSite} />
+              ) : (
+                <CartaoCotacao linha={l} multiSite={multiSite} />
+              )}
 
-                  <div className="hidden shrink-0 text-right sm:block">
-                    <p
-                      className={cn(
-                        "font-mono text-[13px] font-semibold tabular-nums",
-                        respondeuTudo ? "text-ok" : "text-ink",
-                      )}
-                    >
-                      {l.totalRespondidos}/{l.totalConvidados}
-                    </p>
-                    <p className="text-[11px] text-faint">fornecedores responderam</p>
-                  </div>
-
-                  {/* Espaço reservado mesmo sem proposta: sem isso a coluna
-                      dança de linha em linha. O vazio já diz que ninguém
-                      fechou a lista inteira — escrever isso era ruído. */}
-                  <div className="hidden w-28 shrink-0 text-right md:block">
-                    {l.melhorTotal !== null && (
-                      <>
-                        <p className="font-mono text-[15px] font-semibold tabular-nums text-ink">
-                          {fmtMoney(l.melhorTotal)}
-                        </p>
-                        <p className="text-[11px] text-faint">melhor proposta</p>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Espaço do menu de ações: ele mora fora do link (senão
-                      abriria a cotação junto), então a linha reserva o lugar. */}
-                  <span className="w-8 shrink-0" aria-hidden />
-                </Link>
-
-                {podePedir && (
-                  <MenuLinha
-                    aberto={menuAberto === l.id}
-                    onAbrir={() => setMenuAberto(menuAberto === l.id ? null : l.id)}
-                    onFechar={() => setMenuAberto(null)}
-                    numero={l.numero}
-                    pendente={pendente}
-                    podeExcluir={l.status === "RASCUNHO"}
-                    onDuplicar={() => duplicar(l.id)}
-                    onExcluir={() => {
-                      setMenuAberto(null);
-                      setAExcluir(l);
-                    }}
-                    /* As duas últimas linhas abrem o menu para CIMA: para baixo
-                       ele passaria do fim da lista e ficaria cortado. */
-                    paraCima={indice >= visiveis.length - 2 && visiveis.length > 2}
-                  />
-                )}
-              </li>
-            );
-          })}
+              {podePedir && (
+                <MenuLinha
+                  aberto={menuAberto === l.id}
+                  onAbrir={() => setMenuAberto(menuAberto === l.id ? null : l.id)}
+                  onFechar={() => setMenuAberto(null)}
+                  numero={l.numero}
+                  pendente={pendente}
+                  podeExcluir={l.status === "RASCUNHO"}
+                  onDuplicar={() => duplicar(l.id)}
+                  onExcluir={() => {
+                    setMenuAberto(null);
+                    setAExcluir(l);
+                  }}
+                  emCartao={visao === "cards"}
+                  /* As duas últimas linhas abrem o menu para CIMA: para baixo
+                     ele passaria do fim da lista e ficaria cortado. */
+                  paraCima={
+                    visao === "lista" &&
+                    indice >= visiveis.length - 2 &&
+                    visiveis.length > 2
+                  }
+                />
+              )}
+            </li>
+          ))}
         </ul>
       )}
 
@@ -291,6 +291,161 @@ export function ListaCotacoes({
         />
       )}
     </div>
+  );
+}
+
+function BotaoVisao({
+  ativo,
+  onClick,
+  rotulo,
+  children,
+}: {
+  ativo: boolean;
+  onClick: () => void;
+  rotulo: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={ativo}
+      aria-label={rotulo}
+      title={rotulo}
+      className={cn(
+        "grid h-8 w-8 place-items-center rounded-full transition-colors",
+        ativo ? "bg-brand text-on-brand" : "text-muted hover:text-ink",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ── Dados que as duas visões compartilham ───────────────────
+
+/** Itens · fornecedores · prazo, cada um com seu ícone. */
+function Metadados({
+  linha,
+  multiSite,
+}: {
+  linha: CotacaoRow;
+  multiSite: boolean;
+}) {
+  const prazo = linha.status === "ABERTA" ? prazoTexto(linha.prazoResposta) : null;
+  return (
+    <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted">
+      <span className="inline-flex items-center gap-1">
+        <Package size={13} className="text-faint" />
+        {linha.totalItens} {linha.totalItens === 1 ? "item" : "itens"}
+      </span>
+
+      <span className="inline-flex items-center gap-1">
+        <Truck size={13} className="text-faint" />
+        {linha.status === "RASCUNHO" || linha.totalConvidados === 0
+          ? `${linha.totalConvidados} ${linha.totalConvidados === 1 ? "fornecedor" : "fornecedores"}`
+          : `${linha.totalRespondidos}/${linha.totalConvidados} responderam`}
+      </span>
+
+      {prazo && (
+        <span
+          className={cn("inline-flex items-center gap-1", prazo.urgente && "text-accent")}
+        >
+          <CalendarClock size={13} className={cn(!prazo.urgente && "text-faint")} />
+          {prazo.texto}
+        </span>
+      )}
+
+      {multiSite && <span className="truncate">{linha.siteNome}</span>}
+    </p>
+  );
+}
+
+function Identificacao({ linha, espalhar }: { linha: CotacaoRow; espalhar?: boolean }) {
+  const rotulo = statusVisivel(
+    linha.status,
+    linha.totalConvidados,
+    linha.totalRespondidos,
+    linha.totalRecusados,
+  );
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-2",
+        espalhar ? "justify-between" : "flex-wrap",
+      )}
+    >
+      <span className="font-mono text-[12px] font-semibold text-muted">{linha.numero}</span>
+      <span
+        className={cn(
+          "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+          rotulo.classe,
+        )}
+      >
+        {rotulo.label}
+      </span>
+    </div>
+  );
+}
+
+function LinhaCotacao({ linha, multiSite }: { linha: CotacaoRow; multiSite: boolean }) {
+  return (
+    <Link
+      href={`/cotacoes/${linha.id}`}
+      className="flex items-center gap-4 rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-3.5 transition-colors hover:border-brand"
+    >
+      <div className="min-w-0 flex-1">
+        <Identificacao linha={linha} />
+        <p className="mt-0.5 truncate font-display text-[15px] font-semibold text-ink">
+          {linha.titulo}
+        </p>
+        <div className="mt-1">
+          <Metadados linha={linha} multiSite={multiSite} />
+        </div>
+      </div>
+
+      <div className="hidden w-28 shrink-0 text-right md:block">
+        {linha.melhorTotal !== null && (
+          <>
+            <p className="font-mono text-[15px] font-semibold tabular-nums text-ink">
+              {fmtMoney(linha.melhorTotal)}
+            </p>
+            <p className="text-[11px] text-faint">melhor proposta</p>
+          </>
+        )}
+      </div>
+
+      {/* Espaço do menu de ações: ele mora fora do link (senão abriria a
+          cotação junto), então a linha reserva o lugar. */}
+      <span className="w-8 shrink-0" aria-hidden />
+    </Link>
+  );
+}
+
+function CartaoCotacao({ linha, multiSite }: { linha: CotacaoRow; multiSite: boolean }) {
+  return (
+    <Link
+      href={`/cotacoes/${linha.id}`}
+      className="flex h-full flex-col gap-2 rounded-[var(--radius-lg)] border border-line bg-surface p-4 transition-colors hover:border-brand"
+    >
+      <Identificacao linha={linha} espalhar />
+      <p className="line-clamp-2 font-display text-[15px] font-semibold leading-snug text-ink">
+        {linha.titulo}
+      </p>
+      {/* O menu de ações mora sobre esta linha, à direita — daí o recuo. */}
+      <div className="pr-9">
+        <Metadados linha={linha} multiSite={multiSite} />
+      </div>
+
+      {linha.melhorTotal !== null && (
+        <p className="mt-auto border-t border-line pt-2">
+          <span className="font-mono text-[17px] font-semibold tabular-nums text-ink">
+            {fmtMoney(linha.melhorTotal)}
+          </span>
+          <span className="ml-1.5 text-[11px] text-faint">melhor proposta</span>
+        </p>
+      )}
+    </Link>
   );
 }
 
@@ -309,6 +464,7 @@ function MenuLinha({
   onDuplicar,
   onExcluir,
   paraCima,
+  emCartao,
 }: {
   aberto: boolean;
   onAbrir: () => void;
@@ -319,6 +475,7 @@ function MenuLinha({
   onDuplicar: () => void;
   onExcluir: () => void;
   paraCima: boolean;
+  emCartao: boolean;
 }) {
   return (
     <>
@@ -335,7 +492,8 @@ function MenuLinha({
         aria-haspopup="menu"
         aria-expanded={aberto}
         className={cn(
-          "absolute top-1/2 right-3 z-40 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50",
+          "absolute right-3 z-40 grid h-8 w-8 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50",
+          emCartao ? "bottom-3" : "top-1/2 -translate-y-1/2",
           aberto && "bg-surface-2 text-ink",
         )}
       >
@@ -347,7 +505,7 @@ function MenuLinha({
           role="menu"
           className={cn(
             "absolute right-3 z-40 w-48 overflow-hidden rounded-[var(--radius)] border border-line bg-surface py-1 shadow-[var(--shadow-float)]",
-            paraCima ? "bottom-1/2 mb-5" : "top-1/2 mt-5",
+            emCartao ? "bottom-12" : paraCima ? "bottom-1/2 mb-5" : "top-1/2 mt-5",
           )}
         >
           <button
@@ -402,9 +560,9 @@ function ConfirmarExclusao({
         </h2>
         <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
           A cotação <span className="font-medium text-ink">{cotacao.titulo}</span> (
-          <span className="font-mono">{cotacao.numero}</span>) e seus{" "}
-          {cotacao.totalItens} {cotacao.totalItens === 1 ? "item" : "itens"} somem de vez. Isso
-          não pode ser desfeito.
+          <span className="font-mono">{cotacao.numero}</span>) e seus {cotacao.totalItens}{" "}
+          {cotacao.totalItens === 1 ? "item" : "itens"} somem de vez. Isso não pode ser
+          desfeito.
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button

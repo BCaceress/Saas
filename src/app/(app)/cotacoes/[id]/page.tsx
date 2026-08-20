@@ -3,7 +3,12 @@ import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { podeEmAlguma } from "@/lib/permissoes";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { resumirCotacao } from "@/lib/compras/cotacao-resumo";
-import { loadCotacao, loadOpcoes, loadReferenciasPreco } from "../_compra-data";
+import {
+  loadCotacao,
+  loadFornecedoresOpcao,
+  loadReferenciasPreco,
+} from "../_compra-data";
+import { listSites } from "@/lib/sites";
 import { CotacaoDetalheClient } from "./_client";
 
 export default async function CotacaoPage({
@@ -17,11 +22,17 @@ export default async function CotacaoPage({
   const dados = await withTenant(ctx, async () => {
     const cotacao = await loadCotacao(id);
     if (!cotacao) return null;
-    const [opcoes, referencias] = await Promise.all([
-      loadOpcoes(),
+    const [fornecedores, sites, referencias] = await Promise.all([
+      loadFornecedoresOpcao(),
+      listSites(),
       loadReferenciasPreco(cotacao),
     ]);
-    return { cotacao, opcoes, referencias };
+    return {
+      cotacao,
+      fornecedores,
+      sites: sites.map((s) => ({ id: s.id, nome: s.nome })),
+      referencias,
+    };
   });
 
   if (!dados) notFound();
@@ -55,9 +66,8 @@ export default async function CotacaoPage({
   return (
     <CotacaoDetalheClient
       cotacao={dados.cotacao}
-      produtos={dados.opcoes.produtos}
-      fornecedores={dados.opcoes.fornecedores}
-      sites={dados.opcoes.sites}
+      fornecedores={dados.fornecedores}
+      sites={dados.sites}
       resumo={resumo}
       podePedir={podeEmAlguma(ctx.acessos, "compras.pedir")}
       usaMinimo={policyDoTenant(ctx.tenant).usaMinimo}

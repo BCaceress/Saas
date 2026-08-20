@@ -10,6 +10,7 @@ import {
   ThumbsDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { mascaraMoeda, paraMascara, paraNumero } from "@/lib/moeda";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
@@ -43,35 +44,6 @@ const fmtMoeda = (v: number) =>
 
 const fmtData = (iso: string) =>
   new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "long" });
-
-/** Aceita "5,89" e "5.89" — o fornecedor digita como está acostumado. */
-function paraNumero(texto: string): number | null {
-  const limpo = texto.replace(/\s/g, "").replace(/\./g, "").replace(",", ".");
-  if (!limpo) return null;
-  const n = Number(limpo);
-  return Number.isFinite(n) && n >= 0 ? n : null;
-}
-
-/**
- * Máscara de centavos: cada dígito entra pela direita, como em maquininha e
- * caixa. Sem ela, "5" fica ambíguo (cinco reais? cinco centavos?) e o
- * fornecedor precisa lembrar de digitar a vírgula — que no teclado numérico do
- * celular nem sempre está à mão.
- */
-function mascaraMoeda(texto: string): string {
-  const digitos = texto.replace(/\D/g, "").replace(/^0+(?=\d)/, "").slice(0, 11);
-  if (!digitos) return "";
-  return (Number(digitos) / 100).toLocaleString("pt-BR", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
-/** Valor já gravado (5.89) de volta para o formato da máscara ("5,89"). */
-function paraMascara(valor: number): string {
-  if (!valor) return "";
-  return mascaraMoeda(String(Math.round(valor * 100)));
-}
 
 /** Campo de dinheiro: R$ fixo à esquerda, máscara no que o dedo digita. */
 const CampoPreco = forwardRef<
@@ -299,7 +271,6 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
             key={item.id}
             item={item}
             linha={porItem.get(item.id)!}
-            total={totalDaLinha(item)}
             onAlterar={(campo) => alterar(item.id, campo)}
           />
         ))}
@@ -320,7 +291,6 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
                 key={item.id}
                 item={item}
                 linha={porItem.get(item.id)!}
-                total={totalDaLinha(item)}
                 onAlterar={(campo) => alterar(item.id, campo)}
                 refPreco={(el) => {
                   camposPreco.current[indice] = el;
@@ -607,12 +577,10 @@ function Disponibilidade({
 function CartaoItem({
   item,
   linha,
-  total,
   onAlterar,
 }: {
   item: ItemPublico;
   linha: LinhaForm;
-  total: number;
   onAlterar: (campo: Partial<LinhaForm>) => void;
 }) {
   const indisponivel = linha.situacao === "nao";
@@ -665,12 +633,6 @@ function CartaoItem({
         </div>
       )}
 
-      {!indisponivel && total > 0 && (
-        <p className="mt-2 text-right text-[12px] text-muted">
-          Total do item <span className="font-mono text-ink">{fmtMoeda(total)}</span>
-        </p>
-      )}
-
       {indisponivel && (
         <p className="mt-3 text-[13px] text-muted">
           Marcado como indisponível — o comprador vê que este item não foi cotado.
@@ -685,14 +647,12 @@ function CartaoItem({
 function LinhaItem({
   item,
   linha,
-  total,
   onAlterar,
   refPreco,
   onKeyDownPreco,
 }: {
   item: ItemPublico;
   linha: LinhaForm;
-  total: number;
   onAlterar: (campo: Partial<LinhaForm>) => void;
   refPreco: (el: HTMLInputElement | null) => void;
   onKeyDownPreco: React.KeyboardEventHandler<HTMLInputElement>;
@@ -766,9 +726,6 @@ function LinhaItem({
               onKeyDown={onKeyDownPreco}
               alinharDireita
             />
-            {total > 0 && (
-              <p className="mt-1 font-mono text-[12px] text-muted">{fmtMoeda(total)}</p>
-            )}
           </>
         )}
       </div>

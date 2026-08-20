@@ -2,19 +2,34 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight, Handshake, Loader2, Plus } from "lucide-react";
+import { CalendarClock, Handshake, Loader2, Package, Plus, Truck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
 import { MCard, MCardLink } from "@/components/mobile/ui";
 import type { CotacaoRow } from "@/app/(app)/cotacoes/_compra-types";
-import { andamento, statusVisivel } from "@/app/(app)/cotacoes/_status";
+import { statusVisivel } from "@/app/(app)/cotacoes/_status";
 import { criarCotacaoAction } from "@/app/(app)/cotacoes/_compra-actions";
 
 // ── Lista de cotações (celular) ─────────────────────────────
 // Cartão em vez de linha: o que interessa em movimento é o estado (quantos
 // responderam) e o relógio (quanto falta), e isso não cabe numa linha de 390px
 // sem virar sopa de letra.
+//
+// Os três dados viram ícone + número (itens, fornecedores, prazo): em cartão
+// estreito a pessoa varre símbolos, não lê frases. O status fica ancorado à
+// direita, onde o polegar já está — e a seta saiu: cartão inteiro é o alvo, a
+// seta só repetia isso ocupando 16px de largura útil.
+
+/** Quanto tempo resta — o que decide se dá para esperar mais um dia. */
+function prazoTexto(iso: string | null): { texto: string; urgente: boolean } | null {
+  if (!iso) return null;
+  const dias = Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000);
+  if (dias < 0) return { texto: "Prazo vencido", urgente: true };
+  if (dias === 0) return { texto: "Vence hoje", urgente: true };
+  if (dias === 1) return { texto: "Vence amanhã", urgente: true };
+  return { texto: `Vence em ${dias} dias`, urgente: dias <= 2 };
+}
 
 const FILTROS = [
   { id: "ativas", label: "Ativas" },
@@ -99,34 +114,54 @@ export function CotacoesMobile({
               l.totalRespondidos,
               l.totalRecusados,
             );
+            const prazo = l.status === "ABERTA" ? prazoTexto(l.prazoResposta) : null;
             return (
               <li key={l.id}>
-                <MCardLink href={`/m/cotacoes/${l.id}`} className="flex items-center gap-3 p-4">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-[11px] font-semibold text-muted">
-                        {l.numero}
-                      </span>
+                <MCardLink href={`/m/cotacoes/${l.id}`} className="block p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="font-mono text-[11px] font-semibold text-muted">
+                      {l.numero}
+                    </span>
+                    <span
+                      className={cn(
+                        "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
+                        rotulo.classe,
+                      )}
+                    >
+                      {rotulo.label}
+                    </span>
+                  </div>
+
+                  <p className="mt-1 truncate font-display text-[15px] font-semibold text-ink">
+                    {l.titulo}
+                  </p>
+
+                  <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted">
+                    <span className="inline-flex items-center gap-1">
+                      <Package className="size-3.5 text-faint" aria-hidden />
+                      {l.totalItens} {l.totalItens === 1 ? "item" : "itens"}
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <Truck className="size-3.5 text-faint" aria-hidden />
+                      {l.status === "RASCUNHO" || l.totalConvidados === 0
+                        ? `${l.totalConvidados} ${l.totalConvidados === 1 ? "fornecedor" : "fornecedores"}`
+                        : `${l.totalRespondidos}/${l.totalConvidados}`}
+                    </span>
+                    {prazo && (
                       <span
                         className={cn(
-                          "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
-                          rotulo.classe,
+                          "inline-flex items-center gap-1",
+                          prazo.urgente && "text-accent",
                         )}
                       >
-                        {rotulo.label}
+                        <CalendarClock
+                          className={cn("size-3.5", !prazo.urgente && "text-faint")}
+                          aria-hidden
+                        />
+                        {prazo.texto}
                       </span>
-                    </div>
-                    <p className="mt-1 truncate font-display text-[15px] font-semibold text-ink">
-                      {l.titulo}
-                    </p>
-                    <p className="mt-0.5 truncate text-[12px] text-muted">
-                      {l.totalItens} {l.totalItens === 1 ? "item" : "itens"}
-                      {l.status === "ABERTA"
-                        ? ` · ${andamento(l.totalConvidados, l.totalRespondidos)}`
-                        : ` · ${l.siteNome}`}
-                    </p>
-                  </div>
-                  <ChevronRight className="size-4 shrink-0 text-faint" aria-hidden />
+                    )}
+                  </p>
                 </MCardLink>
               </li>
             );

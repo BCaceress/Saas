@@ -3,9 +3,9 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Ban, Check, CheckCheck, Lock, Tag, Unlock } from "lucide-react";
+import { ArrowLeft, Ban, Check, CheckCheck, Lock, Unlock } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { CotacaoDetalhe, FornecedorOpcao, ProdutoOpcao } from "../_compra-types";
+import type { CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
 import {
   cancelarCotacaoAction,
   descartarSeVaziaAction,
@@ -13,11 +13,11 @@ import {
   reabrirCotacaoAction,
 } from "../_compra-actions";
 import type { ResumoCotacao } from "@/lib/compras/cotacao-resumo";
+import { regrasDaCotacao } from "@/lib/compras/cotacao-regras";
 import { ItensCotacao } from "./_itens";
 import { ConvitesCotacao } from "./_convites";
 import { ComparativoCotacao } from "./_comparativo";
 import { ResumoCotacaoPainel } from "./_resumo";
-import { CotarCatalogo } from "./_cotar";
 import { RevisarCotacao } from "./_revisar";
 import { andamento, statusVisivel } from "../_status";
 
@@ -30,11 +30,8 @@ import { andamento, statusVisivel } from "../_status";
 //
 // Enviada em diante → ABAS. A ordem já não manda: ele volta no que precisar,
 // e o painel que abre por padrão é o do momento em que a cotação está.
-//
-// "Preços do catálogo" (cotar) fica fora do trilho de propósito: é atalho de
-// quem já tem tabela do fornecedor, não etapa de todo mundo.
 
-type Painel = "itens" | "cotar" | "fornecedores" | "revisar" | "comparativo";
+type Painel = "itens" | "fornecedores" | "revisar" | "comparativo";
 
 const PASSOS: { id: Painel; label: string }[] = [
   { id: "itens", label: "Produtos" },
@@ -44,7 +41,6 @@ const PASSOS: { id: Painel; label: string }[] = [
 
 export function CotacaoDetalheClient({
   cotacao,
-  produtos,
   fornecedores,
   sites,
   resumo,
@@ -52,7 +48,6 @@ export function CotacaoDetalheClient({
   usaMinimo,
 }: {
   cotacao: CotacaoDetalhe;
-  produtos: ProdutoOpcao[];
   fornecedores: FornecedorOpcao[];
   /** Lojas ativas: com uma só, o nome dela não informa nada e some da tela. */
   sites: { id: string; nome: string }[];
@@ -66,12 +61,15 @@ export function CotacaoDetalheClient({
     temResposta ? "comparativo" : rascunho ? "itens" : "fornecedores",
   );
 
-  const fechada = cotacao.status === "DECIDIDA" || cotacao.status === "CANCELADA";
-  const editavel = podePedir && !fechada;
+  // Mesma régua que as Server Actions aplicam (`lib/compras/cotacao-regras`):
+  // depois da primeira resposta a LISTA congela — mudar o que foi perguntado
+  // invalidaria a proposta que já chegou. Fornecedor novo ainda entra; sair da
+  // cotação, só antes de ela ter sido enviada.
+  const regras = regrasDaCotacao(cotacao.status, cotacao.convites);
+  const editavel = podePedir && !regras.fechada;
 
   const PAINEIS: { id: Painel; label: string; contador: number }[] = [
     { id: "itens", label: "Itens", contador: cotacao.itens.length },
-    { id: "cotar", label: "Cotar", contador: cotacao.itens.filter((i) => i.productId).length },
     { id: "fornecedores", label: "Fornecedores", contador: cotacao.convites.length },
     {
       id: "comparativo",
@@ -87,7 +85,6 @@ export function CotacaoDetalheClient({
     itens: cotacao.itens.length > 0,
     fornecedores: cotacao.convites.length > 0,
     revisar: false,
-    cotar: false,
     comparativo: false,
   };
 
@@ -96,13 +93,7 @@ export function CotacaoDetalheClient({
       <Cabecalho cotacao={cotacao} podePedir={podePedir} multiSite={sites.length > 1} />
 
       {rascunho ? (
-        <Trilho
-          atual={painel}
-          feito={feito}
-          onIr={setPainel}
-          onCatalogo={() => setPainel("cotar")}
-          noCatalogo={painel === "cotar"}
-        />
+        <Trilho atual={painel} feito={feito} onIr={setPainel} />
       ) : (
         <div className="flex items-center gap-1 overflow-x-auto border-b border-line">
           {PAINEIS.map((p) => (
@@ -135,12 +126,11 @@ export function CotacaoDetalheClient({
       {painel === "itens" && (
         <ItensCotacao
           cotacao={cotacao}
-          produtos={produtos}
-          editavel={editavel}
+          editavel={editavel && regras.itens.pode}
+          travado={editavel && !regras.itens.pode ? regras.itens.motivo : null}
           usaMinimo={usaMinimo}
         />
       )}
-      {painel === "cotar" && <CotarCatalogo cotacao={cotacao} editavel={editavel} />}
       {painel === "revisar" && (
         <RevisarCotacao
           cotacao={cotacao}
@@ -154,6 +144,8 @@ export function CotacaoDetalheClient({
           cotacao={cotacao}
           fornecedores={fornecedores}
           editavel={editavel}
+          podeConvidar={editavel && regras.convidar.pode}
+          podeRemover={editavel && regras.desconvidar.pode}
           onVerComparativo={() => setPainel("comparativo")}
         />
       )}
@@ -165,9 +157,7 @@ export function CotacaoDetalheClient({
         </>
       )}
 
-      {rascunho && painel !== "cotar" && (
-        <Navegacao atual={painel} feito={feito} onIr={setPainel} />
-      )}
+      {rascunho && <Navegacao atual={painel} feito={feito} onIr={setPainel} />}
     </div>
   );
 }
@@ -178,17 +168,13 @@ function Trilho({
   atual,
   feito,
   onIr,
-  onCatalogo,
-  noCatalogo,
 }: {
   atual: Painel;
   feito: Record<Painel, boolean>;
   onIr: (p: Painel) => void;
-  onCatalogo: () => void;
-  noCatalogo: boolean;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-3">
+    <div className="flex flex-wrap items-center gap-3 border-b border-line pb-3">
       <ol className="flex items-center gap-1 overflow-x-auto">
         {PASSOS.map((p, i) => {
           const ativo = atual === p.id;
@@ -223,18 +209,6 @@ function Trilho({
           );
         })}
       </ol>
-
-      <button
-        type="button"
-        onClick={onCatalogo}
-        className={cn(
-          "flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] font-medium transition-colors",
-          noCatalogo ? "bg-accent-soft text-accent" : "text-muted hover:text-ink",
-        )}
-      >
-        <Tag size={14} />
-        Preços do catálogo
-      </button>
     </div>
   );
 }
@@ -304,12 +278,48 @@ function Cabecalho({
   const router = useRouter();
   const [pendente, startTransition] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
+  /**
+   * Encerrar, reabrir e cancelar mudam o que o FORNECEDOR vê do outro lado —
+   * encerrar fecha o link no meio do preenchimento dele, cancelar mata a
+   * cotação inteira. Clique solto em botão de barra não pode disparar isso.
+   */
+  const [confirmar, setConfirmar] = useState<null | "encerrar" | "reabrir" | "cancelar">(
+    null,
+  );
+
+  const CONFIRMACOES = {
+    encerrar: {
+      titulo: "Encerrar a cotação",
+      texto:
+        "Os links param de aceitar resposta na hora — quem estiver preenchendo perde o que digitou. Você continua podendo comparar e gerar pedidos, e dá para reabrir depois.",
+      acao: "Encerrar",
+      perigo: false,
+      executar: () => encerrarCotacaoAction(cotacao.id),
+    },
+    reabrir: {
+      titulo: "Reabrir a cotação",
+      texto:
+        "Os fornecedores voltam a poder responder pelos links que já receberam. As respostas que já entraram continuam valendo.",
+      acao: "Reabrir",
+      perigo: false,
+      executar: () => reabrirCotacaoAction(cotacao.id),
+    },
+    cancelar: {
+      titulo: "Cancelar a cotação",
+      texto:
+        "A cotação sai do fluxo e os links deixam de funcionar. O histórico e as respostas ficam guardados, mas ela não vira pedido — e isso não se desfaz.",
+      acao: "Cancelar cotação",
+      perigo: true,
+      executar: () => cancelarCotacaoAction(cotacao.id),
+    },
+  } as const;
 
   function rodar(fn: () => Promise<unknown>) {
     setErro(null);
     startTransition(async () => {
       try {
         await fn();
+        setConfirmar(null);
         router.refresh();
       } catch (e) {
         setErro(e instanceof Error ? e.message : "Não foi possível concluir.");
@@ -396,7 +406,7 @@ function Cabecalho({
             {cotacao.status === "ABERTA" && (
               <button
                 type="button"
-                onClick={() => rodar(() => encerrarCotacaoAction(cotacao.id))}
+                onClick={() => setConfirmar("encerrar")}
                 disabled={pendente}
                 className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
               >
@@ -407,7 +417,7 @@ function Cabecalho({
             {cotacao.status === "ENCERRADA" && (
               <button
                 type="button"
-                onClick={() => rodar(() => reabrirCotacaoAction(cotacao.id))}
+                onClick={() => setConfirmar("reabrir")}
                 disabled={pendente}
                 className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
               >
@@ -420,7 +430,7 @@ function Cabecalho({
               cotacao.status === "ENCERRADA") && (
               <button
                 type="button"
-                onClick={() => rodar(() => cancelarCotacaoAction(cotacao.id))}
+                onClick={() => setConfirmar("cancelar")}
                 disabled={pendente}
                 className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:border-danger hover:text-danger disabled:opacity-50"
               >
@@ -448,6 +458,77 @@ function Cabecalho({
       )}
 
       {erro && <p className="text-[13px] text-danger">{erro}</p>}
+
+      {confirmar && (
+        <ConfirmarAcao
+          titulo={CONFIRMACOES[confirmar].titulo}
+          texto={CONFIRMACOES[confirmar].texto}
+          acao={CONFIRMACOES[confirmar].acao}
+          perigo={CONFIRMACOES[confirmar].perigo}
+          pendente={pendente}
+          onFechar={() => setConfirmar(null)}
+          onConfirmar={() => rodar(CONFIRMACOES[confirmar].executar)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Confirmação de mudança de estado ────────────────────────
+
+function ConfirmarAcao({
+  titulo,
+  texto,
+  acao,
+  perigo,
+  pendente,
+  onFechar,
+  onConfirmar,
+}: {
+  titulo: string;
+  texto: string;
+  acao: string;
+  perigo: boolean;
+  pendente: boolean;
+  onFechar: () => void;
+  onConfirmar: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/30 p-0 sm:items-center sm:p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirmar-acao-titulo"
+        className="w-full max-w-md rounded-t-[var(--radius-xl)] border border-line bg-surface p-5 shadow-[var(--shadow-float)] sm:rounded-[var(--radius-xl)]"
+      >
+        <h2
+          id="confirmar-acao-titulo"
+          className="font-display text-[17px] font-semibold text-ink"
+        >
+          {titulo}
+        </h2>
+        <p className="mt-1.5 text-[13px] leading-relaxed text-muted">{texto}</p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onFechar}
+            className="rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+          >
+            Voltar
+          </button>
+          <button
+            type="button"
+            onClick={onConfirmar}
+            disabled={pendente}
+            className={cn(
+              "rounded-full px-4 py-2 text-sm font-semibold text-on-brand transition-colors disabled:opacity-50",
+              perigo ? "bg-danger hover:opacity-90" : "bg-brand hover:bg-brand-strong",
+            )}
+          >
+            {pendente ? "Um instante…" : acao}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -10,6 +10,7 @@ import {
   Package,
   Link as LinkIcon,
   Loader2,
+  Lock,
   MessageCircle,
   Minus,
   Plus,
@@ -36,6 +37,7 @@ import type {
   FornecedorOpcao,
 } from "@/app/(app)/cotacoes/_compra-types";
 import { andamento, statusVisivel } from "@/app/(app)/cotacoes/_status";
+import { regrasDaCotacao } from "@/lib/compras/cotacao-regras";
 import {
   adicionarItemAction,
   buscarProdutoPorCodigoCotacaoAction,
@@ -218,6 +220,11 @@ function RascunhoTrilho({
 }) {
   const i = PASSOS.findIndex((p) => p.id === passo);
 
+  // Mesma régua do servidor: um rascunho pode ter resposta registrada à mão
+  // (alguém ligou e passou preço pelo desktop). A partir daí a lista congela,
+  // aqui também — senão o celular oferece um botão que a Server Action recusa.
+  const regras = regrasDaCotacao(cotacao.status, cotacao.convites);
+
   // A seleção de fornecedor mora AQUI, e não dentro do passo, porque o botão
   // "Continuar" depende dela: preso à lista do servidor, ele só destravava
   // depois do refresh — meio segundo depois do toque, parecendo travado.
@@ -263,12 +270,18 @@ function RascunhoTrilho({
         })}
       </ol>
 
-      {passo === "produtos" && <PassoProdutos cotacao={cotacao} editavel={podePedir} />}
+      {passo === "produtos" && (
+        <PassoProdutos
+          cotacao={cotacao}
+          editavel={podePedir && regras.itens.pode}
+          travado={podePedir && !regras.itens.pode ? regras.itens.motivo : null}
+        />
+      )}
       {passo === "fornecedores" && (
         <PassoFornecedores
           cotacao={cotacao}
           fornecedores={fornecedores}
-          editavel={podePedir}
+          editavel={podePedir && regras.convidar.pode}
           toques={toques}
           onToques={setToques}
         />
@@ -349,9 +362,12 @@ const MIN_BUSCA = 3;
 function PassoProdutos({
   cotacao,
   editavel,
+  travado,
 }: {
   cotacao: CotacaoDetalhe;
   editavel: boolean;
+  /** Por que a lista congelou, para quem TERIA permissão de mexer nela. */
+  travado?: string | null;
 }) {
   const router = useRouter();
   const [lendo, setLendo] = React.useState(false);
@@ -563,6 +579,13 @@ function PassoProdutos({
 
   return (
     <div className="space-y-3">
+      {travado && (
+        <p className="flex items-start gap-2 rounded-[var(--radius)] border border-line bg-surface-2 px-3 py-2.5 text-[13px] leading-relaxed text-ink-2">
+          <Lock className="mt-0.5 size-3.5 shrink-0 text-muted" aria-hidden />
+          {travado}
+        </p>
+      )}
+
       {editavel && (
         <>
           {lendo && (

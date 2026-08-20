@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   RotateCcw,
@@ -16,7 +16,9 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { copiarTexto } from "@/lib/clipboard";
-import { EstadoVazio, SupplierAvatar, fmtMoney, fmtQuando } from "../_catalogo/ui";
+import { mascaraMoeda, paraMascara, paraNumero } from "@/lib/moeda";
+import { EstadoVazio, SupplierAvatar, fmtMoney, fmtQtd, fmtQuando } from "../_catalogo/ui";
+import { Thumb } from "../_ui";
 import type { ConviteCotacao, CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
 import { CanalPicker, type Canal } from "./_canal";
 import type { EmailEnvio } from "../_compra-actions";
@@ -74,11 +76,18 @@ export function ConvitesCotacao({
   cotacao,
   fornecedores,
   editavel,
+  podeConvidar,
+  podeRemover,
   onVerComparativo,
 }: {
   cotacao: CotacaoDetalhe;
   fornecedores: FornecedorOpcao[];
+  /** Cotação viva e a pessoa pode comprar: enviar, cobrar, registrar resposta. */
   editavel: boolean;
+  /** Chamar mais um para a disputa — vale mesmo depois de respostas chegarem. */
+  podeConvidar: boolean;
+  /** Tirar alguém da cotação — só em rascunho, antes de o convite existir lá fora. */
+  podeRemover: boolean;
   onVerComparativo: () => void;
 }) {
   const router = useRouter();
@@ -116,15 +125,17 @@ export function ConvitesCotacao({
       {editavel && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setConvidando(true)}
-            disabled={disponiveis.length === 0}
-            className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
-          >
-            <Users size={15} />
-            Convidar fornecedores
-          </button>
+          {podeConvidar && (
+            <button
+              type="button"
+              onClick={() => setConvidando(true)}
+              disabled={disponiveis.length === 0}
+              className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
+            >
+              <Users size={15} />
+              Convidar fornecedores
+            </button>
+          )}
 
           {aguardando.length > 0 && (
             <button
@@ -173,7 +184,7 @@ export function ConvitesCotacao({
           titulo="Nenhum fornecedor na cotação"
           descricao="Escolha os fornecedores que vão receber a lista. Quanto mais gente na disputa, melhor o preço."
           acao={
-            editavel ? (
+            podeConvidar ? (
               <button
                 type="button"
                 onClick={() => setConvidando(true)}
@@ -323,7 +334,10 @@ export function ConvitesCotacao({
                         Não vai cotar
                       </button>
                     )}
-                    {c.status !== "RESPONDIDA" && (
+                    {/* Sair da cotação só antes do envio: depois disso o
+                        fornecedor já foi incomodado, e apagar o convite some
+                        com o link que ele pode estar preenchendo agora. */}
+                    {podeRemover && c.status !== "RESPONDIDA" && (
                       <button
                         type="button"
                         onClick={() => rodar(() => removerConviteAction(c.id))}
@@ -485,15 +499,30 @@ function ConvidarSheet({
 }
 
 // ── Registrar resposta ──────────────────────────────────────
+// Quem digita aqui é o operador com o fornecedor no telefone (ou um PDF na
+// tela), e a régua é a velocidade: a mão fica no teclado, o Tab pula de preço
+// em preço e nada é obrigatório além do preço do que ele tem.
+//
+// Os mesmos três estados da tela pública — tem tudo, tem menos, não tem —
+// porque a resposta é a mesma coisa; muda só quem está com o teclado. Marca
+// saiu: era campo que ninguém preenchia e que empurrava o preço para fora da
+// vista em tela estreita.
+
+type Situacao = "tem" | "parcial" | "nao";
 
 type LinhaResposta = {
   quotationItemId: string;
-  disponivel: boolean;
-  precoUnitario: string;
-  /** Vazio = atende a quantidade pedida inteira. */
+  situacao: Situacao;
+  preco: string;
+  /** Só vale em "parcial": quanto ele consegue atender. */
   quantidade: string;
-  marca: string;
 };
+
+const SITUACOES: { id: Situacao; label: string }[] = [
+  { id: "tem", label: "Tem" },
+  { id: "parcial", label: "Menos" },
+  { id: "nao", label: "Não tem" },
+];
 
 function RespostaSheet({
   convite,
@@ -517,22 +546,21 @@ function RespostaSheet({
       disponivel: boolean;
       precoUnitario: number;
       quantidadeOfertada: number | null;
-      marca: string | null;
     }[];
   }) => void;
 }) {
   const [linhas, setLinhas] = useState<LinhaResposta[]>(() =>
     itens.map((i) => {
       const anterior = convite.respostas.find((r) => r.quotationItemId === i.id);
+      const parcial =
+        anterior?.disponivel === true &&
+        anterior.quantidadeOfertada !== null &&
+        anterior.quantidadeOfertada < i.quantidade;
       return {
         quotationItemId: i.id,
-        disponivel: anterior?.disponivel ?? true,
-        precoUnitario: anterior ? String(anterior.precoUnitario) : "",
-        quantidade:
-          anterior?.quantidadeOfertada != null && anterior.quantidadeOfertada !== i.quantidade
-            ? String(anterior.quantidadeOfertada)
-            : "",
-        marca: anterior?.marca ?? "",
+        situacao: anterior ? (anterior.disponivel ? (parcial ? "parcial" : "tem") : "nao") : "tem",
+        preco: anterior ? paraMascara(anterior.precoUnitario) : "",
+        quantidade: parcial ? String(anterior!.quantidadeOfertada) : "",
       };
     }),
   );
@@ -540,93 +568,187 @@ function RespostaSheet({
     convite.prazoEntregaDias === null ? "" : String(convite.prazoEntregaDias),
   );
   const [condicao, setCondicao] = useState(convite.condicaoPagamento ?? "");
-  const [frete, setFrete] = useState(convite.frete === null ? "" : String(convite.frete));
+  const [frete, setFrete] = useState(
+    convite.frete === null ? "" : paraMascara(convite.frete),
+  );
   const [observacao, setObservacao] = useState(convite.observacao ?? "");
 
-  const num = (v: string) => Number(v.replace(",", ".")) || 0;
-
-  const total =
-    linhas.reduce((acc, l, i) => {
-      if (!l.disponivel) return acc;
-      const pedida = itens[i]?.quantidade ?? 0;
-      const ofertada = l.quantidade ? num(l.quantidade) : pedida;
-      return acc + num(l.precoUnitario) * ofertada;
-    }, 0) + num(frete);
+  // Tab pula de preço em preço: sem isto ele cai nos botões de disponibilidade
+  // da linha seguinte, e uma lista de 30 itens vira 90 tabulações.
+  const camposPreco = useRef<(HTMLInputElement | null)[]>([]);
+  function aoTabular(e: React.KeyboardEvent<HTMLInputElement>, indice: number) {
+    if (e.key !== "Tab") return;
+    const alvo = camposPreco.current[indice + (e.shiftKey ? -1 : 1)];
+    if (!alvo) return;
+    e.preventDefault();
+    alvo.focus();
+    alvo.select();
+  }
 
   function atualizar(id: string, patch: Partial<LinhaResposta>) {
     setLinhas((ls) => ls.map((l) => (l.quotationItemId === id ? { ...l, ...patch } : l)));
   }
 
+  /** Quanto ele atende de fato — base do total da linha. */
+  function quantidadeEfetiva(indice: number, l: LinhaResposta): number {
+    const pedida = itens[indice]?.quantidade ?? 0;
+    if (l.situacao === "nao") return 0;
+    if (l.situacao === "parcial") return paraNumero(l.quantidade) ?? 0;
+    return pedida;
+  }
+
+  const totalItens = linhas.reduce((acc, l, i) => {
+    const preco = paraNumero(l.preco);
+    if (l.situacao === "nao" || preco === null) return acc;
+    return acc + preco * quantidadeEfetiva(i, l);
+  }, 0);
+  const total = totalItens + (paraNumero(frete) ?? 0);
+
+  const preenchidos = linhas.filter(
+    (l) => l.situacao === "nao" || paraNumero(l.preco) !== null,
+  ).length;
+
   return (
     <Modal
       titulo={`Resposta de ${convite.supplierNome}`}
-      descricao="Digite o que o fornecedor mandou por telefone, áudio ou PDF. Item sem preço marque como indisponível; quantidade em branco quer dizer que ele atende tudo."
-      largura="max-w-3xl"
+      descricao="Digite o que ele mandou por telefone, áudio ou PDF. Só o preço do que ele tem é obrigatório."
+      largura="max-w-5xl"
       onFechar={onFechar}
     >
-      <div className="max-h-[45vh] overflow-y-auto rounded-[var(--radius)] border border-line">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <span className="flex items-center gap-2">
+          <SupplierAvatar
+            nome={convite.supplierNome}
+            logoUrl={convite.supplierLogoUrl}
+            size={32}
+          />
+          <span className="text-sm font-medium text-ink">{convite.supplierNome}</span>
+        </span>
+        <span className="text-[13px] text-muted tabular-nums">
+          {preenchidos} de {linhas.length} itens preenchidos
+        </span>
+      </div>
+
+      <div className="max-h-[52vh] overflow-y-auto rounded-[var(--radius)] border border-line">
         <table className="w-full text-sm">
-          <thead className="sticky top-0 bg-surface-2 text-[11px] uppercase tracking-wide text-faint">
+          <thead className="sticky top-0 z-10 bg-surface-2 text-[11px] uppercase tracking-wide text-faint">
             <tr>
-              <th className="px-3 py-2 text-left font-medium">Item</th>
-              <th className="px-3 py-2 text-right font-medium">Qtd</th>
-              <th className="px-3 py-2 text-right font-medium">Preço unit.</th>
-              <th className="px-3 py-2 text-right font-medium">Tem quanto?</th>
-              <th className="px-3 py-2 text-left font-medium">Marca</th>
-              <th className="px-3 py-2 text-center font-medium">Tem?</th>
+              <th className="px-3 py-2 text-left font-medium">Produto</th>
+              <th className="w-40 px-3 py-2 text-right font-medium">Pedido</th>
+              <th className="w-56 px-3 py-2 text-left font-medium">Ele tem?</th>
+              <th className="w-36 px-3 py-2 text-right font-medium">Preço unit.</th>
+              <th className="w-28 px-3 py-2 text-right font-medium">Total</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
             {itens.map((item, i) => {
               const l = linhas[i];
+              const preco = paraNumero(l.preco);
+              const indisponivel = l.situacao === "nao";
+              const totalLinha =
+                preco === null || indisponivel ? 0 : preco * quantidadeEfetiva(i, l);
               return (
-                <tr key={item.id} className={cn(!l.disponivel && "opacity-50")}>
-                  <td className="max-w-0 px-3 py-2">
-                    <span className="block truncate text-ink">{item.descricao}</span>
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono text-[13px] tabular-nums text-muted">
-                    {item.quantidade}
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    <input
-                      value={l.precoUnitario}
-                      onChange={(e) =>
-                        atualizar(item.id, { precoUnitario: e.target.value })
-                      }
-                      disabled={!l.disponivel}
-                      inputMode="decimal"
-                      placeholder="0,00"
-                      className="w-24 rounded-[var(--radius)] border border-line bg-surface px-2 py-1 text-right font-mono text-[13px] tabular-nums text-ink disabled:bg-surface-2"
-                    />
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    <input
-                      value={l.quantidade}
-                      onChange={(e) => atualizar(item.id, { quantidade: e.target.value })}
-                      disabled={!l.disponivel}
-                      inputMode="decimal"
-                      placeholder={String(item.quantidade)}
-                      title="Deixe vazio se ele atende a quantidade toda."
-                      className="w-20 rounded-[var(--radius)] border border-line bg-surface px-2 py-1 text-right font-mono text-[13px] tabular-nums text-ink disabled:bg-surface-2"
-                    />
-                  </td>
+                <tr key={item.id} className={cn(indisponivel && "bg-surface-2/50")}>
                   <td className="px-3 py-2">
-                    <input
-                      value={l.marca}
-                      onChange={(e) => atualizar(item.id, { marca: e.target.value })}
-                      disabled={!l.disponivel}
-                      placeholder="—"
-                      className="w-28 rounded-[var(--radius)] border border-line bg-surface px-2 py-1 text-[13px] text-ink disabled:bg-surface-2"
-                    />
+                    <div className="flex items-center gap-2.5">
+                      <Thumb url={item.imagemUrl} nome={item.descricao} size={32} />
+                      <div className="min-w-0">
+                        <p
+                          className={cn(
+                            "text-[14px] font-medium leading-snug",
+                            indisponivel ? "text-muted" : "text-ink",
+                          )}
+                        >
+                          {item.descricao}
+                        </p>
+                        {item.sku && (
+                          <p className="font-mono text-[11px] text-faint">{item.sku}</p>
+                        )}
+                      </div>
+                    </div>
                   </td>
-                  <td className="px-3 py-2 text-center">
-                    <input
-                      type="checkbox"
-                      checked={l.disponivel}
-                      onChange={() => atualizar(item.id, { disponivel: !l.disponivel })}
-                      aria-label={`${item.descricao} disponível`}
-                      className="h-4 w-4 accent-[var(--brand)]"
-                    />
+
+                  {/* Número sem unidade não diz se são duas garrafas ou duas
+                      caixas de doze — e é o preço disso que está sendo digitado. */}
+                  <td className="px-3 py-2 text-right">
+                    <span className="block font-mono text-[14px] font-semibold tabular-nums text-ink">
+                      {fmtQtd(item.quantidade)}
+                    </span>
+                    <span className="block text-[11px] text-faint">
+                      {item.embalagemNome ?? (item.quantidade === 1 ? "unidade" : "unidades")}
+                    </span>
+                  </td>
+
+                  <td className="px-3 py-2">
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex gap-1 rounded-full border border-line bg-surface-2 p-0.5">
+                        {SITUACOES.map((o) => {
+                          const ativo = l.situacao === o.id;
+                          return (
+                            <button
+                              key={o.id}
+                              type="button"
+                              onClick={() => atualizar(item.id, { situacao: o.id })}
+                              aria-pressed={ativo}
+                              className={cn(
+                                "flex-1 rounded-full px-2 py-1 text-[12px] font-medium transition-colors",
+                                ativo
+                                  ? o.id === "nao"
+                                    ? "bg-surface text-muted shadow-[var(--shadow-m)]"
+                                    : "bg-brand text-on-brand"
+                                  : "text-muted hover:text-ink",
+                              )}
+                            >
+                              {o.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {l.situacao === "parcial" && (
+                        <input
+                          value={l.quantidade}
+                          onChange={(e) => atualizar(item.id, { quantidade: e.target.value })}
+                          inputMode="decimal"
+                          placeholder={`tem ${fmtQtd(item.quantidade)}`}
+                          aria-label={`Quanto ${convite.supplierNome} tem de ${item.descricao}`}
+                          className="w-full rounded-[var(--radius)] border border-line bg-surface px-2 py-1 text-right font-mono text-[13px] tabular-nums text-ink"
+                        />
+                      )}
+                    </div>
+                  </td>
+
+                  <td className="px-3 py-2 text-right">
+                    {indisponivel ? (
+                      <span className="text-[12px] text-faint">—</span>
+                    ) : (
+                      <div className="relative">
+                        <span
+                          aria-hidden
+                          className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-faint"
+                        >
+                          R$
+                        </span>
+                        <input
+                          ref={(el) => {
+                            camposPreco.current[i] = el;
+                          }}
+                          value={l.preco}
+                          onChange={(e) =>
+                            atualizar(item.id, { preco: mascaraMoeda(e.target.value) })
+                          }
+                          onKeyDown={(e) => aoTabular(e, i)}
+                          onFocus={(e) => e.currentTarget.select()}
+                          inputMode="decimal"
+                          placeholder="0,00"
+                          aria-label={`Preço de ${item.descricao}`}
+                          className="w-full rounded-[var(--radius)] border border-line bg-surface py-1 pl-7 pr-2 text-right font-mono text-[13px] tabular-nums text-ink"
+                        />
+                      </div>
+                    )}
+                  </td>
+
+                  <td className="px-3 py-2 text-right font-mono text-[13px] tabular-nums text-muted">
+                    {totalLinha > 0 ? fmtMoney(totalLinha) : "—"}
                   </td>
                 </tr>
               );
@@ -640,8 +762,9 @@ function RespostaSheet({
           <span className="text-[12px] font-medium text-ink-2">Entrega em (dias)</span>
           <input
             value={prazo}
-            onChange={(e) => setPrazo(e.target.value)}
+            onChange={(e) => setPrazo(e.target.value.replace(/\D/g, "").slice(0, 3))}
             inputMode="numeric"
+            placeholder="0"
             className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink"
           />
         </label>
@@ -656,13 +779,21 @@ function RespostaSheet({
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-[12px] font-medium text-ink-2">Frete</span>
-          <input
-            value={frete}
-            onChange={(e) => setFrete(e.target.value)}
-            inputMode="decimal"
-            placeholder="0,00"
-            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-right font-mono text-sm tabular-nums text-ink"
-          />
+          <div className="relative">
+            <span
+              aria-hidden
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[12px] text-faint"
+            >
+              R$
+            </span>
+            <input
+              value={frete}
+              onChange={(e) => setFrete(mascaraMoeda(e.target.value))}
+              inputMode="decimal"
+              placeholder="0,00"
+              className="w-full rounded-[var(--radius)] border border-line bg-surface py-2 pl-9 pr-3 text-right font-mono text-sm tabular-nums text-ink"
+            />
+          </div>
         </label>
       </div>
 
@@ -673,6 +804,7 @@ function RespostaSheet({
         <input
           value={observacao}
           onChange={(e) => setObservacao(e.target.value)}
+          placeholder="Ex.: pedido mínimo de 5 caixas, entrega só às terças"
           className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink"
         />
       </label>
@@ -699,15 +831,18 @@ function RespostaSheet({
                 conviteId: convite.id,
                 prazoEntregaDias: prazo ? Number(prazo) : null,
                 condicaoPagamento: condicao.trim() || null,
-                frete: frete ? num(frete) : null,
+                frete: paraNumero(frete),
                 observacao: observacao.trim() || null,
-                itens: linhas.map((l) => ({
-                  quotationItemId: l.quotationItemId,
-                  disponivel: l.disponivel,
-                  precoUnitario: num(l.precoUnitario),
-                  quantidadeOfertada: l.quantidade.trim() ? num(l.quantidade) : null,
-                  marca: l.marca.trim() || null,
-                })),
+                itens: linhas.map((l) => {
+                  const preco = paraNumero(l.preco);
+                  return {
+                    quotationItemId: l.quotationItemId,
+                    disponivel: l.situacao !== "nao" && preco !== null,
+                    precoUnitario: preco ?? 0,
+                    quantidadeOfertada:
+                      l.situacao === "parcial" ? paraNumero(l.quantidade) : null,
+                  };
+                }),
               })
             }
             disabled={pendente}

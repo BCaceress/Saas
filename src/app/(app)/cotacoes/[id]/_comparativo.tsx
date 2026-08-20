@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Scale, Sparkles, Trophy, TrendingDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { EstadoVazio, Metrica, MetricaGrid, fmtMoney, fmtPreco } from "../_catalogo/ui";
+import { SupplierAvatar } from "../_ui";
 import type { ConviteCotacao, CotacaoDetalhe, ItemCotacao } from "../_compra-types";
 import { gerarPedidosAction } from "../_compra-actions";
 
@@ -73,6 +74,46 @@ export function ComparativoCotacao({
     ),
   );
 
+  // Duas formas legítimas de fechar a compra, e a tela não deve escolher pelo
+  // operador:
+  //
+  //  · MELHOR PREÇO POR ITEM rende mais no papel, mas parte a compra em vários
+  //    pedidos — várias entregas, vários mínimos, várias conversas.
+  //  · UM FORNECEDOR SÓ costuma custar um pouco mais e resolve numa entrega;
+  //    é o que ganha quando o frete, o prazo ou a relação valem mais que a
+  //    diferença de centavos.
+  //
+  // Mexer numa célula depois disso vira "personalizado": a tela para de
+  // reescrever a escolha por baixo da mão de quem está decidindo.
+  const [modo, setModo] = useState<"melhor" | "fornecedor" | "manual">("melhor");
+  const [fornecedorUnico, setFornecedorUnico] = useState<string | null>(null);
+
+  function aplicarMelhorPreco() {
+    setModo("melhor");
+    setFornecedorUnico(null);
+    setEscolhas(
+      Object.fromEntries(
+        cotacao.itens.map((i) => [i.id, melhorPorItem.get(i.id)?.conviteId ?? null]),
+      ),
+    );
+  }
+
+  function aplicarFornecedor(conviteId: string) {
+    setModo("fornecedor");
+    setFornecedorUnico(conviteId);
+    const convite = respondidos.find((c) => c.id === conviteId);
+    setEscolhas(
+      Object.fromEntries(
+        cotacao.itens.map((i) => {
+          const r = convite?.respostas.find((x) => x.quotationItemId === i.id);
+          // O que ele não tem fica de fora em vez de cair no vizinho: quem
+          // pediu "tudo de um fornecedor" quer ver o buraco, não um remendo.
+          return [i.id, r?.disponivel ? conviteId : null];
+        }),
+      ),
+    );
+  }
+
   const decidida = cotacao.status === "DECIDIDA";
 
   // Cesta escolhida × a mesma cesta no fornecedor único mais barato: a
@@ -140,8 +181,29 @@ export function ComparativoCotacao({
     );
   }
 
+  const nomeFornecedorUnico = fornecedorUnico
+    ? (respondidos.find((c) => c.id === fornecedorUnico)?.supplierNome ?? null)
+    : null;
+
+  // Itens que o fornecedor escolhido não atende — o preço de fechar com ele.
+  const foraDoFornecedor =
+    modo === "fornecedor"
+      ? cotacao.itens.filter((i) => escolhas[i.id] === null).length
+      : 0;
+
   return (
     <div className="flex flex-col gap-4">
+      {podePedir && !decidida && respondidos.length > 0 && (
+        <EstrategiaCompra
+          modo={modo}
+          respondidos={respondidos}
+          totalItens={cotacao.itens.length}
+          fornecedorUnico={fornecedorUnico}
+          onMelhorPreco={aplicarMelhorPreco}
+          onFornecedor={aplicarFornecedor}
+        />
+      )}
+
       <MetricaGrid className="lg:grid-cols-3">
         <Metrica
           label="Cesta escolhida"
@@ -214,12 +276,13 @@ export function ComparativoCotacao({
                         <button
                           type="button"
                           disabled={!podePedir || decidida}
-                          onClick={() =>
+                          onClick={() => {
+                            setModo("manual");
                             setEscolhas((e) => ({
                               ...e,
                               [item.id]: e[item.id] === c.id ? null : c.id,
-                            }))
-                          }
+                            }));
+                          }}
                           aria-pressed={escolhido}
                           className={cn(
                             "inline-flex flex-col items-end gap-0.5 rounded-[var(--radius)] px-2.5 py-1 transition-colors",
@@ -305,12 +368,13 @@ export function ComparativoCotacao({
             melhorConviteId={melhorPorItem.get(item.id)?.conviteId ?? null}
             escolhido={escolhas[item.id] ?? null}
             editavel={podePedir && !decidida}
-            onEscolher={(conviteId) =>
+            onEscolher={(conviteId) => {
+              setModo("manual");
               setEscolhas((e) => ({
                 ...e,
                 [item.id]: e[item.id] === conviteId ? null : conviteId,
-              }))
-            }
+              }));
+            }}
           />
         ))}
       </ul>
@@ -327,7 +391,11 @@ export function ComparativoCotacao({
           <p className="text-[13px] text-muted">
             {itensEscolhidos === 0
               ? "Escolha de quem comprar cada item."
-              : `${itensEscolhidos} ${itensEscolhidos === 1 ? "item escolhido" : "itens escolhidos"} · `}
+              : `${itensEscolhidos} ${itensEscolhidos === 1 ? "item escolhido" : "itens escolhidos"}${
+                  modo === "fornecedor" && nomeFornecedorUnico
+                    ? ` de ${nomeFornecedorUnico}`
+                    : ""
+                }${foraDoFornecedor > 0 ? ` · ${foraDoFornecedor} sem cotação dele` : ""} · `}
             {itensEscolhidos > 0 && (
               <span className="font-mono text-[15px] font-semibold tabular-nums text-ink">
                 {fmtMoney(totalEscolhido)}
@@ -340,7 +408,11 @@ export function ComparativoCotacao({
             disabled={pendente || itensEscolhidos === 0}
             className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
           >
-            {pendente ? "Gerando…" : "Gerar pedidos de compra"}
+            {pendente
+              ? "Gerando…"
+              : modo === "fornecedor" && nomeFornecedorUnico
+                ? `Gerar pedido para ${nomeFornecedorUnico}`
+                : "Gerar pedidos de compra"}
           </button>
         </div>
       )}
@@ -350,6 +422,83 @@ export function ComparativoCotacao({
           Esta cotação já virou pedido de compra. Acompanhe o resto em Pedidos.
         </p>
       )}
+    </div>
+  );
+}
+
+// ── Estratégia da compra ────────────────────────────────────
+
+function EstrategiaCompra({
+  modo,
+  respondidos,
+  totalItens,
+  fornecedorUnico,
+  onMelhorPreco,
+  onFornecedor,
+}: {
+  modo: "melhor" | "fornecedor" | "manual";
+  respondidos: ConviteCotacao[];
+  totalItens: number;
+  fornecedorUnico: string | null;
+  onMelhorPreco: () => void;
+  onFornecedor: (conviteId: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2.5 rounded-[var(--radius-lg)] border border-line bg-surface p-3.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[13px] font-medium text-ink">Fechar a compra</span>
+        <button
+          type="button"
+          onClick={onMelhorPreco}
+          aria-pressed={modo === "melhor"}
+          className={cn(
+            "rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-colors",
+            modo === "melhor"
+              ? "bg-brand text-on-brand"
+              : "border border-line bg-surface text-muted hover:text-ink",
+          )}
+        >
+          Melhor preço por item
+        </button>
+        {modo === "manual" && (
+          <span className="rounded-full bg-surface-2 px-3 py-1.5 text-[13px] font-medium text-ink-2">
+            Escolha personalizada
+          </span>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[12px] text-muted">Ou tudo de um fornecedor:</span>
+        {respondidos.map((c) => {
+          const ativo = modo === "fornecedor" && fornecedorUnico === c.id;
+          const atende = c.itensAtendidos;
+          return (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => onFornecedor(c.id)}
+              aria-pressed={ativo}
+              className={cn(
+                "flex items-center gap-2 rounded-full px-3 py-1.5 text-[13px] font-medium transition-colors",
+                ativo
+                  ? "bg-brand text-on-brand"
+                  : "border border-line bg-surface text-ink hover:bg-surface-2",
+              )}
+            >
+              <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={18} />
+              {c.supplierNome}
+              <span
+                className={cn(
+                  "font-mono text-[11px] tabular-nums",
+                  ativo ? "text-on-brand/80" : "text-faint",
+                )}
+              >
+                {atende}/{totalItens}
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

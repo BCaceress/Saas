@@ -8,7 +8,7 @@ import { runWithTenant } from "@/lib/tenant-context";
 import { criarPedidoCompra } from "@/lib/estoque";
 import { emitirLinkCotacao, linkVigente } from "@/lib/compras/cotacao-link";
 import { registrarPrecosDaCotacao } from "@/lib/compras/cotacao-precos";
-import { ofertasPorProduto } from "@/lib/compras/comparador";
+import { regrasDaCotacao } from "@/lib/compras/cotacao-regras";
 import { db } from "@/lib/prisma";
 import { enviarEmail } from "@/lib/email";
 import { emailCotacao } from "@/lib/email/templates";
@@ -75,13 +75,32 @@ async function descartarSeVazia(id: string): Promise<boolean> {
   return true;
 }
 
-/** Cotação em RASCUNHO ou ABERTA ainda aceita edição de itens/convidados. */
+/** Cotação viva: ainda aceita as mudanças de estado (enviar, encerrar, responder). */
 async function exigirEditavel(id: string) {
   const c = await db.quotation.findFirst({ where: { id }, select: { status: true, siteId: true } });
   if (!c) throw new Error("Cotação não encontrada.");
   if (c.status === "CANCELADA" || c.status === "DECIDIDA") {
     throw new Error("Esta cotação já foi fechada e não aceita mais mudanças.");
   }
+  return c;
+}
+
+/**
+ * Trava fina de itens e convidados — `regrasDaCotacao` é a fonte única, a
+ * mesma que a tela lê para acender ou apagar os botões.
+ *
+ * Existe separada de `exigirEditavel` porque as duas perguntas são diferentes:
+ * "a cotação está viva?" (encerrar, responder, cancelar) e "esta mudança
+ * específica ainda é honesta com quem já respondeu?".
+ */
+async function exigirLicenca(id: string, acao: "itens" | "convidar" | "desconvidar") {
+  const c = await db.quotation.findFirst({
+    where: { id },
+    select: { status: true, siteId: true, suppliers: { select: { status: true } } },
+  });
+  if (!c) throw new Error("Cotação não encontrada.");
+  const licenca = regrasDaCotacao(c.status, c.suppliers)[acao];
+  if (!licenca.pode) throw new Error(licenca.motivo ?? "Esta mudança não é mais possível.");
   return c;
 }
 
@@ -355,6 +374,8 @@ export type ProdutoCotacao = {
   estoque: number | null;
   /** Quanto falta para o mínimo — vira a quantidade sugerida do item. */
   sugerido: number;
+  /** Embalagens de compra (fardo, caixa) — o item é cotado numa delas. */
+  embalagens: { id: string; nome: string; isCompraDefault: boolean }[];
 };
 
 async function montarProdutos(
@@ -364,6 +385,7 @@ async function montarProdutos(
     sku: string;
     imagemUrl: string | null;
     stocks: { estoqueFechado: unknown; estoqueAberto: unknown; estoqueMinimo: unknown }[];
+    packagings: { id: string; nome: string; isCompraDefault: boolean }[];
   }[],
 ): Promise<ProdutoCotacao[]> {
   const num = (v: unknown) => Number(v ?? 0);
@@ -378,6 +400,7 @@ async function montarProdutos(
       imagemUrl: p.imagemUrl,
       estoque: saldo,
       sugerido: saldo === null ? 0 : Math.max(0, Math.ceil(minimo - saldo)),
+      embalagens: p.packagings,
     };
   });
 }
@@ -417,6 +440,7 @@ export async function buscarProdutosCotacaoAction(
           take: 1,
           select: { estoqueFechado: true, estoqueAberto: true, estoqueMinimo: true },
         },
+        packagings: { select: { id: true, nome: true, isCompraDefault: true } },
       },
     });
     return montarProdutos(produtos);
@@ -442,6 +466,7 @@ export async function buscarProdutoPorCodigoCotacaoAction(
         take: 1,
         select: { estoqueFechado: true, estoqueAberto: true, estoqueMinimo: true },
       },
+      packagings: { select: { id: true, nome: true, isCompraDefault: true } },
     };
     // Unidade, SKU e, por último, o EAN da caixa/fardo — quem bipa no depósito
     // costuma ter a embalagem na mão, não a unidade.
@@ -474,7 +499,7 @@ const itemSchema = z.object({
 export async function adicionarItemAction(input: z.input<typeof itemSchema>) {
   const d = itemSchema.parse(input);
   return tx(async (tid) => {
-    await exigirEditavel(d.quotationId);
+    await exigirLicenca(d.quotationId, "itens");
     const ultimo = await db.quotationItem.findFirst({
       where: { quotationId: d.quotationId },
       orderBy: { ordem: "desc" },
@@ -516,7 +541,7 @@ export async function editarItemAction(input: z.input<typeof editarItemSchema>) 
       select: { quotationId: true },
     });
     if (!item) throw new Error("Item não encontrado.");
-    await exigirEditavel(item.quotationId);
+    await exigirLicenca(item.quotationId, "itens");
     await db.quotationItem.updateMany({
       where: { id: d.id },
       data: {
@@ -536,7 +561,7 @@ export async function removerItemAction(id: string) {
       select: { quotationId: true },
     });
     if (!item) throw new Error("Item não encontrado.");
-    await exigirEditavel(item.quotationId);
+    await exigirLicenca(item.quotationId, "itens");
     await db.quotationItem.deleteMany({ where: { id } });
     ok();
   });
@@ -552,7 +577,7 @@ const convidarSchema = z.object({
 export async function convidarFornecedoresAction(input: z.input<typeof convidarSchema>) {
   const d = convidarSchema.parse(input);
   return tx(async (tid) => {
-    await exigirEditavel(d.quotationId);
+    await exigirLicenca(d.quotationId, "convidar");
     // createMany + skipDuplicates: reconvidar quem já está na lista não é erro,
     // é clique repetido.
     await db.quotationSupplier.createMany({
@@ -586,7 +611,9 @@ const definirConviteSchema = z.object({
 export async function definirConviteAction(input: z.input<typeof definirConviteSchema>) {
   const d = definirConviteSchema.parse(input);
   return tx(async (tid) => {
-    await exigirEditavel(d.quotationId);
+    // Ligar e desligar são duas licenças diferentes: convidar mais gente vale
+    // enquanto a cotação está viva, tirar alguém só antes de ela sair.
+    await exigirLicenca(d.quotationId, d.convidado ? "convidar" : "desconvidar");
     const atual = await db.quotationSupplier.findFirst({
       where: { quotationId: d.quotationId, supplierId: d.supplierId },
       select: { id: true, status: true },
@@ -617,7 +644,7 @@ export async function removerConviteAction(id: string) {
       select: { quotationId: true, status: true },
     });
     if (!convite) throw new Error("Convite não encontrado.");
-    await exigirEditavel(convite.quotationId);
+    await exigirLicenca(convite.quotationId, "desconvidar");
     if (convite.status === "RESPONDIDA") {
       throw new Error("Este fornecedor já respondeu — encerre a compra em vez de apagar a resposta.");
     }
@@ -1009,107 +1036,6 @@ export async function recusarConviteAction(conviteId: string, motivo?: string) {
         observacao: motivo?.trim() || null,
       },
     });
-    ok();
-  });
-}
-
-// ── Cotar pelo catálogo ──────────────────────────────────────
-// Ponte entre o Comparador/Cesta (aposentados como tela própria) e a compra:
-// em vez do operador esperar resposta de RFQ, ele escolhe direto na tabela
-// de preço já importada do fornecedor. O destino do dado é o MESMO de uma
-// resposta manual — QuotationSupplier + QuotationResponse — só que o preço
-// vem do catálogo (`SupplierCatalogItem`) em vez de ser digitado.
-
-export async function carregarOfertasCotacaoAction(
-  quotationId: string,
-): Promise<Record<string, { supplierId: string; supplierNome: string; precoEfetivo: number }[]>> {
-  return tx(async () => {
-    const cotacao = await db.quotation.findFirst({
-      where: { id: quotationId },
-      select: { items: { select: { id: true, productId: true } } },
-    });
-    if (!cotacao) throw new Error("Cotação não encontrada.");
-
-    const productIds = [...new Set(cotacao.items.flatMap((i) => (i.productId ? [i.productId] : [])))];
-    const ofertas = await ofertasPorProduto(productIds);
-
-    const porItem: Record<string, { supplierId: string; supplierNome: string; precoEfetivo: number }[]> = {};
-    for (const item of cotacao.items) {
-      if (!item.productId) continue;
-      const lista = ofertas.get(item.productId) ?? [];
-      porItem[item.id] = lista.map((o) => ({
-        supplierId: o.supplierId,
-        supplierNome: o.supplierNome,
-        precoEfetivo: o.precoEfetivo,
-      }));
-    }
-    return porItem;
-  });
-}
-
-const cotarCatalogoSchema = z.object({
-  quotationId: z.string().min(1),
-  escolhas: z
-    .array(
-      z.object({
-        quotationItemId: z.string().min(1),
-        supplierId: z.string().min(1),
-        precoUnitario: z.number().min(0),
-      }),
-    )
-    .min(1, "Escolha ao menos um fornecedor."),
-});
-
-export async function cotarComCatalogoAction(input: z.input<typeof cotarCatalogoSchema>) {
-  const d = cotarCatalogoSchema.parse(input);
-  return txp("compras.pedir", null, async (tid) => {
-    const cotacao = await db.quotation.findFirst({
-      where: { id: d.quotationId },
-      select: {
-        id: true,
-        items: { select: { id: true } },
-        suppliers: { select: { id: true, supplierId: true } },
-      },
-    });
-    if (!cotacao) throw new Error("Cotação não encontrada.");
-    await exigirEditavel(cotacao.id);
-
-    const porFornecedor = new Map<string, Map<string, number>>();
-    for (const e of d.escolhas) {
-      const mapa = porFornecedor.get(e.supplierId) ?? new Map<string, number>();
-      mapa.set(e.quotationItemId, e.precoUnitario);
-      porFornecedor.set(e.supplierId, mapa);
-    }
-
-    for (const [supplierId, precoPorItem] of porFornecedor) {
-      let convite = cotacao.suppliers.find((s) => s.supplierId === supplierId) ?? null;
-      if (!convite) {
-        convite = await db.quotationSupplier.create({
-          data: { tenantId: tid, quotationId: cotacao.id, supplierId },
-          select: { id: true, supplierId: true },
-        });
-      }
-      // Mesma convenção de `registrarRespostaAction`: regrava a resposta
-      // inteira do convite. Item fora de `precoPorItem` fica "indisponível"
-      // para este fornecedor — correto quando o catálogo dele não tem o item;
-      // simplificação aceita quando o operador escolheu outro fornecedor mais
-      // barato para aquele item específico.
-      await db.quotationResponse.deleteMany({ where: { quotationSupplierId: convite.id } });
-      await db.quotationResponse.createMany({
-        data: cotacao.items.map((item) => ({
-          tenantId: tid,
-          quotationSupplierId: convite!.id,
-          quotationItemId: item.id,
-          disponivel: precoPorItem.has(item.id),
-          precoUnitario: precoPorItem.get(item.id) ?? 0,
-        })),
-      });
-      await db.quotationSupplier.updateMany({
-        where: { id: convite.id },
-        data: { status: "RESPONDIDA", respondidaEm: new Date(), respondidaVia: "OPERADOR" },
-      });
-    }
-
     ok();
   });
 }
