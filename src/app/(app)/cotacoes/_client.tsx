@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   Plus,
   FileQuestion,
+  Trash2,
   Send,
   Wallet,
   Sparkles,
@@ -13,7 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { EstadoVazio, Metrica, MetricaGrid, fmtMoney } from "./_catalogo/ui";
-import { criarCotacaoAction } from "./_compra-actions";
+import { criarCotacaoAction, excluirCotacaoAction } from "./_compra-actions";
 import type { CotacaoRow, CotacaoStatus, ResumoCompras } from "./_compra-types";
 import { andamento, statusVisivel } from "./_status";
 
@@ -59,6 +60,21 @@ export function ListaCotacoes({
   const [pendente, startTransition] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
   const [filtro, setFiltro] = useState<(typeof FILTROS)[number]["id"]>("ativas");
+
+  function excluir(id: string, titulo: string) {
+    // Rascunho é rabisco: quem apaga não está desfazendo compromisso com
+    // ninguém. Ainda assim confirma — a lista é a mesma de cotações reais.
+    if (!window.confirm(`Excluir o rascunho "${titulo}"? Isso não pode ser desfeito.`)) return;
+    setErro(null);
+    startTransition(async () => {
+      try {
+        await excluirCotacaoAction(id);
+        router.refresh();
+      } catch (e) {
+        setErro(e instanceof Error ? e.message : "Não foi possível excluir.");
+      }
+    });
+  }
 
   function novaCotacao() {
     setErro(null);
@@ -183,10 +199,10 @@ export function ListaCotacoes({
             );
             const respondeuTudo = rotulo.id === "RESPONDIDA";
             return (
-              <li key={l.id}>
+              <li key={l.id} className="group relative">
                 <Link
                   href={`/cotacoes/${l.id}`}
-                  className="group flex items-center gap-4 rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-3.5 transition-colors hover:border-brand"
+                  className="flex items-center gap-4 rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-3.5 transition-colors hover:border-brand"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -252,6 +268,19 @@ export function ListaCotacoes({
                     className="shrink-0 text-faint transition-colors group-hover:text-brand"
                   />
                 </Link>
+
+                {podePedir && l.status === "RASCUNHO" && (
+                  <button
+                    type="button"
+                    onClick={() => excluir(l.id, l.titulo)}
+                    disabled={pendente}
+                    aria-label={`Excluir rascunho ${l.numero}`}
+                    title="Excluir rascunho"
+                    className="absolute top-1/2 right-11 hidden h-8 w-8 -translate-y-1/2 place-items-center rounded-full text-faint transition-colors hover:bg-danger-soft hover:text-danger disabled:opacity-50 group-hover:grid focus-visible:grid"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                )}
               </li>
             );
           })}

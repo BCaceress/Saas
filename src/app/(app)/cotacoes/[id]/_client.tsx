@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import type { CotacaoDetalhe, FornecedorOpcao, ProdutoOpcao } from "../_compra-types";
 import {
   cancelarCotacaoAction,
+  descartarSeVaziaAction,
   encerrarCotacaoAction,
   reabrirCotacaoAction,
 } from "../_compra-actions";
@@ -319,6 +320,10 @@ function Cabecalho({
 
   const respondidos = cotacao.convites.filter((c) => c.status === "RESPONDIDA").length;
   const recusados = cotacao.convites.filter((c) => c.status === "RECUSADA").length;
+  const vazia =
+    cotacao.status === "RASCUNHO" &&
+    cotacao.itens.length === 0 &&
+    cotacao.convites.length === 0;
   const rotulo = statusVisivel(
     cotacao.status,
     cotacao.convites.length,
@@ -330,13 +335,31 @@ function Cabecalho({
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-start justify-between gap-x-5 gap-y-3">
         <div className="flex min-w-0 items-center gap-3">
-          <Link
-            href="/cotacoes"
-            aria-label="Voltar para as cotações"
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-          >
-            <ArrowLeft size={17} />
-          </Link>
+          {/* Sair de um rascunho que ninguém preencheu APAGA o rascunho: um
+              toque em "Nova cotação" que não virou nada não deveria virar linha
+              na lista de amanhã. */}
+          {vazia ? (
+            <button
+              type="button"
+              onClick={() => {
+                void descartarSeVaziaAction(cotacao.id).finally(() => {
+                  router.push("/cotacoes");
+                });
+              }}
+              aria-label="Voltar para as cotações"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+            >
+              <ArrowLeft size={17} />
+            </button>
+          ) : (
+            <Link
+              href="/cotacoes"
+              aria-label="Voltar para as cotações"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+            >
+              <ArrowLeft size={17} />
+            </Link>
+          )}
 
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">

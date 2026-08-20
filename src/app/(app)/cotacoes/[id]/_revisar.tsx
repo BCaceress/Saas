@@ -6,6 +6,7 @@ import { AlertTriangle, CalendarClock, Package, Pencil, Send, Store, Users } fro
 import { cn } from "@/lib/utils";
 import type { CotacaoDetalhe } from "../_compra-types";
 import { editarCotacaoAction, enviarCotacaoAction } from "../_compra-actions";
+import { SupplierAvatar } from "../_ui";
 import { EnviosSheet, type Envio } from "./_convites";
 import { CanalPicker, type Canal } from "./_canal";
 
@@ -216,9 +217,10 @@ export function RevisarCotacao({
         >
           <ul className="divide-y divide-line">
             {cotacao.convites.map((c) => (
-              <li key={c.id} className="flex items-baseline justify-between gap-3 py-2">
-                <span className="min-w-0 flex-1 truncate text-[13px] text-ink">
-                  {c.supplierNome}
+              <li key={c.id} className="flex items-center justify-between gap-3 py-2">
+                <span className="flex min-w-0 flex-1 items-center gap-2">
+                  <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={24} />
+                  <span className="truncate text-[13px] text-ink">{c.supplierNome}</span>
                 </span>
                 <span className="shrink-0 text-[11px] text-faint">
                   {c.status !== "PENDENTE"

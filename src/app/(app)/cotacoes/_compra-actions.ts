@@ -45,10 +45,34 @@ const ok = () => {
   revalidatePath("/m/cotacoes", "layout");
 };
 
-/** Gera o próximo número sequencial COT-00001 por tenant. */
+/**
+ * Próximo número sequencial COT-00001 por tenant.
+ *
+ * Deriva do MAIOR número existente, não da contagem: rascunho vazio é
+ * descartado (ver `descartarSeVazia`), e contar linhas faria o contador andar
+ * para trás e bater de frente com o unique `[tenantId, numero]`.
+ */
 async function proximoNumero(): Promise<string> {
-  const total = await db.quotation.count();
-  return `COT-${String(total + 1).padStart(5, "0")}`;
+  const ultima = await db.quotation.findFirst({
+    orderBy: { numero: "desc" },
+    select: { numero: true },
+  });
+  const anterior = Number(ultima?.numero?.replace(/\D/g, "") ?? 0);
+  return `COT-${String(anterior + 1).padStart(5, "0")}`;
+}
+
+/**
+ * Rascunho sem item E sem fornecedor não é cotação — é um toque em "Nova" que
+ * não virou nada. Some sozinho para a lista não encher de casca vazia.
+ */
+async function descartarSeVazia(id: string): Promise<boolean> {
+  const c = await db.quotation.findFirst({
+    where: { id, status: "RASCUNHO" },
+    select: { _count: { select: { items: true, suppliers: true } } },
+  });
+  if (!c || c._count.items > 0 || c._count.suppliers > 0) return false;
+  await db.quotation.deleteMany({ where: { id, status: "RASCUNHO" } });
+  return true;
 }
 
 /** Cotação em RASCUNHO ou ABERTA ainda aceita edição de itens/convidados. */
@@ -108,6 +132,22 @@ export async function criarCotacaoAction(input: z.input<typeof criarSchema> = {}
     assertSite(ctx, "compras.pedir", siteId);
     const tid = ctx.tenant.id;
     const userId = ctx.user.id ?? "";
+
+    // Quem tocou em "Nova" e fechou a aba deixou uma casca para trás. Limpa as
+    // dele antes de abrir mais uma — a lista é do operador, não do histórico
+    // de cliques dele.
+    const vazias = await db.quotation.findMany({
+      where: {
+        status: "RASCUNHO",
+        createdBy: userId || undefined,
+        items: { none: {} },
+        suppliers: { none: {} },
+      },
+      select: { id: true },
+    });
+    if (vazias.length > 0) {
+      await db.quotation.deleteMany({ where: { id: { in: vazias.map((v) => v.id) } } });
+    }
     const numero = await proximoNumero();
     const cotacao = await db.quotation.create({
       data: {
@@ -178,6 +218,32 @@ export async function reabrirCotacaoAction(id: string) {
   });
 }
 
+/**
+ * Apaga a cotação de vez. Só RASCUNHO: depois de enviada existe promessa feita
+ * a fornecedor, e apagar isso apagaria também a resposta que ele deu — para
+ * esse caso existe cancelar, que deixa rastro.
+ */
+export async function excluirCotacaoAction(id: string) {
+  return txp("compras.pedir", null, async () => {
+    const c = await db.quotation.findFirst({ where: { id }, select: { status: true } });
+    if (!c) throw new Error("Cotação não encontrada.");
+    if (c.status !== "RASCUNHO") {
+      throw new Error("Só dá para excluir cotação em rascunho. Use cancelar.");
+    }
+    await db.quotation.deleteMany({ where: { id, status: "RASCUNHO" } });
+    ok();
+  });
+}
+
+/** Chamado ao sair da tela: descarta o rascunho que ninguém preencheu. */
+export async function descartarSeVaziaAction(id: string): Promise<{ descartada: boolean }> {
+  return txp("compras.pedir", null, async () => {
+    const descartada = await descartarSeVazia(id);
+    if (descartada) ok();
+    return { descartada };
+  });
+}
+
 export async function cancelarCotacaoAction(id: string) {
   return tx(async () => {
     const c = await db.quotation.findFirst({ where: { id }, select: { status: true } });
@@ -188,6 +254,126 @@ export async function cancelarCotacaoAction(id: string) {
       data: { status: "CANCELADA", canceladaEm: new Date() },
     });
     ok();
+  });
+}
+
+// ── Busca de produto para a cotação ─────────────────────────
+// Existe em vez de reusar a busca do scanner (`/m/scan/actions`) porque aquela
+// pede `produto.ver`: comprador com perfil só de compras ficava sem resultado
+// nenhum, sem erro na tela. Quem monta cotação precisa de `compras.ver`, e é
+// essa a permissão exigida aqui.
+
+export type ProdutoCotacao = {
+  id: string;
+  nome: string;
+  sku: string;
+  imagemUrl: string | null;
+  /** Saldo na loja de destino, quando a cotação já tem loja. */
+  estoque: number | null;
+  /** Quanto falta para o mínimo — vira a quantidade sugerida do item. */
+  sugerido: number;
+};
+
+async function montarProdutos(
+  produtos: {
+    id: string;
+    nome: string;
+    sku: string;
+    imagemUrl: string | null;
+    stocks: { estoqueFechado: unknown; estoqueAberto: unknown; estoqueMinimo: unknown }[];
+  }[],
+): Promise<ProdutoCotacao[]> {
+  const num = (v: unknown) => Number(v ?? 0);
+  return produtos.map((p) => {
+    const st = p.stocks[0];
+    const saldo = st ? num(st.estoqueFechado) + num(st.estoqueAberto) : null;
+    const minimo = st ? num(st.estoqueMinimo) : 0;
+    return {
+      id: p.id,
+      nome: p.nome,
+      sku: p.sku,
+      imagemUrl: p.imagemUrl,
+      estoque: saldo,
+      sugerido: saldo === null ? 0 : Math.max(0, Math.ceil(minimo - saldo)),
+    };
+  });
+}
+
+const buscaSchema = z.object({
+  termo: z.string().trim().max(120),
+  /** Loja da cotação: sem ela o saldo mostrado seria de outra prateleira. */
+  siteId: z.string().optional().nullable(),
+});
+
+export async function buscarProdutosCotacaoAction(
+  input: z.input<typeof buscaSchema>,
+): Promise<ProdutoCotacao[]> {
+  const d = buscaSchema.parse(input);
+  if (d.termo.length < 2) return [];
+  const ctx = await guardAction("compras.ver", null, { mesmoSuspenso: true });
+  return runWithTenant(ctx.tenant.id, async () => {
+    const produtos = await db.product.findMany({
+      where: {
+        ativo: true,
+        tipo: { in: ["SIMPLES", "INSUMO"] },
+        OR: [
+          { nome: { contains: d.termo, mode: "insensitive" } },
+          { sku: { contains: d.termo, mode: "insensitive" } },
+          { ean: { contains: d.termo } },
+        ],
+      },
+      orderBy: { nome: "asc" },
+      take: 20,
+      select: {
+        id: true,
+        nome: true,
+        sku: true,
+        imagemUrl: true,
+        stocks: {
+          where: d.siteId ? { siteId: d.siteId } : undefined,
+          take: 1,
+          select: { estoqueFechado: true, estoqueAberto: true, estoqueMinimo: true },
+        },
+      },
+    });
+    return montarProdutos(produtos);
+  });
+}
+
+/** Mesma busca, pelo código de barras — o caminho do bipe. */
+export async function buscarProdutoPorCodigoCotacaoAction(
+  codigo: string,
+  siteId?: string | null,
+): Promise<ProdutoCotacao | null> {
+  const limpo = codigo.trim();
+  if (!limpo) return null;
+  const ctx = await guardAction("compras.ver", null, { mesmoSuspenso: true });
+  return runWithTenant(ctx.tenant.id, async () => {
+    const select = {
+      id: true,
+      nome: true,
+      sku: true,
+      imagemUrl: true,
+      stocks: {
+        where: siteId ? { siteId } : undefined,
+        take: 1,
+        select: { estoqueFechado: true, estoqueAberto: true, estoqueMinimo: true },
+      },
+    };
+    // Unidade, SKU e, por último, o EAN da caixa/fardo — quem bipa no depósito
+    // costuma ter a embalagem na mão, não a unidade.
+    const direto = await db.product.findFirst({
+      where: { ativo: true, OR: [{ ean: limpo }, { sku: limpo }] },
+      select,
+    });
+    if (direto) return (await montarProdutos([direto]))[0] ?? null;
+
+    const emb = await db.productPackaging.findFirst({
+      where: { ean: limpo },
+      select: { product: { select: select } },
+    });
+    if (!emb?.product) return null;
+    return (await montarProdutos([emb.product]))[0] ?? null;
   });
 }
 
@@ -509,6 +695,73 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
         };
       }),
     );
+  });
+}
+
+/**
+ * Texto pronto do convite (com o link dentro), sem reenviar nada.
+ *
+ * Existe porque copiar SÓ o link obriga o operador a escrever a explicação de
+ * novo em cada conversa. Com o texto na mão ele manda pelo canal que quiser —
+ * outro WhatsApp, Telegram, e-mail pessoal do vendedor — sem passar por aqui.
+ */
+export async function mensagemDoConviteAction(conviteId: string): Promise<{
+  fornecedor: string;
+  mensagem: string;
+  link: string;
+  waLink: string | null;
+}> {
+  const ctx = await guardAction("compras.ver");
+  return runWithTenant(ctx.tenant.id, async () => {
+    const convite = await db.quotationSupplier.findFirst({
+      where: { id: conviteId },
+      select: {
+        id: true,
+        supplier: { select: { razaoSocial: true, nomeFantasia: true, telefone: true } },
+        quotation: {
+          select: {
+            numero: true,
+            titulo: true,
+            status: true,
+            prazoResposta: true,
+            items: {
+              select: { descricao: true, quantidade: true },
+              orderBy: { ordem: "asc" },
+            },
+          },
+        },
+      },
+    });
+    if (!convite) throw new Error("Convite não encontrado.");
+    if (convite.quotation.status !== "ABERTA") {
+      throw new Error("O link só funciona enquanto a cotação está aberta.");
+    }
+
+    const vigente = await linkVigente(conviteId);
+    const link =
+      vigente?.url ??
+      (await emitirLinkCotacao(ctx.tenant.id, conviteId, convite.quotation.prazoResposta)).url;
+
+    const mensagem = montarMensagem(
+      ctx.tenant.nome,
+      convite.quotation.numero,
+      convite.quotation.titulo,
+      convite.quotation.prazoResposta,
+      convite.quotation.items.map((i) => ({
+        descricao: i.descricao,
+        quantidade: Number(i.quantidade),
+      })),
+      link,
+    );
+    const tel = convite.supplier.telefone?.replace(/\D/g, "") ?? "";
+    const numeroWa = tel.length && tel.length <= 11 ? `55${tel}` : tel;
+
+    return {
+      fornecedor: convite.supplier.nomeFantasia || convite.supplier.razaoSocial,
+      mensagem,
+      link,
+      waLink: numeroWa ? `https://wa.me/${numeroWa}?text=${encodeURIComponent(mensagem)}` : null,
+    };
   });
 }
 

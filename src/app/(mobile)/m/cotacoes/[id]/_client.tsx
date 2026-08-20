@@ -6,6 +6,7 @@ import {
   Check,
   Copy,
   Eye,
+  Mail,
   Link as LinkIcon,
   Loader2,
   MessageCircle,
@@ -26,7 +27,7 @@ import { Scanner } from "@/components/mobile/scanner";
 import { Chip } from "@/components/mobile/acao-estoque";
 import { MobilePageHeader } from "@/components/mobile/page-header";
 import { BottomSheet } from "@/components/mobile/bottom-sheet";
-import { SupplierAvatar } from "@/app/(app)/cotacoes/_ui";
+import { SupplierAvatar, Thumb } from "@/app/(app)/cotacoes/_ui";
 import type {
   ConviteCotacao,
   CotacaoDetalhe,
@@ -35,16 +36,20 @@ import type {
 import { andamento, statusVisivel } from "@/app/(app)/cotacoes/_status";
 import {
   adicionarItemAction,
+  buscarProdutoPorCodigoCotacaoAction,
+  buscarProdutosCotacaoAction,
   convidarFornecedoresAction,
+  descartarSeVaziaAction,
   editarCotacaoAction,
   editarItemAction,
   enviarCotacaoAction,
   linkDoConviteAction,
+  mensagemDoConviteAction,
   removerConviteAction,
   removerItemAction,
+  type ProdutoCotacao,
 } from "@/app/(app)/cotacoes/_compra-actions";
 import { ComparativoCotacao } from "@/app/(app)/cotacoes/[id]/_comparativo";
-import { buscarPorCodigoAction, buscarPorNomeAction } from "../../scan/actions";
 
 // ============================================================
 // Cotação no celular — o fluxo inteiro, não um resumo.
@@ -85,7 +90,13 @@ export function CotacaoMobileDetalhe({
   fornecedores: FornecedorOpcao[];
   podePedir: boolean;
 }) {
+  const router = useRouter();
   const rascunho = cotacao.status === "RASCUNHO";
+  // Rascunho que ninguém preencheu não vira linha na lista: some ao sair.
+  const vazia =
+    cotacao.status === "RASCUNHO" &&
+    cotacao.itens.length === 0 &&
+    cotacao.convites.length === 0;
   const [passo, setPasso] = React.useState<Passo>("produtos");
   const [aba, setAba] = React.useState<"fornecedores" | "comparar">(
     cotacao.convites.some((c) => c.status === "RESPONDIDA") ? "comparar" : "fornecedores",
@@ -106,6 +117,14 @@ export function CotacaoMobileDetalhe({
       <MobilePageHeader
         titulo={cotacao.titulo}
         voltar="/m/cotacoes"
+        onVoltar={
+          vazia
+            ? () => {
+                void descartarSeVaziaAction(cotacao.id);
+                router.push("/m/cotacoes");
+              }
+            : undefined
+        }
         descricao={
           <span className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-[11px]">{cotacao.numero}</span>
@@ -272,9 +291,7 @@ function PassoProdutos({
   const [lendo, setLendo] = React.useState(false);
   const [ocupado, setOcupado] = React.useState(false);
   const [termo, setTermo] = React.useState("");
-  const [achados, setAchados] = React.useState<
-    { id: string; nome: string; sku: string }[]
-  >([]);
+  const [achados, setAchados] = React.useState<ProdutoCotacao[]>([]);
   const [buscando, setBuscando] = React.useState(false);
 
   // Busca com respiro: cada tecla disparando uma consulta transforma o campo
@@ -285,14 +302,20 @@ function PassoProdutos({
     const timer = setTimeout(async () => {
       setBuscando(true);
       try {
-        const r = await buscarPorNomeAction(t);
-        setAchados(r.map((p) => ({ id: p.id, nome: p.nome, sku: p.sku })));
+        setAchados(await buscarProdutosCotacaoAction({ termo: t, siteId: cotacao.siteId }));
+      } catch (e) {
+        // Busca que falha calada vira "não existe nenhum produto" na cabeça de
+        // quem procura — e o operador desiste do módulo, não da busca.
+        toast.error(
+          "A busca falhou",
+          e instanceof Error ? e.message : "Tente de novo em instantes.",
+        );
       } finally {
         setBuscando(false);
       }
     }, 350);
     return () => clearTimeout(timer);
-  }, [termo]);
+  }, [termo, cotacao.siteId]);
 
   // Resultado antigo não sobrevive ao campo esvaziado — e limpar por derivação
   // evita um render extra só para apagar lista.
@@ -320,13 +343,13 @@ function PassoProdutos({
   async function aoLer(codigo: string) {
     setOcupado(true);
     try {
-      const r = await buscarPorCodigoAction(codigo);
-      if (r.tipo !== "achou") {
+      const achado = await buscarProdutoPorCodigoCotacaoAction(codigo, cotacao.siteId);
+      if (!achado) {
         toast.info("Sem cadastro", `Nada encontrado para ${codigo}.`);
         return;
       }
       // Já está na lista? Bipar de novo soma um — é assim que se conta caixa.
-      const existente = cotacao.itens.find((i) => i.productId === r.ficha.id);
+      const existente = cotacao.itens.find((i) => i.productId === achado.id);
       if (existente) {
         await editarItemAction({
           id: existente.id,
@@ -337,9 +360,8 @@ function PassoProdutos({
         toast.success(existente.descricao, `Agora são ${existente.quantidade + 1}.`);
         return;
       }
-      const sugerido = Math.ceil(r.ficha.cobertura?.sugestao ?? 0);
-      await adicionar(r.ficha.id, r.ficha.nome, sugerido > 0 ? sugerido : 1);
-      toast.success("Item adicionado", r.ficha.nome);
+      await adicionar(achado.id, achado.nome, achado.sugerido > 0 ? achado.sugerido : 1);
+      toast.success("Item adicionado", achado.nome);
     } finally {
       setOcupado(false);
     }
@@ -403,14 +425,19 @@ function PassoProdutos({
                 <button
                   key={p.id}
                   type="button"
-                  onClick={() => adicionar(p.id, p.nome)}
+                  onClick={() => adicionar(p.id, p.nome, p.sugerido > 0 ? p.sugerido : 1)}
                   className="flex w-full items-center gap-3 px-3 py-2.5 text-left active:bg-surface-2"
                 >
-                  <Plus className="size-4 shrink-0 text-brand" aria-hidden />
+                  <Thumb url={p.imagemUrl} nome={p.nome} size={36} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm text-ink">{p.nome}</span>
-                    <span className="block font-mono text-[11px] text-faint">{p.sku}</span>
+                    <span className="block text-[11px] text-faint">
+                      <span className="font-mono">{p.sku}</span>
+                      {p.estoque !== null && ` · tem ${fmtQtd(p.estoque)}`}
+                      {p.sugerido > 0 && ` · faltam ${fmtQtd(p.sugerido)}`}
+                    </span>
                   </span>
+                  <Plus className="size-4 shrink-0 text-brand" aria-hidden />
                 </button>
               ))}
             </Card>
@@ -438,6 +465,7 @@ function PassoProdutos({
           {cotacao.itens.map((item) => (
             <li key={item.id}>
               <Card className="flex items-center gap-2 p-3">
+                <Thumb url={item.imagemUrl} nome={item.descricao} size={40} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-ink">{item.descricao}</p>
                   <p className="text-xs text-muted">
@@ -523,28 +551,42 @@ function PassoFornecedores({
 }) {
   const router = useRouter();
   const [busca, setBusca] = React.useState("");
-  const [ocupado, setOcupado] = React.useState<string | null>(null);
 
   const convitePorFornecedor = new Map(cotacao.convites.map((c) => [c.supplierId, c]));
+
+  // Marcação OTIMISTA. Antes, cada toque esperava a ida ao servidor e o
+  // `router.refresh()` inteiro para pintar o check — na rede do mercado isso é
+  // meio segundo de nada acontecendo, e o operador toca de novo achando que
+  // falhou. Agora a tela responde na hora e o servidor corre atrás; se der
+  // errado, a marca volta e o toast diz por quê.
+  // Guarda só o que o TOQUE disse, por fornecedor. O servidor continua sendo a
+  // verdade: assim que a lista chega com o convite gravado, a marca local vira
+  // igual à do servidor e deixa de ter efeito — sem efeito colateral para
+  // limpar, e sem o risco de sobrescrever quem mexeu na mesma cotação.
+  const [toques, setToques] = React.useState<Record<string, boolean>>({});
+  const estaMarcado = (id: string) => toques[id] ?? convitePorFornecedor.has(id);
+
   const visiveis = fornecedores.filter((f) =>
     f.nome.toLowerCase().includes(busca.trim().toLowerCase()),
   );
 
   async function alternar(f: FornecedorOpcao) {
-    if (!editavel || ocupado) return;
-    setOcupado(f.id);
+    if (!editavel) return;
+    const estava = estaMarcado(f.id);
+    setToques((atual) => ({ ...atual, [f.id]: !estava }));
     try {
       const convite = convitePorFornecedor.get(f.id);
-      if (convite) await removerConviteAction(convite.id);
-      else await convidarFornecedoresAction({ quotationId: cotacao.id, supplierIds: [f.id] });
+      if (estava && convite) await removerConviteAction(convite.id);
+      else if (!estava) {
+        await convidarFornecedoresAction({ quotationId: cotacao.id, supplierIds: [f.id] });
+      }
       router.refresh();
     } catch (e) {
+      setToques((atual) => ({ ...atual, [f.id]: estava }));
       toast.error(
         "Não deu para mudar o convite",
         e instanceof Error ? e.message : "Tente de novo em instantes.",
       );
-    } finally {
-      setOcupado(null);
     }
   }
 
@@ -571,14 +613,14 @@ function PassoFornecedores({
       ) : (
         <ul className="space-y-2">
           {visiveis.map((f) => {
-            const escolhido = convitePorFornecedor.has(f.id);
+            const escolhido = estaMarcado(f.id);
             return (
               <li key={f.id}>
                 <button
                   type="button"
                   onClick={() => alternar(f)}
                   aria-pressed={escolhido}
-                  disabled={!editavel || ocupado === f.id}
+                  disabled={!editavel}
                   className={cn(
                     "flex w-full items-center gap-3 rounded-[var(--radius-m)] border p-3 text-left",
                     escolhido
@@ -586,7 +628,7 @@ function PassoFornecedores({
                       : "border-line bg-surface active:bg-surface-2",
                   )}
                 >
-                  <SupplierAvatar nome={f.nome} size={36} />
+                  <SupplierAvatar nome={f.nome} logoUrl={f.logoUrl} size={36} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium text-ink">{f.nome}</span>
                     <span className="block truncate text-[12px] text-muted">
@@ -597,20 +639,16 @@ function PassoFornecedores({
                         : (f.email ?? "sem telefone nem e-mail")}
                     </span>
                   </span>
-                  {ocupado === f.id ? (
-                    <Loader2 className="size-5 shrink-0 animate-spin text-muted" aria-hidden />
-                  ) : (
-                    <span
-                      className={cn(
-                        "grid size-6 shrink-0 place-items-center rounded-full border",
-                        escolhido
-                          ? "border-transparent bg-brand text-on-brand"
-                          : "border-line-button",
-                      )}
-                    >
-                      {escolhido && <Check className="size-3.5" aria-hidden />}
-                    </span>
-                  )}
+                  <span
+                    className={cn(
+                      "grid size-6 shrink-0 place-items-center rounded-full border",
+                      escolhido
+                        ? "border-transparent bg-brand text-on-brand"
+                        : "border-line-button",
+                    )}
+                  >
+                    {escolhido && <Check className="size-3.5" aria-hidden />}
+                  </span>
                 </button>
               </li>
             );
@@ -690,12 +728,18 @@ function PassoEnviar({
         </label>
         <label className="block">
           <span className="mb-1 block text-[12px] font-medium text-ink-2">Responder até</span>
+          {/* Campo de data sem valor mostra "dd/mm/aaaa" na cor do texto e
+              parece preenchido. Enquanto está vazio ele fica cinza, como
+              qualquer placeholder — e ganha a mesma caixa do campo de nome. */}
           <input
             type="date"
             value={prazo}
             onChange={(e) => setPrazo(e.target.value)}
             disabled={!editavel}
-            className="min-h-11 w-full rounded-[var(--radius)] border border-line bg-surface px-3 text-sm text-ink"
+            className={cn(
+              "block min-h-11 w-full appearance-none rounded-[var(--radius)] border border-line bg-surface px-3 text-sm",
+              prazo ? "text-ink" : "text-faint",
+            )}
           />
         </label>
         <label className="block">
@@ -743,13 +787,19 @@ function PassoEnviar({
         <p className="mb-1.5 text-[13px] font-medium text-ink">Enviar por</p>
         <div className="flex gap-2">
           <Chip ativo={canais.includes("whatsapp")} onClick={() => alternarCanal("whatsapp")}>
-            WhatsApp
+            <span className="flex items-center gap-1.5">
+              <MessageCircle className="size-3.5" aria-hidden />
+              WhatsApp
+            </span>
           </Chip>
           <Chip
             ativo={canais.includes("email")}
             onClick={() => !semEmail && alternarCanal("email")}
           >
-            E-mail
+            <span className="flex items-center gap-1.5">
+              <Mail className="size-3.5" aria-hidden />
+              E-mail
+            </span>
           </Chip>
         </div>
         {semEmail && canais.includes("email") && (
@@ -814,6 +864,24 @@ function Acompanhamento({
     }
   }
 
+  /** Texto inteiro, com o link dentro — serve para qualquer canal. */
+  async function copiarMensagem(conviteId: string) {
+    setOcupado(conviteId);
+    try {
+      const { mensagem } = await mensagemDoConviteAction(conviteId);
+      await navigator.clipboard.writeText(mensagem);
+      setCopiado(conviteId);
+      toast.success("Mensagem copiada", "Cole onde quiser mandar.");
+    } catch (e) {
+      toast.error(
+        "Não deu para montar a mensagem",
+        e instanceof Error ? e.message : "Tente de novo em instantes.",
+      );
+    } finally {
+      setOcupado(null);
+    }
+  }
+
   async function reenviar(conviteId: string) {
     setOcupado(conviteId);
     try {
@@ -849,7 +917,7 @@ function Acompanhamento({
         <li key={c.id}>
           <Card className="p-3">
             <div className="flex items-center gap-3">
-              <SupplierAvatar nome={c.supplierNome} size={36} />
+              <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={36} />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-ink">{c.supplierNome}</p>
                 <p className="truncate text-[12px] text-muted">{situacao(c, cotacao)}</p>
@@ -871,6 +939,15 @@ function Acompanhamento({
                     <LinkIcon className="size-3.5" aria-hidden />
                   )}
                   {copiado === c.id ? "Copiado" : "Copiar link"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => copiarMensagem(c.id)}
+                  disabled={ocupado === c.id || c.status === "PENDENTE"}
+                  className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
+                >
+                  <Copy className="size-3.5" aria-hidden />
+                  Copiar mensagem
                 </button>
                 <button
                   type="button"

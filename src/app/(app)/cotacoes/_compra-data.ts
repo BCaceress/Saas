@@ -173,7 +173,13 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
           observacao: true,
           purchaseOrderId: true,
           supplier: {
-            select: { razaoSocial: true, nomeFantasia: true, telefone: true, email: true },
+            select: {
+              razaoSocial: true,
+              nomeFantasia: true,
+              logoUrl: true,
+              telefone: true,
+              email: true,
+            },
           },
           responses: {
             select: {
@@ -270,6 +276,7 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
       id: s.id,
       supplierId: s.supplierId,
       supplierNome: s.supplier.nomeFantasia || s.supplier.razaoSocial,
+      supplierLogoUrl: s.supplier.logoUrl,
       telefone: s.supplier.telefone,
       email: s.supplier.email,
       abertoEm: sinais.get(s.id)?.abertoEm?.toISOString() ?? null,
@@ -363,11 +370,19 @@ export async function loadFornecedoresOpcao(): Promise<OpcoesCotacao["fornecedor
   const fornecedores = await db.supplier.findMany({
     where: { ativo: true },
     orderBy: { razaoSocial: "asc" },
-    select: { id: true, razaoSocial: true, nomeFantasia: true, telefone: true, email: true },
+    select: {
+      id: true,
+      razaoSocial: true,
+      nomeFantasia: true,
+      logoUrl: true,
+      telefone: true,
+      email: true,
+    },
   });
   return fornecedores.map((f) => ({
     id: f.id,
     nome: f.nomeFantasia || f.razaoSocial,
+    logoUrl: f.logoUrl,
     telefone: f.telefone,
     email: f.email,
   }));
@@ -393,6 +408,7 @@ export async function loadOpcoes(): Promise<OpcoesCotacao> {
         id: true,
         razaoSocial: true,
         nomeFantasia: true,
+        logoUrl: true,
         telefone: true,
         email: true,
       },
@@ -409,6 +425,7 @@ export async function loadOpcoes(): Promise<OpcoesCotacao> {
     fornecedores: fornecedores.map((f) => ({
       id: f.id,
       nome: f.nomeFantasia || f.razaoSocial,
+      logoUrl: f.logoUrl,
       telefone: f.telefone,
       email: f.email,
     })),

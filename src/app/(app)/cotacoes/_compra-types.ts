@@ -68,6 +68,7 @@ export type ConviteCotacao = {
   id: string;
   supplierId: string;
   supplierNome: string;
+  supplierLogoUrl: string | null;
   telefone: string | null;
   email: string | null;
   status: ConviteStatus;
@@ -114,6 +115,7 @@ export type ProdutoOpcao = {
 export type FornecedorOpcao = {
   id: string;
   nome: string;
+  logoUrl: string | null;
   telefone: string | null;
   email: string | null;
 };

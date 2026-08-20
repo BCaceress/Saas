@@ -21,6 +21,7 @@ import { CanalPicker, type Canal } from "./_canal";
 import type { EmailEnvio } from "../_compra-actions";
 import {
   convidarFornecedoresAction,
+  mensagemDoConviteAction,
   enviarCotacaoAction,
   linkDoConviteAction,
   recusarConviteAction,
@@ -86,6 +87,7 @@ export function ConvitesCotacao({
   const [respondendo, setRespondendo] = useState<ConviteCotacao | null>(null);
   const [envios, setEnvios] = useState<Envio[] | null>(null);
   const [linkCopiado, setLinkCopiado] = useState<string | null>(null);
+  const [textoCopiado, setTextoCopiado] = useState<string | null>(null);
   const [canais, setCanais] = useState<Canal[]>(["whatsapp"]);
   /** Convite específico em reenvio, ou "todos" para os que não responderam. */
   const [reenviando, setReenviando] = useState<ConviteCotacao | "todos" | null>(null);
@@ -188,7 +190,7 @@ export function ConvitesCotacao({
               key={c.id}
               className="flex items-start gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4"
             >
-              <SupplierAvatar nome={c.supplierNome} size={38} />
+              <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={38} />
 
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
@@ -271,6 +273,26 @@ export function ConvitesCotacao({
                       >
                         <LinkIcon size={13} />
                         {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
+                      </button>
+                    )}
+                    {/* O texto inteiro, com o link dentro: o operador manda
+                        pelo canal que ele já usa com aquele vendedor — outro
+                        número de WhatsApp, e-mail pessoal, o que for. */}
+                    {c.status === "ENVIADA" && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          rodar(async () => {
+                            const { mensagem } = await mensagemDoConviteAction(c.id);
+                            await navigator.clipboard.writeText(mensagem);
+                            setTextoCopiado(c.id);
+                          })
+                        }
+                        disabled={pendente}
+                        className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
+                      >
+                        <Copy size={13} />
+                        {textoCopiado === c.id ? "Mensagem copiada" : "Copiar mensagem"}
                       </button>
                     )}
                     {c.status === "ENVIADA" && (
@@ -419,6 +441,7 @@ function ConvidarSheet({
                   }
                   className="h-4 w-4 accent-[var(--brand)]"
                 />
+                <SupplierAvatar nome={f.nome} logoUrl={f.logoUrl} size={28} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm text-ink">{f.nome}</span>
                   {!f.telefone && (

@@ -14,6 +14,7 @@ export function MobilePageHeader({
   titulo,
   descricao,
   voltar,
+  onVoltar,
   acao,
   className,
 }: {
@@ -22,21 +23,37 @@ export function MobilePageHeader({
   descricao?: React.ReactNode;
   /** Href do destino de volta. Sem isto, não há botão. */
   voltar?: string;
+  /**
+   * Sair pela mão do cliente: quando a tela precisa FAZER algo antes de voltar
+   * (descartar um rascunho vazio, por exemplo), o botão vira `<button>` e o
+   * `voltar` segue valendo como o destino que ela vai empurrar.
+   */
+  onVoltar?: () => void;
   /** Ação à direita do título (um botão, um filtro). */
   acao?: React.ReactNode;
   className?: string;
 }) {
   return (
     <div className={cn("mb-3 flex items-start gap-2", className)}>
-      {voltar && (
-        <Link
-          href={voltar}
-          aria-label="Voltar"
-          className="-ml-2 grid h-10 w-10 shrink-0 place-items-center rounded-full text-ink-2 hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-        >
-          <ChevronLeft className="h-5 w-5" />
-        </Link>
-      )}
+      {voltar &&
+        (onVoltar ? (
+          <button
+            type="button"
+            onClick={onVoltar}
+            aria-label="Voltar"
+            className="-ml-2 grid h-10 w-10 shrink-0 place-items-center rounded-full text-ink-2 hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+        ) : (
+          <Link
+            href={voltar}
+            aria-label="Voltar"
+            className="-ml-2 grid h-10 w-10 shrink-0 place-items-center rounded-full text-ink-2 hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </Link>
+        ))}
 
       <div className="min-w-0 flex-1">
         <h1 className="font-display text-xl leading-tight font-semibold text-ink">
