@@ -278,6 +278,41 @@ function RascunhoTrilho({
 // ── Passo 1: produtos ───────────────────────────────────────
 // Bipe primeiro, busca depois. Quem está na frente da prateleira tem o código
 // de barras na mão; quem está no escritório digita o nome.
+//
+// A lista aqui é OTIMISTA e o servidor vem atrás. Antes cada toque no + fazia
+// gravação + \`router.refresh()\` (isto é: a página inteira voltando do servidor)
+// antes de o número mudar na tela — meio segundo de nada acontecendo por
+// unidade, e o operador tocando de novo achando que não pegou. Agora o número
+// muda no toque, as gravações de quantidade são agrupadas (o dedo bate cinco
+// vezes, o banco leva uma escrita) e a lista do servidor reassume assim que
+// chega.
+
+/** Item como a tela trabalha: o do servidor, ou o que acabou de ser tocado. */
+type ItemLocal = {
+  id: string;
+  productId: string | null;
+  descricao: string;
+  quantidade: number;
+  imagemUrl: string | null;
+  sku: string | null;
+  estoqueAtual: number | null;
+};
+
+const paraLocal = (i: CotacaoDetalhe["itens"][number]): ItemLocal => ({
+  id: i.id,
+  productId: i.productId,
+  descricao: i.descricao,
+  quantidade: i.quantidade,
+  imagemUrl: i.imagemUrl,
+  sku: i.sku,
+  estoqueAtual: i.estoqueAtual,
+});
+
+/** Espera entre o último toque e a gravação da quantidade. */
+const ESPERA_GRAVACAO = 600;
+
+/** Mínimo para buscar: com duas letras, metade do catálogo volta. */
+const MIN_BUSCA = 3;
 
 function PassoProdutos({
   cotacao,
@@ -293,11 +328,90 @@ function PassoProdutos({
   const [achados, setAchados] = React.useState<ProdutoCotacao[]>([]);
   const [buscando, setBuscando] = React.useState(false);
 
+  // Lista da tela. Enquanto o servidor não muda, quem manda é o toque; quando a
+  // lista do servidor muda (gravação confirmada, outra pessoa mexeu), ela
+  // reassume. Ajuste durante o render é o padrão do React para estado derivado
+  // de props — e evita o efeito que rodaria um passo atrasado.
+  const chaveServidor = cotacao.itens.map((i) => `${i.id}:${i.quantidade}`).join("|");
+  const [vistoDoServidor, setVistoDoServidor] = React.useState(chaveServidor);
+  const [itens, setItens] = React.useState<ItemLocal[]>(() => cotacao.itens.map(paraLocal));
+  if (vistoDoServidor !== chaveServidor) {
+    setVistoDoServidor(chaveServidor);
+    setItens(cotacao.itens.map(paraLocal));
+  }
+
+  // Espelho da lista para as tarefas em fila: elas rodam depois do render e
+  // precisam do que está na tela AGORA, não do que estava quando foram criadas.
+  const itensRef = React.useRef<ItemLocal[]>(itens);
+  React.useEffect(() => {
+    itensRef.current = itens;
+  }, [itens]);
+
+  // Um timer e uma fila por item: toques seguidos no mesmo produto viram UMA
+  // gravação, e gravações do mesmo item nunca se atropelam.
+  const timers = React.useRef(
+    new Map<string, { timer: ReturnType<typeof setTimeout>; gravar: () => void }>(),
+  );
+  const filas = React.useRef(new Map<string, Promise<unknown>>());
+  /** Contador dos ids provisórios — não precisa ser único no mundo, só na tela. */
+  const sequencia = React.useRef(0);
+
+  function enfileirar(id: string, tarefa: () => Promise<unknown>) {
+    const proxima = (filas.current.get(id) ?? Promise.resolve())
+      .catch(() => {})
+      .then(tarefa)
+      .catch((e) => {
+        toast.error(
+          "Não deu para salvar o item",
+          e instanceof Error ? e.message : "Tente de novo em instantes.",
+        );
+        router.refresh();
+      });
+    filas.current.set(id, proxima);
+    return proxima;
+  }
+
+  /** Grava a quantidade que ficou de pé depois que o dedo parou. */
+  function agendarGravacao(item: ItemLocal, quantidade: number) {
+    const anterior = timers.current.get(item.id);
+    if (anterior) clearTimeout(anterior.timer);
+
+    const gravar = () => {
+      timers.current.delete(item.id);
+      void enfileirar(item.id, async () => {
+        // Item que ainda nem nasceu no banco não tem o que atualizar: a fila do
+        // id provisório já grava a quantidade certa.
+        if (item.id.startsWith("novo:")) return;
+        if (quantidade <= 0) await removerItemAction(item.id);
+        else {
+          await editarItemAction({ id: item.id, descricao: item.descricao, quantidade });
+        }
+        // Só volta ao servidor quando o dedo parou em TODOS os itens: um
+        // refresh no meio da contagem traria a lista velha por cima.
+        if (timers.current.size === 0) router.refresh();
+      });
+    };
+
+    timers.current.set(item.id, { timer: setTimeout(gravar, ESPERA_GRAVACAO), gravar });
+  }
+
+  // Sair do passo antes do tempo do agrupamento não pode perder o que foi
+  // tocado — o que estiver pendente vai embora agora.
+  React.useEffect(() => {
+    const pendentes = timers.current;
+    return () => {
+      for (const { timer, gravar } of [...pendentes.values()]) {
+        clearTimeout(timer);
+        gravar();
+      }
+    };
+  }, []);
+
   // Busca com respiro: cada tecla disparando uma consulta transforma o campo
   // numa metralhadora de round-trips na rede do mercado.
   React.useEffect(() => {
     const t = termo.trim();
-    if (t.length < 2) return;
+    if (t.length < MIN_BUSCA) return;
     const timer = setTimeout(async () => {
       setBuscando(true);
       try {
@@ -312,31 +426,66 @@ function PassoProdutos({
       } finally {
         setBuscando(false);
       }
-    }, 350);
+    }, 300);
     return () => clearTimeout(timer);
   }, [termo, cotacao.siteId]);
 
   // Resultado antigo não sobrevive ao campo esvaziado — e limpar por derivação
   // evita um render extra só para apagar lista.
-  const sugestoes = termo.trim().length < 2 ? [] : achados;
+  const sugestoes = termo.trim().length < MIN_BUSCA ? [] : achados;
 
-  async function adicionar(productId: string | null, descricao: string, quantidade = 1) {
-    try {
-      await adicionarItemAction({
+  /** Entra na lista na hora; o id de verdade chega da gravação. */
+  function adicionar(produto: {
+    productId: string | null;
+    descricao: string;
+    quantidade: number;
+    imagemUrl?: string | null;
+    sku?: string | null;
+    estoque?: number | null;
+  }) {
+    const provisorio = `novo:${++sequencia.current}`;
+    setItens((atual) => [
+      ...atual,
+      {
+        id: provisorio,
+        productId: produto.productId,
+        descricao: produto.descricao,
+        quantidade: produto.quantidade,
+        imagemUrl: produto.imagemUrl ?? null,
+        sku: produto.sku ?? null,
+        estoqueAtual: produto.estoque ?? null,
+      },
+    ]);
+    setTermo("");
+    setAchados([]);
+
+    void enfileirar(provisorio, async () => {
+      const criado = await adicionarItemAction({
         quotationId: cotacao.id,
-        productId,
-        descricao,
-        quantidade,
+        productId: produto.productId,
+        descricao: produto.descricao,
+        quantidade: produto.quantidade,
       });
-      setTermo("");
-      setAchados([]);
-      router.refresh();
-    } catch (e) {
-      toast.error(
-        "Não deu para adicionar",
-        e instanceof Error ? e.message : "Tente de novo em instantes.",
+      // Troca o id provisório pelo real: sem isso, o + do item recém-criado
+      // gravaria contra um id que não existe.
+      setItens((atual) =>
+        atual.map((i) => (i.id === provisorio ? { ...i, id: criado.id } : i)),
       );
-    }
+      filas.current.delete(provisorio);
+
+      // O dedo não espera a gravação: se a quantidade mudou (ou o item saiu da
+      // lista) enquanto o item nascia, o banco recebe agora o que está na tela.
+      const naTela = itensRef.current.find((i) => i.id === provisorio);
+      if (!naTela) await removerItemAction(criado.id);
+      else if (naTela.quantidade !== produto.quantidade) {
+        await editarItemAction({
+          id: criado.id,
+          descricao: naTela.descricao,
+          quantidade: naTela.quantidade,
+        });
+      }
+      router.refresh();
+    });
   }
 
   async function aoLer(codigo: string) {
@@ -348,38 +497,43 @@ function PassoProdutos({
         return;
       }
       // Já está na lista? Bipar de novo soma um — é assim que se conta caixa.
-      const existente = cotacao.itens.find((i) => i.productId === achado.id);
+      const existente = itens.find((i) => i.productId === achado.id);
       if (existente) {
-        await editarItemAction({
-          id: existente.id,
-          descricao: existente.descricao,
-          quantidade: existente.quantidade + 1,
-        });
-        router.refresh();
-        toast.success(existente.descricao, `Agora são ${existente.quantidade + 1}.`);
+        mudarQtd(existente, existente.quantidade + 1);
+        toast.success(existente.descricao, `Agora são ${fmtQtd(existente.quantidade + 1)}.`);
         return;
       }
-      await adicionar(achado.id, achado.nome, achado.sugerido > 0 ? achado.sugerido : 1);
+      adicionar({
+        productId: achado.id,
+        descricao: achado.nome,
+        quantidade: achado.sugerido > 0 ? achado.sugerido : 1,
+        imagemUrl: achado.imagemUrl,
+        sku: achado.sku,
+        estoque: achado.estoque,
+      });
       toast.success("Item adicionado", achado.nome);
     } finally {
       setOcupado(false);
     }
   }
 
-  async function mudarQtd(itemId: string, descricao: string, nova: number) {
+  /** Zero tira o item da lista — é o "menos" indo até o fim. */
+  function mudarQtd(item: ItemLocal, nova: number) {
     if (nova <= 0) {
-      await removerItemAction(itemId);
+      setItens((atual) => atual.filter((i) => i.id !== item.id));
     } else {
-      await editarItemAction({ id: itemId, descricao, quantidade: nova });
+      setItens((atual) =>
+        atual.map((i) => (i.id === item.id ? { ...i, quantidade: nova } : i)),
+      );
     }
-    router.refresh();
+    agendarGravacao(item, nova);
   }
 
   return (
     <div className="space-y-3">
       {editavel && (
         <>
-          {lendo ? (
+          {lendo && (
             <Scanner
               onCodigo={aoLer}
               onFechar={() => setLendo(false)}
@@ -387,35 +541,44 @@ function PassoProdutos({
               ocupado={ocupado}
               dica="Bipe o que você quer cotar"
             />
-          ) : (
-            <Button
-              onClick={() => setLendo(true)}
-              variant="secondary"
-              size="lg"
-              className="w-full"
-            >
-              <ScanLine className="size-4" aria-hidden />
-              Bipar produto
-            </Button>
           )}
 
-          <div className="relative">
-            <Search
-              className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint"
-              aria-hidden
-            />
-            <input
-              value={termo}
-              onChange={(e) => setTermo(e.target.value)}
-              placeholder="Buscar por nome ou SKU"
-              className="min-h-11 w-full rounded-[var(--radius)] border border-line bg-surface pr-3 pl-9 text-sm text-ink"
-            />
-            {buscando && (
-              <Loader2
-                className="absolute top-1/2 right-3 size-4 -translate-y-1/2 animate-spin text-faint"
+          {/* Buscar e bipar são a mesma decisão ("achar o produto"), então
+              dividem a mesma linha: o campo ocupa o que sobra e o bipe fica no
+              canto do polegar. */}
+          <div className="flex gap-2">
+            <div className="relative min-w-0 flex-1">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint"
                 aria-hidden
               />
-            )}
+              <input
+                value={termo}
+                onChange={(e) => setTermo(e.target.value)}
+                placeholder="Buscar por nome ou SKU"
+                className="h-11 w-full rounded-[var(--radius)] border border-line bg-surface pr-3 pl-9 text-sm text-ink"
+              />
+              {buscando && (
+                <Loader2
+                  className="absolute top-1/2 right-3 size-4 -translate-y-1/2 animate-spin text-faint"
+                  aria-hidden
+                />
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setLendo((v) => !v)}
+              aria-pressed={lendo}
+              aria-label={lendo ? "Fechar a câmera" : "Bipar produto"}
+              className={cn(
+                "grid size-11 shrink-0 place-items-center rounded-[var(--radius)] border",
+                lendo
+                  ? "border-transparent bg-brand text-on-brand"
+                  : "border-line-button bg-surface text-ink-2 active:bg-surface-2",
+              )}
+            >
+              <ScanLine className="size-5" aria-hidden />
+            </button>
           </div>
 
           {sugestoes.length > 0 && (
@@ -424,7 +587,16 @@ function PassoProdutos({
                 <button
                   key={p.id}
                   type="button"
-                  onClick={() => adicionar(p.id, p.nome, p.sugerido > 0 ? p.sugerido : 1)}
+                  onClick={() =>
+                    adicionar({
+                      productId: p.id,
+                      descricao: p.nome,
+                      quantidade: p.sugerido > 0 ? p.sugerido : 1,
+                      imagemUrl: p.imagemUrl,
+                      sku: p.sku,
+                      estoque: p.estoque,
+                    })
+                  }
                   className="flex w-full items-center gap-3 px-3 py-2.5 text-left active:bg-surface-2"
                 >
                   <Thumb url={p.imagemUrl} nome={p.nome} size={36} />
@@ -442,10 +614,12 @@ function PassoProdutos({
             </Card>
           )}
 
-          {termo.trim().length >= 2 && !buscando && sugestoes.length === 0 && (
+          {termo.trim().length >= MIN_BUSCA && !buscando && sugestoes.length === 0 && (
             <button
               type="button"
-              onClick={() => adicionar(null, termo.trim())}
+              onClick={() =>
+                adicionar({ productId: null, descricao: termo.trim(), quantidade: 1 })
+              }
               className="w-full rounded-[var(--radius)] border border-dashed border-line px-3 py-2.5 text-left text-[13px] text-ink-2 active:bg-surface-2"
             >
               Cotar <span className="font-medium text-ink">“{termo.trim()}”</span> mesmo sem
@@ -455,57 +629,53 @@ function PassoProdutos({
         </>
       )}
 
-      {cotacao.itens.length === 0 ? (
+      {itens.length === 0 ? (
         <Card className="p-6 text-center text-[13px] text-muted">
           Nenhum produto ainda. Bipe ou busque o que você quer cotar.
         </Card>
       ) : (
         <ul className="space-y-2">
-          {cotacao.itens.map((item) => (
+          {itens.map((item) => (
             <li key={item.id}>
               <Card className="flex items-center gap-2 p-3">
                 <Thumb url={item.imagemUrl} nome={item.descricao} size={40} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-ink">{item.descricao}</p>
                   <p className="text-xs text-muted">
-                    {item.sku ? (
-                      <span className="font-mono">{item.sku}</span>
-                    ) : (
-                      "fora do catálogo"
-                    )}
+                    {item.sku ? <span className="font-mono">{item.sku}</span> : "fora do catálogo"}
                     {item.estoqueAtual !== null && ` · tem ${fmtQtd(item.estoqueAtual)}`}
                   </p>
                 </div>
 
                 {editavel && (
                   <div className="flex shrink-0 items-center gap-1">
+                    {/* O menos vai até o fim: chegando a zero, o item sai da
+                        lista. Botão de lixeira ao lado seria um segundo jeito
+                        de fazer a mesma coisa, no lugar onde o dedo já está. */}
                     <BotaoQtd
-                      rotulo={`Menos um ${item.descricao}`}
-                      onClick={() => mudarQtd(item.id, item.descricao, item.quantidade - 1)}
+                      rotulo={
+                        item.quantidade <= 1
+                          ? `Tirar ${item.descricao} da cotação`
+                          : `Menos um ${item.descricao}`
+                      }
+                      onClick={() => mudarQtd(item, item.quantidade - 1)}
                     >
-                      <Minus className="size-4" aria-hidden />
+                      {item.quantidade <= 1 ? (
+                        <Trash2 className="size-4" aria-hidden />
+                      ) : (
+                        <Minus className="size-4" aria-hidden />
+                      )}
                     </BotaoQtd>
                     <span className="w-9 text-center font-display text-base font-semibold text-ink tabular-nums">
                       {fmtQtd(item.quantidade)}
                     </span>
                     <BotaoQtd
                       rotulo={`Mais um ${item.descricao}`}
-                      onClick={() => mudarQtd(item.id, item.descricao, item.quantidade + 1)}
+                      onClick={() => mudarQtd(item, item.quantidade + 1)}
                     >
                       <Plus className="size-4" aria-hidden />
                     </BotaoQtd>
                   </div>
-                )}
-
-                {editavel && (
-                  <button
-                    type="button"
-                    onClick={() => mudarQtd(item.id, item.descricao, 0)}
-                    aria-label={`Tirar ${item.descricao} da cotação`}
-                    className="grid size-10 shrink-0 place-items-center rounded-full text-muted active:bg-danger-soft active:text-danger"
-                  >
-                    <Trash2 className="size-4" aria-hidden />
-                  </button>
                 )}
               </Card>
             </li>
@@ -732,7 +902,7 @@ function PassoEnviar({
             value={titulo}
             onChange={(e) => setTitulo(e.target.value)}
             disabled={!editavel}
-            className="min-h-11 w-full rounded-[var(--radius)] border border-line bg-surface px-3 text-sm text-ink"
+            className="block h-11 w-full rounded-[var(--radius)] border border-line bg-surface px-3 text-sm text-ink"
           />
         </label>
         <label className="block">
@@ -746,7 +916,13 @@ function PassoEnviar({
             onChange={(e) => setPrazo(e.target.value)}
             disabled={!editavel}
             className={cn(
-              "block min-h-11 w-full appearance-none rounded-[var(--radius)] border border-line bg-surface px-3 text-sm",
+              // Altura fixa + o pseudo-elemento do WebKit: no iOS/Android o miolo do
+              // campo de data ancora no topo da caixa e some do meio se a altura
+              // vier de padding. Com altura fixa e o valor esticado até o fim, ele
+              // fica centrado igual ao campo de nome.
+              "block h-11 w-full appearance-none rounded-[var(--radius)] border border-line bg-surface px-3 text-sm",
+              "[&::-webkit-date-and-time-value]:h-full [&::-webkit-date-and-time-value]:text-left",
+              "[&::-webkit-date-and-time-value]:leading-[2.75rem] [&::-webkit-datetime-edit]:leading-[2.75rem]",
               prazo ? "text-ink" : "text-faint",
             )}
           />

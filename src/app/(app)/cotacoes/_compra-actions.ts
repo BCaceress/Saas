@@ -397,7 +397,10 @@ export async function adicionarItemAction(input: z.input<typeof itemSchema>) {
       orderBy: { ordem: "desc" },
       select: { ordem: true },
     });
-    await db.quotationItem.create({
+    // Devolve o id: a lista do celular pinta o item antes da gravação e
+    // precisa trocar o id provisório pelo de verdade para o + seguinte gravar
+    // no lugar certo.
+    const item = await db.quotationItem.create({
       data: {
         tenantId: tid,
         quotationId: d.quotationId,
@@ -408,8 +411,10 @@ export async function adicionarItemAction(input: z.input<typeof itemSchema>) {
         observacao: d.observacao ?? null,
         ordem: (ultimo?.ordem ?? -1) + 1,
       },
+      select: { id: true },
     });
     ok();
+    return item;
   });
 }
 
