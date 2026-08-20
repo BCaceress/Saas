@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { Plus, Trash2, Pencil, PackageSearch, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { EstadoVazio, fmtQtd } from "../_catalogo/ui";
@@ -33,6 +33,21 @@ export function ItensCotacao({
   const [erro, setErro] = useState<string | null>(null);
   const [editando, setEditando] = useState<string | null>(null);
 
+  // Lista OTIMISTA: o item aparece no clique e a gravação corre atrás. Esperar
+  // a Server Action mais o `router.refresh()` (a página inteira voltando do
+  // servidor) para desenhar uma linha fazia parecer que o botão não pegou —
+  // e quem monta lista de 30 itens clica de novo.
+  type Item = CotacaoDetalhe["itens"][number];
+  const chaveServidor = cotacao.itens.map((i) => `${i.id}:${i.quantidade}`).join("|");
+  const [vistoDoServidor, setVistoDoServidor] = useState(chaveServidor);
+  const [itens, setItens] = useState<Item[]>(cotacao.itens);
+  if (vistoDoServidor !== chaveServidor) {
+    setVistoDoServidor(chaveServidor);
+    setItens(cotacao.itens);
+  }
+
+  const buscaRef = useRef<HTMLInputElement>(null);
+
   function rodar(fn: () => Promise<unknown>) {
     setErro(null);
     startTransition(async () => {
@@ -42,17 +57,67 @@ export function ItensCotacao({
         router.refresh();
       } catch (e) {
         setErro(e instanceof Error ? e.message : "Não foi possível salvar.");
+        router.refresh();
       }
     });
   }
 
+  /** Desenha o item na hora, grava depois e devolve o foco para a busca. */
+  function adicionar(novo: Omit<Item, "id">) {
+    const provisorio = `novo:${novo.descricao}:${Date.now()}`;
+    setItens((atual) => [...atual, { ...novo, id: provisorio }]);
+    // O próximo item começa a ser digitado antes de o anterior terminar de
+    // gravar — é assim que se monta uma lista de compra.
+    buscaRef.current?.focus();
+    startTransition(async () => {
+      try {
+        const criado = await adicionarItemAction({
+          quotationId: cotacao.id,
+          productId: novo.productId,
+          packagingId: novo.packagingId,
+          descricao: novo.descricao,
+          quantidade: novo.quantidade,
+        });
+        setItens((atual) =>
+          atual.map((i) => (i.id === provisorio ? { ...i, id: criado.id } : i)),
+        );
+        router.refresh();
+      } catch (e) {
+        setItens((atual) => atual.filter((i) => i.id !== provisorio));
+        setErro(e instanceof Error ? e.message : "Não foi possível adicionar.");
+      }
+    });
+  }
+
+  function remover(item: Item) {
+    setItens((atual) => atual.filter((i) => i.id !== item.id));
+    rodar(() => removerItemAction(item.id));
+  }
+
+  function mudarQuantidade(item: Item, quantidade: number) {
+    setItens((atual) =>
+      atual.map((i) => (i.id === item.id ? { ...i, quantidade } : i)),
+    );
+    setEditando(null);
+    rodar(() =>
+      editarItemAction({ id: item.id, descricao: item.descricao, quantidade }),
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4">
-      {editavel && <NovoItem cotacaoId={cotacao.id} produtos={produtos} onSalvar={rodar} pendente={pendente} />}
+      {editavel && (
+        <NovoItem
+          produtos={produtos}
+          onAdicionar={adicionar}
+          pendente={pendente}
+          buscaRef={buscaRef}
+        />
+      )}
 
       {erro && <p className="text-[13px] text-danger">{erro}</p>}
 
-      {cotacao.itens.length === 0 ? (
+      {itens.length === 0 ? (
         <EstadoVazio
           icon={<PackageSearch size={20} />}
           titulo="A lista está vazia"
@@ -60,23 +125,14 @@ export function ItensCotacao({
         />
       ) : (
         <ul className="divide-y divide-line overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
-          {cotacao.itens.map((item) => (
+          {itens.map((item) => (
             <li key={item.id} className="px-4 py-3">
               {editando === item.id ? (
                 <LinhaEdicao
                   item={item}
                   pendente={pendente}
                   onCancelar={() => setEditando(null)}
-                  onSalvar={(d) =>
-                    rodar(() =>
-                      editarItemAction({
-                        id: item.id,
-                        descricao: d.descricao,
-                        quantidade: d.quantidade,
-                        observacao: d.observacao || null,
-                      }),
-                    )
-                  }
+                  onSalvar={(quantidade) => mudarQuantidade(item, quantidade)}
                 />
               ) : (
                 <div className="flex items-center gap-3">
@@ -92,7 +148,6 @@ export function ItensCotacao({
                           fora do catálogo
                         </span>
                       )}
-                      {item.embalagemNome && <span>{item.embalagemNome}</span>}
                       {item.estoqueAtual !== null && (
                         <span
                           className={cn(
@@ -113,8 +168,17 @@ export function ItensCotacao({
                     </p>
                   </div>
 
-                  <span className="shrink-0 font-mono text-[14px] font-semibold tabular-nums text-ink">
-                    {fmtQtd(item.quantidade)}
+                  {/* Número sozinho não diz nada: 2 pode ser duas garrafas ou
+                      duas caixas de doze, e o fornecedor cota o que estiver
+                      escrito aqui. */}
+                  <span className="shrink-0 text-right">
+                    <span className="block font-mono text-[15px] font-semibold tabular-nums text-ink">
+                      {fmtQtd(item.quantidade)}
+                    </span>
+                    <span className="block text-[11px] text-faint">
+                      {item.embalagemNome ??
+                        (item.quantidade === 1 ? "unidade" : "unidades")}
+                    </span>
                   </span>
 
                   {editavel && (
@@ -130,7 +194,7 @@ export function ItensCotacao({
                       </button>
                       <button
                         type="button"
-                        onClick={() => rodar(() => removerItemAction(item.id))}
+                        onClick={() => remover(item)}
                         disabled={pendente}
                         title="Remover"
                         aria-label={`Remover ${item.descricao}`}
@@ -153,15 +217,15 @@ export function ItensCotacao({
 // ── Adicionar item ──────────────────────────────────────────
 
 function NovoItem({
-  cotacaoId,
   produtos,
-  onSalvar,
+  onAdicionar,
   pendente,
+  buscaRef,
 }: {
-  cotacaoId: string;
   produtos: ProdutoOpcao[];
-  onSalvar: (fn: () => Promise<unknown>) => void;
+  onAdicionar: (item: Omit<CotacaoDetalhe["itens"][number], "id">) => void;
   pendente: boolean;
+  buscaRef: React.RefObject<HTMLInputElement | null>;
 }) {
   const [busca, setBusca] = useState("");
   const [escolhido, setEscolhido] = useState<ProdutoOpcao | null>(null);
@@ -198,16 +262,23 @@ function NovoItem({
   }
 
   function salvar() {
-    onSalvar(async () => {
-      await adicionarItemAction({
-        quotationId: cotacaoId,
-        productId: escolhido?.id ?? null,
-        packagingId: packagingId || null,
-        descricao: escolhido ? escolhido.nome : descricaoLivre.trim(),
-        quantidade: qtd,
-      });
-      limpar();
+    const embalagem = escolhido?.packagings.find((e) => e.id === packagingId);
+    onAdicionar({
+      productId: escolhido?.id ?? null,
+      packagingId: packagingId || null,
+      descricao: escolhido ? escolhido.nome : descricaoLivre.trim(),
+      quantidade: qtd,
+      observacao: null,
+      ordem: 0,
+      sku: escolhido?.sku ?? null,
+      imagemUrl: escolhido?.imagemUrl ?? null,
+      // Sem o fator em mãos aqui, o rótulo provisório é o nome da embalagem; o
+      // servidor devolve "Caixa (12 un.)" no refresh seguinte.
+      embalagemNome: embalagem ? embalagem.nome : escolhido ? "Unidade" : null,
+      estoqueAtual: null,
+      estoqueMinimo: null,
     });
+    limpar();
   }
 
   return (
@@ -216,12 +287,17 @@ function NovoItem({
         <div className="relative flex flex-col gap-1">
           <span className="text-[12px] font-medium text-ink-2">Produto</span>
           <input
+            ref={buscaRef}
             value={busca}
             onChange={(e) => {
               setBusca(e.target.value);
               setEscolhido(null);
             }}
-            placeholder="Busque por nome ou SKU"
+            onKeyDown={(e) => {
+              // Enter fecha o item: quem digita lista não solta o teclado.
+              if (e.key === "Enter" && podeSalvar) salvar();
+            }}
+            placeholder="Busque por nome ou SKU (mín. 3 letras)"
             className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink"
           />
           {sugestoes.length > 0 && !escolhido && (
@@ -304,6 +380,14 @@ function NovoItem({
 
 // ── Edição inline ───────────────────────────────────────────
 
+/**
+ * Edição inline: só a QUANTIDADE.
+ *
+ * Descrição e observação saíram porque a linha já foi decidida no momento de
+ * adicionar — o que muda depois é quanto se quer comprar. Menos campos aqui é
+ * menos jeito de mandar ao fornecedor uma lista diferente da que o operador
+ * acha que mandou.
+ */
 function LinhaEdicao({
   item,
   pendente,
@@ -313,38 +397,38 @@ function LinhaEdicao({
   item: CotacaoDetalhe["itens"][number];
   pendente: boolean;
   onCancelar: () => void;
-  onSalvar: (d: { descricao: string; quantidade: number; observacao: string }) => void;
+  onSalvar: (quantidade: number) => void;
 }) {
-  const [descricao, setDescricao] = useState(item.descricao);
   const [quantidade, setQuantidade] = useState(String(item.quantidade));
-  const [observacao, setObservacao] = useState(item.observacao ?? "");
 
   const qtd = Number(quantidade.replace(",", ".")) || 0;
 
   return (
-    <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,14rem)_6rem_auto] md:items-center">
+    <div className="flex flex-wrap items-center gap-3">
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-ink">{item.descricao}</p>
+        <p className="text-[11px] text-faint">
+          {item.embalagemNome ?? (qtd === 1 ? "unidade" : "unidades")}
+        </p>
+      </div>
       <input
-        value={descricao}
-        onChange={(e) => setDescricao(e.target.value)}
-        className="rounded-[var(--radius)] border border-line bg-surface px-3 py-1.5 text-sm text-ink"
-      />
-      <input
-        value={observacao}
-        onChange={(e) => setObservacao(e.target.value)}
-        placeholder="Observação"
-        className="rounded-[var(--radius)] border border-line bg-surface px-3 py-1.5 text-[13px] text-ink"
-      />
-      <input
+        autoFocus
         value={quantidade}
         onChange={(e) => setQuantidade(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && qtd > 0) onSalvar(qtd);
+          if (e.key === "Escape") onCancelar();
+        }}
+        onFocus={(e) => e.currentTarget.select()}
         inputMode="decimal"
-        className="rounded-[var(--radius)] border border-line bg-surface px-3 py-1.5 text-right font-mono text-sm tabular-nums text-ink"
+        aria-label={`Quantidade de ${item.descricao}`}
+        className="w-24 rounded-[var(--radius)] border border-line bg-surface px-3 py-1.5 text-right font-mono text-sm tabular-nums text-ink"
       />
       <div className="flex items-center gap-1">
         <button
           type="button"
-          onClick={() => onSalvar({ descricao, quantidade: qtd, observacao })}
-          disabled={pendente || qtd <= 0 || descricao.trim().length < 2}
+          onClick={() => onSalvar(qtd)}
+          disabled={pendente || qtd <= 0}
           aria-label="Salvar item"
           className={cn(
             "grid h-8 w-8 place-items-center rounded-full text-on-brand transition-colors",

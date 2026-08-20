@@ -4,7 +4,7 @@ import {
   Warehouse,
   Users,
   ShoppingCart,
-  Scale,
+  Handshake,
   ShoppingBag,
   ClipboardList,
   ClipboardCheck,
@@ -266,7 +266,7 @@ export const NAV_GROUPS: NavGroup[] = [
       {
         href: "/cotacoes",
         label: "Cotações",
-        icon: Scale,
+        icon: Handshake,
         enabled: true,
         mobile: true,
         // Cotações é o planejamento: o que comprar, de quem e por quanto. A

@@ -3,25 +3,15 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  Plus,
-  Copy,
-  FileQuestion,
-  MoreVertical,
-  Trash2,
-  Send,
-  Wallet,
-  Sparkles,
-  ChevronRight,
-} from "lucide-react";
+import { Plus, Copy, FileQuestion, MoreVertical, Trash2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { EstadoVazio, Metrica, MetricaGrid, fmtMoney } from "./_catalogo/ui";
+import { EstadoVazio, fmtMoney } from "./_catalogo/ui";
 import {
   criarCotacaoAction,
   duplicarCotacaoAction,
   excluirCotacaoAction,
 } from "./_compra-actions";
-import type { CotacaoRow, CotacaoStatus, ResumoCompras } from "./_compra-types";
+import type { CotacaoRow, CotacaoStatus } from "./_compra-types";
 import { andamento, statusVisivel } from "./_status";
 
 // ── Lista de cotações ───────────────────────────────────────
@@ -52,13 +42,11 @@ function prazoTexto(iso: string | null): { texto: string; urgente: boolean } | n
 
 export function ListaCotacoes({
   linhas,
-  resumo,
   produtosSugeridos,
   multiSite,
   podePedir,
 }: {
   linhas: CotacaoRow[];
-  resumo: ResumoCompras;
   /** Contagem ao vivo de `loadSugestoesReposicao` — mesma fonte da Reposição Inteligente. */
   produtosSugeridos: number;
   /** Mais de uma loja no tenant. Com uma só, dizer o nome dela é ruído. */
@@ -118,35 +106,6 @@ export function ListaCotacoes({
 
   return (
     <div className="flex flex-col gap-5">
-      <MetricaGrid className="lg:grid-cols-4">
-        <Metrica
-          label="Rascunhos"
-          valor={String(resumo.planejamento)}
-          icon={<FileQuestion size={13} />}
-          tom="brand"
-        />
-        <Metrica
-          label="Aguardando resposta"
-          valor={String(resumo.cotando)}
-          sub="cotações já enviadas aos fornecedores"
-          icon={<Send size={13} />}
-        />
-        <Metrica
-          label="Valor previsto"
-          valor={fmtMoney(resumo.valorPrevisto)}
-          sub="pelo melhor preço já conhecido"
-          tom="ok"
-          icon={<Wallet size={13} />}
-        />
-        <Metrica
-          label="Produtos sugeridos"
-          valor={String(produtosSugeridos)}
-          sub="pela reposição inteligente"
-          tom={produtosSugeridos > 0 ? "accent" : "ink"}
-          icon={<Sparkles size={13} />}
-        />
-      </MetricaGrid>
-
       {erro && <p className="text-[13px] text-danger">{erro}</p>}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -177,6 +136,13 @@ export function ListaCotacoes({
             >
               <Sparkles size={15} className="text-muted" />
               <span className="hidden sm:inline">Sugestão de reposição</span>
+              {/* O card de totalizador saiu, mas o número continua valendo:
+                  vive no botão que leva justamente para ele. */}
+              {produtosSugeridos > 0 && (
+                <span className="rounded-full bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-semibold text-accent tabular-nums">
+                  {produtosSugeridos}
+                </span>
+              )}
             </Link>
             <button
               type="button"
@@ -211,7 +177,7 @@ export function ListaCotacoes({
         />
       ) : (
         <ul className="flex flex-col gap-2">
-          {visiveis.map((l) => {
+          {visiveis.map((l, indice) => {
             const prazo = l.status === "ABERTA" ? prazoTexto(l.prazoResposta) : null;
             const rotulo = statusVisivel(
               l.status,
@@ -287,10 +253,9 @@ export function ListaCotacoes({
                     )}
                   </div>
 
-                  <ChevronRight
-                    size={17}
-                    className="shrink-0 text-faint transition-colors group-hover:text-brand"
-                  />
+                  {/* Espaço do menu de ações: ele mora fora do link (senão
+                      abriria a cotação junto), então a linha reserva o lugar. */}
+                  <span className="w-8 shrink-0" aria-hidden />
                 </Link>
 
                 {podePedir && (
@@ -306,6 +271,9 @@ export function ListaCotacoes({
                       setMenuAberto(null);
                       setAExcluir(l);
                     }}
+                    /* As duas últimas linhas abrem o menu para CIMA: para baixo
+                       ele passaria do fim da lista e ficaria cortado. */
+                    paraCima={indice >= visiveis.length - 2 && visiveis.length > 2}
                   />
                 )}
               </li>
@@ -340,6 +308,7 @@ function MenuLinha({
   podeExcluir,
   onDuplicar,
   onExcluir,
+  paraCima,
 }: {
   aberto: boolean;
   onAbrir: () => void;
@@ -349,6 +318,7 @@ function MenuLinha({
   podeExcluir: boolean;
   onDuplicar: () => void;
   onExcluir: () => void;
+  paraCima: boolean;
 }) {
   return (
     <>
@@ -365,8 +335,8 @@ function MenuLinha({
         aria-haspopup="menu"
         aria-expanded={aberto}
         className={cn(
-          "absolute top-1/2 right-10 z-40 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full text-faint transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50",
-          !aberto && "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+          "absolute top-1/2 right-3 z-40 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50",
+          aberto && "bg-surface-2 text-ink",
         )}
       >
         <MoreVertical size={16} />
@@ -375,7 +345,10 @@ function MenuLinha({
       {aberto && (
         <div
           role="menu"
-          className="absolute top-1/2 right-10 z-40 mt-5 w-48 overflow-hidden rounded-[var(--radius)] border border-line bg-surface py-1 shadow-[var(--shadow-float)]"
+          className={cn(
+            "absolute right-3 z-40 w-48 overflow-hidden rounded-[var(--radius)] border border-line bg-surface py-1 shadow-[var(--shadow-float)]",
+            paraCima ? "bottom-1/2 mb-5" : "top-1/2 mt-5",
+          )}
         >
           <button
             type="button"

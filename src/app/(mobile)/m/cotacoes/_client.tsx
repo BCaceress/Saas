@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight, Loader2, Plus, Scale } from "lucide-react";
+import { ChevronRight, Handshake, Loader2, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
@@ -81,7 +81,7 @@ export function CotacoesMobile({
       {visiveis.length === 0 ? (
         <MCard className="flex flex-col items-center gap-3 px-5 py-10 text-center">
           <span className="grid size-12 place-items-center rounded-full bg-surface-2 text-muted">
-            <Scale className="size-5" aria-hidden />
+            <Handshake className="size-5" aria-hidden />
           </span>
           <p className="text-sm font-medium text-ink">
             {filtro === "todas" ? "Você ainda não tem cotações" : "Nada por aqui"}

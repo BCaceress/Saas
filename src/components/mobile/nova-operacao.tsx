@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeftRight,
   ClipboardList,
+  Handshake,
   Image as ImageIcon,
-  Scale,
   ScanLine,
   ShoppingCart,
   Tag,
@@ -99,7 +99,7 @@ const OPERACOES: Operacao[] = [
     href: "/m/cotacoes",
     label: "Cotação",
     descricao: "Pedir preço a vários fornecedores",
-    icone: Scale,
+    icone: Handshake,
     permissao: "compras.pedir",
   },
 ];

@@ -10,7 +10,7 @@ import { ListaCotacoes } from "./_client";
 
 export default async function CotacoesPage() {
   const ctx = await requireActiveTenant();
-  const { linhas, resumo, produtosSugeridos, multiSite } = await withTenant(ctx, async () => {
+  const { linhas, produtosSugeridos, multiSite } = await withTenant(ctx, async () => {
     const activeSiteId = await getActiveSiteId();
     const policy = policyDoTenant(ctx.tenant);
     const [lista, sugestoes, sites] = await Promise.all([
@@ -34,7 +34,6 @@ export default async function CotacoesPage() {
       />
       <ListaCotacoes
         linhas={linhas}
-        resumo={resumo}
         produtosSugeridos={produtosSugeridos}
         multiSite={multiSite}
         podePedir={podeEmAlguma(ctx.acessos, "compras.pedir")}
