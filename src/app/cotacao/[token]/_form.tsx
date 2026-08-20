@@ -4,6 +4,7 @@ import { forwardRef, useMemo, useRef, useState, useTransition } from "react";
 import {
   CalendarClock,
   CheckCircle2,
+  ChevronDown,
   Package,
   Send,
   Store,
@@ -14,6 +15,7 @@ import { mascaraMoeda, paraMascara, paraNumero } from "@/lib/moeda";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import type { CotacaoPublica, ItemPublico } from "@/lib/compras/cotacao-link";
 import { recusarPeloLinkAction, responderPeloLinkAction } from "./actions";
 
@@ -28,7 +30,9 @@ import { recusarPeloLinkAction, responderPeloLinkAction } from "./actions";
 //  · UM campo obrigatório: o preço do que ele diz ter. Marca e observação por
 //    item saíram — eram três toques por produto que ninguém preenchia.
 //  · Disponibilidade é ESCOLHA, não digitação: "tenho", "tenho menos", "não
-//    tenho". A quantidade parcial só aparece quando ele diz que tem menos.
+//    tenho". A quantidade parcial só aparece quando ele diz que tem menos. No
+//    celular as duas exceções moram num menu ao lado do preço; na mesa, onde
+//    sobra largura, continuam como três alvos visíveis.
 //  · A quantidade PEDIDA é o dado mais lido da tela (é o que ele precifica),
 //    então é o maior tipo do cartão — com a unidade junto, porque preço de
 //    fardo e preço de unidade não são o mesmo número.
@@ -499,13 +503,15 @@ function Cabecalho({
         ) : (
           <span />
         )}
-        <span className="shrink-0 text-[13px] font-medium text-muted tabular-nums">
+        {/* Andamento é conferência de escritório: no celular ele empurra a
+            primeira linha para fora da tela sem ajudar quem só quer digitar. */}
+        <span className="hidden shrink-0 text-[13px] font-medium text-muted tabular-nums md:inline">
           {respondidos} de {totalLinhas} respondidos
         </span>
       </div>
 
       <div
-        className="h-1.5 overflow-hidden rounded-full bg-surface-2"
+        className="hidden h-1.5 overflow-hidden rounded-full bg-surface-2 md:block"
         role="progressbar"
         aria-valuenow={progresso}
         aria-valuemin={0}
@@ -539,7 +545,8 @@ function Cabecalho({
 // ── Escolha de disponibilidade ──────────────────────────────
 // Três alvos grandes no lugar de um interruptor: "tenho menos" era invisível
 // quando morava dentro de um campo de quantidade que o fornecedor tinha de
-// adivinhar que existia.
+// adivinhar que existia. Vale na visão de computador; o cartão do celular usa
+// as mesmas OPCOES dentro de um menu, para o preço ficar sozinho na linha.
 
 const OPCOES: { id: Situacao; label: string; curto: string }[] = [
   { id: "tem", label: "Tenho tudo", curto: "Tenho" },
@@ -601,6 +608,7 @@ function CartaoItem({
   onAlterar: (campo: Partial<LinhaForm>) => void;
 }) {
   const indisponivel = linha.situacao === "nao";
+  const atual = OPCOES.find((o) => o.id === linha.situacao) ?? OPCOES[0];
   return (
     <article
       className={cn(
@@ -622,32 +630,66 @@ function CartaoItem({
         </span>
       </p>
 
-      <div className="mt-3">
-        <Disponibilidade valor={linha.situacao} onEscolher={(s) => onAlterar({ situacao: s })} />
-      </div>
-
-      {!indisponivel && (
-        <div className="mt-3 grid grid-cols-2 gap-2.5">
-          <Field label="Preço unitário" htmlFor={`preco-${item.id}`}>
+      {/* No celular só existe UMA coisa a fazer: digitar o preço. Ela fica na
+          frente, com o teclado numérico; as exceções ("tenho menos", "não
+          tenho") saem do caminho e viram um menu ao lado — quem tem tudo nunca
+          precisa tocar nelas. */}
+      <div className="mt-3 flex items-end gap-2">
+        {!indisponivel && (
+          <Field label="Preço unitário" htmlFor={`preco-${item.id}`} className="min-w-0 flex-1">
             <CampoPreco
               id={`preco-${item.id}`}
               valor={linha.preco}
               onValor={(v) => onAlterar({ preco: v })}
             />
           </Field>
-          {linha.situacao === "parcial" && (
-            <Field label="Quanto você tem" htmlFor={`qtd-${item.id}`}>
-              <Input
-                id={`qtd-${item.id}`}
-                inputMode="decimal"
-                placeholder={fmtQtd(item.quantidade)}
-                value={linha.qtd}
-                onChange={(e) => onAlterar({ qtd: e.target.value })}
-                className="font-mono text-base md:text-sm"
-              />
-            </Field>
-          )}
-        </div>
+        )}
+        <Menu
+          align="end"
+          trigger={
+            <button
+              type="button"
+              aria-haspopup="menu"
+              aria-label={`Disponibilidade de ${item.descricao}: ${atual.label}`}
+              className={cn(
+                "flex h-11 items-center gap-1.5 rounded-[var(--radius)] border px-3 text-[13px] font-medium transition-colors",
+                indisponivel
+                  ? "w-full justify-between border-line-strong bg-surface text-muted"
+                  : "shrink-0 border-line-strong bg-surface text-ink-2",
+              )}
+            >
+              {linha.situacao === "tem" ? "Tenho tudo" : atual.label}
+              <ChevronDown className="size-4 text-faint" aria-hidden />
+            </button>
+          }
+        >
+          {OPCOES.map((o) => (
+            <MenuItem
+              key={o.id}
+              onClick={() => onAlterar({ situacao: o.id })}
+              trailing={
+                linha.situacao === o.id ? (
+                  <CheckCircle2 className="size-4 text-ok" aria-hidden />
+                ) : undefined
+              }
+            >
+              {o.label}
+            </MenuItem>
+          ))}
+        </Menu>
+      </div>
+
+      {!indisponivel && linha.situacao === "parcial" && (
+        <Field label="Quanto você tem" htmlFor={`qtd-${item.id}`} className="mt-2.5">
+          <Input
+            id={`qtd-${item.id}`}
+            inputMode="decimal"
+            placeholder={fmtQtd(item.quantidade)}
+            value={linha.qtd}
+            onChange={(e) => onAlterar({ qtd: e.target.value })}
+            className="font-mono text-base md:text-sm"
+          />
+        </Field>
       )}
 
       {indisponivel && (
