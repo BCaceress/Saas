@@ -7,6 +7,7 @@ import {
   Copy,
   Eye,
   Mail,
+  Package,
   Link as LinkIcon,
   Loader2,
   MessageCircle,
@@ -69,6 +70,22 @@ import { ComparativoCotacao } from "@/app/(app)/cotacoes/[id]/_comparativo";
 // ============================================================
 
 const fmtQtd = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
+
+/**
+ * Saldo em estoque como etiqueta, não como frase: numa linha de 390px o "tem"
+ * come espaço do nome do produto, que é o que o operador está lendo. Ícone de
+ * caixa + número + unidade dizem o mesmo em um terço da largura.
+ */
+function Saldo({ quantidade }: { quantidade: number }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-faint">
+      <Package className="size-3" aria-hidden />
+      <span className="font-mono">{fmtQtd(quantidade)}</span>
+      <span className="sr-only">unidades em estoque</span>
+      <span aria-hidden>un</span>
+    </span>
+  );
+}
 
 type Passo = "produtos" | "fornecedores" | "enviar";
 
@@ -599,13 +616,28 @@ function PassoProdutos({
                   }
                   className="flex w-full items-center gap-3 px-3 py-2.5 text-left active:bg-surface-2"
                 >
-                  <Thumb url={p.imagemUrl} nome={p.nome} size={36} />
+                  {/* A miniatura ajuda a escolher, mas no celular ela rouba a
+                      largura do nome — que é o que de fato identifica o item.
+                      Volta a partir do tablet, onde sobra linha. */}
+                  <span className="hidden md:block">
+                    <Thumb url={p.imagemUrl} nome={p.nome} size={36} />
+                  </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm text-ink">{p.nome}</span>
-                    <span className="block text-[11px] text-faint">
+                    <span className="flex flex-wrap items-center gap-x-1.5 text-[11px] text-faint">
                       <span className="font-mono">{p.sku}</span>
-                      {p.estoque !== null && ` · tem ${fmtQtd(p.estoque)}`}
-                      {p.sugerido > 0 && ` · faltam ${fmtQtd(p.sugerido)}`}
+                      {p.estoque !== null && (
+                        <>
+                          <span aria-hidden>·</span>
+                          <Saldo quantidade={p.estoque} />
+                        </>
+                      )}
+                      {p.sugerido > 0 && (
+                        <>
+                          <span aria-hidden>·</span>
+                          <span>faltam {fmtQtd(p.sugerido)}</span>
+                        </>
+                      )}
                     </span>
                   </span>
                   <Plus className="size-4 shrink-0 text-brand" aria-hidden />
@@ -638,12 +670,23 @@ function PassoProdutos({
           {itens.map((item) => (
             <li key={item.id}>
               <Card className="flex items-center gap-2 p-3">
-                <Thumb url={item.imagemUrl} nome={item.descricao} size={40} />
+                <span className="hidden md:block">
+                  <Thumb url={item.imagemUrl} nome={item.descricao} size={40} />
+                </span>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-ink">{item.descricao}</p>
-                  <p className="text-xs text-muted">
-                    {item.sku ? <span className="font-mono">{item.sku}</span> : "fora do catálogo"}
-                    {item.estoqueAtual !== null && ` · tem ${fmtQtd(item.estoqueAtual)}`}
+                  <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
+                    {item.sku ? (
+                      <span className="font-mono">{item.sku}</span>
+                    ) : (
+                      <span>fora do catálogo</span>
+                    )}
+                    {item.estoqueAtual !== null && (
+                      <>
+                        <span aria-hidden>·</span>
+                        <Saldo quantidade={item.estoqueAtual} />
+                      </>
+                    )}
                   </p>
                 </div>
 

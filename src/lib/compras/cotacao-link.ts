@@ -103,8 +103,11 @@ export type ItemPublico = {
   id: string;
   descricao: string;
   quantidade: number;
+  /** Embalagem pedida ("Fardo 12"). Vazio = unidade avulsa. */
   unidade: string | null;
   observacao: string | null;
+  /** Foto do produto — usada na visão de computador, onde há coluna para ela. */
+  imagemUrl: string | null;
 };
 
 export type RespostaPublica = {
@@ -119,6 +122,9 @@ export type RespostaPublica = {
 export type CotacaoPublica = {
   token: string;
   empresa: string;
+  /** Logo do mercado que pediu a cotação — quem recebe o link precisa
+   *  reconhecer o cliente antes de digitar preço. */
+  empresaLogoUrl: string | null;
   numero: string;
   titulo: string;
   prazoResposta: string | null;
@@ -165,7 +171,7 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
       tenantId: true,
       quotationSupplierId: true,
       expiraEm: true,
-      tenant: { select: { nome: true } },
+      tenant: { select: { nome: true, logoUrl: true } },
     },
   });
   if (!link) return { estado: "invalido" };
@@ -205,6 +211,7 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
                 quantidade: true,
                 observacao: true,
                 packagingId: true,
+                productId: true,
               },
             },
           },
@@ -244,11 +251,29 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
       : [];
     const nomePorEmbalagem = new Map(embalagens.map((e) => [e.id, e.nome]));
 
+    // Foto do produto: uma consulta para a lista inteira. Só o que a tela do
+    // fornecedor mostra sai daqui — nada de preço, custo ou saldo do cliente.
+    const productIds = [
+      ...new Set(
+        convite.quotation.items
+          .map((i) => i.productId)
+          .filter((id): id is string => id !== null),
+      ),
+    ];
+    const produtos = productIds.length
+      ? await db.product.findMany({
+          where: { id: { in: productIds } },
+          select: { id: true, imagemUrl: true },
+        })
+      : [];
+    const imagemPorProduto = new Map(produtos.map((p) => [p.id, p.imagemUrl]));
+
     return {
       estado: "valido",
       cotacao: {
         token,
         empresa,
+        empresaLogoUrl: link.tenant.logoUrl,
         numero,
         titulo: convite.quotation.titulo,
         prazoResposta: convite.quotation.prazoResposta?.toISOString() ?? null,
@@ -261,6 +286,7 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
           quantidade: n(i.quantidade),
           unidade: i.packagingId ? (nomePorEmbalagem.get(i.packagingId) ?? null) : null,
           observacao: i.observacao,
+          imagemUrl: i.productId ? (imagemPorProduto.get(i.productId) ?? null) : null,
         })),
         cabecalho: {
           prazoEntregaDias: convite.prazoEntregaDias,

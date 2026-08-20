@@ -25,16 +25,6 @@ const FILTROS = [
 
 type Filtro = (typeof FILTROS)[number]["id"];
 
-/** Quanto tempo resta — a informação que decide se dá para esperar. */
-export function prazoTexto(iso: string | null): { texto: string; urgente: boolean } | null {
-  if (!iso) return null;
-  const dias = Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000);
-  if (dias < 0) return { texto: "prazo vencido", urgente: true };
-  if (dias === 0) return { texto: "vence hoje", urgente: true };
-  if (dias === 1) return { texto: "vence amanhã", urgente: true };
-  return { texto: `vence em ${dias} dias`, urgente: dias <= 2 };
-}
-
 export function CotacoesMobile({
   linhas,
   podePedir,
@@ -109,7 +99,6 @@ export function CotacoesMobile({
               l.totalRespondidos,
               l.totalRecusados,
             );
-            const prazo = l.status === "ABERTA" ? prazoTexto(l.prazoResposta) : null;
             return (
               <li key={l.id}>
                 <MCardLink href={`/m/cotacoes/${l.id}`} className="flex items-center gap-3 p-4">
@@ -126,16 +115,6 @@ export function CotacoesMobile({
                       >
                         {rotulo.label}
                       </span>
-                      {prazo && (
-                        <span
-                          className={cn(
-                            "text-[11px] font-medium",
-                            prazo.urgente ? "text-accent" : "text-faint",
-                          )}
-                        >
-                          {prazo.texto}
-                        </span>
-                      )}
                     </div>
                     <p className="mt-1 truncate font-display text-[15px] font-semibold text-ink">
                       {l.titulo}

@@ -60,7 +60,7 @@ export function statusVisivel(
 export function andamento(convidados: number, respondidos: number): string {
   if (convidados === 0) return "nenhum fornecedor convidado";
   if (respondidos === 0) {
-    return `${convidados} ${convidados === 1 ? "convidado" : "convidados"} · nenhuma resposta`;
+    return `${convidados} ${convidados === 1 ? "fornecedor" : "fornecedores"} · nenhuma resposta`;
   }
   return `${respondidos} de ${convidados} responderam`;
 }

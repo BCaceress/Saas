@@ -40,7 +40,8 @@ describe("statusVisivel", () => {
 
   it("andamento fala em gente, não em enum", () => {
     expect(andamento(0, 0)).toBe("nenhum fornecedor convidado");
-    expect(andamento(1, 0)).toBe("1 convidado · nenhuma resposta");
+    expect(andamento(1, 0)).toBe("1 fornecedor · nenhuma resposta");
+    expect(andamento(3, 0)).toBe("3 fornecedores · nenhuma resposta");
     expect(andamento(4, 2)).toBe("2 de 4 responderam");
   });
 });
