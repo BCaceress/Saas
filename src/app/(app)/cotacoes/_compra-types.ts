@@ -148,6 +148,13 @@ export type FornecedorOpcao = {
   email: string | null;
   /** Contatos cadastrados — o principal já entra selecionado no envio. */
   contatos: ContatoConvite[];
+  /**
+   * Quantos itens DESTA cotação o fornecedor já entregou em NF-e, segundo o
+   * histórico montado pelo XML. Zero quando a lista não foi informada.
+   */
+  jaForneceu: number;
+  /** Última nota dele com algum item da lista. */
+  ultimaCompraEm: string | null;
 };
 
 export type OpcoesCotacao = {

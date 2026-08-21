@@ -1,6 +1,6 @@
 "use client";
 
-import { Gift, Search, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PEDIDO_ABERTO, PEDIDO_STATUS } from "../cotacoes/_ui";
 import type { PedidoView } from "./_pedidos";
@@ -23,9 +23,7 @@ export type PoFiltros = {
   /** "abertos" (padrão) | "" = todos | um status específico */
   status: string;
   periodo: string;     // dias de criação: "" | "7" | "30" | "90"
-  valor: string;       // "" | "ate500" | "500a2000" | "2000mais"
   ordem: string;       // "recentes" | "entrega" | "valor-desc" | "valor-asc" | "numero"
-  bonificacao: boolean; // só pedidos com algum item bonificado/brinde/troca/amostra/serviço
 };
 
 export const PO_FILTROS_VAZIO: PoFiltros = {
@@ -33,9 +31,7 @@ export const PO_FILTROS_VAZIO: PoFiltros = {
   supplierId: "",
   status: PO_STATUS_ABERTOS,
   periodo: "30",
-  valor: "",
   ordem: "recentes",
-  bonificacao: false,
 };
 
 export function filtrosAtivos(f: PoFiltros): boolean {
@@ -43,9 +39,7 @@ export function filtrosAtivos(f: PoFiltros): boolean {
     f.q.trim() !== "" ||
     f.supplierId !== "" ||
     f.status !== PO_FILTROS_VAZIO.status ||
-    f.periodo !== PO_FILTROS_VAZIO.periodo ||
-    f.valor !== "" ||
-    f.bonificacao
+    f.periodo !== PO_FILTROS_VAZIO.periodo
   );
 }
 
@@ -63,10 +57,6 @@ export function aplicarFiltros(pedidos: PedidoView[], f: PoFiltros): PedidoView[
       if (!PEDIDO_ABERTO.includes(p.status)) return false;
     } else if (f.status && p.status !== f.status) return false;
     if (corte && new Date(p.createdAt).getTime() < corte) return false;
-    if (f.valor === "ate500" && p.valorTotal > 500) return false;
-    if (f.valor === "500a2000" && (p.valorTotal < 500 || p.valorTotal > 2000)) return false;
-    if (f.valor === "2000mais" && p.valorTotal < 2000) return false;
-    if (f.bonificacao && !p.items.some((i) => i.tipo !== "COMPRA")) return false;
     if (termo) {
       const alvo = `${p.numero} ${p.supplierNome} ${p.siteNome} ${p.operador ?? ""} ${p.items.map((i) => `${i.nome} ${i.sku}`).join(" ")}`.toLowerCase();
       if (!alvo.includes(termo)) return false;
@@ -155,13 +145,6 @@ export function PurchaseOrderFilters({
         <option value="90">Últimos 90 dias</option>
       </select>
 
-      <select value={filtros.valor} onChange={(e) => set({ valor: e.target.value })} className={selectCls} aria-label="Valor">
-        <option value="">Qualquer valor</option>
-        <option value="ate500">Até R$ 500</option>
-        <option value="500a2000">R$ 500 – 2.000</option>
-        <option value="2000mais">Acima de R$ 2.000</option>
-      </select>
-
       <select value={filtros.ordem} onChange={(e) => set({ ordem: e.target.value })} className={selectCls} aria-label="Ordenação">
         <option value="recentes">Mais recentes</option>
         <option value="entrega">Entrega próxima</option>
@@ -169,18 +152,6 @@ export function PurchaseOrderFilters({
         <option value="valor-asc">Menor valor</option>
         <option value="numero">Número</option>
       </select>
-
-      <button
-        type="button"
-        onClick={() => set({ bonificacao: !filtros.bonificacao })}
-        aria-pressed={filtros.bonificacao}
-        className={cn(
-          "flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-sm font-medium transition-colors",
-          filtros.bonificacao ? "border-violet/40 bg-violet-soft text-violet" : "border-line bg-surface text-muted hover:bg-surface-2",
-        )}
-      >
-        <Gift size={13} /> Com bonificação
-      </button>
 
       {ativos && (
         <button

@@ -12,7 +12,8 @@ import {
   marcarAguardandoPedidoAction,
   marcarEmTransitoPedidoAction,
 } from "../estoque/actions";
-import { PedidoDrawer, PedidoFormSheet, type FormOptions, type PedidoView } from "./_pedidos";
+import { PedidoDrawer, type PedidoView } from "./_pedidos";
+import { PedidoFormSheetLazy, useFormOptions } from "./_form-options";
 import { TransferReceber, type Transfer } from "./_recebimentos";
 import { ReceberMercadoriaPanel } from "./_receber-mercadoria";
 import { useAbrirNovoPedido } from "./_novo-pedido";
@@ -42,19 +43,18 @@ export const PO_VIEW_COOKIE = "nohub-compras-view";
 export function PurchaseOrdersClient({
   pedidos,
   transferencias,
-  formOptions,
   empresa,
   initialView,
   initialQuery,
 }: {
   pedidos: PedidoView[];
   transferencias: Transfer[];
-  formOptions: FormOptions;
   empresa: string;
   initialView: PoView;
   initialQuery?: string;
 }) {
   const router = useRouter();
+  const { options, garantir: garantirFormOptions } = useFormOptions();
   const [view, setView] = useState<PoView>(initialView);
   // A tela abre em "Em aberto" (PO_FILTROS_VAZIO) — quem chega em Pedidos veio
   // cuidar do que está em andamento. Exceção: chegou com busca na URL, e aí a
@@ -133,9 +133,19 @@ export function PurchaseOrdersClient({
   }
 
   const acoes: PoAcoes = {
-    onVer: setDetalhe,
-    onEditar: setEditar,
-    onDuplicar: setDuplicar,
+    onVer: (p) => {
+      setDetalhe(p);
+      // Painel de bonificação do drawer precisa do catálogo — busca já.
+      garantirFormOptions();
+    },
+    onEditar: (p) => {
+      setEditar(p);
+      garantirFormOptions();
+    },
+    onDuplicar: (p) => {
+      setDuplicar(p);
+      garantirFormOptions();
+    },
     onReceber: setReceber,
     onCancelar: async (p) => {
       if (!window.confirm(`Cancelar o pedido ${p.numero}?`)) return;
@@ -191,13 +201,14 @@ export function PurchaseOrdersClient({
         </div>
       )}
 
-      {/* Toolbar: alternador + filtros — valem para as duas visualizações */}
+      {/* Toolbar: filtros à esquerda, alternador de visualização à direita —
+          ambos valem para lista e kanban. */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="hidden items-center rounded-lg border border-line bg-surface p-0.5 md:flex" role="tablist" aria-label="Modo de visualização">
+        <PurchaseOrderFilters filtros={filtros} onChange={setFiltros} fornecedores={fornecedores} />
+        <div className="ml-auto hidden shrink-0 items-center rounded-lg border border-line bg-surface p-0.5 md:flex" role="tablist" aria-label="Modo de visualização">
           <ViewBtn ativo={view === "lista"} onClick={() => trocarView("lista")} icon={List} label="Lista" />
           <ViewBtn ativo={view === "kanban"} onClick={() => trocarView("kanban")} icon={Kanban} label="Kanban" />
         </div>
-        <PurchaseOrderFilters filtros={filtros} onChange={setFiltros} fornecedores={fornecedores} />
       </div>
 
       {/* Conteúdo */}
@@ -221,7 +232,7 @@ export function PurchaseOrdersClient({
             ) : (
               <PurchaseOrderKanban
                 pedidos={filtrados}
-                onAbrir={setDetalhe}
+                onAbrir={acoes.onVer}
                 onMover={moverPedido}
                 movendoId={movendoId}
                 concluidosOcultos={escondendoConcluidos(filtros)}
@@ -247,7 +258,7 @@ export function PurchaseOrdersClient({
       <PedidoDrawer
         pedido={detalheAtual}
         empresa={empresa}
-        products={formOptions.products}
+        products={options?.products ?? []}
         onClose={() => setDetalhe(null)}
         onEditar={(p) => { setDetalhe(null); setEditar(p); }}
         onReceber={(p) => { setDetalhe(null); setReceber(p); }}
@@ -255,12 +266,12 @@ export function PurchaseOrdersClient({
       />
 
       {editar && (
-        <PedidoFormSheet open onClose={() => setEditar(null)} mode="editar" pedido={editar} formOptions={formOptions} empresa={empresa} onDone={() => setEditar(null)} />
+        <PedidoFormSheetLazy open onClose={() => setEditar(null)} mode="editar" pedido={editar} empresa={empresa} onDone={() => setEditar(null)} />
       )}
 
       {/* Duplicar = novo pedido pré-carregado com fornecedor/itens do original */}
       {duplicar && (
-        <PedidoFormSheet open onClose={() => setDuplicar(null)} mode="novo" pedido={duplicar} formOptions={formOptions} empresa={empresa} onDone={() => setDuplicar(null)} />
+        <PedidoFormSheetLazy open onClose={() => setDuplicar(null)} mode="novo" pedido={duplicar} empresa={empresa} onDone={() => setDuplicar(null)} />
       )}
 
       <ReceberMercadoriaPanel

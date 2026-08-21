@@ -443,9 +443,11 @@ function ConvidarSheet({
   const [selecionados, setSelecionados] = useState<string[]>([]);
   const [busca, setBusca] = useState("");
 
-  const visiveis = disponiveis.filter((f) =>
-    f.nome.toLowerCase().includes(busca.trim().toLowerCase()),
-  );
+  // Quem já entregou itens desta lista vem primeiro: o histórico das notas
+  // sabe quem vende o quê melhor do que a memória de quem está comprando.
+  const visiveis = disponiveis
+    .filter((f) => f.nome.toLowerCase().includes(busca.trim().toLowerCase()))
+    .sort((a, b) => b.jaForneceu - a.jaForneceu || a.nome.localeCompare(b.nome, "pt-BR"));
 
   return (
     <Modal titulo="Convidar fornecedores" onFechar={onFechar}>
@@ -480,6 +482,13 @@ function ConvidarSheet({
                 <SupplierAvatar nome={f.nome} logoUrl={f.logoUrl} size={28} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm text-ink">{f.nome}</span>
+                  {f.jaForneceu > 0 && (
+                    <span className="block text-[11px] text-brand">
+                      já forneceu {f.jaForneceu}{" "}
+                      {f.jaForneceu === 1 ? "item desta lista" : "itens desta lista"}
+                      {f.ultimaCompraEm ? ` · última compra: ${fmtQuando(f.ultimaCompraEm).toLowerCase()}` : ""}
+                    </span>
+                  )}
                   {!f.telefone && (
                     <span className="block text-[11px] text-faint">
                       sem WhatsApp cadastrado — a mensagem sai só para copiar

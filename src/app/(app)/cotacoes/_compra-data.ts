@@ -1,5 +1,6 @@
 import { db } from "@/lib/prisma";
 import { sinaisDosLinks } from "@/lib/compras/cotacao-link";
+import { coberturaDeFornecedores } from "@/lib/fornecedores/historico";
 import type {
   ConviteCotacao,
   CotacaoDetalhe,
@@ -407,20 +408,26 @@ const SELECT_CONTATOS = {
  * o mobile não carrega o catálogo inteiro para convidar alguém — lá o produto
  * entra por busca ou bipe, não por lista.
  */
-export async function loadFornecedoresOpcao(): Promise<OpcoesCotacao["fornecedores"]> {
-  const fornecedores = await db.supplier.findMany({
-    where: { ativo: true },
-    orderBy: { razaoSocial: "asc" },
-    select: {
-      id: true,
-      razaoSocial: true,
-      nomeFantasia: true,
-      logoUrl: true,
-      telefone: true,
-      email: true,
-      contacts: SELECT_CONTATOS,
-    },
-  });
+export async function loadFornecedoresOpcao(
+  /** Produtos da cotação: quem já entregou algum deles aparece marcado. */
+  productIds: string[] = [],
+): Promise<OpcoesCotacao["fornecedores"]> {
+  const [fornecedores, cobertura] = await Promise.all([
+    db.supplier.findMany({
+      where: { ativo: true },
+      orderBy: { razaoSocial: "asc" },
+      select: {
+        id: true,
+        razaoSocial: true,
+        nomeFantasia: true,
+        logoUrl: true,
+        telefone: true,
+        email: true,
+        contacts: SELECT_CONTATOS,
+      },
+    }),
+    coberturaDeFornecedores(productIds),
+  ]);
   return fornecedores.map((f) => ({
     id: f.id,
     nome: f.nomeFantasia || f.razaoSocial,
@@ -428,6 +435,8 @@ export async function loadFornecedoresOpcao(): Promise<OpcoesCotacao["fornecedor
     telefone: f.telefone,
     email: f.email,
     contatos: f.contacts,
+    jaForneceu: cobertura.get(f.id)?.itens ?? 0,
+    ultimaCompraEm: cobertura.get(f.id)?.ultimaCompraEm ?? null,
   }));
 }
 
@@ -467,6 +476,8 @@ export async function loadOpcoes(): Promise<OpcoesCotacao> {
   return {
     produtos,
     fornecedores: fornecedores.map((f) => ({
+      jaForneceu: 0,
+      ultimaCompraEm: null,
       id: f.id,
       nome: f.nomeFantasia || f.razaoSocial,
       logoUrl: f.logoUrl,

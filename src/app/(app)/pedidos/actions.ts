@@ -9,6 +9,7 @@ import { criarPedidoCompra } from "@/lib/estoque";
 import { db } from "@/lib/prisma";
 import { listarEventos } from "@/lib/compras/eventos";
 import { loadHistoricoCompraProduto } from "../cotacoes/_data";
+import { loadComprasFormOptions } from "../estoque/_data";
 
 /** Baseline de leitura do módulo. Escrita usa `txp` com a loja de destino. */
 async function tx<T>(fn: (tid: string, userId: string) => Promise<T>): Promise<T> {
@@ -130,4 +131,14 @@ export async function buscarCodigosDeBarrasAction(
     }
     return mapa;
   });
+}
+
+// ── Catálogo do form de pedido (lazy) ─────────────────────────
+// `loadComprasFormOptions` varre catálogo, embalagens, saldos, últimos
+// preços e lead time — é o item mais caro da tela e só serve DEPOIS de
+// abrir o sheet (novo/editar/duplicar) ou o painel de bonificação. Sai
+// do carregamento inicial de /pedidos e vem sob demanda, uma vez só.
+
+export async function carregarFormOptionsAction() {
+  return tx(() => loadComprasFormOptions());
 }

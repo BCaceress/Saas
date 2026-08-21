@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useState } from "react";
-import { PedidoFormSheet, type FormOptions } from "./_pedidos";
+import { PedidoFormSheetLazy, useFormOptions } from "./_form-options";
 
 // ── Dono único do sheet "Novo pedido" ──────────────────────────
 // O botão do cabeçalho (`ComprasAcoes`) e o estado vazio da lista
@@ -17,30 +17,32 @@ export function useAbrirNovoPedido(): () => void {
 }
 
 export function NovoPedidoProvider({
-  formOptions,
   empresa,
   children,
 }: {
-  formOptions: FormOptions;
   empresa: string;
   children: React.ReactNode;
 }) {
   const [aberto, setAberto] = useState(false);
+  const { garantir } = useFormOptions();
 
   return (
-    <AbrirNovoPedidoContext.Provider value={() => setAberto(true)}>
+    <AbrirNovoPedidoContext.Provider
+      value={() => {
+        // Pede o catálogo junto com a abertura — o sheet já sobe carregando.
+        garantir();
+        setAberto(true);
+      }}
+    >
       {children}
 
-      {aberto && (
-        <PedidoFormSheet
-          open
-          onClose={() => setAberto(false)}
-          mode="novo"
-          formOptions={formOptions}
-          empresa={empresa}
-          onDone={() => setAberto(false)}
-        />
-      )}
+      <PedidoFormSheetLazy
+        open={aberto}
+        onClose={() => setAberto(false)}
+        mode="novo"
+        empresa={empresa}
+        onDone={() => setAberto(false)}
+      />
     </AbrirNovoPedidoContext.Provider>
   );
 }

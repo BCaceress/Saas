@@ -23,7 +23,9 @@ export default async function CotacaoPage({
     const cotacao = await loadCotacao(id);
     if (!cotacao) return null;
     const [fornecedores, sites, referencias] = await Promise.all([
-      loadFornecedoresOpcao(),
+      loadFornecedoresOpcao(
+        cotacao.itens.map((i) => i.productId).filter((id): id is string => !!id),
+      ),
       listSites(),
       loadReferenciasPreco(cotacao),
     ]);

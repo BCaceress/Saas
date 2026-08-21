@@ -24,8 +24,8 @@ const ABAS = [
   { slug: "", label: "Resumo" },
   { slug: "catalogo", label: "Catálogo" },
   { slug: "precos", label: "Histórico de preços" },
-  { slug: "pedidos", label: "Pedidos" },
   { slug: "financeiro", label: "Financeiro" },
+  { slug: "historico", label: "Relacionamento" },
 ] as const;
 
 export function FornecedorShell({
@@ -86,6 +86,11 @@ export function FornecedorShell({
               {!header.ativo && <Badge>Inativo</Badge>}
               {header.pendentes > 0 && (
                 <Badge tone="warn">{header.pendentes} itens a revisar</Badge>
+              )}
+              {header.sugestoesPendentes > 0 && (
+                <Badge tone="accent">
+                  {header.sugestoesPendentes} sugestão(ões) do XML
+                </Badge>
               )}
             </div>
 

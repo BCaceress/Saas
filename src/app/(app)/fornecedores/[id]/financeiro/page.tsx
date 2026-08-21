@@ -15,7 +15,8 @@ import { LineChart } from "@/components/charts/line-chart";
 import { Badge } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
 import { loadFinanceiroFornecedor } from "../_data";
-import { EstadoVazio, Metrica, MetricaGrid, fmtMoney } from "../../../cotacoes/_catalogo/ui";
+import { EstadoVazio, Metrica, MetricaGrid } from "../../../cotacoes/_catalogo/ui";
+import { fmtMoney } from "../../../cotacoes/_catalogo/format";
 
 // Aba Financeiro — o peso deste fornecedor no bolso da loja. Só números
 // deste parceiro; o consolidado de compras vive em Relatórios.

@@ -25,6 +25,8 @@ export type FornecedorHeader = {
   totalCatalogo: number;
   pendentes: number;
   totalPedidos: number;
+  /** Informações que o XML da NF-e propôs e ainda esperam decisão. */
+  sugestoesPendentes: number;
 };
 
 export async function loadFornecedorHeader(id: string): Promise<FornecedorHeader | null> {
@@ -45,10 +47,13 @@ export async function loadFornecedorHeader(id: string): Promise<FornecedorHeader
   });
   if (!s) return null;
 
-  const [totalCatalogo, pendentes, totalPedidos] = await Promise.all([
+  const [totalCatalogo, pendentes, totalPedidos, sugestoesPendentes] = await Promise.all([
     db.supplierCatalogItem.count({ where: { supplierId: id, ativo: true } }),
     db.supplierCatalogItem.count({ where: { supplierId: id, ativo: true, matchStatus: "PENDENTE" } }),
     db.purchaseOrder.count({ where: { supplierId: id, status: { not: "CANCELADO" } } }),
+    db.supplierSyncChange.count({
+      where: { supplierId: id, tipo: "SUGESTAO", status: "PENDENTE" },
+    }),
   ]);
 
   return {
@@ -65,6 +70,7 @@ export async function loadFornecedorHeader(id: string): Promise<FornecedorHeader
     totalCatalogo,
     pendentes,
     totalPedidos,
+    sugestoesPendentes,
   };
 }
 
@@ -274,51 +280,6 @@ export async function loadMovimentosPreco(id: string, dias: number): Promise<Mov
     })
     .sort((a, b) => Math.abs(b.variacao) - Math.abs(a.variacao))
     .slice(0, 40);
-}
-
-// ── Aba Pedidos ─────────────────────────────────────────────
-
-export type PedidoFornecedor = {
-  id: string;
-  numero: string;
-  status: string;
-  createdAt: string;
-  previsaoEntrega: string | null;
-  recebidoEm: string | null;
-  valorTotal: number;
-  itens: number;
-  siteNome: string;
-};
-
-export async function loadPedidosFornecedor(id: string): Promise<PedidoFornecedor[]> {
-  const pedidos = await db.purchaseOrder.findMany({
-    where: { supplierId: id },
-    orderBy: { createdAt: "desc" },
-    take: 120,
-    select: {
-      id: true,
-      numero: true,
-      status: true,
-      createdAt: true,
-      previsaoEntrega: true,
-      recebidoEm: true,
-      valorTotal: true,
-      site: { select: { nome: true } },
-      _count: { select: { items: true } },
-    },
-  });
-
-  return pedidos.map((p) => ({
-    id: p.id,
-    numero: p.numero,
-    status: p.status,
-    createdAt: p.createdAt.toISOString(),
-    previsaoEntrega: p.previsaoEntrega?.toISOString() ?? null,
-    recebidoEm: p.recebidoEm?.toISOString() ?? null,
-    valorTotal: Number(p.valorTotal),
-    itens: p._count.items,
-    siteNome: p.site.nome,
-  }));
 }
 
 // ── Aba Financeiro ──────────────────────────────────────────

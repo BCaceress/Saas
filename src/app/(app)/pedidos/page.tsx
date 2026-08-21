@@ -2,12 +2,13 @@ import { cookies } from "next/headers";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { podeEmAlguma } from "@/lib/permissoes";
 import { getActiveSiteId, listSites } from "@/lib/sites";
-import { loadPedidosCompra, loadComprasFormOptions, loadTransferenciasAReceber } from "../estoque/_data";
+import { loadPedidosCompra, loadTransferenciasAReceber } from "../estoque/_data";
 import { SiteSelector } from "@/components/app/site-selector";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon, navDescricao } from "@/components/app/nav-config";
 import { ComprasAcoes } from "./_acoes";
 import { NovoPedidoProvider } from "./_novo-pedido";
+import { FormOptionsProvider } from "./_form-options";
 import { PurchaseOrdersClient, PO_VIEW_COOKIE, type PoView } from "./_po-client";
 
 // ── Pedidos de Compra ──────────────────────────────────────────
@@ -47,13 +48,12 @@ export default async function ComprasPage({
   const sp = await searchParams;
   const data = await withTenant(ctx, async () => {
     const activeSiteId = await getActiveSiteId();
-    const [pedidos, formOptions, aReceber, sites] = await Promise.all([
+    const [pedidos, aReceber, sites] = await Promise.all([
       loadPedidosCompra(),
-      loadComprasFormOptions(),
       loadTransferenciasAReceber(activeSiteId),
       listSites(),
     ]);
-    return { pedidos, formOptions, aReceber, sites, activeSiteId };
+    return { pedidos, aReceber, sites, activeSiteId };
   });
 
   // Último modo usado (lista/kanban) — lido no servidor para abrir já certo.
@@ -67,34 +67,34 @@ export default async function ComprasPage({
   }));
 
   const descricao = navDescricao("/pedidos");
-
   return (
-    <NovoPedidoProvider formOptions={data.formOptions} empresa={ctx.tenant.nome}>
-      <div className="flex flex-col gap-5">
-        <PageHeader
-          title="Pedidos de Compra"
-          icon={navIcon("/pedidos")}
-          description={descricao}
-          innerClassName="max-w-none"
-          actions={
-            /* Receber mercadoria é permissão à parte de "ver pedidos": quem
-               só acompanha compra não confere carga na porta. */
-            <ComprasAcoes podeReceber={podeEmAlguma(ctx.acessos, "compras.receber")} />
-          }
-        >
-          <div className="flex justify-end print:hidden">
-            <SiteSelector sites={data.sites} activeSiteId={data.activeSiteId} />
-          </div>
-        </PageHeader>
-        <PurchaseOrdersClient
-          pedidos={pedidosSerial}
-          transferencias={transfersSerial}
-          formOptions={data.formOptions}
-          empresa={ctx.tenant.nome}
-          initialView={view}
-          initialQuery={sp.q}
-        />
-      </div>
-    </NovoPedidoProvider>
+    <FormOptionsProvider>
+      <NovoPedidoProvider empresa={ctx.tenant.nome}>
+        <div className="flex flex-col gap-5">
+          <PageHeader
+            title="Pedidos de Compra"
+            icon={navIcon("/pedidos")}
+            description={descricao}
+            innerClassName="max-w-none"
+            actions={
+              /* Receber mercadoria é permissão à parte de "ver pedidos": quem
+                 só acompanha compra não confere carga na porta. */
+              <ComprasAcoes podeReceber={podeEmAlguma(ctx.acessos, "compras.receber")} />
+            }
+          >
+            <div className="flex justify-end print:hidden">
+              <SiteSelector sites={data.sites} activeSiteId={data.activeSiteId} />
+            </div>
+          </PageHeader>
+          <PurchaseOrdersClient
+            pedidos={pedidosSerial}
+            transferencias={transfersSerial}
+            empresa={ctx.tenant.nome}
+            initialView={view}
+            initialQuery={sp.q}
+          />
+        </div>
+      </NovoPedidoProvider>
+    </FormOptionsProvider>
   );
 }

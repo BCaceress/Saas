@@ -833,6 +833,19 @@ model Supplier {
   observacoes          String? // anotações internas ("entrega só às quartas")
   ativo                Boolean      @default(true)
 
+  // ── Relacionamento construído pelo XML da NF-e ──
+  // Cada nota importada deste emitente atualiza estes campos. São cache do que
+  // daria para recalcular lendo FiscalInbound — existem para a listagem e o
+  // comparador de cotação responderem "quando comprei" sem varrer notas.
+  crt               Int? // CRT do emitente: 1 Simples, 2 Simples-excesso, 3 normal, 4 MEI
+  ultimaCompraEm    DateTime?
+  ultimaCompraNota  String? // "12548/1"
+  ultimaCompraValor Decimal?  @db.Decimal(12, 2)
+  comprasNotas      Int       @default(0) // quantas NF-e deste fornecedor já entraram
+  // Média (vencimento − emissão) das duplicatas das últimas notas. É o prazo
+  // PRATICADO; `prazoPagamentoDias` continua sendo o negociado, digitado.
+  prazoMedioDias    Int?
+
   // ── Compras com Fornecedores (catálogo/oferta) ──
   // Campos de vitrine: respondem "dá para receber tabela deste fornecedor e
   // por onde?" sem abrir a configuração do conector (SupplierIntegration).
@@ -863,6 +876,8 @@ model Supplier {
   cartItems    SupplierCartItem[]
   quotations   QuotationSupplier[]
   contacts     SupplierContact[]
+  syncChanges  SupplierSyncChange[]
+  fornecidos   SupplierProductHistory[]
 
   @@unique([tenantId, cnpj])
   @@index([tenantId])
@@ -899,6 +914,111 @@ model SupplierContact {
   @@index([tenantId])
   @@index([supplierId])
   @@index([supplierId, principal])
+}
+
+// ============================================================
+// SINCRONIZAÇÃO INTELIGENTE DO FORNECEDOR (XML da NF-e)
+//
+// O XML de entrada traz o cadastro do fornecedor mais atualizado do que
+// qualquer digitação: razão social, IE, endereço e regime vêm da própria
+// SEFAZ. Aproveitar isso é de graça — mas nem tudo pode entrar sozinho.
+//
+// Dado OFICIAL (bloco emit) entra automático: quem manda nele é a Receita.
+// Telefone e e-mail do XML são do setor FISCAL do fornecedor, não do vendedor
+// que atende o lojista — trocar o WhatsApp do representante por um 0800 de
+// faturamento quebraria a cotação. Por isso viram SUGESTÃO com decisão.
+// ============================================================
+
+/// De onde veio a alteração e o que ela exige do operador.
+enum SupplierSyncTipo {
+  AUTOMATICO // dado oficial do XML — aplicado na hora
+  SUGESTAO // precisa de decisão (telefone, e-mail, contato)
+  HISTORICO // não mexe no cadastro: registra o relacionamento
+}
+
+enum SupplierSyncStatus {
+  APLICADA
+  PENDENTE
+  IGNORADA
+}
+
+/// Uma linha da trilha de sincronização. Serve a dois usos ao mesmo tempo:
+/// as PENDENTES são a fila de sugestões do painel; todas juntas são o
+/// "histórico de alterações" da ficha do fornecedor.
+model SupplierSyncChange {
+  id         String  @id @default(cuid())
+  tenantId   String
+  supplierId String
+  inboundId  String? // nota que originou (FiscalInbound)
+  chave      String? // 44 dígitos — rastreia até o documento
+  notaNumero String? // "12548/1"
+
+  tipo   SupplierSyncTipo
+  status SupplierSyncStatus @default(APLICADA)
+
+  /// Chave do que mudou: nomeFantasia, razaoSocial, ie, crt, endereco,
+  /// telefone, email, ultimaCompra, produtos, prazoMedio.
+  campo         String
+  /// Frase pronta para a tela ("Endereço atualizado"). Guardada porque o
+  /// rótulo é do momento da mudança — regra nova não pode reescrever o passado.
+  rotulo        String
+  valorAnterior String?
+  valorNovo     String?
+
+  /// O que o operador escolheu numa sugestão: ATUALIZAR, CONTATO, PRINCIPAL,
+  /// MANTER. Null enquanto pendente ou quando a mudança foi automática.
+  decisao     String?
+  decididoEm  DateTime?
+  decididoPor String?
+
+  createdAt DateTime @default(now())
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([supplierId, createdAt])
+  @@index([tenantId, status])
+}
+
+/// O que este fornecedor já entregou, item a item, como veio no XML. É o
+/// registro bruto (SupplierItemMap guarda só o que o operador relacionou);
+/// aqui fica TUDO que passou pela nota, inclusive o que nunca virou produto.
+///
+/// É a base de "quem já vendeu isto?" e "quanto paguei da última vez?" na hora
+/// de montar a cotação.
+model SupplierProductHistory {
+  id               String  @id @default(cuid())
+  tenantId         String
+  supplierId       String
+  codigoFornecedor String // cProd
+  gtin             String?
+  descricao        String
+  ncm              String?
+  cest             String?
+  unidade          String  @default("UN")
+
+  /// Preenchido quando o item já foi relacionado ao catálogo.
+  productId String?
+
+  vezes           Int      @default(1) // em quantas notas apareceu
+  quantidadeTotal Decimal  @default(0) @db.Decimal(14, 3)
+  /// Último preço unitário faturado, na unidade do fornecedor (uCom).
+  ultimoPreco     Decimal? @db.Decimal(12, 4)
+  ultimaNota      String?
+
+  primeiraCompraEm DateTime @default(now())
+  ultimaCompraEm   DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@unique([supplierId, codigoFornecedor])
+  @@index([tenantId])
+  @@index([supplierId, ultimaCompraEm])
+  @@index([productId])
+  @@index([tenantId, gtin])
 }
 
 model ProductSupplier {

@@ -82,6 +82,9 @@ export default async function NotasRecebidasPage() {
     return (
       <NotasRecebidasClient
         podeImportar={podeEmAlguma(ctx.acessos, "fiscal.importar")}
+        // Aplicar sugestão do XML mexe no CADASTRO do fornecedor: quem só
+        // importa nota vê o que mudou, mas não decide por ele.
+        podeEditarFornecedor={podeEmAlguma(ctx.acessos, "fornecedor.editar")}
         distribuicaoAtiva={distribuicaoAtiva}
         notas={notas.map((n) => ({
           id: n.id,

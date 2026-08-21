@@ -72,6 +72,10 @@ export type NotaXml = {
     complemento: string | null;
     bairro: string | null;
     telefone: string | null;
+    /** emit/email — quase sempre a caixa do faturamento, não a do vendedor. */
+    email: string | null;
+    /** emit/CRT — regime: 1 Simples, 2 Simples-excesso, 3 normal, 4 MEI. */
+    crt: number | null;
   };
   /** CNPJ do destinatário — usado para conferir se a nota é mesmo nossa. */
   destinatarioCnpj: string | null;
@@ -127,6 +131,18 @@ function asArray<T>(v: T | T[] | undefined): T[] {
 }
 
 type Qualquer = Record<string, unknown>;
+
+/**
+ * E-mail do emitente. O campo é livre no XML e vem de tudo: "nao possui",
+ * vários endereços separados por ";", espaço no meio. Só o primeiro endereço
+ * com cara de e-mail passa — o resto viraria contato inválido no cadastro.
+ */
+function emailValido(v: unknown): string | null {
+  const bruto = String(v ?? "").trim().toLowerCase();
+  if (!bruto) return null;
+  const primeiro = bruto.split(/[;,\s]+/).find((p) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(p));
+  return primeiro ?? null;
+}
 
 /** GTIN só vale se for numérico com 8/12/13/14 dígitos — "SEM GTIN" é comum. */
 function gtinValido(v: unknown): string | null {
@@ -251,6 +267,8 @@ export function parseNotaXml(xml: string): NotaXml {
       complemento: str(ender.xCpl),
       bairro: str(ender.xBairro),
       telefone: str(ender.fone) ? digits(ender.fone) : null,
+      email: emailValido(emit.email),
+      crt: emit.CRT == null ? null : Number(emit.CRT) || null,
     },
     destinatarioCnpj: dest.CNPJ ? digits(dest.CNPJ) : null,
     itens,

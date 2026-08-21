@@ -85,7 +85,7 @@ export function PurchaseOrderList({
     return (
       <div className="flex flex-col gap-2">
         {rows.map((p) => <PurchaseOrderCardRow key={p.id} pedido={p} acoes={acoes} statusPending={p.id === statusPendingId} />)}
-        <Paginacao pagina={pg} total={totalPaginas} onPage={setPagina} count={pedidos.length} />
+        <Paginacao pagina={pg} total={totalPaginas} onPage={setPagina} />
       </div>
     );
   }
@@ -112,7 +112,7 @@ export function PurchaseOrderList({
           </tbody>
         </table>
       </div>
-      <Paginacao pagina={pg} total={totalPaginas} onPage={setPagina} count={pedidos.length} />
+      <Paginacao pagina={pg} total={totalPaginas} onPage={setPagina} />
     </div>
   );
 }
@@ -239,34 +239,29 @@ function PurchaseOrderCardRow({ pedido: p, acoes, statusPending = false }: { ped
   );
 }
 
-function Paginacao({ pagina, total, count, onPage }: { pagina: number; total: number; count: number; onPage: (p: number) => void }) {
-  if (total <= 1) {
-    return <p className="text-xs text-muted">{count} {count === 1 ? "pedido" : "pedidos"}</p>;
-  }
+function Paginacao({ pagina, total, onPage }: { pagina: number; total: number; onPage: (p: number) => void }) {
+  if (total <= 1) return null;
   return (
-    <div className="flex items-center justify-between gap-3">
-      <p className="text-xs text-muted">{count} {count === 1 ? "pedido" : "pedidos"}</p>
-      <div className="flex items-center gap-1">
-        <button
-          type="button"
-          onClick={() => onPage(pagina - 1)}
-          disabled={pagina <= 1}
-          aria-label="Página anterior"
-          className="grid h-8 w-8 place-items-center rounded-lg border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-40"
-        >
-          <ChevronLeft size={15} />
-        </button>
-        <span className="px-2 text-xs font-medium tabular-nums text-muted">{pagina} <span className="text-faint">/ {total}</span></span>
-        <button
-          type="button"
-          onClick={() => onPage(pagina + 1)}
-          disabled={pagina >= total}
-          aria-label="Próxima página"
-          className="grid h-8 w-8 place-items-center rounded-lg border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-40"
-        >
-          <ChevronRight size={15} />
-        </button>
-      </div>
+    <div className="flex items-center justify-end gap-1">
+      <button
+        type="button"
+        onClick={() => onPage(pagina - 1)}
+        disabled={pagina <= 1}
+        aria-label="Página anterior"
+        className="grid h-8 w-8 place-items-center rounded-lg border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-40"
+      >
+        <ChevronLeft size={15} />
+      </button>
+      <span className="px-2 text-xs font-medium tabular-nums text-muted">{pagina} <span className="text-faint">/ {total}</span></span>
+      <button
+        type="button"
+        onClick={() => onPage(pagina + 1)}
+        disabled={pagina >= total}
+        aria-label="Próxima página"
+        className="grid h-8 w-8 place-items-center rounded-lg border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-40"
+      >
+        <ChevronRight size={15} />
+      </button>
     </div>
   );
 }

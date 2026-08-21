@@ -25,6 +25,8 @@ import { maskCnpj } from "@/lib/masks";
 import { fatorDaNota } from "@/lib/fiscal/fator";
 import { termoDeBuscaDoItem } from "@/lib/compras/conciliacao-regras";
 import { cn } from "@/lib/utils";
+import { CardSincronizacao } from "@/components/fornecedor/sincronizacao";
+import type { ResumoSincronizacao } from "@/lib/fornecedores/sincronizacao-xml";
 import { fmtMoney, fmtQtd, relDia } from "../../cotacoes/_ui";
 import {
   buscarProdutosAction,
@@ -116,10 +118,13 @@ function custoItem(i: ItemNota): number {
 export function NotasRecebidasClient({
   notas,
   podeImportar,
+  podeEditarFornecedor,
   distribuicaoAtiva,
 }: {
   notas: NotaRecebida[];
   podeImportar: boolean;
+  /** Pode decidir as sugestões que o XML fez ao cadastro do fornecedor. */
+  podeEditarFornecedor: boolean;
   /** Provedor com distribuição DF-e configurado nesta loja. */
   distribuicaoAtiva: boolean;
 }) {
@@ -127,6 +132,8 @@ export function NotasRecebidasClient({
   const [enviando, setEnviando] = useState(false);
   const [aberta, setAberta] = useState<NotaRecebida | null>(null);
   const [filtro, setFiltro] = useState<"TODAS" | Status>("TODAS");
+  // O que o XML fez pelo cadastro dos fornecedores desta leva de arquivos.
+  const [sincronizacoes, setSincronizacoes] = useState<ResumoSincronizacao[] | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const visiveis = filtro === "TODAS" ? notas : notas.filter((n) => n.status === filtro);
@@ -168,6 +175,16 @@ export function NotasRecebidasClient({
       for (const e of erros.slice(0, 3)) {
         toast.error(e.arquivo, e.motivo ?? "Falha ao importar.");
       }
+
+      // Painel de sincronização: só abre quando há o que mostrar. Nota de
+      // fornecedor conhecido que não mudou nada no cadastro não merece um
+      // modal — o toast da importação já disse tudo.
+      const sync = r
+        .map((x) => x.sincronizacao)
+        .filter((s): s is ResumoSincronizacao => !!s)
+        .filter((s) => s.criado || s.automaticas.length > 0 || s.sugestoes.length > 0);
+      if (sync.length > 0) setSincronizacoes(sync);
+
       router.refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Falha ao importar os arquivos.");
@@ -280,7 +297,71 @@ export function NotasRecebidasClient({
           onClose={() => setAberta(null)}
         />
       )}
+
+      {sincronizacoes && (
+        <PainelSincronizacao
+          resumos={sincronizacoes}
+          podeDecidir={podeEditarFornecedor}
+          onClose={() => {
+            setSincronizacoes(null);
+            router.refresh();
+          }}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * O que a importação fez pelo cadastro dos fornecedores. Aparece uma vez, logo
+ * depois do upload, porque é o único momento em que o operador tem o contexto
+ * na cabeça ("acabei de subir a nota da AMBEV"). Quem fechar sem decidir não
+ * perde nada: a sugestão continua na ficha do fornecedor.
+ */
+function PainelSincronizacao({
+  resumos,
+  podeDecidir,
+  onClose,
+}: {
+  resumos: ResumoSincronizacao[];
+  podeDecidir: boolean;
+  onClose: () => void;
+}) {
+  const pendentes = podeDecidir ? resumos.reduce((s, r) => s + r.sugestoes.length, 0) : 0;
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Fornecedores sincronizados"
+      description={
+        pendentes > 0
+          ? "O que o XML atualizou sozinho e o que precisa da sua decisão."
+          : "O que o XML atualizou no cadastro destes fornecedores."
+      }
+      width="lg"
+      footer={
+        <div className="flex justify-end">
+          <Button variant={pendentes > 0 ? "secondary" : "primary"} onClick={onClose}>
+            {pendentes > 0 ? "Decidir depois" : "Concluir"}
+          </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-col gap-3">
+        {resumos.map((r) => (
+          <CardSincronizacao
+            key={r.supplierId + r.historico.notaNumero}
+            resumo={podeDecidir ? r : { ...r, sugestoes: [] }}
+          />
+        ))}
+        {pendentes > 0 && (
+          <p className="text-[12px] text-muted">
+            O que ficar sem decisão continua esperando na ficha do fornecedor, em Histórico.
+          </p>
+        )}
+      </div>
+    </Modal>
   );
 }
 

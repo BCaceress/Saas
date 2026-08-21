@@ -6,13 +6,17 @@ import {
   extrairXmls,
   XmlInvalidoError,
   type ItemNotaXml,
-  type NotaXml,
 } from "./nfe-xml";
 import { fatorDaNota } from "./fator";
 import { custoDoItem } from "./custo";
 import { ratearTotaisDaNota } from "./rateio";
 import { enriquecerProdutoComNota, atualizarCustoDeReferencia } from "./enriquecer-produto";
 import { conciliarComPedidoSugerido } from "@/lib/compras/conciliacao";
+import {
+  sincronizarFornecedorComNota,
+  vincularSincronizacaoAoInbound,
+  type ResumoSincronizacao,
+} from "@/lib/fornecedores/sincronizacao-xml";
 import type { FiscalInboundStatus } from "@/generated/prisma";
 
 // ============================================================
@@ -41,53 +45,10 @@ export type ResultadoImportacao = {
   pedidoNumero?: string | null;
   /** Havia pedido candidato, mas nenhum se destacou — a tela pergunta. */
   pedidosCandidatos?: number;
+  /** O que a nota fez pelo cadastro do fornecedor — vira o painel de revisão. */
+  sincronizacao?: ResumoSincronizacao;
   motivo?: string;
 };
-
-/** Fornecedor do XML: acha pelo CNPJ ou cria com o que a nota já traz. */
-async function resolverFornecedor(tenantId: string, emit: NotaXml["emitente"]): Promise<string> {
-  const existente = await db.supplier.findFirst({
-    where: { cnpj: emit.cnpj },
-    select: { id: true, ie: true, codigoMunicipio: true },
-  });
-
-  if (existente) {
-    // Completa lacunas fiscais sem sobrescrever o que o operador já ajustou.
-    if ((!existente.ie && emit.ie) || (!existente.codigoMunicipio && emit.codigoMunicipio)) {
-      await db.supplier.update({
-        where: { id: existente.id },
-        data: {
-          ie: existente.ie ?? emit.ie,
-          codigoMunicipio: existente.codigoMunicipio ?? emit.codigoMunicipio,
-        },
-      });
-    }
-    return existente.id;
-  }
-
-  // Cadastrar na mão só para importar a nota seria atrito puro — o XML já tem
-  // tudo o que o cadastro pede.
-  const novo = await db.supplier.create({
-    data: {
-      tenantId,
-      cnpj: emit.cnpj,
-      razaoSocial: emit.razaoSocial,
-      nomeFantasia: emit.nomeFantasia,
-      ie: emit.ie,
-      cep: emit.cep,
-      logradouro: emit.logradouro,
-      numero: emit.numero,
-      complemento: emit.complemento,
-      bairro: emit.bairro,
-      municipio: emit.municipio,
-      codigoMunicipio: emit.codigoMunicipio,
-      uf: emit.uf,
-      telefone: emit.telefone,
-    },
-    select: { id: true },
-  });
-  return novo.id;
-}
 
 type ItemResolvido = {
   productId: string | null;
@@ -226,7 +187,14 @@ async function importarUmXml(input: {
     };
   }
 
-  const supplierId = await resolverFornecedor(tenantId, nota.emitente);
+  // O cadastro do fornecedor é sincronizado com o XML aqui: dado oficial entra
+  // sozinho, canal de contato vira sugestão e a compra alimenta o histórico
+  // que as cotações leem depois (ver lib/fornecedores/sincronizacao-xml.ts).
+  const { supplierId, resumo: sincronizacao } = await sincronizarFornecedorComNota({
+    tenantId,
+    nota,
+    userId,
+  });
 
   // Frete e desconto que o emitente lançou só no total da nota são rateados
   // pelos itens agora: o custo médio nasce do que foi PAGO, e reconstruir isso
@@ -309,6 +277,11 @@ async function importarUmXml(input: {
     select: { id: true },
   });
 
+  // A trilha de sincronização nasce antes da nota (o fornecedor tem de existir
+  // para o inbound apontar para ele); agora que a nota existe, ela ganha a
+  // origem — é o que liga "endereço atualizado" ao documento que o mudou.
+  await vincularSincronizacaoAoInbound(nota.chave, criada.id);
+
   // Achar o pedido é trabalho do sistema, não do operador: quando um candidato
   // se destaca com folga, a nota já nasce conciliada.
   const vinculo = await conciliarComPedidoSugerido({
@@ -326,6 +299,7 @@ async function importarUmXml(input: {
     itensTotal: resolvidos.length,
     pedidoNumero: vinculo.numero,
     pedidosCandidatos: vinculo.sugestoes.length,
+    sincronizacao,
   };
 }
 
@@ -400,6 +374,16 @@ export async function relacionarItemInbound(input: {
     where: { id: itemId },
     data: { productId, packagingId, fatorConversao },
   });
+
+  // O histórico do fornecedor guarda o item como o XML mandou; relacionar aqui
+  // é o que faz "quem já me vendeu este produto?" achar por productId, e não só
+  // por código de barras.
+  if (item.inbound.supplierId) {
+    await db.supplierProductHistory.updateMany({
+      where: { supplierId: item.inbound.supplierId, codigoFornecedor: item.codigoFornecedor },
+      data: { productId },
+    });
+  }
 
   if (item.inbound.supplierId) {
     const mapa = await db.supplierItemMap.findFirst({
