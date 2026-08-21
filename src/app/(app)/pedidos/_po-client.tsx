@@ -16,7 +16,14 @@ import { PedidoDrawer, PedidoFormSheet, type FormOptions, type PedidoView } from
 import { TransferReceber, type Transfer } from "./_recebimentos";
 import { ReceberMercadoriaPanel } from "./_receber-mercadoria";
 import { useAbrirNovoPedido } from "./_novo-pedido";
-import { aplicarFiltros, filtrosAtivos, PurchaseOrderFilters, PO_FILTROS_VAZIO, type PoFiltros } from "./_po-filters";
+import {
+  aplicarFiltros,
+  escondendoConcluidos,
+  filtrosAtivos,
+  PurchaseOrderFilters,
+  PO_FILTROS_VAZIO,
+  type PoFiltros,
+} from "./_po-filters";
 import { PurchaseOrderList, type PoAcoes } from "./_po-list";
 import { PurchaseOrderKanban } from "./_po-kanban";
 import { PurchaseOrderSummary } from "./_po-summary";
@@ -49,7 +56,14 @@ export function PurchaseOrdersClient({
 }) {
   const router = useRouter();
   const [view, setView] = useState<PoView>(initialView);
-  const [filtros, setFiltros] = useState<PoFiltros>({ ...PO_FILTROS_VAZIO, q: initialQuery?.trim() ?? "" });
+  // A tela abre em "Em aberto" (PO_FILTROS_VAZIO) — quem chega em Pedidos veio
+  // cuidar do que está em andamento. Exceção: chegou com busca na URL, e aí a
+  // pessoa procura UM pedido específico, que pode muito bem estar concluído —
+  // esconder o que ela veio buscar seria a tela mentindo.
+  const [filtros, setFiltros] = useState<PoFiltros>(() => {
+    const q = initialQuery?.trim() ?? "";
+    return q ? { ...PO_FILTROS_VAZIO, q, status: "", periodo: "" } : { ...PO_FILTROS_VAZIO };
+  });
 
   // Sobreposições
   const [detalhe, setDetalhe] = useState<PedidoView | null>(null);
@@ -190,7 +204,8 @@ export function PurchaseOrdersClient({
       {vazio ? (
         <EmptyState
           comFiltro={temFiltro}
-          onLimpar={() => setFiltros({ ...PO_FILTROS_VAZIO })}
+          escondendoConcluidos={escondendoConcluidos(filtros)}
+          onLimpar={() => setFiltros({ ...PO_FILTROS_VAZIO, status: "", periodo: "" })}
           onCriar={abrirNovoPedido}
         />
       ) : (
@@ -204,7 +219,13 @@ export function PurchaseOrdersClient({
             {view === "lista" ? (
               <PurchaseOrderList pedidos={filtrados} acoes={acoes} statusPendingId={statusPendingId} />
             ) : (
-              <PurchaseOrderKanban pedidos={filtrados} onAbrir={setDetalhe} onMover={moverPedido} movendoId={movendoId} />
+              <PurchaseOrderKanban
+                pedidos={filtrados}
+                onAbrir={setDetalhe}
+                onMover={moverPedido}
+                movendoId={movendoId}
+                concluidosOcultos={escondendoConcluidos(filtros)}
+              />
             )}
           </div>
         </>
@@ -278,7 +299,17 @@ function ViewBtn({ ativo, onClick, icon: Icon, label }: { ativo: boolean; onClic
   );
 }
 
-function EmptyState({ comFiltro, onLimpar, onCriar }: { comFiltro: boolean; onLimpar: () => void; onCriar: () => void }) {
+function EmptyState({
+  comFiltro,
+  escondendoConcluidos: semConcluidos,
+  onLimpar,
+  onCriar,
+}: {
+  comFiltro: boolean;
+  escondendoConcluidos: boolean;
+  onLimpar: () => void;
+  onCriar: () => void;
+}) {
   return (
     <div className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-surface px-6 py-16 text-center">
       <span className="grid h-16 w-16 place-items-center rounded-full bg-brand-soft text-brand">
@@ -287,19 +318,24 @@ function EmptyState({ comFiltro, onLimpar, onCriar }: { comFiltro: boolean; onLi
       <p className="text-sm font-semibold text-ink">Nenhum pedido encontrado.</p>
       {comFiltro ? (
         <>
-          <p className="max-w-sm text-xs text-muted">Ajuste os filtros ou limpe a busca para ver todos os pedidos.</p>
+          <p className="max-w-sm text-xs text-muted">
+            {semConcluidos
+              ? "A tela mostra só os pedidos em aberto. Pedido concluído ou cancelado aparece ao limpar os filtros."
+              : "Ajuste os filtros ou limpe a busca para ver todos os pedidos."}
+          </p>
           <button
             type="button"
             onClick={onLimpar}
             className="mt-1 flex items-center gap-1.5 rounded-full border border-line bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
           >
-            <X size={14} className="text-muted" /> Limpar filtros
+            <X size={14} className="text-muted" />
+            {semConcluidos ? "Ver todos os pedidos" : "Limpar filtros"}
           </button>
         </>
       ) : (
         <>
           <p className="max-w-sm text-xs text-muted">
-            Crie um pedido manual ou use a Reposição inteligente para gerar pedidos a partir do estoque.
+            Crie o pedido ao fornecedor: escolha os produtos, as quantidades e envie.
           </p>
           <button
             type="button"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -12,23 +12,31 @@ import {
   Check,
   Boxes,
   Building2,
-  Contact,
   Landmark,
+  Link2,
   StickyNote,
+  Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
-import { Field, Badge } from "@/components/ui/misc";
+import { Field } from "@/components/ui/misc";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "@/components/ui/toast";
 import { cn, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
 import { maskCep, maskCnpj, maskPhone } from "@/lib/masks";
-import { updateSupplier } from "../../produtos/actions";
+import { resizeLogo } from "@/lib/imagem";
+import { ContatosFornecedor } from "./_contatos";
+import { setSupplierActive, updateSupplier } from "../../produtos/actions";
 import { salvarObservacoesAction } from "../actions";
 import type { FornecedorCadastro } from "./_data";
 import type { IndicadorIE } from "@/generated/prisma";
 
 // Aba Resumo — TODA a edição do fornecedor acontece aqui. Não há mais modal:
 // o cadastro é a página, e o rodapé só acorda quando algo muda.
+//
+// Ordem dos cards: Dados gerais (identidade + como falar + o que está
+// negociado) → Endereço → Contatos → Dados fiscais → Observações. É a ordem em
+// que o operador precisa das coisas, da mais usada para a mais rara.
 
 const UFS = [
   "AC",
@@ -115,23 +123,27 @@ function Secao({
   icon,
   titulo,
   descricao,
+  acaoTitulo,
   children,
 }: {
   icon: React.ReactNode;
   titulo: string;
   descricao?: string;
+  /** Encostado à direita do título — estado do card, não campo do formulário. */
+  acaoTitulo?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="rounded-[var(--radius-lg)] border border-line bg-surface">
-      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-        <span className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] bg-brand-soft text-brand">
+      <div className="flex items-center gap-3 border-b border-line px-4 py-3">
+        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-sm)] bg-brand-soft text-brand">
           {icon}
         </span>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <h2 className="text-[13px] font-semibold text-ink">{titulo}</h2>
           {descricao && <p className="text-[11px] text-muted">{descricao}</p>}
         </div>
+        {acaoTitulo && <div className="shrink-0">{acaoTitulo}</div>}
       </div>
       <div className="p-4">{children}</div>
     </section>
@@ -152,6 +164,8 @@ export function ResumoFornecedor({
   const [buscandoCnpj, setBuscandoCnpj] = useState(false);
   const [buscandoCep, setBuscandoCep] = useState(false);
   const [buscandoIbge, setBuscandoIbge] = useState(false);
+  const [alterandoSituacao, setAlterandoSituacao] = useState(false);
+  const arquivoRef = useRef<HTMLInputElement>(null);
 
   const sujo = useMemo(
     () =>
@@ -165,6 +179,48 @@ export function ResumoFornecedor({
 
   function upd<K extends keyof Form>(k: K, v: Form[K]) {
     setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  /**
+   * Situação salva NA HORA, fora do rodapé: ativar/inativar é decisão de uma
+   * chave só, e deixá-la presa a "Salvar fornecedor" faria o operador achar
+   * que já valeu quando ainda não valeu.
+   */
+  function alternarSituacao(ativo: boolean) {
+    setAlterandoSituacao(true);
+    start(async () => {
+      try {
+        await setSupplierActive(fornecedor.id, ativo);
+        toast.success(
+          ativo ? "Fornecedor reativado" : "Fornecedor inativado",
+          ativo
+            ? "Ele volta a aparecer nas sugestões de compra."
+            : "Ele sai das sugestões de compra e do comparador.",
+        );
+        router.refresh();
+      } catch (e) {
+        toast.error(
+          "Não deu para mudar a situação",
+          e instanceof Error ? e.message : undefined,
+        );
+      } finally {
+        setAlterandoSituacao(false);
+      }
+    });
+  }
+
+  async function enviarLogo(e: React.ChangeEvent<HTMLInputElement>) {
+    const arquivo = e.target.files?.[0];
+    e.target.value = ""; // permite reenviar o mesmo arquivo
+    if (!arquivo) return;
+    try {
+      // Redimensionada no navegador: a logo cabe na própria coluna do banco,
+      // sem storage externo.
+      upd("logoUrl", await resizeLogo(arquivo));
+      toast.success("Logo carregada", "Salve o fornecedor para aplicar.");
+    } catch {
+      toast.error("Não foi possível ler a imagem", "Tente um PNG ou JPG.");
+    }
   }
 
   async function buscarCnpj() {
@@ -317,8 +373,8 @@ export function ResumoFornecedor({
           indicadorIE: form.indicadorIE || null,
           codigoMunicipio: form.codigoMunicipio,
         });
-        // Prazo e anotações vivem fora do schema de cadastro — mesma ação da
-        // aba Observações, para não haver duas verdades.
+        // Prazo e anotações vivem fora do schema de cadastro — mesma ação de
+        // antes, para não haver duas verdades.
         await salvarObservacoesAction({
           supplierId: fornecedor.id,
           observacoes: form.observacoes,
@@ -361,15 +417,41 @@ export function ResumoFornecedor({
         <Secao
           icon={<Building2 size={14} />}
           titulo="Dados gerais"
-          descricao="Quem é este parceiro comercial."
+          descricao="Quem é este parceiro e como falar com ele."
+          acaoTitulo={
+            <label className="flex items-center gap-2">
+              <span
+                className={cn(
+                  "text-[12px] font-medium",
+                  fornecedor.ativo ? "text-ok" : "text-faint",
+                )}
+              >
+                {fornecedor.ativo ? "Ativo" : "Inativo"}
+              </span>
+              <Switch
+                checked={fornecedor.ativo}
+                busy={alterandoSituacao}
+                disabled={somenteLeitura}
+                onCheckedChange={alternarSituacao}
+                // Verde = "está comprando dele". Marca de saúde, não de marca.
+                className={fornecedor.ativo ? "bg-ok" : undefined}
+                aria-label={
+                  fornecedor.ativo ? "Inativar fornecedor" : "Reativar fornecedor"
+                }
+              />
+            </label>
+          }
         >
-          <div className="grid grid-cols-12 gap-x-3 gap-y-3">
+          <div className="grid grid-cols-24 gap-x-3 gap-y-3">
+            {/* CNPJ, razão social e fantasia na MESMA linha: é como o
+                documento chega ao operador, e é a leitura que identifica o
+                fornecedor sem rolar a tela. */}
             <Field
-              className="col-span-12 sm:col-span-5"
+              className="col-span-24 sm:col-span-6"
               label="CNPJ"
               htmlFor="f-cnpj"
             >
-              <div className="flex gap-2">
+              <div className="flex gap-1.5">
                 <Input
                   id="f-cnpj"
                   value={form.cnpj}
@@ -387,19 +469,20 @@ export function ResumoFornecedor({
                   variant="secondary"
                   onClick={buscarCnpj}
                   disabled={buscandoCnpj || somenteLeitura}
-                  className="shrink-0"
+                  className="h-10 w-10 shrink-0 rounded-full p-0"
+                  title="Consultar na Receita"
+                  aria-label="Consultar CNPJ na Receita"
                 >
                   {buscandoCnpj ? (
                     <Loader2 size={15} className="animate-spin" />
                   ) : (
                     <Search size={15} />
                   )}
-                  Consultar
                 </Button>
               </div>
             </Field>
             <Field
-              className="col-span-12 sm:col-span-7"
+              className="col-span-24 sm:col-span-10"
               label="Razão social"
               htmlFor="f-razao"
               required
@@ -411,7 +494,7 @@ export function ResumoFornecedor({
               />
             </Field>
             <Field
-              className="col-span-12 sm:col-span-7"
+              className="col-span-24 sm:col-span-8"
               label="Nome fantasia"
               htmlFor="f-fant"
             >
@@ -421,51 +504,12 @@ export function ResumoFornecedor({
                 onChange={(e) => upd("nomeFantasia", e.target.value)}
               />
             </Field>
-            <Field
-              className="col-span-12 sm:col-span-5"
-              label="Situação"
-              hint="Mude no botão do cabeçalho — inativo sai das sugestões de compra."
-            >
-              <div className="flex h-10 items-center">
-                <Badge tone={fornecedor.ativo ? "ok" : "neutral"}>
-                  {fornecedor.ativo ? "Fornecedor ativo" : "Fornecedor inativo"}
-                </Badge>
-                {fornecedor.produtosVinculados > 0 && (
-                  <Link
-                    href={`/produtos?fornecedorId=${fornecedor.id}&fornecedorNome=${encodeURIComponent(
-                      fornecedor.nomeFantasia || fornecedor.razaoSocial,
-                    )}`}
-                    className="ml-3 flex items-center gap-1 text-[12px] text-muted hover:text-brand hover:underline"
-                  >
-                    <Boxes size={12} /> {fornecedor.produtosVinculados} produtos
-                    vinculados
-                  </Link>
-                )}
-              </div>
-            </Field>
-          </div>
-        </Secao>
 
-        <Secao
-          icon={<Contact size={14} />}
-          titulo="Contato e condições"
-          descricao="Com quem falar e o que já está negociado."
-        >
-          <div className="grid grid-cols-12 gap-x-3 gap-y-3">
+            {/* Como falar com a empresa e o que já está negociado: uma linha
+                só. Pedido mínimo e prazo são números curtos e ocupam menos. */}
             <Field
-              className="col-span-12 sm:col-span-4"
-              label="Contato principal"
-              htmlFor="f-cont"
-            >
-              <Input
-                id="f-cont"
-                value={form.contato}
-                onChange={(e) => upd("contato", e.target.value)}
-              />
-            </Field>
-            <Field
-              className="col-span-12 sm:col-span-4"
-              label="Telefone / WhatsApp"
+              className="col-span-24 sm:col-span-4"
+              label="Telefone da empresa"
               htmlFor="f-tel"
             >
               <Input
@@ -478,8 +522,8 @@ export function ResumoFornecedor({
               />
             </Field>
             <Field
-              className="col-span-12 sm:col-span-4"
-              label="E-mail"
+              className="col-span-24 sm:col-span-6"
+              label="E-mail da empresa"
               htmlFor="f-mail"
             >
               <Input
@@ -490,7 +534,7 @@ export function ResumoFornecedor({
               />
             </Field>
             <Field
-              className="col-span-12 sm:col-span-4"
+              className="col-span-24 sm:col-span-8"
               label="Website"
               htmlFor="f-site"
             >
@@ -501,11 +545,11 @@ export function ResumoFornecedor({
                 placeholder="https://"
               />
             </Field>
+
             <Field
-              className="col-span-6 sm:col-span-4"
-              label="Pedido mínimo (R$)"
+              className="col-span-12 sm:col-span-3"
+              label="Pedido mín. (R$)"
               htmlFor="f-min"
-              hint="Vazio = sem mínimo."
             >
               <Input
                 id="f-min"
@@ -516,10 +560,9 @@ export function ResumoFornecedor({
               />
             </Field>
             <Field
-              className="col-span-6 sm:col-span-4"
-              label="Prazo de pagamento (dias)"
+              className="col-span-12 sm:col-span-3"
+              label="Prazo (dias)"
               htmlFor="f-prazo"
-              hint="Alimenta o indicador financeiro."
             >
               <Input
                 id="f-prazo"
@@ -535,6 +578,84 @@ export function ResumoFornecedor({
                 className="font-mono"
               />
             </Field>
+            {fornecedor.produtosVinculados > 0 && (
+              <div className="col-span-24 flex items-end">
+                <Link
+                  href={`/produtos?fornecedorId=${fornecedor.id}&fornecedorNome=${encodeURIComponent(
+                    fornecedor.nomeFantasia || fornecedor.razaoSocial,
+                  )}`}
+                  className="flex items-center gap-1 text-[12px] text-muted hover:text-brand hover:underline"
+                >
+                  <Boxes size={12} /> {fornecedor.produtosVinculados} produtos
+                  vinculados
+                </Link>
+              </div>
+            )}
+          </div>
+
+          {/* A logo fecha o card: identifica, mas não é o que se lê primeiro
+              — nome e telefone vêm antes. Cola o link ou envia o arquivo. */}
+          <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+            {form.logoUrl ? (
+              // Logo é URL de terceiro ou data URL colada pelo operador — host
+              // arbitrário não passa pelo next/image.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={form.logoUrl}
+                alt="Logo do fornecedor"
+                className="h-14 w-14 shrink-0 rounded-[var(--radius)] border border-line bg-surface-2 object-contain p-1"
+              />
+            ) : (
+              <span className="grid h-14 w-14 shrink-0 place-items-center rounded-[var(--radius)] border border-dashed border-line bg-surface-2 text-faint">
+                <ImageIcon size={20} />
+              </span>
+            )}
+
+            <div className="flex min-w-52 flex-1 items-center gap-2">
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius)] border border-line bg-surface-2 text-faint">
+                <Link2 size={14} />
+              </span>
+              <Input
+                type="url"
+                value={form.logoUrl.startsWith("data:") ? "" : form.logoUrl}
+                onChange={(e) => upd("logoUrl", e.target.value)}
+                placeholder={
+                  form.logoUrl.startsWith("data:")
+                    ? "Imagem enviada do computador"
+                    : "https://exemplo.com/logo.png"
+                }
+                aria-label="Link da logo do fornecedor"
+                className="flex-1"
+              />
+            </div>
+
+            <input
+              ref={arquivoRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/svg+xml"
+              className="hidden"
+              onChange={enviarLogo}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              className="shrink-0"
+              onClick={() => arquivoRef.current?.click()}
+            >
+              <Upload size={15} />
+              Enviar imagem
+            </Button>
+            {form.logoUrl && (
+              <Button
+                type="button"
+                variant="ghost"
+                className="shrink-0"
+                onClick={() => upd("logoUrl", "")}
+                aria-label="Remover logo"
+              >
+                <Trash2 size={15} />
+              </Button>
+            )}
           </div>
         </Secao>
 
@@ -553,7 +674,7 @@ export function ResumoFornecedor({
               label="CEP"
               htmlFor="f-cep"
             >
-              <div className="flex gap-2">
+              <div className="flex gap-1.5">
                 <Input
                   id="f-cep"
                   value={form.cep}
@@ -571,19 +692,20 @@ export function ResumoFornecedor({
                   variant="secondary"
                   onClick={buscarCep}
                   disabled={buscandoCep || somenteLeitura}
-                  className="shrink-0"
+                  className="h-10 w-10 shrink-0 rounded-full p-0"
+                  title="Buscar endereço pelo CEP"
+                  aria-label="Buscar endereço pelo CEP"
                 >
                   {buscandoCep ? (
                     <Loader2 size={15} className="animate-spin" />
                   ) : (
                     <Search size={15} />
                   )}
-                  Buscar
                 </Button>
               </div>
             </Field>
             <Field
-              className="col-span-12 sm:col-span-5"
+              className="col-span-12 sm:col-span-6"
               label="Logradouro"
               htmlFor="f-log"
             >
@@ -594,7 +716,7 @@ export function ResumoFornecedor({
               />
             </Field>
             <Field
-              className="col-span-6 sm:col-span-3"
+              className="col-span-6 sm:col-span-2"
               label="Número"
               htmlFor="f-num"
             >
@@ -668,6 +790,14 @@ export function ResumoFornecedor({
           )}
         </Secao>
 
+        {/* Cada contato é salvo na hora, por ação própria — não entra no
+            "Salvar fornecedor" do rodapé nem no controle de sujo do formulário. */}
+        <ContatosFornecedor
+          supplierId={fornecedor.id}
+          contatos={fornecedor.contatos}
+          podeEditar={podeEditar}
+        />
+
         <Secao
           icon={<Landmark size={14} />}
           titulo="Dados fiscais"
@@ -710,7 +840,7 @@ export function ResumoFornecedor({
               htmlFor="f-ibge"
               hint="7 dígitos — busca por município + UF."
             >
-              <div className="flex gap-2">
+              <div className="flex gap-1.5">
                 <Input
                   id="f-ibge"
                   value={form.codigoMunicipio}
@@ -729,14 +859,15 @@ export function ResumoFornecedor({
                   variant="secondary"
                   onClick={() => buscarIbge(form.uf, form.municipio)}
                   disabled={buscandoIbge || somenteLeitura}
-                  className="shrink-0"
+                  className="h-10 w-10 shrink-0 rounded-full p-0"
+                  title="Buscar código IBGE"
+                  aria-label="Buscar código IBGE do município"
                 >
                   {buscandoIbge ? (
                     <Loader2 size={15} className="animate-spin" />
                   ) : (
                     <Search size={15} />
                   )}
-                  Buscar
                 </Button>
               </div>
             </Field>
@@ -744,48 +875,9 @@ export function ResumoFornecedor({
         </Secao>
 
         <Secao
-          icon={<ImageIcon size={14} />}
-          titulo="Logo"
-          descricao="Aparece na lista, no comparador e nos pedidos."
-        >
-          <div className="flex flex-wrap items-center gap-3">
-            {form.logoUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={form.logoUrl}
-                alt="Logo do fornecedor"
-                className="h-16 w-16 shrink-0 rounded-[var(--radius)] border border-line bg-surface-2 object-contain p-1"
-              />
-            ) : (
-              <span className="grid h-16 w-16 shrink-0 place-items-center rounded-[var(--radius)] border border-dashed border-line bg-surface-2 text-faint">
-                <ImageIcon size={22} />
-              </span>
-            )}
-            <Input
-              type="url"
-              value={form.logoUrl}
-              onChange={(e) => upd("logoUrl", e.target.value)}
-              placeholder="https://exemplo.com/logo.png"
-              aria-label="URL do logo do fornecedor"
-              className="min-w-52 flex-1"
-            />
-            {form.logoUrl && (
-              <Button
-                type="button"
-                variant="outline"
-                className="shrink-0"
-                onClick={() => upd("logoUrl", "")}
-              >
-                <Trash2 size={15} /> Remover
-              </Button>
-            )}
-          </div>
-        </Secao>
-
-        <Secao
           icon={<StickyNote size={14} />}
           titulo="Observações"
-          descricao="O combinado que não cabe em campo — a mesma nota da aba Observações."
+          descricao="O combinado que não cabe em campo."
         >
           <Textarea
             value={form.observacoes}

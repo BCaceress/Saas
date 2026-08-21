@@ -505,7 +505,7 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
         `NF ${nota.numero} · ${nota.emitRazaoSocial} — importada há ${dias} dias e ainda sem entrada.`,
       ),
       at: new Date(nota.createdAt).toISOString(),
-      href: `/recebimento/${nota.id}`,
+      href: `/pedidos/recebimento/${nota.id}`,
       acaoLabel: "Conferir",
     });
   }

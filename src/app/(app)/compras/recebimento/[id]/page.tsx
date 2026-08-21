@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 
 // Este redirect preserva links e favoritos antigos; o código vive em
-// `recebimento/[id]/`.
+// `pedidos/recebimento/[id]/`.
 
 export default async function RecebimentoDetalheRedirect({
   params,
@@ -9,5 +9,5 @@ export default async function RecebimentoDetalheRedirect({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  redirect(`/recebimento/${id}`);
+  redirect(`/pedidos/recebimento/${id}`);
 }

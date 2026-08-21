@@ -384,6 +384,22 @@ export async function createSupplier(input: z.input<typeof supplierSchema>) {
       if (dup) throw new Error(`Já existe um fornecedor com esse CNPJ: «${dup.nomeFantasia || dup.razaoSocial}».`);
     }
     const sup = await db.supplier.create({ data: { tenantId: tid, ...data } });
+
+    // Fornecedor novo com telefone/e-mail já nasce com o contato principal:
+    // é ele que a cotação usa, e cadastro rápido não abre a aba Contatos.
+    if (data.telefone || data.email) {
+      await db.supplierContact.create({
+        data: {
+          tenantId: tid,
+          supplierId: sup.id,
+          nome: data.nomeContatoPrincipal || data.nomeFantasia || data.razaoSocial,
+          telefone: data.telefone,
+          email: data.email,
+          principal: true,
+        },
+      });
+    }
+
     okFornecedor(tid);
     return sup.id;
   });

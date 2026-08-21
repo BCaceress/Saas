@@ -26,6 +26,7 @@ export function PurchaseOrderKanban({
   onAbrir,
   onMover,
   movendoId,
+  concluidosOcultos = false,
 }: {
   pedidos: PedidoView[];
   onAbrir: (p: PedidoView) => void;
@@ -33,6 +34,10 @@ export function PurchaseOrderKanban({
   onMover: (p: PedidoView, paraStatus: string) => void;
   /** Pedido com ação de status em andamento (spinner no card). */
   movendoId: string | null;
+  /** Filtro "Em aberto" está em vigor — a coluna Concluído fica vazia por
+   *  isso, não por falta de pedido. A coluna CONTINUA: é o alvo do arraste
+   *  que abre a conferência do recebimento. */
+  concluidosOcultos?: boolean;
 }) {
   // Pedido sendo arrastado — colunas válidas se destacam enquanto isso.
   const [dragging, setDragging] = useState<PedidoView | null>(null);
@@ -88,7 +93,11 @@ export function PurchaseOrderKanban({
                     ativa ? "border-brand text-brand" : "border-line text-faint",
                   )}
                 >
-                  {ativa ? "Solte aqui" : "Sem pedidos"}
+                  {ativa
+                    ? "Solte aqui"
+                    : concluidosOcultos && status === "RECEBIDO"
+                      ? "Ocultos pelo filtro “Em aberto”"
+                      : "Sem pedidos"}
                 </div>
               ) : (
                 doStatus.map((p) => (

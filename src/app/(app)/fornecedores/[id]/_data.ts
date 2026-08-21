@@ -1,5 +1,5 @@
 import { db } from "@/lib/prisma";
-import type { IndicadorIE, SupplierIntegrationKind, SupplierIntegrationStatus } from "@/generated/prisma";
+import type { IndicadorIE } from "@/generated/prisma";
 
 // ============================================================
 // Leituras do Centro de Gestão do Fornecedor. Uma função por aba — a página
@@ -21,10 +21,6 @@ export type FornecedorHeader = {
   telefone: string | null;
   email: string | null;
   pedidoMinimo: number | null;
-  tipoIntegracao: SupplierIntegrationKind | null;
-  situacaoIntegracao: SupplierIntegrationStatus;
-  possuiIntegracao: boolean;
-  ultimaSincronizacao: string | null;
   createdAt: string;
   totalCatalogo: number;
   pendentes: number;
@@ -44,10 +40,6 @@ export async function loadFornecedorHeader(id: string): Promise<FornecedorHeader
       telefone: true,
       email: true,
       pedidoMinimo: true,
-      tipoIntegracao: true,
-      situacaoIntegracao: true,
-      possuiIntegracao: true,
-      ultimaSincronizacao: true,
       createdAt: true,
     },
   });
@@ -69,10 +61,6 @@ export async function loadFornecedorHeader(id: string): Promise<FornecedorHeader
     telefone: s.telefone,
     email: s.email,
     pedidoMinimo: s.pedidoMinimo == null ? null : Number(s.pedidoMinimo),
-    tipoIntegracao: s.tipoIntegracao,
-    situacaoIntegracao: s.situacaoIntegracao,
-    possuiIntegracao: s.possuiIntegracao,
-    ultimaSincronizacao: s.ultimaSincronizacao?.toISOString() ?? null,
     createdAt: s.createdAt.toISOString(),
     totalCatalogo,
     pendentes,
@@ -81,6 +69,25 @@ export async function loadFornecedorHeader(id: string): Promise<FornecedorHeader
 }
 
 // ── Aba Resumo ──────────────────────────────────────────────
+
+/** Pessoa que recebe cotação neste fornecedor. */
+export type ContatoFornecedor = {
+  id: string;
+  nome: string;
+  cargo: string | null;
+  telefone: string | null;
+  email: string | null;
+  observacao: string | null;
+  principal: boolean;
+  ativo: boolean;
+  /** Quantas cotações já saíram para ele (WhatsApp ou e-mail). */
+  envios: number;
+  /**
+   * Contato que nunca recebeu nada pode sumir; quem já recebeu só pode ser
+   * inativado — apagar levaria junto o "para quem foi" do histórico.
+   */
+  podeExcluir: boolean;
+};
 
 export type FornecedorCadastro = {
   id: string;
@@ -108,15 +115,34 @@ export type FornecedorCadastro = {
   ativo: boolean;
   /** Produtos do meu catálogo que apontam para este fornecedor. */
   produtosVinculados: number;
+  /** Quem recebe cotação — o principal primeiro. */
+  contatos: ContatoFornecedor[];
 };
 
 export async function loadFornecedorCadastro(id: string): Promise<FornecedorCadastro | null> {
   const s = await db.supplier.findFirst({ where: { id } });
   if (!s) return null;
 
-  const produtosVinculados = await db.productSupplier.count({
-    where: { supplierId: id, product: { ativo: true } },
-  });
+  const [produtosVinculados, contatos] = await Promise.all([
+    db.productSupplier.count({ where: { supplierId: id, product: { ativo: true } } }),
+    // Inativos entram na lista: sumir com o vendedor que saiu da empresa
+    // apagaria o rastro de quem falava com quem.
+    db.supplierContact.findMany({
+      where: { supplierId: id },
+      orderBy: [{ ativo: "desc" }, { principal: "desc" }, { createdAt: "asc" }],
+      select: {
+        id: true,
+        nome: true,
+        cargo: true,
+        telefone: true,
+        email: true,
+        observacao: true,
+        principal: true,
+        ativo: true,
+        _count: { select: { envios: true } },
+      },
+    }),
+  ]);
 
   return {
     id: s.id,
@@ -143,142 +169,17 @@ export async function loadFornecedorCadastro(id: string): Promise<FornecedorCada
     indicadorIE: s.indicadorIE,
     ativo: s.ativo,
     produtosVinculados,
-  };
-}
-
-// ── Aba Integração ──────────────────────────────────────────
-
-export type IntegracaoFornecedor = {
-  supplierId: string;
-  possuiIntegracao: boolean;
-  tipoIntegracao: SupplierIntegrationKind | null;
-  situacaoIntegracao: SupplierIntegrationStatus;
-  aceitaImportacaoManual: boolean;
-  aceitaImportacaoAutomatica: boolean;
-  endpoint: string | null;
-  authTipo: string | null;
-  usuario: string | null;
-  /** Só o fato de existir — o valor nunca sai do servidor. */
-  temCredencial: boolean;
-  headers: Array<{ nome: string; valor: string }>;
-  frequenciaHoras: number | null;
-  proximaSync: string | null;
-  ultimaSync: string | null;
-  ultimoErro: string | null;
-  /** Sinais de "está funcionando?" — o que a aba precisa responder. */
-  totalProdutos: number;
-  ultimaImportacao: {
-    id: string;
-    tipo: SupplierIntegrationKind;
-    origem: string;
-    arquivoNome: string | null;
-    status: string;
-    itensLidos: number;
-    itensNovos: number;
-    itensAtualizados: number;
-    itensSemVinculo: number;
-    mensagem: string | null;
-    createdAt: string;
-  } | null;
-  importacoes: Array<{
-    id: string;
-    tipo: SupplierIntegrationKind;
-    origem: string;
-    arquivoNome: string | null;
-    status: string;
-    itensLidos: number;
-    itensNovos: number;
-    itensAtualizados: number;
-    itensSemVinculo: number;
-    createdAt: string;
-  }>;
-};
-
-export async function loadIntegracao(id: string): Promise<IntegracaoFornecedor | null> {
-  const supplier = await db.supplier.findFirst({
-    where: { id },
-    select: {
-      id: true,
-      possuiIntegracao: true,
-      tipoIntegracao: true,
-      situacaoIntegracao: true,
-      aceitaImportacaoManual: true,
-      aceitaImportacaoAutomatica: true,
-    },
-  });
-  if (!supplier) return null;
-
-  const [integracao, importacoes, totalProdutos] = await Promise.all([
-    db.supplierIntegration.findFirst({
-      where: { supplierId: id },
-      select: {
-        endpoint: true,
-        authTipo: true,
-        usuario: true,
-        credencial: true,
-        headers: true,
-        frequenciaHoras: true,
-        proximaSync: true,
-        ultimaSync: true,
-        ultimoErro: true,
-      },
-    }),
-    db.supplierImport.findMany({
-      where: { supplierId: id },
-      orderBy: { createdAt: "desc" },
-      take: 8,
-      select: {
-        id: true,
-        tipo: true,
-        origem: true,
-        arquivoNome: true,
-        status: true,
-        itensLidos: true,
-        itensNovos: true,
-        itensAtualizados: true,
-        itensSemVinculo: true,
-        mensagem: true,
-        createdAt: true,
-      },
-    }),
-    db.supplierCatalogItem.count({ where: { supplierId: id, ativo: true } }),
-  ]);
-
-  const headersBrutos = (integracao?.headers as Record<string, string> | null) ?? null;
-
-  return {
-    supplierId: supplier.id,
-    possuiIntegracao: supplier.possuiIntegracao,
-    tipoIntegracao: supplier.tipoIntegracao,
-    situacaoIntegracao: supplier.situacaoIntegracao,
-    aceitaImportacaoManual: supplier.aceitaImportacaoManual,
-    aceitaImportacaoAutomatica: supplier.aceitaImportacaoAutomatica,
-    endpoint: integracao?.endpoint ?? null,
-    authTipo: integracao?.authTipo ?? null,
-    usuario: integracao?.usuario ?? null,
-    temCredencial: !!integracao?.credencial,
-    headers: headersBrutos
-      ? Object.entries(headersBrutos).map(([nome, valor]) => ({ nome, valor: String(valor) }))
-      : [],
-    frequenciaHoras: integracao?.frequenciaHoras ?? null,
-    proximaSync: integracao?.proximaSync?.toISOString() ?? null,
-    ultimaSync: integracao?.ultimaSync?.toISOString() ?? null,
-    ultimoErro: integracao?.ultimoErro ?? null,
-    totalProdutos,
-    ultimaImportacao: importacoes[0]
-      ? { ...importacoes[0], createdAt: importacoes[0].createdAt.toISOString() }
-      : null,
-    importacoes: importacoes.map((i) => ({
-      id: i.id,
-      tipo: i.tipo,
-      origem: i.origem,
-      arquivoNome: i.arquivoNome,
-      status: i.status,
-      itensLidos: i.itensLidos,
-      itensNovos: i.itensNovos,
-      itensAtualizados: i.itensAtualizados,
-      itensSemVinculo: i.itensSemVinculo,
-      createdAt: i.createdAt.toISOString(),
+    contatos: contatos.map((c) => ({
+      id: c.id,
+      nome: c.nome,
+      cargo: c.cargo,
+      telefone: c.telefone,
+      email: c.email,
+      observacao: c.observacao,
+      principal: c.principal,
+      ativo: c.ativo,
+      envios: c._count.envios,
+      podeExcluir: c._count.envios === 0,
     })),
   };
 }

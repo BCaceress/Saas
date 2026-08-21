@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { after } from "next/server";
 import { ClipboardX, Clock, PackageSearch } from "lucide-react";
 import { marcarLinkAberto, resolverLinkCotacao } from "@/lib/compras/cotacao-link";
 import { RespostaFornecedor } from "./_form";
@@ -78,7 +79,9 @@ export default async function CotacaoPublicaPage({
 
   // Só marca leitura depois de saber que o link é bom: link expirado ou de
   // cotação fechada não é "o fornecedor abriu", é uma porta que não abriu.
-  await marcarLinkAberto(token);
+  // Fora do caminho crítico: é telemetria para o comprador, e quem abriu o
+  // link no 3G do caminhão não deve esperar um UPDATE antes de ver a lista.
+  after(() => marcarLinkAberto(token));
 
   return <RespostaFornecedor cotacao={resultado.cotacao} />;
 }

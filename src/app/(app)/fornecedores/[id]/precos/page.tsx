@@ -27,7 +27,6 @@ export default async function PrecosFornecedorPage({
 
   return (
     <HistoricoPrecos
-      supplierId={id}
       itens={dados.itens}
       movimentos={dados.movimentos}
       dias={dias}

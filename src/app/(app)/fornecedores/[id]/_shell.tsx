@@ -2,78 +2,44 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useTransition } from "react";
-import { useRouter } from "next/navigation";
-import {
-  ArrowLeft,
-  Truck,
-  Phone,
-  Mail,
-  Archive,
-  ArchiveRestore,
-  Loader2,
-  ShoppingCart,
-} from "lucide-react";
+import { ArrowLeft, Truck, Phone, Mail, ShoppingCart } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
-import { toast } from "@/components/ui/toast";
 import { maskCnpj, maskPhone } from "@/lib/masks";
-import { IntegracaoStatus, fmtQuando } from "../../cotacoes/_catalogo/ui";
-import { setSupplierActive } from "../../produtos/actions";
 import type { FornecedorHeader } from "./_data";
 
 // ============================================================
 // Centro de Gestão do Fornecedor — a moldura que vale para todas as abas.
 //
-// A identidade (quem é, como falo com ele, a integração está de pé?) fica
-// sempre visível; cada aba responde uma pergunta diferente sobre o MESMO
-// parceiro. É o que acaba com a ida e volta entre Fornecedores e Compras.
+// A identidade (quem é, como falo com ele) fica sempre visível; cada aba
+// responde uma pergunta diferente sobre o MESMO parceiro. É o que acaba com a
+// ida e volta entre Fornecedores e Compras.
+//
+// Ativar/inativar mora no card "Dados gerais" do Resumo — chave repetida em
+// dois lugares vira duas verdades.
 // ============================================================
 
 const ABAS = [
   { slug: "", label: "Resumo" },
-  { slug: "integracao", label: "Integração" },
   { slug: "catalogo", label: "Catálogo" },
   { slug: "precos", label: "Histórico de preços" },
   { slug: "pedidos", label: "Pedidos" },
   { slug: "financeiro", label: "Financeiro" },
-  { slug: "observacoes", label: "Observações" },
 ] as const;
 
 export function FornecedorShell({
   header,
-  podeEditar,
   children,
 }: {
   header: FornecedorHeader;
-  podeEditar: boolean;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const router = useRouter();
-  const [pending, start] = useTransition();
 
   const base = `/fornecedores/${header.id}`;
   const resto = pathname.startsWith(base) ? pathname.slice(base.length).replace(/^\//, "") : "";
   const ativa = ABAS.find((a) => a.slug === resto)?.slug ?? "";
-
-  function alternarAtivo() {
-    start(async () => {
-      try {
-        await setSupplierActive(header.id, !header.ativo);
-        toast.success(
-          header.ativo ? "Fornecedor inativado" : "Fornecedor reativado",
-          header.ativo
-            ? "Ele sai das sugestões de compra e do comparador."
-            : "Ele volta a aparecer nas sugestões de compra.",
-        );
-        router.refresh();
-      } catch (e) {
-        toast.error("Não deu para mudar a situação", e instanceof Error ? e.message : undefined);
-      }
-    });
-  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -147,10 +113,8 @@ export function FornecedorShell({
                   <Mail size={11} /> {header.email}
                 </a>
               )}
-              <IntegracaoStatus status={header.situacaoIntegracao} kind={header.tipoIntegracao} />
-              <span className="text-faint">
-                {header.totalCatalogo.toLocaleString("pt-BR")} itens · atualizado{" "}
-                {fmtQuando(header.ultimaSincronizacao).toLowerCase()}
+<span className="text-faint">
+                {header.totalCatalogo.toLocaleString("pt-BR")} itens no catálogo
               </span>
             </div>
           </div>
@@ -162,18 +126,6 @@ export function FornecedorShell({
                 <span className="hidden sm:inline">Comprar</span>
               </Button>
             </Link>
-            {podeEditar && (
-              <Button size="sm" variant="ghost" onClick={alternarAtivo} disabled={pending}>
-                {pending ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : header.ativo ? (
-                  <Archive size={14} />
-                ) : (
-                  <ArchiveRestore size={14} />
-                )}
-                <span className="hidden sm:inline">{header.ativo ? "Inativar" : "Reativar"}</span>
-              </Button>
-            )}
           </div>
         </div>
 

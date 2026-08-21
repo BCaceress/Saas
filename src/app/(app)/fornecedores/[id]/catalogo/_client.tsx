@@ -160,11 +160,11 @@ export function CatalogoFornecedor({
         <EstadoVazio
           icon={<PackageSearch size={20} />}
           titulo="Nenhum item nesta tabela"
-          descricao="Configure como a tabela deste fornecedor chega e importe a primeira versão."
+          descricao="Importe a tabela de preços deste fornecedor para o catálogo aparecer aqui."
           acao={
-            <Link href={`/fornecedores/${fornecedor.id}/integracao`}>
+            <Link href="/cotacoes/importacoes">
               <Button size="sm" variant="secondary">
-                Abrir integração
+                Importar tabela
               </Button>
             </Link>
           }

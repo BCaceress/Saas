@@ -1,7 +1,6 @@
 import { cookies } from "next/headers";
-import Link from "next/link";
-import { Sparkles } from "lucide-react";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
+import { podeEmAlguma } from "@/lib/permissoes";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { loadPedidosCompra, loadComprasFormOptions, loadTransferenciasAReceber } from "../estoque/_data";
 import { SiteSelector } from "@/components/app/site-selector";
@@ -78,16 +77,9 @@ export default async function ComprasPage({
           description={descricao}
           innerClassName="max-w-none"
           actions={
-            <>
-              <Link
-                href="/cotacoes/reposicao-inteligente"
-                className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-              >
-                <Sparkles size={15} className="text-muted" />
-                <span className="hidden sm:inline">Reposição inteligente</span>
-              </Link>
-              <ComprasAcoes />
-            </>
+            /* Receber mercadoria é permissão à parte de "ver pedidos": quem
+               só acompanha compra não confere carga na porta. */
+            <ComprasAcoes podeReceber={podeEmAlguma(ctx.acessos, "compras.receber")} />
           }
         >
           <div className="flex justify-end print:hidden">

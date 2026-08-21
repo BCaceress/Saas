@@ -25,13 +25,11 @@ import type { ItemComHistorico, MovimentoPreco } from "../_data";
 const JANELAS = [7, 30, 90, 180] as const;
 
 export function HistoricoPrecos({
-  supplierId,
   itens,
   movimentos,
   dias,
   itemSelecionado,
 }: {
-  supplierId: string;
   itens: ItemComHistorico[];
   movimentos: MovimentoPreco[];
   dias: number;
@@ -90,9 +88,9 @@ export function HistoricoPrecos({
         titulo="Nenhum preço registrado ainda"
         descricao="O histórico nasce na segunda tabela importada: é a comparação entre uma versão e a anterior."
         acao={
-          <Link href={`/fornecedores/${supplierId}/integracao`}>
+          <Link href="/cotacoes/importacoes">
             <Button size="sm" variant="secondary">
-              Abrir integração
+              Importar tabela
             </Button>
           </Link>
         }

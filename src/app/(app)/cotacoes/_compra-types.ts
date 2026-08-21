@@ -64,6 +64,28 @@ export type RespostaItem = {
   observacao: string | null;
 };
 
+/** Pessoa do fornecedor que pode receber a cotação. */
+export type ContatoConvite = {
+  id: string;
+  nome: string;
+  cargo: string | null;
+  telefone: string | null;
+  email: string | null;
+  principal: boolean;
+};
+
+/** Uma linha do histórico de envio: para quem foi, por onde e quando. */
+export type EnvioConvite = {
+  id: string;
+  canal: "WHATSAPP" | "EMAIL";
+  contatoNome: string | null;
+  destino: string | null;
+  reenvio: boolean;
+  sucesso: boolean;
+  erro: string | null;
+  enviadoEm: string;
+};
+
 export type ConviteCotacao = {
   id: string;
   supplierId: string;
@@ -72,6 +94,12 @@ export type ConviteCotacao = {
   telefone: string | null;
   email: string | null;
   status: ConviteStatus;
+  /** Contato escolhido para este convite — null cai no telefone da empresa. */
+  contatoId: string | null;
+  /** Todos os contatos do fornecedor: é a lista do "Trocar" no envio. */
+  contatos: ContatoConvite[];
+  /** Quem já recebeu, por qual canal e quando — mais novo primeiro. */
+  envios: EnvioConvite[];
   enviadaEm: string | null;
   respondidaEm: string | null;
   /** Quando o fornecedor ABRIU o link. Separa "ignorou" de "está pensando". */
@@ -118,6 +146,8 @@ export type FornecedorOpcao = {
   logoUrl: string | null;
   telefone: string | null;
   email: string | null;
+  /** Contatos cadastrados — o principal já entra selecionado no envio. */
+  contatos: ContatoConvite[];
 };
 
 export type OpcoesCotacao = {

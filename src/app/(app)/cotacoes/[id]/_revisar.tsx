@@ -5,10 +5,10 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, CalendarClock, Package, Pencil, Send, Store, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CotacaoDetalhe } from "../_compra-types";
-import { editarCotacaoAction, enviarCotacaoAction } from "../_compra-actions";
+import { editarCotacaoAction, type Envio } from "../_compra-actions";
 import { SupplierAvatar } from "../_ui";
-import { EnviosSheet, type Envio } from "./_convites";
-import { CanalPicker, type Canal } from "./_canal";
+import { EnviosSheet } from "./_convites";
+import { EnvioSheet } from "./_envio";
 
 // ── Revisar e enviar ────────────────────────────────────────
 // Último passo do rascunho e o único lugar onde os dados de cabeçalho são
@@ -42,7 +42,8 @@ export function RevisarCotacao({
   const [pendente, startTransition] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
   const [envios, setEnvios] = useState<Envio[] | null>(null);
-  const [canais, setCanais] = useState<Canal[]>(["whatsapp"]);
+  /** Folha de conferência do envio: quem recebe em cada fornecedor e por onde. */
+  const [enviando, setEnviando] = useState(false);
 
   const [form, setForm] = useState({
     titulo: cotacao.titulo,
@@ -58,7 +59,6 @@ export function RevisarCotacao({
     form.observacao !== (cotacao.observacao ?? "");
 
   const pendentes = cotacao.convites.filter((c) => c.status === "PENDENTE");
-  const semEmail = pendentes.length > 0 && pendentes.every((c) => !c.email);
   const semItens = cotacao.itens.length === 0;
   const semFornecedores = cotacao.convites.length === 0;
   const podeEnviar = editavel && !semItens && !semFornecedores && pendentes.length > 0;
@@ -85,18 +85,16 @@ export function RevisarCotacao({
     });
   }
 
-  function enviar() {
+  function abrirEnvio() {
     setErro(null);
     startTransition(async () => {
       try {
-        // Salva antes de mandar: o prazo que o fornecedor vê é o que está na
-        // tela, não o que sobrou do rascunho.
+        // Salva antes de abrir a conferência: o prazo que o fornecedor vê é o
+        // que está na tela, não o que sobrou do rascunho.
         if (sujo) await salvarAjustes();
-        const r = await enviarCotacaoAction({ quotationId: cotacao.id, canais });
-        setEnvios(r);
-        router.refresh();
+        setEnviando(true);
       } catch (e) {
-        setErro(e instanceof Error ? e.message : "Não foi possível enviar a cotação.");
+        setErro(e instanceof Error ? e.message : "Não foi possível salvar a cotação.");
       }
     });
   }
@@ -222,14 +220,10 @@ export function RevisarCotacao({
                   <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={24} />
                   <span className="truncate text-[13px] text-ink">{c.supplierNome}</span>
                 </span>
-                <span className="shrink-0 text-[11px] text-faint">
+                <span className="shrink-0 truncate text-[11px] text-faint">
                   {c.status !== "PENDENTE"
                     ? "já recebeu"
-                    : c.telefone
-                      ? "WhatsApp"
-                      : c.email
-                        ? "e-mail"
-                        : "sem contato"}
+                    : (destinatarioDoConvite(c) ?? "sem contato")}
                 </span>
               </li>
             ))}
@@ -237,7 +231,9 @@ export function RevisarCotacao({
         </Bloco>
       </div>
 
-      {cotacao.convites.some((c) => c.status === "PENDENTE" && !c.telefone && !c.email) && (
+      {cotacao.convites.some(
+        (c) => c.status === "PENDENTE" && c.contatos.length === 0 && !c.telefone && !c.email,
+      ) && (
         <p className="flex items-start gap-2 rounded-[var(--radius)] border border-line bg-surface-2 px-3.5 py-2.5 text-[12px] text-ink-2">
           <AlertTriangle size={14} className="mt-0.5 shrink-0 text-accent" />
           Tem fornecedor sem telefone nem e-mail cadastrado. A cotação é enviada do mesmo
@@ -258,10 +254,9 @@ export function RevisarCotacao({
                 : `${pendentes.length} ${pendentes.length === 1 ? "fornecedor recebe" : "fornecedores recebem"} o link agora.`}
         </p>
         <div className="flex flex-wrap items-center gap-3">
-        <CanalPicker canais={canais} onChange={setCanais} semEmail={semEmail} />
         <button
           type="button"
-          onClick={enviar}
+          onClick={abrirEnvio}
           disabled={!podeEnviar || pendente}
           className={cn(
             "flex items-center gap-1.5 rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50",
@@ -273,9 +268,37 @@ export function RevisarCotacao({
         </div>
       </div>
 
+      {enviando && (
+        <EnvioSheet
+          cotacaoId={cotacao.id}
+          alvos={pendentes}
+          prazoAtual={cotacao.prazoResposta}
+          onFechar={() => setEnviando(false)}
+          onEnviado={(r) => {
+            setEnviando(false);
+            setEnvios(r);
+          }}
+        />
+      )}
+
       {envios && <EnviosSheet envios={envios} onFechar={() => setEnvios(null)} />}
     </div>
   );
+}
+
+/** Quem recebe hoje: o contato escolhido, o principal, ou o telefone da empresa. */
+function destinatarioDoConvite(c: {
+  contatoId: string | null;
+  contatos: { id: string; nome: string; principal: boolean }[];
+  telefone: string | null;
+  email: string | null;
+}): string | null {
+  const contato =
+    c.contatos.find((x) => x.id === c.contatoId) ??
+    c.contatos.find((x) => x.principal) ??
+    c.contatos[0];
+  if (contato) return contato.nome;
+  return c.telefone || c.email ? "contato geral" : null;
 }
 
 function Bloco({

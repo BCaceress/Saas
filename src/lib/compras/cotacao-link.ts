@@ -131,6 +131,8 @@ export type CotacaoPublica = {
   prazoResposta: string | null;
   observacao: string | null;
   fornecedor: string;
+  /** Pessoa a quem o link foi mandado — null quando saiu no contato geral. */
+  contato: string | null;
   /** Já enviou uma resposta? Continua editável enquanto a cotação estiver aberta. */
   respondida: boolean;
   itens: ItemPublico[];
@@ -187,6 +189,9 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
         frete: true,
         observacao: true,
         supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+        // Quem recebeu o link. É só o nome — o telefone e o e-mail dele não
+        // atravessam a fronteira pública.
+        contact: { select: { nome: true } },
         responses: {
           select: {
             quotationItemId: true,
@@ -244,19 +249,6 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
           .filter((id): id is string => id !== null),
       ),
     ];
-    const embalagens = packagingIds.length
-      ? await db.productPackaging.findMany({
-          where: { id: { in: packagingIds } },
-          select: { id: true, nome: true, fatorConversao: true },
-        })
-      : [];
-    // "Caixa (12 un.)" e não só "Caixa": o fornecedor precisa saber quantas
-    // unidades vêm dentro, senão o preço que ele manda é de outra coisa. O
-    // rótulo é o MESMO da mensagem de WhatsApp — uma fonte só (cotacao-unidades).
-    const nomePorEmbalagem = new Map(
-      embalagens.map((e) => [e.id, rotuloEmbalagem(e.nome, n(e.fatorConversao))] as const),
-    );
-
     // Foto do produto: uma consulta para a lista inteira. Só o que a tela do
     // fornecedor mostra sai daqui — nada de preço, custo ou saldo do cliente.
     const productIds = [
@@ -266,12 +258,30 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
           .filter((id): id is string => id !== null),
       ),
     ];
-    const produtos = productIds.length
-      ? await db.product.findMany({
-          where: { id: { in: productIds } },
-          select: { id: true, imagemUrl: true, unidadeBase: true },
-        })
-      : [];
+
+    // Embalagem e produto não se cruzam: juntos, uma ida ao banco em vez de
+    // duas em fila — é o tempo até o fornecedor ver a lista.
+    const [embalagens, produtos] = await Promise.all([
+      packagingIds.length
+        ? db.productPackaging.findMany({
+            where: { id: { in: packagingIds } },
+            select: { id: true, nome: true, fatorConversao: true },
+          })
+        : Promise.resolve([]),
+      productIds.length
+        ? db.product.findMany({
+            where: { id: { in: productIds } },
+            select: { id: true, imagemUrl: true, unidadeBase: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    // "Caixa (12 un.)" e não só "Caixa": o fornecedor precisa saber quantas
+    // unidades vêm dentro, senão o preço que ele manda é de outra coisa. O
+    // rótulo é o MESMO da mensagem de WhatsApp — uma fonte só (cotacao-unidades).
+    const nomePorEmbalagem = new Map(
+      embalagens.map((e) => [e.id, rotuloEmbalagem(e.nome, n(e.fatorConversao))] as const),
+    );
     const imagemPorProduto = new Map(produtos.map((p) => [p.id, p.imagemUrl]));
     // Sem embalagem escolhida, a unidade é a do cadastro (KG, L, CX…). Só "UN"
     // vira null, porque aí a tela já escreve "unidades" por extenso.
@@ -290,6 +300,7 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
         prazoResposta: convite.quotation.prazoResposta?.toISOString() ?? null,
         observacao: convite.quotation.observacao,
         fornecedor: convite.supplier.nomeFantasia || convite.supplier.razaoSocial,
+        contato: convite.contact?.nome ?? null,
         respondida: convite.status === "RESPONDIDA",
         itens: convite.quotation.items.map((i) => ({
           id: i.id,

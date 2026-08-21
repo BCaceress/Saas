@@ -172,6 +172,7 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
           frete: true,
           observacao: true,
           purchaseOrderId: true,
+          contactId: true,
           supplier: {
             select: {
               razaoSocial: true,
@@ -179,6 +180,20 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
               logoUrl: true,
               telefone: true,
               email: true,
+              contacts: SELECT_CONTATOS,
+            },
+          },
+          envios: {
+            orderBy: { enviadoEm: "desc" },
+            select: {
+              id: true,
+              canal: true,
+              contatoNome: true,
+              destino: true,
+              reenvio: true,
+              sucesso: true,
+              erro: true,
+              enviadoEm: true,
             },
           },
           responses: {
@@ -279,6 +294,18 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
       supplierLogoUrl: s.supplier.logoUrl,
       telefone: s.supplier.telefone,
       email: s.supplier.email,
+      contatoId: s.contactId,
+      contatos: s.supplier.contacts,
+      envios: s.envios.map((e) => ({
+        id: e.id,
+        canal: e.canal,
+        contatoNome: e.contatoNome,
+        destino: e.destino,
+        reenvio: e.reenvio,
+        sucesso: e.sucesso,
+        erro: e.erro,
+        enviadoEm: e.enviadoEm.toISOString(),
+      })),
       abertoEm: sinais.get(s.id)?.abertoEm?.toISOString() ?? null,
       status: s.status,
       enviadaEm: s.enviadaEm?.toISOString() ?? null,
@@ -361,6 +388,20 @@ export async function loadReferenciasPreco(
 
 // ── Opções dos formulários ──────────────────────────────────
 
+/** Contatos que podem receber cotação — o principal encabeça a lista. */
+const SELECT_CONTATOS = {
+  where: { ativo: true },
+  orderBy: [{ principal: "desc" as const }, { createdAt: "asc" as const }],
+  select: {
+    id: true,
+    nome: true,
+    cargo: true,
+    telefone: true,
+    email: true,
+    principal: true,
+  },
+};
+
 /**
  * Fornecedores ativos em forma de opção. Existe separado de  porque
  * o mobile não carrega o catálogo inteiro para convidar alguém — lá o produto
@@ -377,6 +418,7 @@ export async function loadFornecedoresOpcao(): Promise<OpcoesCotacao["fornecedor
       logoUrl: true,
       telefone: true,
       email: true,
+      contacts: SELECT_CONTATOS,
     },
   });
   return fornecedores.map((f) => ({
@@ -385,6 +427,7 @@ export async function loadFornecedoresOpcao(): Promise<OpcoesCotacao["fornecedor
     logoUrl: f.logoUrl,
     telefone: f.telefone,
     email: f.email,
+    contatos: f.contacts,
   }));
 }
 
@@ -411,6 +454,7 @@ export async function loadOpcoes(): Promise<OpcoesCotacao> {
         logoUrl: true,
         telefone: true,
         email: true,
+        contacts: SELECT_CONTATOS,
       },
     }),
     db.site.findMany({
@@ -428,6 +472,7 @@ export async function loadOpcoes(): Promise<OpcoesCotacao> {
       logoUrl: f.logoUrl,
       telefone: f.telefone,
       email: f.email,
+      contatos: f.contacts,
     })),
     sites,
   };

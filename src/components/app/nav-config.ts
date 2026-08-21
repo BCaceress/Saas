@@ -337,13 +337,20 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: ClipboardList,
         enabled: true,
         permissao: "compras.ver",
-        descricao: "Acompanhe cada pedido de compra do envio ao recebimento.",
+        descricao:
+          "Acompanhe cada pedido de compra do envio ao recebimento — a conferência da mercadoria começa aqui.",
       },
       {
-        href: "/recebimento",
-        label: "Recebimentos",
+        // Recebimento deixou de ser item de menu: mercadoria sempre chega
+        // CONTRA um pedido, então a porta de entrada é a lista de pedidos. A
+        // rota fica no mapa (ícone, título, rota ativa) porque a conferência
+        // é uma tela de verdade — só não é um lugar aonde se vá pelo menu.
+        href: "/pedidos/recebimento",
+        label: "Recebimento",
         icon: PackageCheck,
         enabled: true,
+        ocultoNoMenu: true,
+        semAbas: true,
         permissao: "compras.receber",
         descricao:
           "Suba o XML da nota: o pedido é encontrado sozinho e sobra só conferir a mercadoria.",

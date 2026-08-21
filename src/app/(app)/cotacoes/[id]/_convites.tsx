@@ -10,6 +10,7 @@ import {
   Trash2,
   Users,
   MessageCircle,
+  Mail,
   Copy,
   Link as LinkIcon,
   X,
@@ -23,12 +24,11 @@ import { Menu, MenuItem } from "@/components/ui/menu";
 import { EstadoVazio, SupplierAvatar, fmtMoney, fmtQtd, fmtQuando } from "../_catalogo/ui";
 import { Thumb } from "../_ui";
 import type { ConviteCotacao, CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
-import { CanalPicker, type Canal } from "./_canal";
-import type { EmailEnvio } from "../_compra-actions";
+import { EnvioSheet } from "./_envio";
+import type { Envio } from "../_compra-actions";
 import {
   convidarFornecedoresAction,
   mensagemDoConviteAction,
-  enviarCotacaoAction,
   linkDoConviteAction,
   recusarConviteAction,
   registrarRespostaAction,
@@ -64,17 +64,6 @@ function rotulo(c: ConviteCotacao): { label: string; classe: string } {
   return STATUS[c.status];
 }
 
-export type Envio = {
-  conviteId: string;
-  fornecedor: string;
-  mensagem: string;
-  /** Endereço público onde o fornecedor preenche os preços (um por convite). */
-  link: string | null;
-  waLink: string | null;
-  /** O que aconteceu com o canal de e-mail neste envio. */
-  email: EmailEnvio;
-};
-
 export function ConvitesCotacao({
   cotacao,
   fornecedores,
@@ -101,7 +90,8 @@ export function ConvitesCotacao({
   const [envios, setEnvios] = useState<Envio[] | null>(null);
   const [linkCopiado, setLinkCopiado] = useState<string | null>(null);
   const [textoCopiado, setTextoCopiado] = useState<string | null>(null);
-  const [canais, setCanais] = useState<Canal[]>(["whatsapp"]);
+  /** Folha de conferência aberta: quem recebe, em qual fornecedor, por onde. */
+  const [enviando, setEnviando] = useState(false);
   /** Convite específico em reenvio, ou "todos" para os que não responderam. */
   const [reenviando, setReenviando] = useState<ConviteCotacao | "todos" | null>(null);
 
@@ -153,20 +143,9 @@ export function ConvitesCotacao({
           </div>
 
           {pendentes.length > 0 && cotacao.itens.length > 0 && (
-            <div className="flex flex-wrap items-center gap-3">
-            <CanalPicker
-              canais={canais}
-              onChange={setCanais}
-              semEmail={pendentes.every((c) => !c.email)}
-            />
             <button
               type="button"
-              onClick={() =>
-                rodar(async () => {
-                  const r = await enviarCotacaoAction({ quotationId: cotacao.id, canais });
-                  setEnvios(r);
-                })
-              }
+              onClick={() => setEnviando(true)}
               disabled={pendente}
               className="flex items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
             >
@@ -174,7 +153,6 @@ export function ConvitesCotacao({
               Enviar para {pendentes.length}{" "}
               {pendentes.length === 1 ? "fornecedor" : "fornecedores"}
             </button>
-            </div>
           )}
         </div>
       )}
@@ -234,6 +212,8 @@ export function ConvitesCotacao({
                         ? (c.observacao ?? "Não vai cotar")
                         : "Ainda não recebeu a lista"}
                 </p>
+
+                {c.envios.length > 0 && <HistoricoEnvios envios={c.envios} />}
 
                 {c.status === "RESPONDIDA" && (
                   <p className="mt-1.5 flex flex-wrap items-baseline gap-x-3 text-[12px] text-muted">
@@ -415,25 +395,30 @@ export function ConvitesCotacao({
         />
       )}
 
-      {reenviando && (
-        <ReenviarSheet
-          alvo={reenviando}
+      {enviando && (
+        <EnvioSheet
+          cotacaoId={cotacao.id}
+          alvos={pendentes}
           prazoAtual={cotacao.prazoResposta}
-          pendente={pendente}
+          onFechar={() => setEnviando(false)}
+          onEnviado={(r) => {
+            setEnviando(false);
+            setEnvios(r);
+          }}
+        />
+      )}
+
+      {reenviando && (
+        <EnvioSheet
+          cotacaoId={cotacao.id}
+          alvos={reenviando === "todos" ? aguardando : [reenviando]}
+          reenvio
+          prazoAtual={cotacao.prazoResposta}
           onFechar={() => setReenviando(null)}
-          onConfirmar={(prazo, canaisEscolhidos) =>
-            rodar(async () => {
-              const r = await enviarCotacaoAction({
-                quotationId: cotacao.id,
-                conviteIds: reenviando === "todos" ? undefined : [reenviando.id],
-                canais: canaisEscolhidos,
-                reenviar: true,
-                prazoResposta: prazo,
-              });
-              setReenviando(null);
-              setEnvios(r);
-            })
-          }
+          onEnviado={(r) => {
+            setReenviando(null);
+            setEnvios(r);
+          }}
         />
       )}
 
@@ -887,69 +872,6 @@ function RespostaSheet({
 }
 
 // ── Reenvio ─────────────────────────────────────────────────
-// Reenviar não é só mandar de novo: quase sempre o prazo já passou, e mandar
-// o mesmo prazo vencido é pedir para ser ignorado. Por isso a data vem junto.
-
-function ReenviarSheet({
-  alvo,
-  prazoAtual,
-  pendente,
-  onFechar,
-  onConfirmar,
-}: {
-  alvo: ConviteCotacao | "todos";
-  prazoAtual: string | null;
-  pendente: boolean;
-  onFechar: () => void;
-  onConfirmar: (prazo: string | null, canais: Canal[]) => void;
-}) {
-  const [prazo, setPrazo] = useState(
-    prazoAtual ? new Date(prazoAtual).toISOString().slice(0, 10) : "",
-  );
-  const [canais, setCanais] = useState<Canal[]>(["whatsapp"]);
-  const original = prazoAtual ? new Date(prazoAtual).toISOString().slice(0, 10) : "";
-  const semEmail = alvo === "todos" ? false : !alvo.email;
-
-  return (
-    <Modal
-      titulo={alvo === "todos" ? "Reenviar aos pendentes" : `Reenviar para ${alvo.supplierNome}`}
-      descricao="O link antigo deixa de valer: quem já tinha a página aberta precisa do endereço novo."
-      onFechar={onFechar}
-    >
-      <div className="flex flex-col gap-3">
-        <label className="flex flex-col gap-1">
-          <span className="text-[12px] font-medium text-ink-2">Novo prazo de resposta</span>
-          <input
-            type="date"
-            value={prazo}
-            onChange={(e) => setPrazo(e.target.value)}
-            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink"
-          />
-        </label>
-        <CanalPicker canais={canais} onChange={setCanais} semEmail={semEmail} />
-      </div>
-
-      <div className="mt-5 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onFechar}
-          className="rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-        >
-          Cancelar
-        </button>
-        <button
-          type="button"
-          onClick={() => onConfirmar(prazo && prazo !== original ? prazo : null, canais)}
-          disabled={pendente}
-          className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
-        >
-          {pendente ? "Enviando…" : "Reenviar"}
-        </button>
-      </div>
-    </Modal>
-  );
-}
-
 // ── Mensagens prontas ───────────────────────────────────────
 
 export function EnviosSheet({ envios, onFechar }: { envios: Envio[]; onFechar: () => void }) {
@@ -969,7 +891,14 @@ export function EnviosSheet({ envios, onFechar }: { envios: Envio[]; onFechar: (
             className="flex flex-col gap-2 rounded-[var(--radius)] border border-line px-3 py-2.5"
           >
             <div className="flex items-center gap-3">
-              <span className="min-w-0 flex-1 truncate text-sm text-ink">{e.fornecedor}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm text-ink">{e.fornecedor}</span>
+                {e.contato && (
+                  <span className="block truncate text-[12px] text-muted">
+                    para {e.contato.nome}
+                  </span>
+                )}
+              </span>
               <button
                 type="button"
                 onClick={() => {
@@ -1082,4 +1011,57 @@ function Modal({
       </div>
     </div>
   );
+}
+
+// ── Histórico de envio ──────────────────────────────────────
+// "Mandei pro João ou pra Maria?" é a pergunta de três dias depois. Duas
+// linhas no cartão respondem sem abrir nada — o resto fica no "mais".
+
+function HistoricoEnvios({
+  envios,
+}: {
+  envios: ConviteCotacao["envios"];
+}) {
+  const [todos, setTodos] = useState(false);
+  const visiveis = todos ? envios : envios.slice(0, 2);
+
+  return (
+    <ul className="mt-1.5 flex flex-col gap-0.5">
+      {visiveis.map((e) => (
+        <li key={e.id} className="flex items-center gap-1.5 text-[11px] text-muted">
+          {e.canal === "WHATSAPP" ? (
+            <MessageCircle size={11} className="shrink-0 text-faint" />
+          ) : (
+            <Mail size={11} className="shrink-0 text-faint" />
+          )}
+          <span className="font-mono tabular-nums text-faint">{fmtDataHora(e.enviadoEm)}</span>
+          <span className="truncate">
+            {e.contatoNome ?? "contato geral"}
+            {e.reenvio && " · reenvio"}
+          </span>
+          {!e.sucesso && <span className="shrink-0 text-accent">falhou</span>}
+        </li>
+      ))}
+      {envios.length > 2 && (
+        <li>
+          <button
+            type="button"
+            onClick={() => setTodos((v) => !v)}
+            className="text-[11px] font-medium text-brand transition-colors hover:underline"
+          >
+            {todos ? "ver menos" : `ver os ${envios.length} envios`}
+          </button>
+        </li>
+      )}
+    </ul>
+  );
+}
+
+/** "20/08 09:15" — data e hora curtas, que é o que o operador compara. */
+function fmtDataHora(iso: string): string {
+  const d = new Date(iso);
+  return `${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString(
+    "pt-BR",
+    { hour: "2-digit", minute: "2-digit" },
+  )}`;
 }

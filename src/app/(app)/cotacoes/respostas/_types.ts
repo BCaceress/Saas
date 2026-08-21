@@ -26,6 +26,8 @@ export type RespostaRow = {
   origem: "cotacao" | "importacao";
   supplierId: string;
   supplierNome: string;
+  /** Contato que recebeu a cotação — null em importação e no contato geral. */
+  contatoNome: string | null;
   canal: CanalResposta;
   estado: EstadoResposta;
   /** O que chegou: "Cotação COT-00042" ou o nome do arquivo. */

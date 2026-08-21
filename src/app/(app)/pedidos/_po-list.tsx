@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronLeft, ChevronRight, Gift, Loader2, PackageCheck } from "lucide-react";
+import { ChevronLeft, ChevronRight, Gift, Loader2, PackageCheck, Receipt, TriangleAlert, Truck } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { estadoEntrega, fmtMoney, previsaoLabel, relTempo, PurchaseOrderStatusBadge, SupplierAvatar, PEDIDO_A_RECEBER } from "../cotacoes/_ui";
+import { fmtMoney, previsaoLabel, relTempo, PurchaseOrderStatusBadge, SupplierAvatar, PEDIDO_A_RECEBER } from "../cotacoes/_ui";
 import type { PedidoView } from "./_pedidos";
 
 // ── Visualização em lista — análise, busca e produtividade ─────
@@ -22,6 +22,45 @@ const POR_PAGINA = 25;
 function previsaoComAno(iso: string | null): string {
   if (!iso) return previsaoLabel(iso);
   return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+/** Só o sinal do prazo — ícone vermelho p/ atraso, âmbar p/ entrega hoje. Sem label. */
+function sinalPrazo(iso: string | null): { icon: React.ElementType; cls: string; title: string } | null {
+  if (!iso) return null;
+  const dia = (x: Date) => Math.floor(new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime() / 86400000);
+  const diff = dia(new Date(iso)) - dia(new Date());
+  if (diff < 0) {
+    const dias = -diff;
+    return { icon: TriangleAlert, cls: "text-danger", title: `Atrasado há ${dias} ${dias === 1 ? "dia" : "dias"}` };
+  }
+  if (diff === 0) return { icon: Truck, cls: "text-accent", title: "Previsto para hoje" };
+  return null;
+}
+
+/**
+ * Sinais do pedido, colados no número: bonificação (violeta — é o CONTEÚDO do
+ * pedido) e NF-e vinculada (cyan — é o DOCUMENTO). Cores diferentes porque é o
+ * que faz os dois se lerem de relance. Teto de dois: um terceiro sinal vira
+ * coluna, não mais um ícone solto aqui.
+ */
+function SinaisPedido({ pedido: p, aberto }: { pedido: PedidoView; aberto: boolean }) {
+  const temBonificacao = p.items.some((i) => i.tipo !== "COMPRA");
+  return (
+    <>
+      {temBonificacao && (
+        <span title="Tem bonificação" aria-label="Tem bonificação" className="inline-flex shrink-0 text-violet">
+          <Gift size={12} />
+        </span>
+      )}
+      {/* Só enquanto há o que receber: em pedido já fechado toda linha teria o
+          ícone, e sinal sempre aceso não é sinal. */}
+      {aberto && p.temNota && (
+        <span title="NF-e vinculada — a conferência sai pelo XML" aria-label="NF-e vinculada" className="inline-flex shrink-0 text-brand">
+          <Receipt size={12} />
+        </span>
+      )}
+    </>
+  );
 }
 
 export function PurchaseOrderList({
@@ -65,7 +104,7 @@ export function PurchaseOrderList({
               <th className="px-4 py-2.5">Entrega prevista</th>
               <th className="px-4 py-2.5">Última atualização</th>
               <th className="px-4 py-2.5">Responsável</th>
-              <th className="px-4 py-2.5" />
+              <th className="w-px px-4 py-2.5" />
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
@@ -80,7 +119,7 @@ export function PurchaseOrderList({
 
 export function PurchaseOrderRow({ pedido: p, acoes, statusPending = false }: { pedido: PedidoView; acoes: PoAcoes; statusPending?: boolean }) {
   const aberto = PEDIDO_A_RECEBER.includes(p.status);
-  const prazo = aberto ? estadoEntrega(p.previsaoEntrega) : null;
+  const prazo = aberto ? sinalPrazo(p.previsaoEntrega) : null;
   return (
     <tr
       onClick={() => acoes.onVer(p)}
@@ -89,9 +128,7 @@ export function PurchaseOrderRow({ pedido: p, acoes, statusPending = false }: { 
       <td className="px-4 py-2.5">
         <span className="flex items-center gap-1.5">
           <span className="font-mono text-[13px] font-semibold text-ink">{p.numero}</span>
-          {p.items.some((i) => i.tipo !== "COMPRA") && (
-            <Gift size={12} className="shrink-0 text-violet" aria-label="Tem bonificação" />
-          )}
+          <SinaisPedido pedido={p} aberto={aberto} />
         </span>
         <span className="block text-[11px] text-faint">{p.siteNome}</span>
       </td>
@@ -110,25 +147,21 @@ export function PurchaseOrderRow({ pedido: p, acoes, statusPending = false }: { 
           <PurchaseOrderStatusBadge status={p.status} />
         )}
       </td>
-      <td className="px-4 py-2.5 text-right tabular-nums text-ink">
-        {p.totalItems} {p.totalItems === 1 ? "produto" : "produtos"}
-      </td>
+      <td className="px-4 py-2.5 text-right tabular-nums text-ink">{p.totalItems}</td>
       <td className="px-4 py-2.5 text-right font-medium tabular-nums text-ink">{fmtMoney(p.valorTotal)}</td>
       <td className="px-4 py-2.5">
-        {prazo ? (
-          <span className="flex flex-col items-start gap-1">
-            <span className={cn("inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold", prazo.cls)}>
-              <prazo.icon size={11} /> {prazo.label}
+        <span className="flex items-center gap-1.5 whitespace-nowrap text-muted">
+          {previsaoComAno(p.previsaoEntrega)}
+          {prazo && (
+            <span title={prazo.title} aria-label={prazo.title} className={cn("inline-flex shrink-0", prazo.cls)}>
+              <prazo.icon size={14} />
             </span>
-            <span className="whitespace-nowrap text-[11px] text-faint">{previsaoComAno(p.previsaoEntrega)}</span>
-          </span>
-        ) : (
-          <span className="whitespace-nowrap text-muted">{previsaoComAno(p.previsaoEntrega)}</span>
-        )}
+          )}
+        </span>
       </td>
       <td className="whitespace-nowrap px-4 py-2.5 text-muted">{relTempo(p.updatedAt)}</td>
       <td className="max-w-32 truncate px-4 py-2.5 text-muted">{p.operador ?? "—"}</td>
-      <td className="px-4 py-2.5 text-right">
+      <td className="w-px whitespace-nowrap px-4 py-2.5 text-right">
         {aberto && (
           <button
             type="button"
@@ -136,7 +169,7 @@ export function PurchaseOrderRow({ pedido: p, acoes, statusPending = false }: { 
               e.stopPropagation();
               acoes.onReceber(p);
             }}
-            className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-xs font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+            className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-xs font-semibold text-on-brand transition-colors hover:bg-brand-strong"
           >
             <PackageCheck size={13} /> Receber
           </button>
@@ -149,7 +182,7 @@ export function PurchaseOrderRow({ pedido: p, acoes, statusPending = false }: { 
 /** Linha-card usada na versão mobile da lista. */
 function PurchaseOrderCardRow({ pedido: p, acoes, statusPending = false }: { pedido: PedidoView; acoes: PoAcoes; statusPending?: boolean }) {
   const aberto = PEDIDO_A_RECEBER.includes(p.status);
-  const prazo = aberto ? estadoEntrega(p.previsaoEntrega) : null;
+  const prazo = aberto ? sinalPrazo(p.previsaoEntrega) : null;
   return (
     <div
       role="button"
@@ -161,9 +194,7 @@ function PurchaseOrderCardRow({ pedido: p, acoes, statusPending = false }: { ped
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5">
           <span className="font-mono text-[13px] font-semibold text-ink">{p.numero}</span>
-          {p.items.some((i) => i.tipo !== "COMPRA") && (
-            <Gift size={12} className="shrink-0 text-violet" aria-label="Tem bonificação" />
-          )}
+          <SinaisPedido pedido={p} aberto={aberto} />
         </span>
         {statusPending ? (
           <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-surface-2 px-2.5 py-1 text-xs font-semibold text-muted">
@@ -178,17 +209,17 @@ function PurchaseOrderCardRow({ pedido: p, acoes, statusPending = false }: { ped
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{p.supplierNome}</span>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-        <span className="tabular-nums">{p.totalItems} {p.totalItems === 1 ? "produto" : "produtos"}</span>
+        <span className="tabular-nums">{p.totalItems}</span>
         <span className="font-medium tabular-nums text-ink">{fmtMoney(p.valorTotal)}</span>
-        {prazo ? (
-          <>
-            <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold", prazo.cls)}>
-              <prazo.icon size={11} /> {prazo.label}
-            </span>
-            <span>Entrega {previsaoComAno(p.previsaoEntrega)}</span>
-          </>
-        ) : (
-          p.previsaoEntrega && <span>Entrega {previsaoComAno(p.previsaoEntrega)}</span>
+        {p.previsaoEntrega && (
+          <span className="inline-flex items-center gap-1.5">
+            Entrega {previsaoComAno(p.previsaoEntrega)}
+            {prazo && (
+              <span title={prazo.title} aria-label={prazo.title} className={cn("inline-flex shrink-0", prazo.cls)}>
+                <prazo.icon size={14} />
+              </span>
+            )}
+          </span>
         )}
         <span className="text-faint">{relTempo(p.updatedAt)}</span>
       </div>

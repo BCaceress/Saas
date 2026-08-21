@@ -1,10 +1,20 @@
 "use client";
 
-import { forwardRef, useMemo, useRef, useState, useTransition } from "react";
+import {
+  forwardRef,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import {
   CalendarClock,
   CheckCircle2,
   ChevronDown,
+  Loader2,
   Package,
   Send,
   Store,
@@ -108,8 +118,15 @@ type LinhaForm = {
   qtd: string;
 };
 
+/** Spinner do botão em trabalho — o retorno imediato de que o toque pegou. */
+function Girando({ className }: { className?: string }) {
+  return <Loader2 className={cn("size-4 animate-spin", className)} aria-hidden />;
+}
+
 export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   const [pendente, startTransition] = useTransition();
+  /** Qual botão está trabalhando — sem isto, enviar apagava o botão de recusar. */
+  const [acao, setAcao] = useState<"enviar" | "recusar" | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [enviado, setEnviado] = useState(false);
   /** Já mandou alguma resposta — na carga ou agora, nesta mesma sessão. */
@@ -118,13 +135,12 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   const [confirmando, setConfirmando] = useState(false);
   const [motivo, setMotivo] = useState("");
 
-  const respostaPorItem = useMemo(
-    () => new Map(cotacao.respostas.map((r) => [r.quotationItemId, r])),
-    [cotacao.respostas],
-  );
-
-  const [linhas, setLinhas] = useState<LinhaForm[]>(() =>
-    cotacao.itens.map((i) => {
+  // O estado inicial é lazy: o Map das respostas anteriores é montado UMA vez,
+  // na primeira renderização. Como useMemo, ele era recalculado a cada tecla
+  // digitada para ninguém ler.
+  const [linhas, setLinhas] = useState<LinhaForm[]>(() => {
+    const respostaPorItem = new Map(cotacao.respostas.map((r) => [r.quotationItemId, r]));
+    return cotacao.itens.map((i) => {
       const r = respostaPorItem.get(i.id);
       const parcial =
         r?.disponivel === true &&
@@ -136,8 +152,8 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
         preco: r ? paraMascara(r.precoUnitario) : "",
         qtd: parcial ? String(r!.quantidadeOfertada).replace(".", ",") : "",
       };
-    }),
-  );
+    });
+  });
 
   const [prazoEntrega, setPrazoEntrega] = useState(
     cotacao.cabecalho.prazoEntregaDias === null ? "" : String(cotacao.cabecalho.prazoEntregaDias),
@@ -158,18 +174,29 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   // parar a cada item. Aqui ele pula direto para o próximo preço.
   const camposPreco = useRef<(HTMLInputElement | null)[]>([]);
 
-  function aoTabularPreco(e: React.KeyboardEvent<HTMLInputElement>, indice: number) {
-    if (e.key !== "Tab") return;
-    const alvo = camposPreco.current[indice + (e.shiftKey ? -1 : 1)];
-    if (!alvo) return; // primeiro/último: deixa o Tab seguir seu caminho normal
-    e.preventDefault();
-    alvo.focus();
-    alvo.select();
-  }
+  const aoTabularPreco = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>, indice: number) => {
+      if (e.key !== "Tab") return;
+      const alvo = camposPreco.current[indice + (e.shiftKey ? -1 : 1)];
+      if (!alvo) return; // primeiro/último: deixa o Tab seguir seu caminho normal
+      e.preventDefault();
+      alvo.focus();
+      alvo.select();
+    },
+    [],
+  );
 
-  function alterar(itemId: string, campo: Partial<LinhaForm>) {
+  const registrarCampoPreco = useCallback((indice: number, el: HTMLInputElement | null) => {
+    camposPreco.current[indice] = el;
+  }, []);
+
+  // Identidade estável (só `setLinhas` por dentro): é o que permite os cartões e
+  // as linhas serem `memo`. Sem isso, cada tecla digitada num preço re-renderiza
+  // os 30 cartões E as 30 linhas da grade — no Android de vendedor, isso é o
+  // atraso entre apertar o número e ele aparecer.
+  const alterar = useCallback((itemId: string, campo: Partial<LinhaForm>) => {
     setLinhas((atual) => atual.map((l) => (l.itemId === itemId ? { ...l, ...campo } : l)));
-  }
+  }, []);
 
   /** Quantidade que ele realmente atende — base do total daquela linha. */
   function quantidadeEfetiva(item: ItemPublico, linha: LinhaForm): number {
@@ -208,8 +235,12 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   }
 
   function enviar() {
+    if (pendente) return; // toque duplo no celular não vira dois envios
     setErro(null);
-    setConfirmando(false);
+    // O modal NÃO fecha aqui. Fechar antes da resposta deixava a página
+    // exatamente como estava, sem nada se mexendo — é o que dava a sensação de
+    // ter travado. Ele fica, com o botão girando, e só sai com o resultado.
+    setAcao("enviar");
     startTransition(async () => {
       const r = await responderPeloLinkAction({
         token: cotacao.token,
@@ -229,6 +260,8 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
           };
         }),
       });
+      setAcao(null);
+      setConfirmando(false);
       if (r.ok) {
         setJaRespondeu(true);
         setEnviado(true);
@@ -237,9 +270,12 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   }
 
   function recusar() {
+    if (pendente) return;
     setErro(null);
+    setAcao("recusar");
     startTransition(async () => {
       const r = await recusarPeloLinkAction({ token: cotacao.token, motivo: motivo || null });
+      setAcao(null);
       if (r.ok) setEnviado(true);
       else setErro(r.erro);
     });
@@ -247,8 +283,8 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
 
   if (enviado) {
     return (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 px-5 text-center">
-        <span className="flex size-14 items-center justify-center rounded-full bg-ok-soft text-ok">
+      <main className="fade-up mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 px-5 text-center">
+        <span className="pop-in flex size-14 items-center justify-center rounded-full bg-ok-soft text-ok">
           <CheckCircle2 className="size-7" aria-hidden />
         </span>
         <h1 className="font-display text-xl font-semibold text-ink">Resposta enviada</h1>
@@ -273,7 +309,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   const prazo = faltam(cotacao.prazoResposta);
 
   return (
-    <main className="mx-auto max-w-5xl px-4 pt-5 pb-44 sm:px-6 md:pb-32">
+    <main className="mx-auto max-w-[88rem] px-4 pt-5 pb-44 sm:px-6 md:pb-32">
       <Cabecalho
         cotacao={cotacao}
         jaRespondeu={jaRespondeu}
@@ -290,7 +326,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
             key={item.id}
             item={item}
             linha={porItem.get(item.id)!}
-            onAlterar={(campo) => alterar(item.id, campo)}
+            onAlterar={alterar}
           />
         ))}
       </section>
@@ -309,12 +345,11 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
               <LinhaItem
                 key={item.id}
                 item={item}
+                indice={indice}
                 linha={porItem.get(item.id)!}
-                onAlterar={(campo) => alterar(item.id, campo)}
-                refPreco={(el) => {
-                  camposPreco.current[indice] = el;
-                }}
-                onKeyDownPreco={(e) => aoTabularPreco(e, indice)}
+                onAlterar={alterar}
+                onRegistrarPreco={registrarCampoPreco}
+                onTabPreco={aoTabularPreco}
               />
             ))}
           </ul>
@@ -377,11 +412,25 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
               className="text-base md:text-sm"
             />
             <div className="flex gap-2">
-              <Button variant="secondary" size="sm" onClick={() => setRecusando(false)}>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="tap"
+                onClick={() => setRecusando(false)}
+                disabled={pendente}
+              >
                 Voltar
               </Button>
-              <Button variant="danger" size="sm" onClick={recusar} disabled={pendente}>
-                Confirmar recusa
+              <Button
+                variant="danger"
+                size="sm"
+                className="tap"
+                onClick={recusar}
+                disabled={pendente}
+                aria-busy={acao === "recusar"}
+              >
+                {acao === "recusar" ? <Girando /> : null}
+                {acao === "recusar" ? "Registrando…" : "Confirmar recusa"}
               </Button>
             </div>
           </div>
@@ -402,7 +451,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
           empresa={cotacao.empresa}
           total={total}
           faltantes={faltantes}
-          pendente={pendente}
+          enviando={acao === "enviar"}
           onVoltar={() => setConfirmando(false)}
           onEnviar={enviar}
         />
@@ -411,7 +460,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
       {/* Barra fixa: o total e o botão acompanham a rolagem — em lista de 30
           itens, botão no rodapé é botão que ninguém acha. */}
       <div className="fixed inset-x-0 bottom-0 border-t border-line bg-surface/95 backdrop-blur">
-        <div className="mx-auto flex max-w-5xl items-center gap-3 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
+        <div className="mx-auto flex max-w-[88rem] items-center gap-3 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
           <div className="min-w-0 flex-1">
             <p className="font-mono text-lg font-semibold text-ink">{fmtMoeda(total)}</p>
             <p className="text-xs text-muted">
@@ -420,13 +469,19 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
                 : "Tudo respondido"}
             </p>
           </div>
-          <Button onClick={revisar} disabled={pendente} size="lg">
-            <Send className="size-4" aria-hidden />
-            {pendente ? "Enviando…" : jaRespondeu ? "Reenviar" : "Enviar cotação"}
+          <Button
+            onClick={revisar}
+            disabled={pendente}
+            size="lg"
+            className="tap"
+            aria-busy={acao === "enviar"}
+          >
+            {acao === "enviar" ? <Girando /> : <Send className="size-4" aria-hidden />}
+            {acao === "enviar" ? "Enviando…" : jaRespondeu ? "Reenviar" : "Enviar cotação"}
           </Button>
         </div>
         {erro && (
-          <p className="mx-auto max-w-5xl px-4 pb-3 text-sm text-danger sm:px-6" role="alert">
+          <p className="mx-auto max-w-[88rem] px-4 pb-3 text-sm text-danger sm:px-6" role="alert">
             {erro}
           </p>
         )}
@@ -464,6 +519,9 @@ function Cabecalho({
             <img
               src={cotacao.empresaLogoUrl}
               alt=""
+              width={28}
+              height={28}
+              decoding="async"
               className="size-7 shrink-0 rounded-md border border-line bg-surface object-contain p-0.5"
             />
           ) : (
@@ -479,7 +537,8 @@ function Cabecalho({
       <div>
         <h1 className="font-display text-2xl font-semibold text-ink">{cotacao.titulo}</h1>
         <p className="mt-1 text-sm text-muted">
-          Olá, {cotacao.fornecedor}. Informe seus preços abaixo.
+          Olá, {primeiroNome(cotacao.contato) ?? cotacao.fornecedor}. Informe seus
+          preços abaixo.
           {/* A promessa de "sem cadastro" tranquiliza quem abre no computador e
               tem tempo de ler; no celular ela empurra a lista para baixo. */}
           <span className="hidden md:inline"> Sem cadastro e sem senha.</span>
@@ -579,7 +638,7 @@ function Disponibilidade({
             aria-checked={ativo}
             onClick={() => onEscolher(o.id)}
             className={cn(
-              "min-h-9 flex-1 rounded-full px-2 text-[13px] font-medium transition-colors",
+              "tap min-h-9 flex-1 rounded-full px-2 text-[13px] font-medium transition-colors",
               "focus-visible:ring-1 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
               ativo
                 ? o.id === "nao"
@@ -598,14 +657,14 @@ function Disponibilidade({
 
 // ── Cartão (celular) ────────────────────────────────────────
 
-function CartaoItem({
+const CartaoItem = memo(function CartaoItem({
   item,
   linha,
   onAlterar,
 }: {
   item: ItemPublico;
   linha: LinhaForm;
-  onAlterar: (campo: Partial<LinhaForm>) => void;
+  onAlterar: (itemId: string, campo: Partial<LinhaForm>) => void;
 }) {
   const indisponivel = linha.situacao === "nao";
   const atual = OPCOES.find((o) => o.id === linha.situacao) ?? OPCOES[0];
@@ -640,7 +699,7 @@ function CartaoItem({
             <CampoPreco
               id={`preco-${item.id}`}
               valor={linha.preco}
-              onValor={(v) => onAlterar({ preco: v })}
+              onValor={(v) => onAlterar(item.id, { preco: v })}
             />
           </Field>
         )}
@@ -652,7 +711,7 @@ function CartaoItem({
               aria-haspopup="menu"
               aria-label={`Disponibilidade de ${item.descricao}: ${atual.label}`}
               className={cn(
-                "flex h-11 items-center gap-1.5 rounded-[var(--radius)] border px-3 text-[13px] font-medium transition-colors",
+                "tap flex h-11 items-center gap-1.5 rounded-[var(--radius)] border px-3 text-[13px] font-medium transition-colors",
                 indisponivel
                   ? "w-full justify-between border-line-strong bg-surface text-muted"
                   : "shrink-0 border-line-strong bg-surface text-ink-2",
@@ -666,7 +725,7 @@ function CartaoItem({
           {OPCOES.map((o) => (
             <MenuItem
               key={o.id}
-              onClick={() => onAlterar({ situacao: o.id })}
+              onClick={() => onAlterar(item.id, { situacao: o.id })}
               trailing={
                 linha.situacao === o.id ? (
                   <CheckCircle2 className="size-4 text-ok" aria-hidden />
@@ -686,7 +745,7 @@ function CartaoItem({
             inputMode="decimal"
             placeholder={fmtQtd(item.quantidade)}
             value={linha.qtd}
-            onChange={(e) => onAlterar({ qtd: e.target.value })}
+            onChange={(e) => onAlterar(item.id, { qtd: e.target.value })}
             className="font-mono text-base md:text-sm"
           />
         </Field>
@@ -699,22 +758,24 @@ function CartaoItem({
       )}
     </article>
   );
-}
+});
 
 // ── Linha (computador) ──────────────────────────────────────
 
-function LinhaItem({
+const LinhaItem = memo(function LinhaItem({
   item,
+  indice,
   linha,
   onAlterar,
-  refPreco,
-  onKeyDownPreco,
+  onRegistrarPreco,
+  onTabPreco,
 }: {
   item: ItemPublico;
+  indice: number;
   linha: LinhaForm;
-  onAlterar: (campo: Partial<LinhaForm>) => void;
-  refPreco: (el: HTMLInputElement | null) => void;
-  onKeyDownPreco: React.KeyboardEventHandler<HTMLInputElement>;
+  onAlterar: (itemId: string, campo: Partial<LinhaForm>) => void;
+  onRegistrarPreco: (indice: number, el: HTMLInputElement | null) => void;
+  onTabPreco: (e: React.KeyboardEvent<HTMLInputElement>, indice: number) => void;
 }) {
   const indisponivel = linha.situacao === "nao";
   return (
@@ -730,6 +791,12 @@ function LinhaItem({
           <img
             src={item.imagemUrl}
             alt=""
+            width={48}
+            height={48}
+            // Lista de 30 produtos são 30 imagens: só carrega o que entra na
+            // tela, e a decodificação sai da thread que atende a digitação.
+            loading="lazy"
+            decoding="async"
             className="size-12 shrink-0 rounded-lg border border-line bg-surface object-cover"
           />
         ) : (
@@ -757,7 +824,7 @@ function LinhaItem({
       <div className="flex flex-col gap-2">
         <Disponibilidade
           valor={linha.situacao}
-          onEscolher={(s) => onAlterar({ situacao: s })}
+          onEscolher={(s) => onAlterar(item.id, { situacao: s })}
           compacto
         />
         {linha.situacao === "parcial" && (
@@ -766,7 +833,7 @@ function LinhaItem({
             inputMode="decimal"
             placeholder={`tenho ${fmtQtd(item.quantidade)}`}
             value={linha.qtd}
-            onChange={(e) => onAlterar({ qtd: e.target.value })}
+            onChange={(e) => onAlterar(item.id, { qtd: e.target.value })}
             className="font-mono text-base md:text-sm"
           />
         )}
@@ -776,21 +843,19 @@ function LinhaItem({
         {indisponivel ? (
           <span className="text-[13px] text-faint">não cotado</span>
         ) : (
-          <>
-            <CampoPreco
-              ref={refPreco}
-              rotulo={`Preço unitário de ${item.descricao}`}
-              valor={linha.preco}
-              onValor={(v) => onAlterar({ preco: v })}
-              onKeyDown={onKeyDownPreco}
-              alinharDireita
-            />
-          </>
+          <CampoPreco
+            ref={(el) => onRegistrarPreco(indice, el)}
+            rotulo={`Preço unitário de ${item.descricao}`}
+            valor={linha.preco}
+            onValor={(v) => onAlterar(item.id, { preco: v })}
+            onKeyDown={(e) => onTabPreco(e, indice)}
+            alinharDireita
+          />
         )}
       </div>
     </li>
   );
-}
+});
 
 // ── Confirmação ─────────────────────────────────────────────
 
@@ -798,24 +863,54 @@ function ConfirmarEnvio({
   empresa,
   total,
   faltantes,
-  pendente,
+  enviando,
   onVoltar,
   onEnviar,
 }: {
   empresa: string;
   total: number;
   faltantes: number;
-  pendente: boolean;
+  enviando: boolean;
   onVoltar: () => void;
   onEnviar: () => void;
 }) {
+  const confirmarRef = useRef<HTMLButtonElement>(null);
+
+  // Esc fecha, a página atrás para de rolar e o foco cai no botão que ele veio
+  // apertar — no celular isso significa que o Enter do teclado já confirma.
+  useEffect(() => {
+    confirmarRef.current?.focus();
+    const overflowAnterior = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = overflowAnterior;
+    };
+  }, []);
+
+  useEffect(() => {
+    function aoTeclar(e: KeyboardEvent) {
+      if (e.key === "Escape" && !enviando) onVoltar();
+    }
+    window.addEventListener("keydown", aoTeclar);
+    return () => window.removeEventListener("keydown", aoTeclar);
+  }, [enviando, onVoltar]);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 sm:items-center sm:p-4">
+    <div
+      className="veu-in fixed inset-0 z-50 flex items-end justify-center bg-ink/40 backdrop-blur-[2px] sm:items-center sm:p-4"
+      // Tocar fora fecha — menos durante o envio, que é quando fechar sozinho
+      // faria o fornecedor achar que perdeu a proposta.
+      onClick={() => {
+        if (!enviando) onVoltar();
+      }}
+    >
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirmar-titulo"
-        className="w-full max-w-md rounded-t-[var(--radius-xl)] border border-line bg-surface p-5 sm:rounded-[var(--radius-xl)]"
+        aria-busy={enviando}
+        onClick={(e) => e.stopPropagation()}
+        className="folha-in w-full max-w-md rounded-t-[var(--radius-xl)] border border-line bg-surface p-5 sm:rounded-[var(--radius-xl)]"
       >
         <h2 id="confirmar-titulo" className="font-display text-lg font-semibold text-ink">
           Confirmar envio
@@ -832,15 +927,29 @@ function ConfirmarEnvio({
             : "Todos os itens respondidos"}
         </p>
         <div className="mt-5 flex justify-end gap-2">
-          <Button variant="secondary" onClick={onVoltar}>
+          <Button variant="secondary" className="tap" onClick={onVoltar} disabled={enviando}>
             Voltar
           </Button>
-          <Button onClick={onEnviar} disabled={pendente}>
-            <Send className="size-4" aria-hidden />
-            {pendente ? "Enviando…" : "Confirmar e enviar"}
+          <Button ref={confirmarRef} className="tap" onClick={onEnviar} disabled={enviando}>
+            {enviando ? <Girando /> : <Send className="size-4" aria-hidden />}
+            {enviando ? "Enviando…" : "Confirmar e enviar"}
           </Button>
         </div>
+        {/* Um envio pode levar um segundo em rede de rua. O fio abaixo do botão
+            mantém alguma coisa se mexendo — é o que separa "está indo" de
+            "travou" na cabeça de quem está esperando. */}
+        {enviando && (
+          <div className="mt-3 h-0.5 overflow-hidden rounded-full bg-surface-2">
+            <div className="h-full w-1/3 rounded-full bg-brand" style={{ animation: "envio-fio 1s ease-in-out infinite" }} />
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+/** Primeiro nome de quem recebeu o link — "Olá, João" é mais gente que "Olá, AMBEV". */
+function primeiroNome(nome: string | null): string | null {
+  const limpo = nome?.trim();
+  return limpo ? limpo.split(/\s+/)[0] : null;
 }

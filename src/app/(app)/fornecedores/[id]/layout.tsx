@@ -1,6 +1,5 @@
 import { notFound } from "next/navigation";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
-import { podeEmAlguma } from "@/lib/permissoes";
 import { loadFornecedorHeader } from "./_data";
 import { FornecedorShell } from "./_shell";
 
@@ -20,9 +19,5 @@ export default async function FornecedorLayout({
   const header = await withTenant(ctx, () => loadFornecedorHeader(id));
   if (!header) notFound();
 
-  return (
-    <FornecedorShell header={header} podeEditar={podeEmAlguma(ctx.acessos, "fornecedor.editar")}>
-      {children}
-    </FornecedorShell>
-  );
+  return <FornecedorShell header={header}>{children}</FornecedorShell>;
 }

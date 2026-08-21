@@ -98,3 +98,31 @@ export async function arquivoParaThumb(file: File): Promise<string> {
     ? dataUrl
     : canvas.toDataURL("image/jpeg", QUALIDADE);
 }
+
+// ── Logo ─────────────────────────────────────────────────────────────────────
+
+/** Lado máximo da logo. 256 já cobre o cabeçalho e a lista sem inchar a coluna. */
+const LADO_LOGO = 256;
+
+/**
+ * Encolhe a logo escolhida e devolve `data:image/png` — pequena o bastante
+ * para viver na própria coluna do banco, sem storage externo. PNG (e não WebP,
+ * como `arquivoParaThumb`) porque logo costuma ter fundo transparente e é o
+ * formato que qualquer cliente de e-mail abre.
+ *
+ * Roda no browser: depende de `createImageBitmap` e `<canvas>`.
+ */
+export async function resizeLogo(file: File, max = LADO_LOGO): Promise<string> {
+  const bitmap = await createImageBitmap(file);
+  const escala = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * escala));
+  const h = Math.max(1, Math.round(bitmap.height * escala));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas indisponível.");
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  return canvas.toDataURL("image/png");
+}

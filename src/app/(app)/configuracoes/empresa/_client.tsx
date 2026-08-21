@@ -8,27 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
 import { maskCnpj, maskPhone, maskCep } from "@/lib/masks";
+import { resizeLogo } from "@/lib/imagem";
 import { updateEmpresa } from "../actions";
-
-/**
- * Redimensiona a logo no navegador (máx. 256px) e devolve um data URL PNG —
- * pequena o bastante para viver no próprio banco, sem storage externo.
- */
-async function resizeLogo(file: File): Promise<string> {
-  const bitmap = await createImageBitmap(file);
-  const MAX = 256;
-  const scale = Math.min(1, MAX / Math.max(bitmap.width, bitmap.height));
-  const w = Math.max(1, Math.round(bitmap.width * scale));
-  const h = Math.max(1, Math.round(bitmap.height * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas indisponível.");
-  ctx.drawImage(bitmap, 0, 0, w, h);
-  bitmap.close();
-  return canvas.toDataURL("image/png");
-}
 
 type EmpresaForm = {
   nome: string;

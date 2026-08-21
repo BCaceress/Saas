@@ -74,6 +74,7 @@ async function linhasDeCotacao(): Promise<RespostaRow[]> {
       frete: true,
       observacao: true,
       supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+      contact: { select: { nome: true } },
       responses: {
         select: { quotationItemId: true, disponivel: true, precoUnitario: true },
       },
@@ -131,6 +132,7 @@ async function linhasDeCotacao(): Promise<RespostaRow[]> {
       origem: "cotacao" as const,
       supplierId: c.supplierId,
       supplierNome: c.supplier.nomeFantasia ?? c.supplier.razaoSocial,
+      contatoNome: c.contact?.nome ?? null,
       canal,
       estado,
       titulo: `Cotação ${c.quotation.numero} — ${c.quotation.titulo}`,
@@ -191,6 +193,8 @@ async function linhasDeImportacao(): Promise<RespostaRow[]> {
       origem: "importacao" as const,
       supplierId: i.supplierId,
       supplierNome: i.supplier.nomeFantasia ?? i.supplier.razaoSocial,
+      // Importação de tabela não tem pessoa do outro lado: é arquivo/API.
+      contatoNome: null,
       canal: i.origem === "api" || i.origem === "agendado" ? "API" : CANAL_POR_KIND[i.tipo] ?? "ARQUIVO",
       estado,
       titulo: i.arquivoNome ?? `Tabela por ${KIND_LABEL[i.tipo] ?? "arquivo"}`,

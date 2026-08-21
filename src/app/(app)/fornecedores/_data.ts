@@ -1,5 +1,4 @@
 import { db } from "@/lib/prisma";
-import type { SupplierIntegrationKind, SupplierIntegrationStatus } from "@/generated/prisma";
 
 const PEDIDOS_ATIVOS = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] as const;
 const DIA_MS = 24 * 60 * 60 * 1000;
@@ -27,8 +26,6 @@ export type FornecedorListaRow = {
   totalCatalogo: number;
   emPromocao: number;
   pendentes: number;
-  tipoIntegracao: SupplierIntegrationKind | null;
-  situacaoIntegracao: SupplierIntegrationStatus;
   ultimaSincronizacao: string | null;
   proximaEntrega: string | null;
   ultimaSolicitacao: { numero: string; status: string; data: string } | null;
@@ -54,8 +51,6 @@ export async function loadFornecedores(): Promise<FornecedorListaRow[]> {
         uf: true,
         ativo: true,
         createdAt: true,
-        tipoIntegracao: true,
-        situacaoIntegracao: true,
         ultimaSincronizacao: true,
       },
     }),
@@ -136,8 +131,6 @@ export async function loadFornecedores(): Promise<FornecedorListaRow[]> {
       totalCatalogo: cat?.total ?? 0,
       emPromocao: cat?.promo ?? 0,
       pendentes: cat?.pendentes ?? 0,
-      tipoIntegracao: s.tipoIntegracao,
-      situacaoIntegracao: s.situacaoIntegracao,
       ultimaSincronizacao: s.ultimaSincronizacao?.toISOString() ?? null,
       proximaEntrega: proximaPorFornecedor.get(s.id) ?? null,
       ultimaSolicitacao: ultimaPorFornecedor.get(s.id) ?? null,

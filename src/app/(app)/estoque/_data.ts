@@ -880,6 +880,8 @@ export type PedidoCompraView = {
   canceladoEm: Date | null;
   operador: string | null;
   totalItems: number;
+  /** Tem NF-e vinculada (XML já importado) — decide se receber é conferir ou digitar. */
+  temNota: boolean;
   items: PedidoCompraItemView[];
 };
 
@@ -912,6 +914,8 @@ export async function loadPedidosCompra(
       supplier: { select: { razaoSocial: true, nomeFantasia: true, telefone: true, email: true, logoUrl: true } },
       site: { select: { nome: true } },
       items: true,
+      // Só o booleano interessa à lista — contar é mais barato que hidratar a nota.
+      _count: { select: { inbounds: true } },
     },
     orderBy: { createdAt: "desc" },
     take: filtro.take ?? 100,
@@ -958,6 +962,7 @@ export async function loadPedidosCompra(
     canceladoEm: p.canceladoEm,
     operador: p.createdBy ? (userMap.get(p.createdBy) ?? null) : null,
     totalItems: p.items.length,
+    temNota: p._count.inbounds > 0,
     items: p.items.map((i) => {
       const pkg = i.packagingId ? (pkgMap.get(i.packagingId) ?? null) : null;
       return {

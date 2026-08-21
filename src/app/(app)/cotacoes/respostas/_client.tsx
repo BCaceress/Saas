@@ -73,7 +73,9 @@ export function CentralRespostas({
       if (aba === "aguardando" && l.estado !== "AGUARDANDO" && l.estado !== "LIDO") return false;
       if (!termo) return true;
       return (
-        l.supplierNome.toLowerCase().includes(termo) || l.titulo.toLowerCase().includes(termo)
+        l.supplierNome.toLowerCase().includes(termo) ||
+        (l.contatoNome?.toLowerCase().includes(termo) ?? false) ||
+        l.titulo.toLowerCase().includes(termo)
       );
     });
   }, [linhas, aba, busca]);
@@ -171,6 +173,13 @@ export function CentralRespostas({
                       <span className="truncate text-sm font-semibold text-ink">
                         {l.supplierNome}
                       </span>
+                      {/* Quem, de gente, está do outro lado — é para essa
+                          pessoa que o comprador liga quando a resposta atrasa. */}
+                      {l.contatoNome && (
+                        <span className="truncate text-[12px] text-muted">
+                          {l.contatoNome}
+                        </span>
+                      )}
                       <span
                         className={cn(
                           "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",

@@ -24,7 +24,7 @@ import {
 } from "@/lib/compras/conciliacao";
 import type { ActiveTenant } from "@/lib/current-tenant";
 
-const ROTA = "/recebimento";
+const ROTA = "/pedidos/recebimento";
 
 async function tx<T>(fn: (ctx: ActiveTenant) => Promise<T>): Promise<T> {
   const ctx = await guardAction("compras.receber");
@@ -32,8 +32,10 @@ async function tx<T>(fn: (ctx: ActiveTenant) => Promise<T>): Promise<T> {
 }
 
 function revalidar(inboundId?: string) {
-  revalidatePath(ROTA);
   if (inboundId) revalidatePath(`${ROTA}/${inboundId}`);
+  // A fila de recebimento deixou de existir: quem lista o que está por
+  // conferir agora é a própria lista de pedidos.
+  revalidatePath("/pedidos");
   revalidatePath("/cotacoes");
 }
 

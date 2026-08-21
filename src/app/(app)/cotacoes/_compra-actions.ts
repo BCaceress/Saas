@@ -669,6 +669,8 @@ function montarMensagem(
   prazo: Date | null,
   itens: { descricao: string; quantidade: string }[],
   linkResposta: string | null,
+  /** Primeiro nome de quem recebe. Sem contato cadastrado, volta ao "Olá!". */
+  contato: string | null = null,
 ): string {
   // A quantidade chega pronta com a unidade ("2 × Caixa (12 un.)"): número solto
   // faz o fornecedor precificar outra coisa. Ver lib/compras/cotacao-unidades.
@@ -679,8 +681,9 @@ function montarMensagem(
   const fecho = linkResposta
     ? `\nÉ só preencher os preços aqui (não precisa cadastro):\n${linkResposta}`
     : "\nPode me passar preço, prazo de entrega e condição de pagamento?";
+  const saudacao = contato ? `Olá, ${contato.trim().split(/\s+/)[0]}!` : "Olá!";
   return [
-    `Olá! Aqui é da ${empresa}.`,
+    `${saudacao} Aqui é da ${empresa}.`,
     `Pedido de cotação ${numero} — ${titulo}:`,
     "",
     ...linhas,
@@ -688,6 +691,16 @@ function montarMensagem(
     fecho,
   ].join("\n");
 }
+
+const canalSchema = z.enum(["whatsapp", "email"]);
+
+/** Uma linha do modal de envio: para quem, dentro daquele fornecedor, e por onde. */
+const destinoSchema = z.object({
+  conviteId: z.string().min(1),
+  /** Contato escolhido na tela. Vazio = o principal (ou a empresa, na falta dele). */
+  contactId: z.string().min(1).nullable().optional(),
+  canais: z.array(canalSchema).min(1),
+});
 
 const enviarSchema = z.object({
   quotationId: z.string().min(1),
@@ -697,8 +710,17 @@ const enviarSchema = z.object({
    * Por onde o link vai. O LINK é o mesmo nos dois canais — só muda o
    * carteiro. E-mail sai do servidor; WhatsApp continua sendo a mensagem
    * pronta que o operador dispara (sem gateway oficial, ver [[cotacoes-rfq]]).
+   *
+   * Vale como padrão: quem não aparece em `destinos` sai por aqui.
    */
-  canais: z.array(z.enum(["whatsapp", "email"])).min(1).default(["whatsapp"]),
+  canais: z.array(canalSchema).min(1).default(["whatsapp"]),
+  /**
+   * Escolha por fornecedor feita no modal de envio (contato + canal). Quando
+   * vem preenchido, MANDA: define o conjunto de alvos e o destinatário de
+   * cada um. É o que permite um botão só de "Enviar cotação" com João no
+   * WhatsApp e Maria no e-mail no mesmo disparo.
+   */
+  destinos: z.array(destinoSchema).optional(),
   /**
    * Reenvio: alcança também quem JÁ recebeu e ainda não respondeu. Cada
    * reenvio emite um token novo — o link antigo morre na hora, então quem
@@ -715,9 +737,76 @@ export type EmailEnvio =
   | { estado: "enviado"; endereco: string }
   | { estado: "falhou"; endereco: string; erro: string };
 
-export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
+/** Contato que de fato vai receber — já resolvido, com os fallbacks aplicados. */
+type Destinatario = {
+  contactId: string | null;
+  nome: string | null;
+  telefone: string | null;
+  email: string | null;
+};
+
+type ContatoDoFornecedor = {
+  id: string;
+  nome: string;
+  telefone: string | null;
+  email: string | null;
+  principal: boolean;
+};
+
+/**
+ * Quem recebe a cotação neste fornecedor, em ordem de precedência:
+ * escolha da tela → contato já gravado no convite → principal → primeiro
+ * contato alcançável → telefone/e-mail da empresa (fornecedor sem ninguém
+ * cadastrado continua recebendo, como sempre recebeu).
+ */
+function resolverDestinatario(
+  contatos: ContatoDoFornecedor[],
+  contactIdGravado: string | null,
+  escolhido: string | null | undefined,
+  empresa: { telefone: string | null; email: string | null },
+): Destinatario {
+  const alcancavel = (c: ContatoDoFornecedor) => Boolean(c.telefone?.trim() || c.email?.trim());
+  const contato =
+    (escolhido ? contatos.find((c) => c.id === escolhido) : undefined) ??
+    (contactIdGravado ? contatos.find((c) => c.id === contactIdGravado) : undefined) ??
+    contatos.find((c) => c.principal && alcancavel(c)) ??
+    contatos.find(alcancavel);
+
+  // Com contato escolhido, o dado DELE manda: cair no telefone da empresa
+  // faria a mensagem chegar em quem o comprador não escolheu.
+  if (contato) {
+    return {
+      contactId: contato.id,
+      nome: contato.nome,
+      telefone: contato.telefone,
+      email: contato.email,
+    };
+  }
+  return { contactId: null, nome: null, telefone: empresa.telefone, email: empresa.email };
+}
+
+/** 11 dígitos ou menos = número nacional; o wa.me exige o 55 na frente. */
+function numeroWhatsApp(telefone: string | null): string | null {
+  const tel = telefone?.replace(/\D/g, "") ?? "";
+  if (!tel) return null;
+  return tel.length <= 11 ? `55${tel}` : tel;
+}
+
+export type Envio = {
+  conviteId: string;
+  fornecedor: string;
+  /** Quem recebeu — null quando o fornecedor ainda não tem contato cadastrado. */
+  contato: { id: string; nome: string } | null;
+  mensagem: string;
+  link: string | null;
+  waLink: string | null;
+  email: EmailEnvio;
+};
+
+export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>): Promise<Envio[]> {
   const d = enviarSchema.parse(input);
   const ctx = await guardAction("compras.pedir");
+  const userId = ctx.user.id ?? null;
   return runWithTenant(ctx.tenant.id, async () => {
     const cotacao = await db.quotation.findFirst({
       where: { id: d.quotationId },
@@ -741,8 +830,25 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
           select: {
             id: true,
             status: true,
+            contactId: true,
             supplier: {
-              select: { razaoSocial: true, nomeFantasia: true, telefone: true, email: true },
+              select: {
+                razaoSocial: true,
+                nomeFantasia: true,
+                telefone: true,
+                email: true,
+                contacts: {
+                  where: { ativo: true },
+                  orderBy: [{ principal: "desc" }, { createdAt: "asc" }],
+                  select: {
+                    id: true,
+                    nome: true,
+                    telefone: true,
+                    email: true,
+                    principal: true,
+                  },
+                },
+              },
             },
           },
         },
@@ -753,12 +859,19 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
       throw new Error("Adicione ao menos um item antes de enviar.");
     if (cotacao.suppliers.length === 0) throw new Error("Convide ao menos um fornecedor.");
 
+    const escolhas = new Map(d.destinos?.map((x) => [x.conviteId, x]) ?? []);
     const aceita = d.reenviar
       ? (st: string) => st === "PENDENTE" || st === "ENVIADA"
       : (st: string) => st === "PENDENTE";
-    const alvos = cotacao.suppliers.filter(
-      (s) => (d.conviteIds?.length ? d.conviteIds.includes(s.id) : true) && aceita(s.status),
-    );
+    // Com o modal de envio aberto, a lista de destinos É a seleção; sem ele
+    // (mobile, reenvio direto) vale o conviteIds de sempre.
+    const conviteIds = d.conviteIds;
+    const selecionados = escolhas.size
+      ? (id: string) => escolhas.has(id)
+      : conviteIds?.length
+        ? (id: string) => conviteIds.includes(id)
+        : () => true;
+    const alvos = cotacao.suppliers.filter((s) => selecionados(s.id) && aceita(s.status));
     if (alvos.length === 0) {
       throw new Error(
         d.reenviar
@@ -813,6 +926,26 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
       alvos.map(async (a) => {
         const link = links.get(a.id) ?? null;
         const fornecedor = a.supplier.nomeFantasia || a.supplier.razaoSocial;
+        const escolha = escolhas.get(a.id);
+        const canais = escolha?.canais ?? d.canais;
+        const destinatario = resolverDestinatario(
+          a.supplier.contacts,
+          a.contactId,
+          escolha?.contactId ?? null,
+          { telefone: a.supplier.telefone, email: a.supplier.email },
+        );
+
+        // O contato usado fica gravado no convite: o próximo reenvio já abre
+        // com a mesma pessoa, sem o comprador reescolher.
+        if (destinatario.contactId && destinatario.contactId !== a.contactId) {
+          await db.quotationSupplier.updateMany({
+            where: { id: a.id },
+            data: { contactId: destinatario.contactId },
+          });
+        }
+
+        // "Olá, João" abre melhor que "Olá!" — e é o sinal de que o comprador
+        // sabe com quem está falando.
         const mensagem = montarMensagem(
           ctx.tenant.nome,
           cotacao.numero,
@@ -820,21 +953,21 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
           prazo,
           itensDoTexto,
           link,
+          destinatario.nome,
         );
-        const tel = a.supplier.telefone?.replace(/\D/g, "") ?? "";
-        const numeroWa = tel.length && tel.length <= 11 ? `55${tel}` : tel;
+        const numeroWa = numeroWhatsApp(destinatario.telefone);
 
         // E-mail nunca derruba o envio: o convite já está gravado e o link
         // continua copiável na tela. Falha vira aviso, não exceção.
-        let email: EmailEnvio = { estado: "nao-pedido", endereco: a.supplier.email ?? null };
-        if (d.canais.includes("email") && link) {
-          if (!a.supplier.email) {
+        let email: EmailEnvio = { estado: "nao-pedido", endereco: destinatario.email };
+        if (canais.includes("email") && link) {
+          if (!destinatario.email) {
             email = { estado: "sem-endereco", endereco: null };
           } else {
             const r = await enviarEmail(
               emailCotacao({
-                para: a.supplier.email,
-                fornecedor,
+                para: destinatario.email,
+                fornecedor: destinatario.nome ?? fornecedor,
                 mercado: ctx.tenant.nome,
                 numero: cotacao.numero,
                 titulo: cotacao.titulo,
@@ -845,14 +978,67 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
               }),
             );
             email = r.ok
-              ? { estado: "enviado", endereco: a.supplier.email }
-              : { estado: "falhou", endereco: a.supplier.email, erro: r.erro };
+              ? { estado: "enviado", endereco: destinatario.email }
+              : { estado: "falhou", endereco: destinatario.email, erro: r.erro };
           }
+        }
+
+        // Trilha: uma linha por canal, com o nome do contato COPIADO. É o que
+        // responde "mandei pro João ou pra Maria?" três dias depois — e
+        // continua respondendo depois de o vendedor sair da empresa.
+        const trilha: {
+          canal: "WHATSAPP" | "EMAIL";
+          destino: string | null;
+          sucesso: boolean;
+          erro: string | null;
+        }[] = [];
+        if (canais.includes("whatsapp")) {
+          trilha.push({
+            canal: "WHATSAPP",
+            destino: destinatario.telefone,
+            sucesso: true,
+            erro: null,
+          });
+        }
+        if (email.estado !== "nao-pedido") {
+          trilha.push({
+            canal: "EMAIL",
+            destino: email.estado === "sem-endereco" ? null : email.endereco,
+            sucesso: email.estado === "enviado",
+            erro:
+              email.estado === "falhou"
+                ? email.erro
+                : email.estado === "sem-endereco"
+                  ? "Contato sem e-mail cadastrado."
+                  : null,
+          });
+        }
+        if (trilha.length > 0) {
+          await db.quotationSend.createMany({
+            // O tipo do createMany exige tenantId em cada linha; o extension reescreve
+            // com o mesmo valor, então declarar aqui não abre brecha de tenant.
+            data: trilha.map((t) => ({
+              tenantId: ctx.tenant.id,
+              quotationSupplierId: a.id,
+              contactId: destinatario.contactId,
+              contatoNome: destinatario.nome,
+              canal: t.canal,
+              destino: t.destino,
+              reenvio: d.reenviar,
+              sucesso: t.sucesso,
+              erro: t.erro,
+              enviadoEm: agora,
+              enviadoPor: userId,
+            })),
+          });
         }
 
         return {
           conviteId: a.id,
           fornecedor,
+          contato: destinatario.contactId
+            ? { id: destinatario.contactId, nome: destinatario.nome ?? fornecedor }
+            : null,
           mensagem,
           link,
           waLink: numeroWa
@@ -874,6 +1060,8 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>) {
  */
 export async function mensagemDoConviteAction(conviteId: string): Promise<{
   fornecedor: string;
+  /** Nome do contato a quem o texto está endereçado — null = sem contato. */
+  contato: string | null;
   mensagem: string;
   link: string;
   waLink: string | null;
@@ -884,7 +1072,20 @@ export async function mensagemDoConviteAction(conviteId: string): Promise<{
       where: { id: conviteId },
       select: {
         id: true,
-        supplier: { select: { razaoSocial: true, nomeFantasia: true, telefone: true } },
+        contactId: true,
+        supplier: {
+          select: {
+            razaoSocial: true,
+            nomeFantasia: true,
+            telefone: true,
+            email: true,
+            contacts: {
+              where: { ativo: true },
+              orderBy: [{ principal: "desc" }, { createdAt: "asc" }],
+              select: { id: true, nome: true, telefone: true, email: true, principal: true },
+            },
+          },
+        },
         quotation: {
           select: {
             numero: true,
@@ -915,6 +1116,13 @@ export async function mensagemDoConviteAction(conviteId: string): Promise<{
       vigente?.url ??
       (await emitirLinkCotacao(ctx.tenant.id, conviteId, convite.quotation.prazoResposta)).url;
 
+    const destinatario = resolverDestinatario(
+      convite.supplier.contacts,
+      convite.contactId,
+      null,
+      { telefone: convite.supplier.telefone, email: convite.supplier.email },
+    );
+
     const unidades = await unidadesDosItens(convite.quotation.items);
     const mensagem = montarMensagem(
       ctx.tenant.nome,
@@ -926,12 +1134,13 @@ export async function mensagemDoConviteAction(conviteId: string): Promise<{
         quantidade: quantidadeComUnidade(Number(i.quantidade), unidades.get(i.id)),
       })),
       link,
+      destinatario.nome,
     );
-    const tel = convite.supplier.telefone?.replace(/\D/g, "") ?? "";
-    const numeroWa = tel.length && tel.length <= 11 ? `55${tel}` : tel;
+    const numeroWa = numeroWhatsApp(destinatario.telefone);
 
     return {
       fornecedor: convite.supplier.nomeFantasia || convite.supplier.razaoSocial,
+      contato: destinatario.nome,
       mensagem,
       link,
       waLink: numeroWa ? `https://wa.me/${numeroWa}?text=${encodeURIComponent(mensagem)}` : null,

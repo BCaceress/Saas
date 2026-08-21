@@ -23,7 +23,7 @@ import { maskCnpj, maskPhone } from "@/lib/masks";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import { ViewToggle, useViewMode } from "@/components/app/view-toggle";
-import { IntegracaoStatus, fmtQuando } from "../cotacoes/_catalogo/ui";
+import { fmtQuando } from "../cotacoes/_catalogo/ui";
 import { fmtMoney } from "../cotacoes/_ui";
 import { createSupplier } from "../produtos/actions";
 import type { FornecedorListaRow } from "./_data";
@@ -196,7 +196,6 @@ export function FornecedoresManager({
 function SinaisCatalogo({ s }: { s: FornecedorListaRow }) {
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <IntegracaoStatus status={s.situacaoIntegracao} kind={s.tipoIntegracao} />
       {s.totalCatalogo > 0 && (
         <span className="text-[11px] text-faint">
           {s.totalCatalogo.toLocaleString("pt-BR")} itens · {fmtQuando(s.ultimaSincronizacao).toLowerCase()}

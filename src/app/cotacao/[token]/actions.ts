@@ -1,5 +1,6 @@
 "use server";
 
+import { after } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/prisma";
 import { runWithTenant } from "@/lib/tenant-context";
@@ -47,10 +48,13 @@ export async function responderPeloLinkAction(
   }
   const d = parsed.data;
 
-  const limite = await consumir(`cotacao-link:${d.token}`, LIMITE_ENVIOS, JANELA_SEG);
+  // Contador e link não dependem um do outro: uma ida ao banco em vez de duas
+  // seguidas. O gate do limite continua valendo — só o custo em rede some.
+  const [limite, link] = await Promise.all([
+    consumir(`cotacao-link:${d.token}`, LIMITE_ENVIOS, JANELA_SEG),
+    linkParaGravar(d.token),
+  ]);
   if (!limite.ok) return { ok: false, erro: mensagemBloqueio(limite.esperaSeg) };
-
-  const link = await linkParaGravar(d.token);
   if (!link) return { ok: false, erro: "Este link não vale mais. Peça um novo ao comprador." };
 
   return runWithTenant(link.tenantId, async () => {
@@ -77,35 +81,44 @@ export async function responderPeloLinkAction(
     // cotação está aberta o fornecedor pode voltar e corrigir um preço, e a
     // resposta válida é sempre a última que ele mandou.
     await db.quotationResponse.deleteMany({ where: { quotationSupplierId: convite.id } });
-    await db.quotationResponse.createMany({
-      data: itens.map((i) => ({
-        tenantId: link.tenantId,
-        quotationSupplierId: convite.id,
-        quotationItemId: i.quotationItemId,
-        disponivel: i.disponivel,
-        precoUnitario: i.disponivel ? i.precoUnitario : 0,
-        quantidadeOfertada: i.quantidadeOfertada ?? null,
-        marca: i.marca || null,
-        observacao: i.observacao || null,
-      })),
-    });
-    await db.quotationSupplier.updateMany({
-      where: { id: convite.id },
-      data: {
-        status: "RESPONDIDA",
-        respondidaEm: new Date(),
-        respondidaVia: "LINK",
-        prazoEntregaDias: d.prazoEntregaDias ?? null,
-        condicaoPagamento: d.condicaoPagamento || null,
-        frete: d.frete ?? null,
-        observacao: d.observacao || null,
-      },
-    });
 
-    await marcarLinkRespondido(link.linkId);
+    // Os três que sobram não dependem entre si — vão juntos. Em lista de 30
+    // itens cada ida ao Neon é uma transação (SET LOCAL + query): serializar
+    // por hábito é o que fazia o botão parecer travado.
+    await Promise.all([
+      db.quotationResponse.createMany({
+        data: itens.map((i) => ({
+          tenantId: link.tenantId,
+          quotationSupplierId: convite.id,
+          quotationItemId: i.quotationItemId,
+          disponivel: i.disponivel,
+          precoUnitario: i.disponivel ? i.precoUnitario : 0,
+          quantidadeOfertada: i.quantidadeOfertada ?? null,
+          marca: i.marca || null,
+          observacao: i.observacao || null,
+        })),
+      }),
+      db.quotationSupplier.updateMany({
+        where: { id: convite.id },
+        data: {
+          status: "RESPONDIDA",
+          respondidaEm: new Date(),
+          respondidaVia: "LINK",
+          prazoEntregaDias: d.prazoEntregaDias ?? null,
+          condicaoPagamento: d.condicaoPagamento || null,
+          frete: d.frete ?? null,
+          observacao: d.observacao || null,
+        },
+      }),
+      marcarLinkRespondido(link.linkId),
+    ]);
+
     // Preço respondido vira preço vigente no catálogo do fornecedor (e ponto no
-    // histórico). Não lança — ver lib/compras/cotacao-precos.
-    await registrarPrecosDaCotacao(convite.id);
+    // histórico). É a parte CARA — `ingerir` faz matching, upsert de catálogo e
+    // histórico, dezenas de idas ao banco. O fornecedor não tem nada a ver com
+    // isso: a proposta dele já está salva acima, então roda depois da resposta
+    // (`after`) em vez de segurar o botão. Não lança — ver cotacao-precos.
+    after(() => runWithTenant(link.tenantId, () => registrarPrecosDaCotacao(convite.id)));
     return { ok: true };
   });
 }
@@ -123,10 +136,11 @@ export async function recusarPeloLinkAction(
   if (!parsed.success) return { ok: false, erro: "Não foi possível registrar." };
   const d = parsed.data;
 
-  const limite = await consumir(`cotacao-link:${d.token}`, LIMITE_ENVIOS, JANELA_SEG);
+  const [limite, link] = await Promise.all([
+    consumir(`cotacao-link:${d.token}`, LIMITE_ENVIOS, JANELA_SEG),
+    linkParaGravar(d.token),
+  ]);
   if (!limite.ok) return { ok: false, erro: mensagemBloqueio(limite.esperaSeg) };
-
-  const link = await linkParaGravar(d.token);
   if (!link) return { ok: false, erro: "Este link não vale mais. Peça um novo ao comprador." };
 
   return runWithTenant(link.tenantId, async () => {
@@ -139,16 +153,18 @@ export async function recusarPeloLinkAction(
       return { ok: false, erro: "Esta cotação não está mais aberta." };
     }
 
-    await db.quotationSupplier.updateMany({
-      where: { id: convite.id },
-      data: {
-        status: "RECUSADA",
-        respondidaEm: new Date(),
-        respondidaVia: "LINK",
-        observacao: d.motivo || null,
-      },
-    });
-    await marcarLinkRespondido(link.linkId);
+    await Promise.all([
+      db.quotationSupplier.updateMany({
+        where: { id: convite.id },
+        data: {
+          status: "RECUSADA",
+          respondidaEm: new Date(),
+          respondidaVia: "LINK",
+          observacao: d.motivo || null,
+        },
+      }),
+      marcarLinkRespondido(link.linkId),
+    ]);
     return { ok: true };
   });
 }

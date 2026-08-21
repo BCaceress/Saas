@@ -28,7 +28,7 @@ async function txp<T>(
 const ok = () => {
   revalidatePath("/cotacoes", "layout");
   revalidatePath("/pedidos", "layout");
-  revalidatePath("/recebimento", "layout");
+  revalidatePath("/pedidos", "layout");
   revalidatePath("/estoque", "layout");
 };
 

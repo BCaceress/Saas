@@ -684,6 +684,57 @@ body:has([data-app-shell]) {
   animation: toast-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* Folha de confirmação (modal que sobe de baixo no celular, cresce no centro
+   na mesa). O véu escurece sozinho — sem transform, senão a tela inteira
+   pula. Curto de propósito: quem apertou "enviar" quer ver o botão, não a
+   animação. Reduced-motion zera a duração pela regra global. */
+@keyframes veu-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.veu-in {
+  animation: veu-in 0.15s ease-out both;
+}
+@keyframes folha-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.folha-in {
+  animation: folha-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Fio indeterminado do envio: só transform, nada que force layout. */
+@keyframes envio-fio {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+@media (min-width: 640px) {
+  @keyframes folha-in {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+}
+
 /* ============================================================
    Auth (login/cadastro) — superfície própria, clara e premium:
    canvas quase branco + glow laranja de marca, card branco

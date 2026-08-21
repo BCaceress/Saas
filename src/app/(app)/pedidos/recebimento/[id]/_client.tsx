@@ -29,7 +29,7 @@ import { toast } from "@/components/ui/toast";
 import { Scanner } from "@/components/mobile/scanner";
 import { useLeitorTeclado } from "@/lib/hooks/use-leitor-teclado";
 import { termoDeBuscaDoItem, variacaoCusto } from "@/lib/compras/conciliacao-regras";
-import { Metrica, MetricaGrid, fmtMoney, fmtQtd, fmtQuando } from "../../cotacoes/_catalogo/ui";
+import { Metrica, MetricaGrid, fmtMoney, fmtQtd, fmtQuando } from "../../../cotacoes/_catalogo/ui";
 import {
   aceitarCustoAction,
   buscarProdutoAction,
@@ -703,9 +703,9 @@ function Cabecalho({
   return (
     <div className="flex flex-wrap items-start gap-3">
       <Link
-        href="/recebimento"
+        href="/pedidos"
         className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full border border-line-button text-ink-2 hover:bg-surface-2"
-        aria-label="Voltar para a fila de recebimento"
+        aria-label="Voltar para os pedidos de compra"
       >
         <ArrowLeft className="h-4 w-4" aria-hidden />
       </Link>

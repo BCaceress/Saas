@@ -2,16 +2,26 @@
 
 import { Gift, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { PEDIDO_STATUS } from "../cotacoes/_ui";
+import { PEDIDO_ABERTO, PEDIDO_STATUS } from "../cotacoes/_ui";
 import type { PedidoView } from "./_pedidos";
 
 // ── Filtros compartilhados entre Lista e Kanban ────────────────
 // O estado vive no client root — trocar de visualização preserva tudo.
 
+/**
+ * Valor de status que significa "tudo que ainda dá trabalho" — todo status
+ * menos Concluído e Cancelado. É o PADRÃO da tela: quem abre Pedidos veio
+ * cuidar do que está em andamento, e pedido concluído do trimestre passado só
+ * empurra para baixo o que ainda precisa de ação. Fica visível no seletor
+ * (não é filtro escondido) e sai com um clique em "Status: todos".
+ */
+export const PO_STATUS_ABERTOS = "abertos";
+
 export type PoFiltros = {
   q: string;
   supplierId: string;
-  status: string;      // "" = todos
+  /** "abertos" (padrão) | "" = todos | um status específico */
+  status: string;
   periodo: string;     // dias de criação: "" | "7" | "30" | "90"
   valor: string;       // "" | "ate500" | "500a2000" | "2000mais"
   ordem: string;       // "recentes" | "entrega" | "valor-desc" | "valor-asc" | "numero"
@@ -21,7 +31,7 @@ export type PoFiltros = {
 export const PO_FILTROS_VAZIO: PoFiltros = {
   q: "",
   supplierId: "",
-  status: "",
+  status: PO_STATUS_ABERTOS,
   periodo: "30",
   valor: "",
   ordem: "recentes",
@@ -32,12 +42,15 @@ export function filtrosAtivos(f: PoFiltros): boolean {
   return (
     f.q.trim() !== "" ||
     f.supplierId !== "" ||
-    f.status !== "" ||
+    f.status !== PO_FILTROS_VAZIO.status ||
     f.periodo !== PO_FILTROS_VAZIO.periodo ||
     f.valor !== "" ||
     f.bonificacao
   );
 }
+
+/** O filtro em vigor está escondendo concluído/cancelado? */
+export const escondendoConcluidos = (f: PoFiltros) => f.status === PO_STATUS_ABERTOS;
 
 /** Aplica filtros + ordenação — única fonte de verdade para as duas visualizações. */
 export function aplicarFiltros(pedidos: PedidoView[], f: PoFiltros): PedidoView[] {
@@ -46,7 +59,9 @@ export function aplicarFiltros(pedidos: PedidoView[], f: PoFiltros): PedidoView[
 
   const out = pedidos.filter((p) => {
     if (f.supplierId && p.supplierId !== f.supplierId) return false;
-    if (f.status && p.status !== f.status) return false;
+    if (f.status === PO_STATUS_ABERTOS) {
+      if (!PEDIDO_ABERTO.includes(p.status)) return false;
+    } else if (f.status && p.status !== f.status) return false;
     if (corte && new Date(p.createdAt).getTime() < corte) return false;
     if (f.valor === "ate500" && p.valorTotal > 500) return false;
     if (f.valor === "500a2000" && (p.valorTotal < 500 || p.valorTotal > 2000)) return false;
@@ -120,7 +135,15 @@ export function PurchaseOrderFilters({
         {fornecedores.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
       </select>
 
-      <select value={filtros.status} onChange={(e) => set({ status: e.target.value })} className={selectCls} aria-label="Status">
+      {/* "Em aberto" primeiro E selecionado por padrão: o seletor mostra o
+          recorte em vigor, então nada some sem o operador ver por quê. */}
+      <select
+        value={filtros.status}
+        onChange={(e) => set({ status: e.target.value })}
+        className={cn(selectCls, filtros.status === PO_STATUS_ABERTOS && "border-brand/40 bg-brand-soft text-brand")}
+        aria-label="Status"
+      >
+        <option value={PO_STATUS_ABERTOS}>Em aberto</option>
         <option value="">Status: todos</option>
         {Object.entries(PEDIDO_STATUS).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
       </select>

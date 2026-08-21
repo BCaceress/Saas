@@ -656,7 +656,7 @@ function DetalheNota({
             // conferência que compara pedido × nota × mercadoria e cuida do
             // recebido de cada item do pedido.
             <Link
-              href={`/recebimento/${nota.id}`}
+              href={`/pedidos/recebimento/${nota.id}`}
               className="flex items-center gap-2 rounded-[var(--radius-md)] border border-brand/30 bg-brand-soft px-3 py-2.5 text-[13px] font-medium text-brand-strong hover:bg-brand-softer"
             >
               <ClipboardCheck size={16} className="shrink-0" />

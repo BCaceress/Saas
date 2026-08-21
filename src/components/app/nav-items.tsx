@@ -35,7 +35,9 @@ export function filtrarGrupos(acessos: Acesso[], toggles: NavToggles) {
     title: group.title,
     rodape: group.rodape ?? false,
     items: group.items
-      .filter((i) => itemVisivel(i, acessos, toggles))
+      // `ocultoNoMenu` vale para item de topo também (Recebimento): a rota
+      // segue no mapa (ícone, título, paleta), só não é destino do menu.
+      .filter((i) => !i.ocultoNoMenu && itemVisivel(i, acessos, toggles))
       .map((item) => ({
         ...item,
         children: item.children?.filter(

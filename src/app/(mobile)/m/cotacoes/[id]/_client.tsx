@@ -1125,6 +1125,9 @@ function PassoEnviar({
 
 // ── Enviada: acompanhamento ─────────────────────────────────
 
+/** Ação de um cartão de fornecedor. Cada uma gira no próprio botão. */
+type Acao = "link" | "mensagem" | "reenviar";
+
 function Acompanhamento({
   cotacao,
   podePedir,
@@ -1135,18 +1138,24 @@ function Acompanhamento({
   onEnviado: (e: Envio[]) => void;
 }) {
   const router = useRouter();
-  const [ocupado, setOcupado] = React.useState<string | null>(null);
-  const [copiado, setCopiado] = React.useState<string | null>(null);
+  /** Qual botão de qual cartão está rodando — o giro precisa nascer no botão
+   *  que o dedo tocou, senão parece que outra coisa começou a acontecer. */
+  const [ocupado, setOcupado] = React.useState<{ id: string; acao: Acao } | null>(null);
+  const [copiado, setCopiado] = React.useState<{ id: string; acao: Acao } | null>(null);
+
+  const rodando = (id: string, acao: Acao) =>
+    ocupado?.id === id && ocupado.acao === acao;
+  const copiou = (id: string, acao: Acao) => copiado?.id === id && copiado.acao === acao;
 
   async function copiarLink(conviteId: string) {
-    setOcupado(conviteId);
+    setOcupado({ id: conviteId, acao: "link" });
     try {
       const { url } = await linkDoConviteAction(conviteId);
       if (!(await copiarTexto(url))) {
         toast.info("Copie manualmente", url);
         return;
       }
-      setCopiado(conviteId);
+      setCopiado({ id: conviteId, acao: "link" });
       toast.success("Link copiado", "Cole na conversa com o fornecedor.");
     } catch (e) {
       toast.error(
@@ -1160,14 +1169,14 @@ function Acompanhamento({
 
   /** Texto inteiro, com o link dentro — serve para qualquer canal. */
   async function copiarMensagem(conviteId: string) {
-    setOcupado(conviteId);
+    setOcupado({ id: conviteId, acao: "mensagem" });
     try {
       const { mensagem } = await mensagemDoConviteAction(conviteId);
       if (!(await copiarTexto(mensagem))) {
         toast.info("Copie manualmente", mensagem);
         return;
       }
-      setCopiado(conviteId);
+      setCopiado({ id: conviteId, acao: "mensagem" });
       toast.success("Mensagem copiada", "Cole onde quiser mandar.");
     } catch (e) {
       toast.error(
@@ -1180,7 +1189,7 @@ function Acompanhamento({
   }
 
   async function reenviar(conviteId: string) {
-    setOcupado(conviteId);
+    setOcupado({ id: conviteId, acao: "reenviar" });
     try {
       const r = await enviarCotacaoAction({
         quotationId: cotacao.id,
@@ -1227,32 +1236,40 @@ function Acompanhamento({
                 <button
                   type="button"
                   onClick={() => copiarLink(c.id)}
-                  disabled={ocupado === c.id || c.status === "PENDENTE"}
+                  disabled={ocupado !== null || c.status === "PENDENTE"}
                   className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
                 >
-                  {copiado === c.id ? (
+                  {rodando(c.id, "link") ? (
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  ) : copiou(c.id, "link") ? (
                     <Check className="size-3.5" aria-hidden />
                   ) : (
                     <LinkIcon className="size-3.5" aria-hidden />
                   )}
-                  {copiado === c.id ? "Copiado" : "Copiar link"}
+                  {copiou(c.id, "link") ? "Copiado" : "Copiar link"}
                 </button>
                 <button
                   type="button"
                   onClick={() => copiarMensagem(c.id)}
-                  disabled={ocupado === c.id || c.status === "PENDENTE"}
+                  disabled={ocupado !== null || c.status === "PENDENTE"}
                   className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
                 >
-                  <Copy className="size-3.5" aria-hidden />
-                  Copiar mensagem
+                  {rodando(c.id, "mensagem") ? (
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  ) : copiou(c.id, "mensagem") ? (
+                    <Check className="size-3.5" aria-hidden />
+                  ) : (
+                    <Copy className="size-3.5" aria-hidden />
+                  )}
+                  {copiou(c.id, "mensagem") ? "Copiada" : "Copiar mensagem"}
                 </button>
                 <button
                   type="button"
                   onClick={() => reenviar(c.id)}
-                  disabled={ocupado === c.id}
+                  disabled={ocupado !== null}
                   className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
                 >
-                  {ocupado === c.id ? (
+                  {rodando(c.id, "reenviar") ? (
                     <Loader2 className="size-3.5 animate-spin" aria-hidden />
                   ) : (
                     <RotateCcw className="size-3.5" aria-hidden />
@@ -1337,6 +1354,11 @@ function EnviosSheetMobile({
           <li key={e.conviteId}>
             <Card className="space-y-2 p-3">
               <p className="truncate text-sm font-medium text-ink">{e.fornecedor}</p>
+              {/* Quem recebeu, e não só onde: no celular é o dado que o
+                  comprador confere antes de apertar "WhatsApp". */}
+              {e.contato && (
+                <p className="-mt-1 truncate text-[12px] text-muted">para {e.contato.nome}</p>
+              )}
 
               {e.email.estado !== "nao-pedido" && (
                 <p

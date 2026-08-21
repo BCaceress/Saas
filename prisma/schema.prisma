@@ -862,9 +862,43 @@ model Supplier {
   priceHistory SupplierPriceHistory[]
   cartItems    SupplierCartItem[]
   quotations   QuotationSupplier[]
+  contacts     SupplierContact[]
 
   @@unique([tenantId, cnpj])
   @@index([tenantId])
+}
+
+/// Pessoa de contato dentro do fornecedor — o vendedor, o representante, o
+/// supervisor. O fornecedor é a EMPRESA; quem responde cotação é gente, e
+/// quase nunca o telefone da recepção. Por isso a cotação sai para um contato,
+/// não para "o fornecedor".
+///
+/// `principal` é o contato que já vem escolhido no envio. Só um por
+/// fornecedor — a exclusividade é garantida na escrita (`definirPrincipal`),
+/// não por índice: Postgres só faria isso com índice parcial, que o Prisma não
+/// declara, e a regra tem que valer também no backfill.
+model SupplierContact {
+  id         String  @id @default(cuid())
+  tenantId   String
+  supplierId String
+  nome       String
+  cargo      String? // "Vendedor", "Representante", "Supervisor"
+  telefone   String? // WhatsApp
+  email      String?
+  observacao String?
+  principal  Boolean @default(false)
+  ativo      Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  supplier Supplier            @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  convites QuotationSupplier[]
+  envios   QuotationSend[]
+
+  @@index([tenantId])
+  @@index([supplierId])
+  @@index([supplierId, principal])
 }
 
 model ProductSupplier {
@@ -3116,6 +3150,13 @@ enum QuotationSupplierStatus {
 /// Quem digitou a resposta. Muda o que a Central de Respostas mostra: o que
 /// veio pelo link já está no formato certo; o que o operador transcreveu de um
 /// áudio ou de uma foto merece um segundo olhar.
+/// Por onde o convite saiu. WhatsApp é mensagem pronta que o operador dispara
+/// (não há gateway); e-mail sai do servidor.
+enum QuotationCanal {
+  WHATSAPP
+  EMAIL
+}
+
 enum QuotationResponseOrigem {
   OPERADOR // alguém da loja registrou o que o fornecedor mandou
   LINK // o fornecedor preencheu o link público
@@ -3181,6 +3222,10 @@ model QuotationSupplier {
   supplierId  String
   status      QuotationSupplierStatus @default(PENDENTE)
 
+  /// Quem recebeu (ou vai receber) a cotação neste fornecedor. Nulo = ninguém
+  /// cadastrado ainda; cai no telefone/e-mail da empresa.
+  contactId String?
+
   enviadaEm    DateTime?
   respondidaEm DateTime?
 
@@ -3198,12 +3243,46 @@ model QuotationSupplier {
 
   quotation Quotation           @relation(fields: [quotationId], references: [id], onDelete: Cascade)
   supplier  Supplier            @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  contact   SupplierContact?    @relation(fields: [contactId], references: [id], onDelete: SetNull)
   responses QuotationResponse[]
+  envios    QuotationSend[]
   link      QuotationLink?
 
   @@unique([quotationId, supplierId])
   @@index([tenantId])
   @@index([supplierId])
+  @@index([contactId])
+}
+
+/// Uma linha por disparo: quem recebeu, por onde e quando. `enviadaEm` no
+/// convite responde "já foi?"; isto responde "foi para quem, por qual canal e
+/// quantas vezes" — que é o que o operador pergunta no reenvio ("mandei pro
+/// João ou pra Maria?").
+///
+/// Os dados do contato ficam COPIADOS aqui: contato removido do cadastro não
+/// pode apagar o histórico de que ele recebeu a cotação.
+model QuotationSend {
+  id                  String  @id @default(cuid())
+  tenantId            String
+  quotationSupplierId String
+  contactId           String?
+
+  canal       QuotationCanal
+  contatoNome String? // cópia — sobrevive à exclusão do contato
+  destino     String? // número ou e-mail de fato usado
+  reenvio     Boolean        @default(false)
+  /// E-mail que voltou com erro fica registrado como tentativa falha; WhatsApp
+  /// sai como mensagem pronta e por isso conta sempre como enviado.
+  sucesso     Boolean        @default(true)
+  erro        String?
+  enviadoEm   DateTime       @default(now())
+  enviadoPor  String?
+
+  quotationSupplier QuotationSupplier @relation(fields: [quotationSupplierId], references: [id], onDelete: Cascade)
+  contact           SupplierContact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([quotationSupplierId, enviadoEm])
 }
 
 /// A resposta de um fornecedor para um item. Sem linha = não respondeu;

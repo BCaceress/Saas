@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
-import { importarXmlRecebimentoAction, vincularPedidoAction } from "../recebimento/actions";
+import { importarXmlRecebimentoAction, vincularPedidoAction } from "./recebimento/actions";
 import { PedidoReceber } from "./_recebimentos";
 import type { PedidoView } from "./_pedidos";
 
@@ -73,7 +73,7 @@ export function ReceberMercadoriaPanel({
       }
 
       fechar();
-      router.push(`/recebimento/${importada.inboundId}`);
+      router.push(`/pedidos/recebimento/${importada.inboundId}`);
     } catch (e) {
       toast.error("Não foi possível ler o arquivo", e instanceof Error ? e.message : "Tente de novo.");
     } finally {

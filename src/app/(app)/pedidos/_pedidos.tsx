@@ -101,6 +101,8 @@ export type PedidoView = {
   canceladoEm: string | null;
   operador: string | null;
   totalItems: number;
+  /** Tem NF-e vinculada (XML já importado) — decide se receber é conferir ou digitar. */
+  temNota: boolean;
   items: ItemView[];
 };
 

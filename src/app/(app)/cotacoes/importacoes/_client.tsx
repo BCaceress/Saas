@@ -226,7 +226,7 @@ export function Importacoes({
                   <tr key={imp.id} className="border-b border-line last:border-0 hover:bg-surface-2/60">
                     <td className="max-w-52 px-4 py-2.5">
                       <Link
-                        href={`/fornecedores/${imp.supplierId}/integracao`}
+                        href={`/fornecedores/${imp.supplierId}/catalogo`}
                         className="block truncate font-medium text-ink hover:text-brand hover:underline"
                       >
                         {imp.supplierNome}
