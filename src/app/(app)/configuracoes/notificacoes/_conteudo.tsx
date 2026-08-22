@@ -17,6 +17,8 @@ export async function ConteudoNotificacoes() {
       limiares={{
         inventarioAtrasoDias: tenant.inventarioAtrasoDias,
         novoSemMovDias: tenant.novoSemMovDias,
+        entradaSemDocumentoDias: tenant.entradaSemDocumentoDias,
+        saldoPendenteDias: tenant.saldoPendenteDias,
       }}
       pushHoraInicio={tenant.pushHoraInicio}
       pushHoraFim={tenant.pushHoraFim}

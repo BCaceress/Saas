@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CalendarClock, Gift, Loader2, User } from "lucide-react";
+import { CalendarClock, Gift, Loader2, PackageX, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   estadoEntrega,
@@ -68,7 +68,7 @@ export function PurchaseOrderKanban({
               setDragging(null);
             }}
             className={cn(
-              "flex w-72 shrink-0 snap-start flex-col rounded-2xl border bg-surface-2/50 transition-colors",
+              "flex w-72 shrink-0 snap-start flex-col rounded-[var(--radius-xl)] border bg-surface-2/50 transition-colors",
               ativa ? "border-brand bg-brand-soft/40" : "border-line",
               dragging && !aceita && "opacity-55",
             )}
@@ -89,7 +89,7 @@ export function PurchaseOrderKanban({
               {doStatus.length === 0 ? (
                 <div
                   className={cn(
-                    "grid flex-1 place-items-center rounded-xl border border-dashed px-3 py-6 text-center text-xs",
+                    "grid flex-1 place-items-center rounded-lg border border-dashed px-3 py-6 text-center text-xs",
                     ativa ? "border-brand text-brand" : "border-line text-faint",
                   )}
                 >
@@ -155,7 +155,7 @@ export function PurchaseOrderCard({
       role="button"
       aria-label={`Pedido ${p.numero} — ${p.supplierNome}`}
       className={cn(
-        "flex cursor-grab flex-col gap-2.5 rounded-xl border border-line bg-surface p-3 shadow-(--shadow-1) transition-all",
+        "flex cursor-grab flex-col gap-2.5 rounded-lg border border-line bg-surface p-3 shadow-(--shadow-1) transition-all",
         "hover:border-line-strong hover:shadow-(--shadow-2)",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)",
         arrastando && "opacity-40",
@@ -165,8 +165,15 @@ export function PurchaseOrderCard({
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5">
           <span className="font-mono text-xs font-semibold text-ink">{p.numero}</span>
-          {p.items.some((i) => i.tipo !== "COMPRA") && (
+          {p.temBonificacao && (
             <Gift size={11} className="shrink-0 text-violet" aria-label="Tem bonificação" />
+          )}
+          {p.saldoPendente && (
+            <PackageX
+              size={11}
+              className="shrink-0 text-accent"
+              aria-label="Saldo sem decisão"
+            />
           )}
         </span>
         {movendo && <Loader2 size={13} className="animate-spin text-brand" />}
@@ -181,7 +188,15 @@ export function PurchaseOrderCard({
         <span className="tabular-nums text-muted">
           {p.totalItems} {p.totalItems === 1 ? "produto" : "produtos"}
         </span>
-        <span className="font-semibold tabular-nums text-ink">{fmtMoney(p.valorTotal)}</span>
+        <span className="text-right">
+          <span className="block font-semibold tabular-nums text-ink">{fmtMoney(p.valorTotal)}</span>
+          {/* Em parcial o total já não é o número que importa. */}
+          {aberto && p.valorSaldo > 0 && p.valorSaldo < p.valorTotal - 0.005 && (
+            <span className="block text-[11px] tabular-nums text-accent">
+              falta {fmtMoney(p.valorSaldo)}
+            </span>
+          )}
+        </span>
       </div>
 
       {(prazo || p.previsaoEntrega) && (

@@ -105,8 +105,15 @@ export function NotificacoesClient({
   // o refresh do servidor deixaria a barra de ação pendurada na tela.
   const [base, setBase] = useState(inicial);
   const [ligados, setLigados] = useState(inicial.ligados);
-  const [inventario, setInventario] = useState(String(limiares.inventarioAtrasoDias));
-  const [novo, setNovo] = useState(String(limiares.novoSemMovDias));
+  // Indexado pela chave em vez de um useState por limiar: cada limiar novo no
+  // catálogo custava mais um estado, mais um ramo de `dirty` e mais um if em
+  // `valorLimiar` — três lugares para esquecer de mexer.
+  const [textoLimiar, setTextoLimiar] = useState<Record<ChaveLimiar, string>>(
+    () =>
+      Object.fromEntries(
+        (Object.keys(LIMIARES) as ChaveLimiar[]).map((k) => [k, String(limiares[k])]),
+      ) as Record<ChaveLimiar, string>,
+  );
   const [inicio, setInicio] = useState(pushHoraInicio);
   const [fim, setFim] = useState(pushHoraFim);
   const [salvoAgora, setSalvoAgora] = useState(false);
@@ -117,8 +124,9 @@ export function NotificacoesClient({
   const dirty =
     inicio !== base.inicio ||
     fim !== base.fim ||
-    Number(inventario) !== base.limiares.inventarioAtrasoDias ||
-    Number(novo) !== base.limiares.novoSemMovDias ||
+    (Object.keys(LIMIARES) as ChaveLimiar[]).some(
+      (k) => Number(textoLimiar[k]) !== base.limiares[k],
+    ) ||
     Object.keys(ligados).some((k) => ligados[k as AlertKind] !== base.ligados[k as AlertKind]);
 
   // O selo "salvo" é confirmação, não estado — some sozinho.
@@ -142,10 +150,12 @@ export function NotificacoesClient({
 
   function salvar() {
     if (janelaInvalida) return;
-    const limiaresSalvos: Limiares = {
-      inventarioAtrasoDias: dentro(inventario, LIMIARES.inventarioAtrasoDias, base.limiares.inventarioAtrasoDias),
-      novoSemMovDias: dentro(novo, LIMIARES.novoSemMovDias, base.limiares.novoSemMovDias),
-    };
+    const limiaresSalvos = Object.fromEntries(
+      (Object.keys(LIMIARES) as ChaveLimiar[]).map((k) => [
+        k,
+        dentro(textoLimiar[k], LIMIARES[k], base.limiares[k]),
+      ]),
+    ) as Limiares;
     // Manda a preferência de TODOS os tipos, inclusive os que a estratégia
     // atual esconde: quem troca de estratégia e volta encontra as escolhas de
     // antes, não os padrões de fábrica.
@@ -163,8 +173,11 @@ export function NotificacoesClient({
           pushHoraInicio: inicio,
           pushHoraFim: fim,
         });
-        setInventario(String(limiaresSalvos.inventarioAtrasoDias));
-        setNovo(String(limiaresSalvos.novoSemMovDias));
+        setTextoLimiar(
+          Object.fromEntries(
+            (Object.keys(LIMIARES) as ChaveLimiar[]).map((k) => [k, String(limiaresSalvos[k])]),
+          ) as Record<ChaveLimiar, string>,
+        );
         setBase({ ligados, limiares: limiaresSalvos, inicio, fim });
         setSalvoAgora(true);
         toast.success("Preferências de alerta salvas.");
@@ -175,10 +188,9 @@ export function NotificacoesClient({
     });
   }
 
-  const valorLimiar = (chave: ChaveLimiar) =>
-    chave === "inventarioAtrasoDias" ? inventario : novo;
-  const setLimiar = (chave: ChaveLimiar) =>
-    chave === "inventarioAtrasoDias" ? setInventario : setNovo;
+  const valorLimiar = (chave: ChaveLimiar) => textoLimiar[chave];
+  const setLimiar = (chave: ChaveLimiar) => (v: string) =>
+    setTextoLimiar((prev) => ({ ...prev, [chave]: v }));
 
   return (
     <div className="flex flex-col gap-4 pb-2">

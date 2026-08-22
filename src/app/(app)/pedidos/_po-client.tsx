@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Kanban, List, PackageCheck, Plus, ShoppingBag, Truck, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -17,17 +17,18 @@ import { PedidoFormSheetLazy, useFormOptions } from "./_form-options";
 import { TransferReceber, type Transfer } from "./_recebimentos";
 import { ReceberMercadoriaPanel } from "./_receber-mercadoria";
 import { useAbrirNovoPedido } from "./_novo-pedido";
+import { PurchaseOrderFilters } from "./_po-filters";
 import {
-  aplicarFiltros,
   escondendoConcluidos,
   filtrosAtivos,
-  PurchaseOrderFilters,
+  urlDosFiltros,
   PO_FILTROS_VAZIO,
   type PoFiltros,
-} from "./_po-filters";
+} from "./_query";
 import { PurchaseOrderList, type PoAcoes } from "./_po-list";
 import { PurchaseOrderKanban } from "./_po-kanban";
 import { PurchaseOrderSummary } from "./_po-summary";
+import type { ResumoPedidos } from "../estoque/_data";
 import { relDia, transicaoDrag } from "../cotacoes/_ui";
 
 // ── Raiz do módulo Pedidos de Compra ───────────────────────────
@@ -42,28 +43,37 @@ export const PO_VIEW_COOKIE = "nohub-compras-view";
 
 export function PurchaseOrdersClient({
   pedidos,
+  total,
+  porPagina,
+  filtros,
+  fornecedores,
+  resumo,
   transferencias,
   empresa,
   initialView,
-  initialQuery,
 }: {
+  /** Já é a FATIA da página — filtrar e ordenar aconteceu no banco. */
   pedidos: PedidoView[];
+  total: number;
+  porPagina: number;
+  filtros: PoFiltros;
+  fornecedores: { id: string; nome: string }[];
+  resumo: ResumoPedidos;
   transferencias: Transfer[];
   empresa: string;
   initialView: PoView;
-  initialQuery?: string;
 }) {
   const router = useRouter();
   const { options, garantir: garantirFormOptions } = useFormOptions();
   const [view, setView] = useState<PoView>(initialView);
-  // A tela abre em "Em aberto" (PO_FILTROS_VAZIO) — quem chega em Pedidos veio
-  // cuidar do que está em andamento. Exceção: chegou com busca na URL, e aí a
-  // pessoa procura UM pedido específico, que pode muito bem estar concluído —
-  // esconder o que ela veio buscar seria a tela mentindo.
-  const [filtros, setFiltros] = useState<PoFiltros>(() => {
-    const q = initialQuery?.trim() ?? "";
-    return q ? { ...PO_FILTROS_VAZIO, q, status: "", periodo: "" } : { ...PO_FILTROS_VAZIO };
-  });
+  const [navegando, iniciarNavegacao] = useTransition();
+
+  // O recorte mora na URL: o servidor precisa lê-lo para consultar o banco, e
+  // de quebra o filtro fica compartilhável e sobrevive ao F5.
+  const irPara = (f: PoFiltros) =>
+    iniciarNavegacao(() => router.push(`/pedidos${urlDosFiltros(f)}`, { scroll: false }));
+
+  const totalPaginas = Math.max(1, Math.ceil(total / porPagina));
 
   // Sobreposições
   const [detalhe, setDetalhe] = useState<PedidoView | null>(null);
@@ -96,15 +106,11 @@ export function PurchaseOrdersClient({
   function trocarView(v: PoView) {
     setView(v);
     document.cookie = `${PO_VIEW_COOKIE}=${v}; path=/; max-age=31536000; samesite=lax`;
+    // O modo decide QUANTO buscar (a lista pagina de 25, o quadro leva um teto
+    // alto), então trocar de visualização precisa voltar ao servidor — senão o
+    // Kanban desenharia colunas com a fatia de uma página.
+    iniciarNavegacao(() => router.refresh());
   }
-
-  const fornecedores = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const p of pedidos) map.set(p.supplierId, p.supplierNome);
-    return [...map.entries()].map(([id, nome]) => ({ id, nome })).sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
-  }, [pedidos]);
-
-  const filtrados = useMemo(() => aplicarFiltros(pedidos, filtros), [pedidos, filtros]);
 
   // ── Drag-and-drop: regras de negócio ──
   async function moverPedido(p: PedidoView, para: string) {
@@ -168,18 +174,22 @@ export function PurchaseOrdersClient({
   };
 
   const temFiltro = filtrosAtivos(filtros);
-  const vazio = filtrados.length === 0;
+  const vazio = pedidos.length === 0;
 
   return (
     <div className="flex flex-col gap-4">
-      <PurchaseOrderSummary pedidos={pedidos} />
+      <PurchaseOrderSummary resumo={resumo} />
 
       {/* Transferências CD→loja aguardando conferência — recebimento também mora aqui */}
       {transferencias.length > 0 && (
         <div className="flex flex-col gap-2">
           {transferencias.map((t) => (
-            <div key={t.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-line bg-surface px-4 py-2.5">
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400">
+            <div key={t.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-line bg-surface px-4 py-2.5">
+              {/* Token, não azul do Tailwind: era a única cor hardcoded do
+                  módulo e no dark mode ficava com temperatura errada ao lado
+                  do brand. Transferência é movimento interno — violeta, a mesma
+                  cor que a bonificação usa para dizer "não é compra". */}
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-sm bg-violet-soft text-violet">
                 <Truck size={15} />
               </span>
               <div className="min-w-0 flex-1">
@@ -204,8 +214,13 @@ export function PurchaseOrdersClient({
       {/* Toolbar: filtros à esquerda, alternador de visualização à direita —
           ambos valem para lista e kanban. */}
       <div className="flex flex-wrap items-center gap-2">
-        <PurchaseOrderFilters filtros={filtros} onChange={setFiltros} fornecedores={fornecedores} />
-        <div className="ml-auto hidden shrink-0 items-center rounded-lg border border-line bg-surface p-0.5 md:flex" role="tablist" aria-label="Modo de visualização">
+        <PurchaseOrderFilters
+          filtros={filtros}
+          onChange={irPara}
+          fornecedores={fornecedores}
+          pendente={navegando}
+        />
+        <div className="ml-auto hidden shrink-0 items-center rounded-sm border border-line bg-surface p-0.5 md:flex" role="tablist" aria-label="Modo de visualização">
           <ViewBtn ativo={view === "lista"} onClick={() => trocarView("lista")} icon={List} label="Lista" />
           <ViewBtn ativo={view === "kanban"} onClick={() => trocarView("kanban")} icon={Kanban} label="Kanban" />
         </div>
@@ -216,22 +231,37 @@ export function PurchaseOrdersClient({
         <EmptyState
           comFiltro={temFiltro}
           escondendoConcluidos={escondendoConcluidos(filtros)}
-          onLimpar={() => setFiltros({ ...PO_FILTROS_VAZIO, status: "", periodo: "" })}
+          onLimpar={() => irPara({ ...PO_FILTROS_VAZIO, status: "", periodo: "" })}
           onCriar={abrirNovoPedido}
         />
       ) : (
         <>
           {/* Mobile: sempre lista vertical */}
           <div className="md:hidden">
-            <PurchaseOrderList pedidos={filtrados} acoes={acoes} statusPendingId={statusPendingId} compacta />
+            <PurchaseOrderList
+              pedidos={pedidos}
+              acoes={acoes}
+              statusPendingId={statusPendingId}
+              pagina={filtros.pagina}
+              totalPaginas={totalPaginas}
+              onPagina={(pagina) => irPara({ ...filtros, pagina })}
+              compacta
+            />
           </div>
           {/* Desktop: modo escolhido */}
           <div className="hidden md:block">
             {view === "lista" ? (
-              <PurchaseOrderList pedidos={filtrados} acoes={acoes} statusPendingId={statusPendingId} />
+              <PurchaseOrderList
+                pedidos={pedidos}
+                acoes={acoes}
+                statusPendingId={statusPendingId}
+                pagina={filtros.pagina}
+                totalPaginas={totalPaginas}
+                onPagina={(pagina) => irPara({ ...filtros, pagina })}
+              />
             ) : (
               <PurchaseOrderKanban
-                pedidos={filtrados}
+                pedidos={pedidos}
                 onAbrir={acoes.onVer}
                 onMover={moverPedido}
                 movendoId={movendoId}
@@ -322,7 +352,7 @@ function EmptyState({
   onCriar: () => void;
 }) {
   return (
-    <div className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-surface px-6 py-16 text-center">
+    <div className="flex flex-col items-center gap-3 rounded-lg border border-line bg-surface px-6 py-16 text-center">
       <span className="grid h-16 w-16 place-items-center rounded-full bg-brand-soft text-brand">
         <ShoppingBag size={28} strokeWidth={1.7} />
       </span>

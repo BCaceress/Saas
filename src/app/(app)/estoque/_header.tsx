@@ -12,6 +12,9 @@ import {
   Loader2,
   ArrowRightLeft,
   ShoppingBag,
+  FlaskConical,
+  Repeat,
+  Undo2,
 } from "lucide-react";
 import { useState, useTransition, useEffect } from "react";
 import {
@@ -99,31 +102,54 @@ const CORE_TABS: { href: string; label: string }[] = [];
 const ENTRADA_ICON: Record<Motivo, React.ElementType> = {
   COMPRA_SEM_PEDIDO: PackagePlus,
   BONIFICACAO: Gift,
+  BRINDE: Gift,
+  AMOSTRA: FlaskConical,
+  TROCA: Repeat,
   ESTOQUE_INICIAL: PackageCheck,
 };
 
 const ENTRADA_DESC: Record<Motivo, string> = {
-  COMPRA_SEM_PEDIDO: "Registrar produtos diretamente no estoque sem um pedido de compra.",
+  COMPRA_SEM_PEDIDO: "Mercadoria comprada que chegou sem pedido — vira documento e conta a pagar.",
   BONIFICACAO: "Registrar produtos recebidos sem custo.",
+  BRINDE: "Cortesia do fornecedor, fora da negociação de compra.",
+  AMOSTRA: "Degustação ou teste enviado pelo fornecedor.",
+  TROCA: "Reposição do que o fornecedor trocou.",
   ESTOQUE_INICIAL: "Informar os saldos existentes na implantação.",
 };
 
 export const ENTRADA_SHEET_META: Record<Motivo, { title: string; description: string }> = {
-  COMPRA_SEM_PEDIDO: { title: "Nova entrada manual", description: "Adicione produtos diretamente ao estoque." },
+  COMPRA_SEM_PEDIDO: { title: "Nova entrada manual", description: "Mercadoria comprada que chegou sem pedido no sistema." },
   BONIFICACAO: { title: "Nova bonificação", description: "Registre produtos recebidos sem custo." },
+  BRINDE: { title: "Entrada de brinde", description: "Cortesia do fornecedor — entra no saldo sem custo." },
+  AMOSTRA: { title: "Entrada de amostra", description: "Degustação ou teste enviado pelo fornecedor." },
+  TROCA: { title: "Entrada por troca", description: "Reposição do que o fornecedor trocou." },
   ESTOQUE_INICIAL: { title: "Definir estoque inicial", description: "Informe as quantidades existentes antes de iniciar o controle pelo sistema." },
 };
 
-// Bonificação de estoque nasce vinculada a um pedido de compra (aba
-// Pedidos → recebimento/bonificação) — não faz sentido como entrada avulsa.
-// Estoque inicial é opção só da implantação — não aparece no menu do dia a dia.
-const ENTRADA_ACOES: { id: EntradaPanelId; label: string; desc: string; icon: React.ElementType }[] =
-  MOTIVO_OPTIONS.filter((m) => m.value !== "BONIFICACAO" && m.value !== "ESTOQUE_INICIAL").map((m) => ({
-    id: `entrada:${m.value}` as EntradaPanelId,
-    label: m.label,
-    desc: ENTRADA_DESC[m.value],
-    icon: ENTRADA_ICON[m.value],
-  }));
+// Duas famílias, e a diferença importa: COMPRA_SEM_PEDIDO é mercadoria que
+// alguém vai cobrar (nasce com pedido e título a pagar); brinde, amostra e
+// troca entram no saldo sem dívida nenhuma. Estavam no mesmo botão, e era isso
+// que fazia cortesia virar custo.
+//
+// Bonificação avulsa continua fora: nasce vinculada a um pedido (aba Pedidos →
+// recebimento/bonificação). Estoque inicial é só da implantação.
+type EntradaAcao = { id: EntradaPanelId; label: string; desc: string; icon: React.ElementType };
+
+const acaoDe = (m: { value: Motivo; label: string }): EntradaAcao => ({
+  id: `entrada:${m.value}` as EntradaPanelId,
+  label: m.label,
+  desc: ENTRADA_DESC[m.value],
+  icon: ENTRADA_ICON[m.value],
+});
+
+const ENTRADA_COMPRA: EntradaAcao[] = MOTIVO_OPTIONS.filter(
+  (m) => m.value === "COMPRA_SEM_PEDIDO",
+).map(acaoDe);
+
+const ENTRADA_SEM_CUSTO: EntradaAcao[] = MOTIVO_OPTIONS.filter(
+  (m) => m.value === "BRINDE" || m.value === "AMOSTRA" || m.value === "TROCA",
+).map(acaoDe);
+
 
 function PedidoPanel({ onClose, empresa }: { onClose: () => void; empresa: string }) {
   const router = useRouter();
@@ -252,9 +278,9 @@ export function EstoqueHeader({
             }
           >
             <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
-              Entradas
+              Compra
             </p>
-            {ENTRADA_ACOES.map((a) => (
+            {ENTRADA_COMPRA.map((a) => (
               <MenuItem key={a.id} icon={<a.icon size={16} />} onClick={() => setPanel(a.id)}>
                 <span className="block text-sm font-medium text-ink">{a.label}</span>
                 <span className="block text-xs text-muted">{a.desc}</span>
@@ -263,6 +289,28 @@ export function EstoqueHeader({
             <MenuItem icon={<ShoppingBag size={16} />} onClick={() => setPanel("pedido")}>
               <span className="block text-sm font-medium text-ink">Pedido de compra</span>
               <span className="block text-xs text-muted">Criar um pedido para um fornecedor.</span>
+            </MenuItem>
+
+            <div className="my-1 h-px bg-line" />
+            <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
+              Entrada sem custo
+            </p>
+            {ENTRADA_SEM_CUSTO.map((a) => (
+              <MenuItem key={a.id} icon={<a.icon size={16} />} onClick={() => setPanel(a.id)}>
+                <span className="block text-sm font-medium text-ink">{a.label}</span>
+                <span className="block text-xs text-muted">{a.desc}</span>
+              </MenuItem>
+            ))}
+
+            <div className="my-1 h-px bg-line" />
+            <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
+              Saída
+            </p>
+            <MenuItem icon={<Undo2 size={16} />} onClick={() => router.push("/estoque/devolucoes")}>
+              <span className="block text-sm font-medium text-ink">Devolver ao fornecedor</span>
+              <span className="block text-xs text-muted">
+                Mercadoria que volta — abate o que se deve ao fornecedor.
+              </span>
             </MenuItem>
 
             {multiSite && (

@@ -122,6 +122,51 @@ export default async function FinanceiroFornecedorPage({
         />
       </MetricaGrid>
 
+      {/* Exposição: quanto se deve HOJE a este parceiro, e se a loja tem
+          cumprido o prazo que negociou. Volume de compra não responde nem uma
+          coisa nem outra — e é o fornecedor quem sente a diferença. */}
+      {(f.titulosAbertos > 0 || f.titulosPagos > 0) && (
+        <MetricaGrid className="lg:grid-cols-3">
+          <Metrica
+            label="Devendo agora"
+            valor={fmtMoney(f.devendo)}
+            sub={`${f.titulosAbertos} título${f.titulosAbertos === 1 ? "" : "s"} em aberto`}
+            tom={f.devendo > 0 ? "accent" : "ink"}
+            icon={<Wallet size={12} />}
+          />
+          <Metrica
+            label="Vencido"
+            valor={fmtMoney(f.devendoVencido)}
+            sub={
+              f.titulosVencidos > 0
+                ? `${f.titulosVencidos} título${f.titulosVencidos === 1 ? "" : "s"} atrasado${f.titulosVencidos === 1 ? "" : "s"}`
+                : "nada atrasado"
+            }
+            tom={f.devendoVencido > 0 ? "accent" : "ok"}
+            icon={<Timer size={12} />}
+          />
+          <Metrica
+            label="Pagamento praticado"
+            valor={
+              f.atrasoMedioDias == null
+                ? "—"
+                : f.atrasoMedioDias > 0.5
+                  ? `${f.atrasoMedioDias} dias após`
+                  : f.atrasoMedioDias < -0.5
+                    ? `${Math.abs(f.atrasoMedioDias)} dias antes`
+                    : "no dia"
+            }
+            sub={
+              f.titulosPagos > 0
+                ? `média de ${f.titulosPagos} título${f.titulosPagos === 1 ? "" : "s"} quitado${f.titulosPagos === 1 ? "" : "s"}`
+                : "nenhum título quitado ainda"
+            }
+            tom={f.atrasoMedioDias != null && f.atrasoMedioDias > 3 ? "accent" : "ok"}
+            icon={<CreditCard size={12} />}
+          />
+        </MetricaGrid>
+      )}
+
       <section className="rounded-[var(--radius-lg)] border border-line bg-surface p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>

@@ -218,6 +218,8 @@ const notifSchema = z.object({
   /** Limiares cujo dono é esta tela (ver `LIMIARES` no catálogo). */
   inventarioAtrasoDias: z.number().int().min(1).max(60),
   novoSemMovDias: z.number().int().min(1).max(90),
+  entradaSemDocumentoDias: z.number().int().min(1).max(60),
+  saldoPendenteDias: z.number().int().min(1).max(60),
   /** Janela de silêncio do push, em hora local. */
   pushHoraInicio: z.number().int().min(0).max(23),
   pushHoraFim: z.number().int().min(1).max(24),
@@ -242,6 +244,8 @@ export async function updateNotificacoes(input: z.input<typeof notifSchema>) {
         alertasDesativados: [],
         inventarioAtrasoDias: d.inventarioAtrasoDias,
         novoSemMovDias: d.novoSemMovDias,
+        entradaSemDocumentoDias: d.entradaSemDocumentoDias,
+        saldoPendenteDias: d.saldoPendenteDias,
         pushHoraInicio: d.pushHoraInicio,
         pushHoraFim: d.pushHoraFim,
       },

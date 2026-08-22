@@ -882,6 +882,18 @@ export type PedidoCompraView = {
   totalItems: number;
   /** Tem NF-e vinculada (XML já importado) — decide se receber é conferir ou digitar. */
   temNota: boolean;
+  /** De onde o pedido nasceu — distingue compra planejada de documento retroativo. */
+  origem: string;
+  /** Alguma linha não é COMPRA (bonificação, brinde, amostra). */
+  temBonificacao: boolean;
+  /**
+   * Quanto ainda falta chegar, em dinheiro. Zero em pedido completo. É este o
+   * número do "valor em aberto" — `valorTotal` de um parcial conta mercadoria
+   * que já está na prateleira.
+   */
+  valorSaldo: number;
+  /** Parcial cuja pendência ninguém resolveu ainda. */
+  saldoPendente: boolean;
   items: PedidoCompraItemView[];
 };
 
@@ -899,17 +911,122 @@ export type PedidosCompraFiltro = {
   status?: string[];
   siteId?: string | null;
   take?: number;
+  /** Busca por número, fornecedor, loja ou produto — resolvida no banco. */
+  q?: string | null;
+  supplierId?: string | null;
+  /** Dias desde a criação. null/0 = todo período. */
+  periodoDias?: number | null;
+  /** Só parciais com saldo sem decisão. */
+  saldoPendente?: boolean;
+  ordem?: "recentes" | "entrega" | "valor-desc" | "valor-asc" | "numero";
+  skip?: number;
+};
+
+/**
+ * WHERE compartilhado entre a listagem e a contagem — um só lugar para errar.
+ *
+ * `productIds` vem resolvido de fora porque a busca por produto exige uma
+ * consulta ao catálogo antes; deixar isso aqui dentro tornaria a função async e
+ * a contagem passaria a repetir a mesma busca.
+ */
+function wherePedidos(f: PedidosCompraFiltro, productIds: string[]) {
+  const termo = f.q?.trim();
+  const corte =
+    f.periodoDias && f.periodoDias > 0
+      ? new Date(Date.now() - f.periodoDias * 864e5)
+      : null;
+
+  // `saldoPendente` manda no status: pedir "só os com saldo em aberto" e o
+  // status "Enviado" ao mesmo tempo é contraditório, e o recorte mais
+  // específico é o que a pessoa acabou de clicar.
+  const status = f.saldoPendente
+    ? { status: "RECEBIDO_PARCIAL" as never, saldoResolucao: "PENDENTE" as never }
+    : f.status
+      ? { status: { in: f.status as never } }
+      : {};
+
+  return {
+    ...(f.id ? { id: f.id } : {}),
+    ...status,
+    ...(f.siteId ? { siteId: f.siteId } : {}),
+    ...(f.supplierId ? { supplierId: f.supplierId } : {}),
+    ...(corte ? { createdAt: { gte: corte } } : {}),
+    // A busca varre o que o operador enxerga na linha (número, fornecedor,
+    // loja) e também o CONTEÚDO do pedido — quem digita "heineken" quer o
+    // pedido que tem heineken dentro, não só o fornecedor com esse nome.
+    ...(termo
+      ? {
+          OR: [
+            { numero: { contains: termo, mode: "insensitive" as const } },
+            { observacao: { contains: termo, mode: "insensitive" as const } },
+            { supplier: { razaoSocial: { contains: termo, mode: "insensitive" as const } } },
+            { supplier: { nomeFantasia: { contains: termo, mode: "insensitive" as const } } },
+            { site: { nome: { contains: termo, mode: "insensitive" as const } } },
+            ...(productIds.length > 0
+              ? [{ items: { some: { productId: { in: productIds } } } }]
+              : []),
+          ],
+        }
+      : {}),
+  };
+}
+
+/** Produtos cujo nome/SKU casa com o termo — alimenta a busca por conteúdo. */
+async function produtosDoTermo(termo: string | null | undefined): Promise<string[]> {
+  const t = termo?.trim();
+  if (!t || t.length < 2) return [];
+  const achados = await db.product.findMany({
+    where: {
+      OR: [
+        { nome: { contains: t, mode: "insensitive" } },
+        { sku: { contains: t, mode: "insensitive" } },
+        { ean: { contains: t } },
+      ],
+    },
+    select: { id: true },
+    // Teto: termo genérico ("cerveja") casaria com o catálogo inteiro e o IN
+    // viraria uma lista de milhares de ids dentro do WHERE.
+    take: 200,
+  });
+  return achados.map((p) => p.id);
+}
+
+const ORDEM_PEDIDOS: Record<
+  NonNullable<PedidosCompraFiltro["ordem"]>,
+  Record<string, "asc" | "desc">
+> = {
+  recentes: { updatedAt: "desc" },
+  // Nulos por último: pedido sem previsão não é "o mais urgente do mundo".
+  entrega: { previsaoEntrega: "asc" },
+  "valor-desc": { valorTotal: "desc" },
+  "valor-asc": { valorTotal: "asc" },
+  numero: { numero: "desc" },
 };
 
 export async function loadPedidosCompra(
   filtro: PedidosCompraFiltro = {},
 ): Promise<PedidoCompraView[]> {
-  const pedidos = await db.purchaseOrder.findMany({
-    where: {
-      ...(filtro.id ? { id: filtro.id } : {}),
-      ...(filtro.status ? { status: { in: filtro.status as never } } : {}),
-      ...(filtro.siteId ? { siteId: filtro.siteId } : {}),
-    },
+  return (await loadPedidosCompraPagina(filtro)).rows;
+}
+
+/**
+ * Listagem de pedidos com filtro, ordenação e paginação NO BANCO.
+ *
+ * Antes a tela trazia os cem últimos com todos os itens e filtrava no
+ * navegador: quem tinha trezentos pedidos nunca via o centésimo primeiro, nem
+ * pela busca — porque a busca rodava sobre o array já cortado. A tela não
+ * errava, só escondia, que é o pior tipo de erro.
+ */
+export async function loadPedidosCompraPagina(
+  filtro: PedidosCompraFiltro = {},
+): Promise<{ rows: PedidoCompraView[]; total: number }> {
+  const idsDaBusca = await produtosDoTermo(filtro.q);
+  const where = wherePedidos(filtro, idsDaBusca);
+
+  const [total, pedidos] = await Promise.all([
+    db.purchaseOrder.count({ where }),
+    db.purchaseOrder.findMany({
+    where,
     include: {
       supplier: { select: { razaoSocial: true, nomeFantasia: true, telefone: true, email: true, logoUrl: true } },
       site: { select: { nome: true } },
@@ -917,9 +1034,11 @@ export async function loadPedidosCompra(
       // Só o booleano interessa à lista — contar é mais barato que hidratar a nota.
       _count: { select: { inbounds: true } },
     },
-    orderBy: { createdAt: "desc" },
+    orderBy: ORDEM_PEDIDOS[filtro.ordem ?? "recentes"],
+    skip: filtro.skip ?? 0,
     take: filtro.take ?? 100,
-  });
+    }),
+  ]);
 
   const productIds = [...new Set(pedidos.flatMap((p) => p.items.map((i) => i.productId)))];
   const packagingIds = [...new Set(pedidos.flatMap((p) => p.items.flatMap((i) => (i.packagingId ? [i.packagingId] : []))))];
@@ -938,7 +1057,7 @@ export async function loadPedidosCompra(
   const pkgMap = new Map(packagings.map((pk) => [pk.id, { nome: pk.nome, fator: n(pk.fatorConversao) || 1 }]));
   const userMap = new Map(users.map((u) => [u.id, u.name ?? u.email ?? null]));
 
-  return pedidos.map((p) => ({
+  const rows = pedidos.map((p) => ({
     id: p.id,
     numero: p.numero,
     status: p.status,
@@ -963,6 +1082,18 @@ export async function loadPedidosCompra(
     operador: p.createdBy ? (userMap.get(p.createdBy) ?? null) : null,
     totalItems: p.items.length,
     temNota: p._count.inbounds > 0,
+    origem: p.origem,
+    temBonificacao: p.items.some((i) => i.tipo !== "COMPRA"),
+    // Saldo em dinheiro do que ainda não chegou. Bonificação não entra: ela
+    // nunca teve custo, e somá-la aqui inflaria o "valor em aberto".
+    valorSaldo: p.items.reduce(
+      (a, i) =>
+        i.tipo === "COMPRA"
+          ? a + Math.max(0, n(i.qtdPedida) - n(i.qtdRecebida)) * n(i.custoUnitario)
+          : a,
+      0,
+    ),
+    saldoPendente: p.status === "RECEBIDO_PARCIAL" && p.saldoResolucao === "PENDENTE",
     items: p.items.map((i) => {
       const pkg = i.packagingId ? (pkgMap.get(i.packagingId) ?? null) : null;
       return {
@@ -983,10 +1114,101 @@ export async function loadPedidosCompra(
       };
     }),
   }));
+
+  return { rows, total };
 }
 
 /** Status em que um pedido ainda espera mercadoria na porta. */
 const STATUS_A_RECEBER = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"];
+
+export type ResumoPedidos = {
+  ativos: number;
+  aguardandoRecebimento: number;
+  /** Dinheiro do que AINDA NÃO CHEGOU — não o valor dos pedidos abertos. */
+  valorSaldo: number;
+  entregaHoje: number;
+  atrasados: number;
+  /** Parciais sem decisão sobre o saldo. */
+  saldoPendente: number;
+};
+
+/**
+ * Os números do topo de /pedidos. Do TENANT, não da página: cinco totais que
+ * mudam a cada filtro não são resumo, são ruído — o operador leria "3
+ * atrasados" achando que são todos.
+ *
+ * `valorSaldo` conserta um número que mentia: somava `valorTotal` de todo
+ * pedido a receber, inclusive parcial cuja mercadoria já está na prateleira.
+ * O certo é o que falta chegar.
+ */
+export async function loadResumoPedidos(): Promise<ResumoPedidos> {
+  const [abertos, aReceber] = await Promise.all([
+    db.purchaseOrder.count({
+      where: { status: { in: ["RASCUNHO", ...STATUS_A_RECEBER] as never } },
+    }),
+    db.purchaseOrder.findMany({
+      where: { status: { in: STATUS_A_RECEBER as never } },
+      select: {
+        status: true,
+        previsaoEntrega: true,
+        saldoResolucao: true,
+        items: { select: { tipo: true, qtdPedida: true, qtdRecebida: true, custoUnitario: true } },
+      },
+    }),
+  ]);
+
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const amanha = new Date(hoje.getTime() + 864e5);
+
+  let valorSaldo = 0;
+  let entregaHoje = 0;
+  let atrasados = 0;
+  let saldoPendente = 0;
+
+  for (const p of aReceber) {
+    valorSaldo += p.items.reduce(
+      (a, i) =>
+        i.tipo === "COMPRA"
+          ? a + Math.max(0, n(i.qtdPedida) - n(i.qtdRecebida)) * n(i.custoUnitario)
+          : a,
+      0,
+    );
+    if (p.previsaoEntrega) {
+      if (p.previsaoEntrega < hoje) atrasados += 1;
+      else if (p.previsaoEntrega < amanha) entregaHoje += 1;
+    }
+    if (p.status === "RECEBIDO_PARCIAL" && p.saldoResolucao === "PENDENTE") saldoPendente += 1;
+  }
+
+  return {
+    ativos: abertos,
+    aguardandoRecebimento: aReceber.length,
+    valorSaldo: Math.round(valorSaldo * 100) / 100,
+    entregaHoje,
+    atrasados,
+    saldoPendente,
+  };
+}
+
+/**
+ * Fornecedores que aparecem no filtro. Vem do banco porque a lista da página
+ * agora é uma fatia: derivar do array visível faria o filtro perder opções
+ * conforme a pessoa navega — e sumir justamente o fornecedor procurado.
+ */
+export async function loadFornecedoresComPedido(): Promise<{ id: string; nome: string }[]> {
+  const ids = await db.purchaseOrder.findMany({
+    select: { supplierId: true },
+    distinct: ["supplierId"],
+  });
+  if (ids.length === 0) return [];
+  const fornecedores = await db.supplier.findMany({
+    where: { id: { in: ids.map((i) => i.supplierId) } },
+    select: { id: true, razaoSocial: true, nomeFantasia: true },
+    orderBy: { razaoSocial: "asc" },
+  });
+  return fornecedores.map((s) => ({ id: s.id, nome: s.nomeFantasia || s.razaoSocial }));
+}
 
 /** Pedidos abertos para conferência/recebimento, opcionalmente do site ativo. */
 export async function loadPedidosAReceber(siteId: string | null): Promise<PedidoCompraView[]> {
@@ -1151,7 +1373,7 @@ export async function loadComprasFormOptions() {
 
 export async function loadEntradaFormOptions() {
   // Select enxuto: só os campos que o NovaEntradaForm consome.
-  const [products, sites] = await Promise.all([
+  const [products, sites, suppliers] = await Promise.all([
     db.product.findMany({
       where: { ativo: true, tipo: { in: ["SIMPLES", "INSUMO"] } },
       select: {
@@ -1170,9 +1392,16 @@ export async function loadEntradaFormOptions() {
       orderBy: { nome: "asc" },
       select: { id: true, nome: true, tipo: true },
     }),
+    // Quem entregou. É o que transforma um ajuste de saldo em COMPRA: sem
+    // fornecedor não há pedido retroativo, nem título a pagar, nem histórico.
+    db.supplier.findMany({
+      where: { ativo: true },
+      orderBy: { razaoSocial: "asc" },
+      select: { id: true, razaoSocial: true, nomeFantasia: true, prazoPagamentoDias: true },
+    }),
   ]);
 
-  return { products, sites };
+  return { products, sites, suppliers };
 }
 
 // A reposição (sugestão de quanto comprar) vive só em

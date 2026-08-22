@@ -10,11 +10,13 @@ import {
   usaCsosn,
 } from "./index";
 import type {
+  DestinatarioFiscal,
   DocumentoParaEmitir,
   ItemFiscal,
   PagamentoFiscal,
   ResultadoFiscal,
 } from "./types";
+import { registrarChaveDevolucao } from "./devolucao-nfe";
 import type { FiscalStatus, PaymentMethod, Prisma } from "@/generated/prisma";
 
 // ============================================================
@@ -340,6 +342,8 @@ async function montarDocumento(
         idempotencyKey: true,
         status: true,
         saleId: true,
+        supplierId: true,
+        chaveReferenciada: true,
         destNome: true,
         destDocumento: true,
         valorProdutos: true,
@@ -372,6 +376,68 @@ async function montarDocumento(
         }),
       )
     : [];
+
+  // Devolução sai para o FORNECEDOR: contribuinte, com endereço e IE. Sem isso
+  // a NF-e de saída é rejeitada — e o cadastro já tem tudo (veio do XML dele).
+  const fornecedor = doc.supplierId
+    ? await comTenant(tenantId, (tx) =>
+        tx.supplier.findFirst({
+          where: { id: doc.supplierId as string },
+          select: {
+            cnpj: true,
+            razaoSocial: true,
+            email: true,
+            ie: true,
+            indicadorIE: true,
+            cep: true,
+            logradouro: true,
+            numero: true,
+            complemento: true,
+            bairro: true,
+            municipio: true,
+            codigoMunicipio: true,
+            uf: true,
+          },
+        }),
+      )
+    : null;
+
+  const destinatario: DestinatarioFiscal | null = fornecedor
+    ? {
+        documento: fornecedor.cnpj,
+        nome: fornecedor.razaoSocial,
+        email: fornecedor.email,
+        ie: fornecedor.ie,
+        indicadorIE:
+          fornecedor.indicadorIE === "ISENTO"
+            ? 2
+            : fornecedor.indicadorIE === "NAO_CONTRIBUINTE"
+              ? 9
+              : 1,
+        endereco:
+          fornecedor.cep && fornecedor.logradouro && fornecedor.municipio && fornecedor.uf
+            ? {
+                cep: fornecedor.cep,
+                logradouro: fornecedor.logradouro,
+                numero: fornecedor.numero ?? "S/N",
+                complemento: fornecedor.complemento,
+                bairro: fornecedor.bairro ?? "Centro",
+                municipio: fornecedor.municipio,
+                codigoMunicipio: fornecedor.codigoMunicipio ?? "",
+                uf: fornecedor.uf,
+              }
+            : null,
+      }
+    : doc.destDocumento
+      ? {
+          documento: doc.destDocumento,
+          nome: doc.destNome,
+          email: null,
+          ie: null,
+          indicadorIE: 9,
+          endereco: null,
+        }
+      : null;
 
   const itens: ItemFiscal[] = doc.items.map((i) => ({
     ordem: i.ordem,
@@ -424,16 +490,9 @@ async function montarDocumento(
       csc: decifrar(emitente.csc),
     },
     // NFC-e aceita consumidor não identificado — o caso normal no balcão.
-    destinatario: doc.destDocumento
-      ? {
-          documento: doc.destDocumento,
-          nome: doc.destNome,
-          email: null,
-          ie: null,
-          indicadorIE: 9,
-          endereco: null,
-        }
-      : null,
+    // NF-e para fornecedor (devolução) é o oposto: exige destinatário completo,
+    // com IE e endereço, ou a SEFAZ rejeita.
+    destinatario: destinatario,
     itens,
     pagamentos: pagamentos.map((p): PagamentoFiscal => {
       const ehCartao = p.metodo === "CARTAO_CREDITO" || p.metodo === "CARTAO_DEBITO";
@@ -459,6 +518,7 @@ async function montarDocumento(
     valorDesconto: num(doc.valorDesconto),
     valorTotal: num(doc.valorTotal),
     informacoesComplementares: null,
+    chaveReferenciada: doc.chaveReferenciada,
     idempotencyKey: doc.idempotencyKey,
     contingencia: doc.status === "CONTINGENCIA",
   };
@@ -503,6 +563,9 @@ async function aplicarResultado(
       protocolo: r.protocolo,
       payload: r.payload,
     });
+    // Devolução: só agora a chave é fato. Carimbar antes seria promessa, e a
+    // tela mostraria uma chave que a SEFAZ ainda podia recusar.
+    await registrarChaveDevolucao(tenantId, documentId);
   } else if (recusada) {
     await registrarEvento(tenantId, {
       documentId,

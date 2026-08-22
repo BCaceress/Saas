@@ -6,6 +6,7 @@ import { assertSite, guardAction } from "@/lib/guard";
 import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { criarPedidoCompra } from "@/lib/estoque";
+import { proximoNumeroDocumento } from "@/lib/numeracao";
 import { emitirLinkCotacao, linkVigente } from "@/lib/compras/cotacao-link";
 import { registrarPrecosDaCotacao } from "@/lib/compras/cotacao-precos";
 import { regrasDaCotacao } from "@/lib/compras/cotacao-regras";
@@ -49,17 +50,12 @@ const ok = () => {
 /**
  * Próximo número sequencial COT-00001 por tenant.
  *
- * Deriva do MAIOR número existente, não da contagem: rascunho vazio é
- * descartado (ver `descartarSeVazia`), e contar linhas faria o contador andar
- * para trás e bater de frente com o unique `[tenantId, numero]`.
+ * Contador atômico no banco (ver `lib/numeracao`), e não contagem nem "maior
+ * existente": as duas formas leem antes de escrever, e duas cotações criadas no
+ * mesmo segundo recebiam o mesmo número — batendo no unique `[tenantId, numero]`.
  */
-async function proximoNumero(): Promise<string> {
-  const ultima = await db.quotation.findFirst({
-    orderBy: { numero: "desc" },
-    select: { numero: true },
-  });
-  const anterior = Number(ultima?.numero?.replace(/\D/g, "") ?? 0);
-  return `COT-${String(anterior + 1).padStart(5, "0")}`;
+async function proximoNumero(tenantId: string): Promise<string> {
+  return proximoNumeroDocumento(tenantId, "COT");
 }
 
 /**
@@ -168,7 +164,7 @@ export async function criarCotacaoAction(input: z.input<typeof criarSchema> = {}
     if (vazias.length > 0) {
       await db.quotation.deleteMany({ where: { id: { in: vazias.map((v) => v.id) } } });
     }
-    const numero = await proximoNumero();
+    const numero = await proximoNumero(tid);
     const cotacao = await db.quotation.create({
       data: {
         tenantId: tid,
@@ -276,7 +272,7 @@ export async function duplicarCotacaoAction(id: string) {
     assertSite(ctx, "compras.pedir", origem.siteId);
 
     const tid = ctx.tenant.id;
-    const numero = await proximoNumero();
+    const numero = await proximoNumero(tid);
     const nova = await db.quotation.create({
       data: {
         tenantId: tid,
@@ -1363,6 +1359,8 @@ export async function gerarPedidosAction(input: z.input<typeof decidirSchema>) {
           supplierId: convite.supplierId,
           previsaoEntrega: previsao,
           observacao: `Gerado da compra ${cotacao.numero}`,
+          origem: "COTACAO",
+          quotationId: cotacao.id,
           items,
         },
         { enviar: d.enviar, createdBy: ctx.user.id ?? undefined },
@@ -1413,7 +1411,7 @@ export async function criarCompraDaReposicaoAction(
 ): Promise<{ id: string }> {
   const d = compraDaReposicaoSchema.parse(input);
   return txp("compras.pedir", d.siteId, async (tid, userId) => {
-    const numero = await proximoNumero();
+    const numero = await proximoNumero(tid);
     const cotacao = await db.quotation.create({
       data: {
         tenantId: tid,

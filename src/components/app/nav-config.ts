@@ -38,6 +38,8 @@ import {
   TriangleAlert,
   LineChart,
   Sparkles,
+  Undo2,
+  HandCoins,
   type LucideIcon,
 } from "lucide-react";
 import { podeEmAlguma, type Acesso, type Permissao } from "@/lib/permissoes";
@@ -246,6 +248,17 @@ export const NAV_GROUPS: NavGroup[] = [
             permissao: "estoque.transferir",
             descricao: "Pedidos de um local para outro.",
           },
+          {
+            // Fica em Estoque porque é onde a mercadoria some do saldo, mas o
+            // documento é de Compras: aponta para o pedido, a nota e o título.
+            href: "/estoque/devolucoes",
+            label: "Devoluções",
+            icon: Undo2,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "compras.devolver",
+            descricao: "Mercadoria que volta ao fornecedor — e o crédito que vem junto.",
+          },
         ],
       },
       {
@@ -363,6 +376,45 @@ export const NAV_GROUPS: NavGroup[] = [
         permissao: "fornecedor.ver",
         descricao:
           "O centro de gestão de cada parceiro: cadastro, integração, catálogo, preços e financeiro.",
+      },
+      {
+        // Financeiro nasceu dentro de Comprar (contas a pagar é consequência
+        // direta da mercadoria que entrou) e cresceu para as duas pontas do
+        // caixa. Fica aqui, e não em Gestão, porque quem compra é quem sabe se
+        // o boleto bate com a nota.
+        href: "/financeiro/fluxo-de-caixa",
+        label: "Financeiro",
+        icon: Wallet,
+        enabled: true,
+        indice: true,
+        permissao: "financeiro.ver",
+        descricao: "Contas a pagar, a receber e o caixa projetado.",
+        children: [
+          {
+            href: "/financeiro/fluxo-de-caixa",
+            label: "Fluxo de caixa",
+            icon: LineChart,
+            enabled: true,
+            permissao: "financeiro.ver",
+            descricao: "O que entra e o que sai, dia a dia, com saldo acumulado.",
+          },
+          {
+            href: "/financeiro/contas-a-pagar",
+            label: "Contas a pagar",
+            icon: Wallet,
+            enabled: true,
+            permissao: "financeiro.ver",
+            descricao: "O que a loja deve aos fornecedores, por vencimento.",
+          },
+          {
+            href: "/financeiro/contas-a-receber",
+            label: "Contas a receber",
+            icon: HandCoins,
+            enabled: true,
+            permissao: "financeiro.ver",
+            descricao: "Venda a prazo, comodato faturado e aluguel de espaço.",
+          },
+        ],
       },
     ],
   },

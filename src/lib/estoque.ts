@@ -1,7 +1,8 @@
 import "server-only";
 import { basePrisma, comTenant } from "./prisma";
 import { registrarEvento } from "./compras/eventos";
-import type { MovementType } from "@/generated/prisma";
+import type { MovementType, PurchaseOrderOrigem } from "@/generated/prisma";
+import { proximoNumeroDocumento } from "@/lib/numeracao";
 
 // ============================================================
 // Serviço de estoque — toda operação é transacional e grava
@@ -208,6 +209,10 @@ export async function registrarEntrada(
     numeroNota?: string | null;
     observacao?: string | null;
     createdBy?: string;
+    /** Entrada lançada sem documento fiscal — espera o XML que vai chegar. */
+    aguardandoDocumento?: boolean;
+    /** Chave da NF-e que já documenta esta entrada. */
+    chaveNfe?: string | null;
   }
 ): Promise<string> {
   // 1. Resolve quantidades base (converte embalagem se necessário)
@@ -240,6 +245,9 @@ export async function registrarEntrada(
         numeroNota: opts.numeroNota ?? null,
         observacao: opts.observacao ?? null,
         createdBy: opts.createdBy ?? null,
+        aguardandoDocumento: opts.aguardandoDocumento ?? false,
+        chaveNfe: opts.chaveNfe ?? null,
+        documentoVinculadoEm: opts.chaveNfe ? new Date() : null,
         items: {
           create: resolvedItems.map((ri) => ({
             tenantId,
@@ -310,9 +318,8 @@ const PEDIDO_MOTIVO_LABEL: Record<"BONIFICACAO" | "BRINDE" | "TROCA" | "AMOSTRA"
 };
 
 /** Gera o próximo número sequencial PC-00001 por tenant. */
-async function proximoNumeroPedido(tenantId: string): Promise<string> {
-  const total = await comTenant(tenantId, basePrisma.purchaseOrder.count({ where: { tenantId } }));
-  return `PC-${String(total + 1).padStart(5, "0")}`;
+export async function proximoNumeroPedido(tenantId: string): Promise<string> {
+  return proximoNumeroDocumento(tenantId, "PC");
 }
 
 // Bonificação/brinde/troca/amostra/serviço nunca entram no valor do pedido —
@@ -328,6 +335,12 @@ export async function criarPedidoCompra(
     previsaoEntrega?: Date | null;
     observacao?: string | null;
     items: PedidoItemInput[];
+    /** De onde o pedido nasceu — o que faz "de onde veio esta mercadoria?" ter resposta. */
+    origem?: PurchaseOrderOrigem;
+    /** Cotação que originou. Uma cotação vira N pedidos (um por fornecedor). */
+    quotationId?: string | null;
+    /** Pedido cujo saldo cortado gerou este (backorder). */
+    origemPedidoId?: string | null;
   },
   opts: { enviar?: boolean; createdBy?: string } = {}
 ): Promise<string> {
@@ -346,6 +359,9 @@ export async function criarPedidoCompra(
         supplierId: data.supplierId,
         numero,
         status: enviar ? "ENVIADO" : "RASCUNHO",
+        origem: data.origem ?? "MANUAL",
+        quotationId: data.quotationId ?? null,
+        origemPedidoId: data.origemPedidoId ?? null,
         enviadoEm: enviar ? new Date() : null,
         previsaoEntrega: data.previsaoEntrega ?? null,
         observacao: data.observacao ?? null,

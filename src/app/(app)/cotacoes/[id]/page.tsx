@@ -3,6 +3,7 @@ import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { podeEmAlguma } from "@/lib/permissoes";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { resumirCotacao } from "@/lib/compras/cotacao-resumo";
+import { economiaDaCotacao } from "@/lib/compras/cotacao-economia";
 import {
   loadCotacao,
   loadFornecedoresOpcao,
@@ -29,11 +30,16 @@ export default async function CotacaoPage({
       listSites(),
       loadReferenciasPreco(cotacao),
     ]);
+    // Só depois de decidida existe "resultado": antes disso a economia seria
+    // um número sobre uma escolha que ninguém fez.
+    const economia = cotacao.status === "DECIDIDA" ? await economiaDaCotacao(id) : null;
+
     return {
       cotacao,
       fornecedores,
       sites: sites.map((s) => ({ id: s.id, nome: s.nome })),
       referencias,
+      economia,
     };
   });
 
@@ -71,6 +77,7 @@ export default async function CotacaoPage({
       fornecedores={dados.fornecedores}
       sites={dados.sites}
       resumo={resumo}
+      economia={dados.economia}
       podePedir={podeEmAlguma(ctx.acessos, "compras.pedir")}
       usaMinimo={policyDoTenant(ctx.tenant).usaMinimo}
     />

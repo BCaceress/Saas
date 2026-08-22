@@ -39,7 +39,10 @@ export type AlertIcon =
   | "cliente-risco"
   | "validade"
   | "canal-nfe"
-  | "certificado";
+  | "certificado"
+  | "documento-pendente"
+  | "saldo-pendente"
+  | "titulo-vencido";
 
 export type AlertItem = {
   /** Estável entre recargas — usado para ocultar/resolver. Ex.: "sem-estoque:<productId>". */

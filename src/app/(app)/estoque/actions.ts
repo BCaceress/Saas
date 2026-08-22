@@ -9,6 +9,8 @@ import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { loadComprasFormOptions, loadInventarioFormOptions, loadInventariosConcluidos } from "./_data";
 import { invalidarOpcoesFiltro } from "../produtos/_query";
+import { criarPedidoRetroativo } from "@/lib/compras/documento";
+import { gerarTituloDaEntradaManual } from "@/lib/financeiro/contas-pagar";
 import {
   registrarEntrada,
   registrarAjuste,
@@ -171,23 +173,82 @@ const entradaItemSchema = z.object({
 
 const entradaSchema = z.object({
   siteId: z.string().min(1, "Selecione o site."),
-  motivo: z.enum(["COMPRA_SEM_PEDIDO", "BONIFICACAO", "ESTOQUE_INICIAL", "TRANSFERENCIA"]),
+  motivo: z.enum([
+    "COMPRA_SEM_PEDIDO",
+    "BONIFICACAO",
+    "ESTOQUE_INICIAL",
+    "TRANSFERENCIA",
+    "BRINDE",
+    "TROCA",
+    "AMOSTRA",
+  ]),
+  /** Quem entregou. Sem isto a entrada não vira documento nem conta a pagar. */
+  supplierId: z.string().optional().nullable(),
   numeroNota: z.string().optional().nullable(),
   observacao: z.string().optional().nullable(),
   items: z.array(entradaItemSchema).min(1, "Adicione ao menos um item."),
 });
 
+/** Entradas que representam COMPRA — as únicas que geram documento e dívida. */
+const MOTIVO_DE_COMPRA = new Set(["COMPRA_SEM_PEDIDO"]);
+
 export async function registrarEntradaAction(input: z.input<typeof entradaSchema>) {
   const d = entradaSchema.parse(input);
   return txp("estoque.ajustar", d.siteId, async (tid, userId) => {
+    const compra = MOTIVO_DE_COMPRA.has(d.motivo);
+    const valorTotal = d.items.reduce((a, i) => a + (i.custoTotal ?? 0), 0);
+
+    // Compra lançada à mão sem número de nota fica esperando o XML. Quando ele
+    // chegar (upload, e-mail ou SEFAZ), a tela oferece VINCULAR em vez de
+    // receber — que é o que impedia a mesma mercadoria de entrar duas vezes.
+    const aguardandoDocumento = compra && !d.numeroNota?.trim();
+
     const id = await registrarEntrada(tid, d.siteId, d.items, {
       tipo: "MANUAL",
       motivo: d.motivo,
-      supplierId: null,
+      supplierId: d.supplierId ?? null,
       numeroNota: d.numeroNota,
       observacao: d.observacao,
       createdBy: userId,
+      aguardandoDocumento,
     });
+
+    // Toda mercadoria que entra ganha documento. Sem fornecedor não há a quem
+    // atribuir a compra — aí a entrada segue sendo só um ajuste de saldo.
+    if (compra && d.supplierId) {
+      const pedido = await criarPedidoRetroativo({
+        tenantId: tid,
+        siteId: d.siteId,
+        supplierId: d.supplierId,
+        origem: "ENTRADA_MANUAL",
+        itens: d.items.map((i) => ({
+          productId: i.productId,
+          packagingId: i.packagingId ?? null,
+          quantidade: i.quantidade,
+          custoUnitario: i.quantidade > 0 ? (i.custoTotal ?? 0) / i.quantidade : 0,
+        })),
+        observacao: d.observacao ?? "Entrada lançada direto no estoque.",
+        userId,
+      });
+      await db.purchase.update({
+        where: { id },
+        data: { purchaseOrderId: pedido.id },
+      });
+
+      await gerarTituloDaEntradaManual({
+        tenantId: tid,
+        purchaseId: id,
+        supplierId: d.supplierId,
+        purchaseOrderId: pedido.id,
+        valor: valorTotal,
+        numeroNota: d.numeroNota ?? null,
+        data: new Date(),
+        userId,
+      });
+      revalidatePath("/pedidos", "layout");
+      revalidatePath("/financeiro", "layout");
+    }
+
     ok();
     return id;
   });
@@ -885,6 +946,11 @@ export async function fetchEntradaFormDataAction() {
         brand: p.brand ? { nome: p.brand.nome } : null,
       })),
       sites: opts.sites.map((s) => ({ id: s.id, nome: s.nome, tipo: s.tipo })),
+      suppliers: opts.suppliers.map((s) => ({
+        id: s.id,
+        nome: s.nomeFantasia || s.razaoSocial,
+        prazoPagamentoDias: s.prazoPagamentoDias ?? null,
+      })),
     };
   });
 }

@@ -304,6 +304,23 @@ export type FinanceiroFornecedor = {
   emAberto: number;
   valorEmAberto: number;
   serieMensal: Array<{ mes: string; valor: number }>;
+
+  // ── Exposição e disciplina de pagamento ──────────────────
+  // Nascem de `AccountPayable`: até existir contas a pagar, "quanto eu devo a
+  // este fornecedor" era uma pergunta que só o extrato do banco respondia.
+  /** Saldo em aberto de títulos deste fornecedor — a exposição real. */
+  devendo: number;
+  titulosAbertos: number;
+  /** Parte da exposição que já passou do vencimento. */
+  devendoVencido: number;
+  titulosVencidos: number;
+  /**
+   * DPO praticado: média (pagamento − vencimento) dos títulos quitados.
+   * Negativo = a loja paga adiantado; positivo = paga atrasado. É a diferença
+   * entre o prazo NEGOCIADO e o prazo CUMPRIDO, e é o que o fornecedor sente.
+   */
+  atrasoMedioDias: number | null;
+  titulosPagos: number;
 };
 
 export async function loadFinanceiroFornecedor(id: string): Promise<FinanceiroFornecedor> {
@@ -312,7 +329,7 @@ export async function loadFinanceiroFornecedor(id: string): Promise<FinanceiroFo
   const inicioAno = new Date(agora.getFullYear(), 0, 1);
   const dozeMesesAtras = new Date(agora.getFullYear(), agora.getMonth() - 11, 1);
 
-  const [supplier, pedidos, ofertas] = await Promise.all([
+  const [supplier, pedidos, ofertas, titulos] = await Promise.all([
     db.supplier.findFirst({ where: { id }, select: { prazoPagamentoDias: true } }),
     db.purchaseOrder.findMany({
       where: { supplierId: id, status: { not: "CANCELADO" } },
@@ -329,6 +346,10 @@ export async function loadFinanceiroFornecedor(id: string): Promise<FinanceiroFo
     db.supplierCatalogItem.findMany({
       where: { supplierId: id, ativo: true, matchStatus: "VINCULADO" },
       select: { productId: true, preco: true, precoPromocional: true, validadeOferta: true },
+    }),
+    db.accountPayable.findMany({
+      where: { supplierId: id, status: { not: "CANCELADO" } },
+      select: { status: true, valor: true, valorPago: true, vencimento: true, pagoEm: true },
     }),
   ]);
 
@@ -428,7 +449,36 @@ export async function loadFinanceiroFornecedor(id: string): Promise<FinanceiroFo
     });
   }
 
+  // Exposição e disciplina de pagamento.
+  let devendo = 0;
+  let titulosAbertos = 0;
+  let devendoVencido = 0;
+  let titulosVencidos = 0;
+  let somaAtraso = 0;
+  let titulosPagos = 0;
+
+  for (const t of titulos) {
+    const saldo = Number(t.valor) - Number(t.valorPago);
+    if (t.status === "ABERTO" && saldo > 0.005) {
+      devendo += saldo;
+      titulosAbertos++;
+      if (t.vencimento < agora) {
+        devendoVencido += saldo;
+        titulosVencidos++;
+      }
+    } else if (t.status === "PAGO" && t.pagoEm) {
+      somaAtraso += (t.pagoEm.getTime() - t.vencimento.getTime()) / DIA_MS;
+      titulosPagos++;
+    }
+  }
+
   return {
+    devendo: Math.round(devendo * 100) / 100,
+    titulosAbertos,
+    devendoVencido: Math.round(devendoVencido * 100) / 100,
+    titulosVencidos,
+    atrasoMedioDias: titulosPagos > 0 ? Math.round((somaAtraso / titulosPagos) * 10) / 10 : null,
+    titulosPagos,
     compradoMes: Math.round(compradoMes * 100) / 100,
     compradoAno: Math.round(compradoAno * 100) / 100,
     pedidosMes,

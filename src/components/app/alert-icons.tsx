@@ -2,7 +2,7 @@ import {
   PackageX, AlertTriangle, Tag, PackagePlus, ShoppingCart,
   ArrowLeftRight, Truck, ClipboardList, Sparkles, PauseCircle, Coins, Percent,
   Wine, TrendingUp, TrendingDown, Flame, Cake, Gift, CalendarClock,
-  MailWarning, FileSignature, type LucideIcon,
+  MailWarning, FileSignature, FileClock, Wallet, type LucideIcon,
 } from "lucide-react";
 import type { AlertIcon } from "@/lib/alerts-types";
 
@@ -37,4 +37,7 @@ export const ALERT_ICON: Record<AlertIcon, LucideIcon> = {
   validade: CalendarClock,
   "canal-nfe": MailWarning,
   certificado: FileSignature,
+  "documento-pendente": FileClock,
+  "saldo-pendente": PackageX,
+  "titulo-vencido": Wallet,
 };

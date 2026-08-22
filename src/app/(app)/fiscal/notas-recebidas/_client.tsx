@@ -15,6 +15,10 @@ import {
   Search,
   Trash2,
   Upload,
+  Copy,
+  Receipt,
+  Undo2,
+  Unlink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
@@ -29,6 +33,11 @@ import { CardSincronizacao } from "@/components/fornecedor/sincronizacao";
 import type { ResumoSincronizacao } from "@/lib/fornecedores/sincronizacao-xml";
 import { fmtMoney, fmtQtd, relDia } from "../../cotacoes/_ui";
 import {
+  estornarEntradaAction,
+  desvincularNotaAction,
+  entradaDaNotaAction,
+} from "../../estoque/estorno-actions";
+import {
   buscarProdutosAction,
   descartarNotaAction,
   importarXmlAction,
@@ -36,12 +45,14 @@ import {
   notasAguardandoManifestacaoAction,
   pedidosDoFornecedorAction,
   receberNotaAction,
+  candidatasEntradaManualAction,
+  vincularEntradaManualAction,
   relacionarItemAction,
   sincronizarSefazAction,
   vincularPedidoAction,
 } from "./actions";
 
-type Status = "PENDENTE" | "CONCILIADO" | "RECEBIDO" | "DESCARTADO";
+type Status = "PENDENTE" | "CONCILIADO" | "RECEBIDO" | "DESCARTADO" | "SEM_ESTOQUE" | "VINCULADO";
 
 export type ItemNota = {
   id: string;
@@ -86,6 +97,8 @@ export type NotaRecebida = {
   purchaseOrderId: string | null;
   temEntrada: boolean;
   observacao: string | null;
+  /** Por que este documento não virou estoque — serviço, frete ou já lançado. */
+  semEstoqueMotivo: string | null;
   itens: ItemNota[];
 };
 
@@ -94,6 +107,10 @@ const STATUS_UI: Record<Status, { label: string; tone: "warn" | "brand" | "ok" |
   CONCILIADO: { label: "Pronta para receber", tone: "brand" },
   RECEBIDO: { label: "Recebida", tone: "ok" },
   DESCARTADO: { label: "Descartada", tone: "neutral" },
+  // Documento guardado que não movimenta saldo: CT-e, nota de serviço, ou nota
+  // que apenas documentou uma entrada já lançada à mão.
+  SEM_ESTOQUE: { label: "Despesa (sem estoque)", tone: "neutral" },
+  VINCULADO: { label: "Documenta entrada manual", tone: "ok" },
 };
 
 /** Custo real do item: mercadoria + ST + IPI + frete − desconto. */
@@ -223,7 +240,7 @@ export function NotasRecebidasClient({
             </Button>
           </>
         )}
-        {(["TODAS", "PENDENTE", "CONCILIADO", "RECEBIDO", "DESCARTADO"] as const).map((f) => (
+        {(["TODAS", "PENDENTE", "CONCILIADO", "RECEBIDO", "SEM_ESTOQUE", "VINCULADO", "DESCARTADO"] as const).map((f) => (
           <button
             key={f}
             type="button"
@@ -603,6 +620,22 @@ function DetalheNota({
   const [pedidos, setPedidos] = useState<
     { id: string; numero: string; status: string; valorTotal: number }[] | null
   >(null);
+  // Entradas lançadas à mão que esta nota pode estar documentando. Sem esta
+  // pergunta, receber a nota somaria a mesma mercadoria pela segunda vez.
+  type Candidata = Awaited<ReturnType<typeof candidatasEntradaManualAction>>[number];
+  const [candidatas, setCandidatas] = useState<Candidata[] | null>(null);
+
+  useEffect(() => {
+    if (nota.status !== "PENDENTE" && nota.status !== "CONCILIADO") return;
+    if (!nota.supplierId) return;
+    let vivo = true;
+    candidatasEntradaManualAction(nota.id)
+      .then((r) => vivo && setCandidatas(r))
+      .catch(() => vivo && setCandidatas([]));
+    return () => {
+      vivo = false;
+    };
+  }, [nota.id, nota.status, nota.supplierId]);
 
   const faltam = nota.itens.filter((i) => !i.productId).length;
   const custoTotal = nota.itens.reduce((s, i) => s + custoItem(i), 0);
@@ -620,12 +653,56 @@ function DetalheNota({
   function receber() {
     start(async () => {
       try {
-        await receberNotaAction(nota.id);
+        // O operador viu a lista de candidatas nesta tela; se mandou receber
+        // mesmo assim, a decisão é dele e o servidor não barra de novo.
+        await receberNotaAction(nota.id, (candidatas?.length ?? 0) > 0);
         toast.success("Entrada gerada.", "Estoque e custo médio atualizados.");
         onClose();
         router.refresh();
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Falha ao gerar a entrada.");
+      }
+    });
+  }
+
+  function estornar() {
+    const motivo = window.prompt(
+      "Por que esta entrada está sendo estornada? O saldo volta e os títulos em aberto são cancelados.",
+    );
+    if (!motivo?.trim()) return;
+    start(async () => {
+      try {
+        const entrada = await entradaDaNotaAction(nota.id);
+        if (!entrada) {
+          toast.error("Não foi possível localizar a entrada desta nota.");
+          return;
+        }
+        const r = await estornarEntradaAction({ purchaseId: entrada.id, motivo });
+        toast.success(
+          "Entrada estornada.",
+          r.titulosCancelados > 0
+            ? `${r.itens} item(ns) saíram do estoque e ${r.titulosCancelados} título(s) foram cancelados.`
+            : `${r.itens} item(ns) saíram do estoque.`,
+        );
+        onClose();
+        router.refresh();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Falha ao estornar.");
+      }
+    });
+  }
+
+  function desvincular() {
+    const motivo = window.prompt("Por que este vínculo está errado?");
+    if (!motivo?.trim()) return;
+    start(async () => {
+      try {
+        await desvincularNotaAction({ inboundId: nota.id, motivo });
+        toast.success("Vínculo desfeito.", "A entrada voltou a aguardar documento.");
+        onClose();
+        router.refresh();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Falha ao desfazer o vínculo.");
       }
     });
   }
@@ -673,6 +750,18 @@ function DetalheNota({
                   {pending ? "Gerando…" : "Receber mercadoria"}
                 </Button>
               )}
+              {/* Desfazer é operação de verdade, não “registre um ajuste”:
+                  volta o saldo, cancela os títulos e libera a nota. */}
+              {nota.status === "RECEBIDO" && podeImportar && (
+                <Button variant="ghost" onClick={estornar} disabled={pending}>
+                  <Undo2 size={16} /> Estornar entrada
+                </Button>
+              )}
+              {nota.status === "VINCULADO" && podeImportar && (
+                <Button variant="ghost" onClick={desvincular} disabled={pending}>
+                  <Unlink size={16} /> Desfazer vínculo
+                </Button>
+              )}
             </div>
           </div>
         }
@@ -691,6 +780,77 @@ function DetalheNota({
 
           {nota.status === "DESCARTADO" && nota.observacao && (
             <p className="text-sm text-muted">Motivo do descarte: {nota.observacao}</p>
+          )}
+
+          {nota.semEstoqueMotivo && (
+            <p className="flex items-start gap-2 rounded-[var(--radius-md)] border border-line bg-surface-2 px-3.5 py-3 text-sm text-muted">
+              <Receipt size={15} className="mt-0.5 shrink-0 text-faint" />
+              <span>
+                {nota.semEstoqueMotivo}
+                {nota.status === "SEM_ESTOQUE" &&
+                  " O valor entrou em Contas a pagar — nada foi somado ao saldo."}
+              </span>
+            </p>
+          )}
+
+          {editavel && candidatas && candidatas.length > 0 && (
+            <div className="flex flex-col gap-2.5 rounded-[var(--radius-md)] border border-accent/40 bg-accent-soft p-3.5">
+              <p className="flex items-start gap-2 text-sm font-medium text-accent">
+                <Copy size={15} className="mt-0.5 shrink-0" />
+                Esta mercadoria já pode ter entrado à mão
+              </p>
+              <p className="text-xs text-accent/90">
+                Se uma destas entradas é esta mesma nota, vincule as duas: o documento fica
+                registrado e o estoque não sobe de novo. Se são compras diferentes, é só receber
+                normalmente.
+              </p>
+              <ul className="flex flex-col gap-1.5">
+                {candidatas.map((c) => (
+                  <li
+                    key={c.purchaseId}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-line bg-surface px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm text-ink">
+                        Entrada de {new Date(c.data).toLocaleDateString("pt-BR")} ·{" "}
+                        <span className="font-mono">{fmtMoney(c.valorTotal)}</span>
+                        <span className="ml-2 text-[11px] text-muted">
+                          {c.itens} {c.itens === 1 ? "item" : "itens"}
+                        </span>
+                      </p>
+                      <p className="text-[11px] text-muted">{c.motivos.join(" · ")}</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={pending}
+                      onClick={() =>
+                        start(async () => {
+                          try {
+                            await vincularEntradaManualAction({
+                              inboundId: nota.id,
+                              purchaseId: c.purchaseId,
+                            });
+                            toast.success(
+                              "Nota vinculada à entrada.",
+                              "O estoque não foi movimentado de novo.",
+                            );
+                            onClose();
+                            router.refresh();
+                          } catch (e) {
+                            toast.error(
+                              e instanceof Error ? e.message : "Falha ao vincular.",
+                            );
+                          }
+                        })
+                      }
+                    >
+                      É esta entrada
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
 
           {editavel && nota.supplierId && (

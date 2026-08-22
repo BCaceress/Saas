@@ -145,6 +145,11 @@ export type DocumentoParaEmitir = {
   valorTotal: number;
   informacoesComplementares: string | null;
   /**
+   * refNFe — chave da nota que esta está devolvendo. Só existe em devolução;
+   * é o que faz a entrada e a saída se cruzarem no fisco.
+   */
+  chaveReferenciada?: string | null;
+  /**
    * Chave de idempotência (usamos o id do FiscalDocument). Retry de rede não
    * pode virar nota duplicada — o adapter repassa ao provedor.
    */

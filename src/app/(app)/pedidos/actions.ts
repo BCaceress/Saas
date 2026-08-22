@@ -74,6 +74,7 @@ export async function criarPedidosReposicaoAction(input: z.input<typeof reposica
           supplierId: pedido.supplierId,
           previsaoEntrega: pedido.previsaoEntrega ? new Date(`${pedido.previsaoEntrega}T00:00:00`) : null,
           observacao: pedido.observacao ?? null,
+          origem: "REPOSICAO",
           items: pedido.items,
         },
         { enviar: d.enviar, createdBy: userId },

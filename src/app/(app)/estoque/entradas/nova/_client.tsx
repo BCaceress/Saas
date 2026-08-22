@@ -17,14 +17,37 @@ type Product = {
 };
 
 type Site = { id: string; nome: string; tipo: string };
+type Supplier = { id: string; nome: string; prazoPagamentoDias: number | null };
 
-export type Motivo = "COMPRA_SEM_PEDIDO" | "BONIFICACAO" | "ESTOQUE_INICIAL";
+export type Motivo =
+  | "COMPRA_SEM_PEDIDO"
+  | "BONIFICACAO"
+  | "ESTOQUE_INICIAL"
+  | "BRINDE"
+  | "TROCA"
+  | "AMOSTRA";
 
 export const MOTIVO_OPTIONS: { value: Motivo; label: string }[] = [
   { value: "COMPRA_SEM_PEDIDO", label: "Entrada manual" },
   { value: "BONIFICACAO", label: "Bonificação" },
+  { value: "BRINDE", label: "Brinde" },
+  { value: "AMOSTRA", label: "Amostra" },
+  { value: "TROCA", label: "Troca" },
   { value: "ESTOQUE_INICIAL", label: "Estoque inicial" },
 ];
+
+/**
+ * Motivos que representam COMPRA. Só eles pedem fornecedor, geram pedido
+ * retroativo e viram conta a pagar — bonificação, brinde e amostra entram no
+ * saldo sem ninguém dever nada a ninguém.
+ */
+const MOTIVO_DE_COMPRA: Motivo[] = ["COMPRA_SEM_PEDIDO"];
+
+/**
+ * Entradas em que ninguém pagou nada: lançar valor aqui puxaria o custo médio
+ * para baixo e faria a margem parecer melhor do que é.
+ */
+const SEM_CUSTO: Motivo[] = ["BONIFICACAO", "BRINDE", "AMOSTRA"];
 
 export type Item = {
   productId: string;
@@ -62,6 +85,7 @@ export function NovaEntradaForm({
   motivo,
   products,
   sites,
+  suppliers = [],
   embedded = false,
   onDone,
   initialItems,
@@ -70,6 +94,7 @@ export function NovaEntradaForm({
   motivo: Motivo;
   products: Product[];
   sites: Site[];
+  suppliers?: Supplier[];
   /** Quando usado dentro de um sidepanel: não navega, chama onDone + refresh. */
   embedded?: boolean;
   onDone?: () => void;
@@ -79,8 +104,10 @@ export function NovaEntradaForm({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const ehCompra = MOTIVO_DE_COMPRA.includes(motivo);
 
   const [siteId, setSiteId] = useState(sites[0]?.id ?? "");
+  const [supplierId, setSupplierId] = useState("");
   const [numeroNota, setNumeroNota] = useState("");
   const [observacao, setObservacao] = useState("");
   const [items, setItems] = useState<Item[]>(
@@ -128,6 +155,7 @@ export function NovaEntradaForm({
         await registrarEntradaAction({
           siteId,
           motivo,
+          supplierId: supplierId || null,
           numeroNota: numeroNota || null,
           observacao: observacao || null,
           items: valid,
@@ -169,6 +197,24 @@ export function NovaEntradaForm({
           )}
         </div>
 
+        {ehCompra && (
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wide text-faint">
+              Fornecedor
+            </label>
+            <select
+              value={supplierId}
+              onChange={(e) => setSupplierId(e.target.value)}
+              className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            >
+              <option value="">Sem fornecedor (só ajusta o saldo)</option>
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>{s.nome}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-semibold uppercase tracking-wide text-faint">Nº do documento (opcional)</label>
           <input
@@ -190,6 +236,23 @@ export function NovaEntradaForm({
         </div>
       </div>
 
+      {ehCompra && supplierId && !numeroNota.trim() && (
+        <p className="flex items-start gap-2 rounded-[var(--radius-lg)] border border-accent/30 bg-accent-soft px-3.5 py-2.5 text-xs text-accent">
+          <Info size={14} className="mt-0.5 shrink-0" />
+          Sem número de nota, esta entrada fica <strong className="font-semibold">aguardando
+          documento</strong>. Quando o XML chegar, o NoHub oferece vincular os dois em vez de
+          somar a mercadoria de novo.
+        </p>
+      )}
+
+      {ehCompra && !supplierId && (
+        <p className="flex items-start gap-2 rounded-[var(--radius-lg)] border border-line bg-surface-2 px-3.5 py-2.5 text-xs text-muted">
+          <Info size={14} className="mt-0.5 shrink-0 text-faint" />
+          Sem fornecedor, esta entrada só corrige o saldo: não gera pedido, não entra no histórico
+          do fornecedor e não cria conta a pagar.
+        </p>
+      )}
+
       {motivo === "ESTOQUE_INICIAL" && (
         <p className="flex items-start gap-2 rounded-[var(--radius-lg)] border border-line bg-surface-2 px-3.5 py-2.5 text-xs text-muted">
           <Info size={14} className="mt-0.5 shrink-0 text-faint" />
@@ -201,7 +264,7 @@ export function NovaEntradaForm({
       <div className="flex flex-col gap-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-faint">Adicionar item</p>
         {(() => {
-          const semCusto = motivo === "BONIFICACAO";
+          const semCusto = SEM_CUSTO.includes(motivo);
           const draftProd = products.find((p) => p.id === draft.productId);
           const usedIds = new Set(items.map((i) => i.productId).filter(Boolean));
           const selectableProducts = products.filter((p) => !usedIds.has(p.id));
@@ -408,7 +471,7 @@ export function NovaEntradaForm({
             const prod = products.find((p) => p.id === item.productId);
             const pk = prod?.packagings.find((p) => p.id === item.packagingId);
             const desc = `${prod?.nome ?? "Produto"} · ${prod?.sku ?? ""}${pk ? ` · ${pk.nome} (×${Number(pk.fatorConversao)})` : " · Unidade"}`;
-            const semCusto = motivo === "BONIFICACAO";
+            const semCusto = SEM_CUSTO.includes(motivo);
             return (
               <div
                 key={idx}

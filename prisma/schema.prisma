@@ -194,8 +194,13 @@ model Tenant {
 
   /// Limiares cujo dono é o próprio alerta (os demais moram no ajuste que os
   /// origina: `produtoParadoDias`, `cupomDiasRisco`, `diasCobertura`…).
-  inventarioAtrasoDias Int @default(3) // inventário aberto vira "atrasado"
-  novoSemMovDias       Int @default(7) // janela do aviso "recém cadastrado sem movimentação"
+  inventarioAtrasoDias    Int @default(3) // inventário aberto vira "atrasado"
+  novoSemMovDias          Int @default(7) // janela do aviso "recém cadastrado sem movimentação"
+  // Carência antes de cobrar o XML de uma entrada lançada à mão: a nota do
+  // fornecedor costuma chegar no dia seguinte, e avisar na mesma hora
+  // transformaria o alerta em ruído diário.
+  entradaSemDocumentoDias Int @default(3)
+  saldoPendenteDias       Int @default(5) // pedido parcial sem decisão sobre o saldo
 
   /// Janela civilizada do push, em hora local (fora dela o job não notifica).
   pushHoraInicio Int @default(7)
@@ -549,6 +554,7 @@ enum MovementType {
   PERDA
   DEVOLUCAO_CLIENTE // cliente devolve → entra no estoque (+)
   DEVOLUCAO_FORNECEDOR // devolvido ao fornecedor → sai do estoque (−)
+  ESTORNO // desfaz uma entrada lançada errada — sai do estoque (−)
 }
 
 enum PurchaseType {
@@ -598,6 +604,77 @@ enum PurchaseOrderStatus {
   RECEBIDO_PARCIAL // recebimento pendente (chegou em parte) 🟠
   RECEBIDO // concluído ✅
   CANCELADO // 🔴
+}
+
+/// O que aconteceu com o que faltou num pedido que chegou só em parte. Sem
+/// isto um RECEBIDO_PARCIAL fica aberto para sempre e ninguém sabe se o resto
+/// ainda vem, se o fornecedor cortou, ou se virou pedido novo.
+enum SaldoPedidoResolucao {
+  PENDENTE // ainda se espera o resto
+  ENCERRADO // o que faltou não vem (corte do fornecedor)
+  REPEDIDO // o saldo virou um pedido novo
+}
+
+/// De onde o pedido nasceu. Todo caminho de entrada gera um pedido — os
+/// retroativos (XML, DFe, lançamento manual) existem para "de onde veio esta
+/// mercadoria?" ter sempre resposta, e não só quando houve compra planejada.
+enum PurchaseOrderOrigem {
+  MANUAL // digitado na tela de pedidos
+  COTACAO // decisão de uma cotação
+  REPOSICAO // sugestão de reposição inteligente
+  CARRINHO // comparador de cesta
+  XML // XML importado sem pedido prévio
+  DFE // NF-e capturada na SEFAZ / e-mail
+  ENTRADA_MANUAL // lançamento direto no estoque
+}
+
+/// Situação de um título a pagar ao fornecedor.
+enum AccountPayableStatus {
+  ABERTO
+  PAGO
+  CANCELADO
+}
+
+/// De onde veio a baixa de um título: dinheiro que saiu, ou crédito de uma
+/// devolução ao fornecedor. São coisas diferentes no extrato e no caixa.
+enum BaixaOrigem {
+  PAGAMENTO
+  CREDITO_DEVOLUCAO
+  AJUSTE
+}
+
+/// Situação de um título a receber. Espelha `AccountPayableStatus` de propósito:
+/// as duas pontas do caixa se leem no mesmo vocabulário.
+enum AccountReceivableStatus {
+  ABERTO
+  RECEBIDO
+  CANCELADO
+}
+
+/// De onde nasceu o título a receber. Hoje só o lançamento manual existe de
+/// verdade; VENDA_PRAZO fica reservado para quando o PDV tiver fiado, e
+/// existir aqui evita migration no dia em que tiver.
+enum AccountReceivableOrigem {
+  MANUAL
+  VENDA_PRAZO
+  COMODATO
+  OUTRO
+}
+
+enum SupplierReturnStatus {
+  RASCUNHO
+  CONFIRMADA
+  CANCELADA
+}
+
+/// Por que a mercadoria voltou para o fornecedor.
+enum SupplierReturnMotivo {
+  AVARIA
+  VALIDADE
+  DIVERGENCIA // veio diferente do pedido/nota
+  RECUSA // recusada no recebimento
+  ACORDO_COMERCIAL
+  OUTRO
 }
 
 enum RequisicaoStatus {
@@ -878,6 +955,8 @@ model Supplier {
   contacts     SupplierContact[]
   syncChanges  SupplierSyncChange[]
   fornecidos   SupplierProductHistory[]
+  titulos      AccountPayable[]
+  devolucoes   SupplierReturn[]
 
   @@unique([tenantId, cnpj])
   @@index([tenantId])
@@ -1378,6 +1457,7 @@ model Site {
   quotations         Quotation[]
   promotions         ProductPromotion[]
   fiscalEmailInboxes FiscalEmailInbox[]
+  devolucoes         SupplierReturn[]
 
   @@unique([tenantId, nome])
   @@index([tenantId])
@@ -1466,17 +1546,35 @@ model Purchase {
   createdAt       DateTime        @default(now())
   createdBy       String?
 
+  // Entrada lançada à mão sem documento: fica marcada esperando o XML que vai
+  // chegar depois (upload, e-mail ou SEFAZ). Sem isto, a mesma mercadoria
+  // entraria duas vezes — uma pelo lançamento, outra pela nota.
+  aguardandoDocumento  Boolean   @default(false)
+  chaveNfe             String? // chave da NF-e que documentou esta entrada
+  documentoVinculadoEm DateTime?
+
+  // Entrada desfeita. Não apagamos a linha: a razão de estoque é append-only e
+  // o estorno é um FATO — quem lançou errado, quem desfez e por quê. Apagar
+  // deixaria um buraco que ninguém consegue explicar seis meses depois.
+  estornadaEm   DateTime?
+  estornoMotivo String?
+  estornadaPor  String?
+
   site          Site             @relation(fields: [siteId], references: [id])
   supplier      Supplier?        @relation(fields: [supplierId], references: [id])
   purchaseOrder PurchaseOrder?   @relation(fields: [purchaseOrderId], references: [id])
   items         PurchaseItem[]
   fiscalDocs    FiscalDocument[]
   fiscalInbound FiscalInbound?
+  titulos       AccountPayable[]
+  devolucoes    SupplierReturn[]
 
   @@index([tenantId])
   @@index([siteId])
   @@index([supplierId])
   @@index([purchaseOrderId])
+  @@index([tenantId, aguardandoDocumento])
+  @@index([chaveNfe])
 }
 
 // Pedido de compra ao fornecedor (PC-00125). Ciclo: rascunho → enviado →
@@ -1489,32 +1587,52 @@ model PurchaseOrder {
   supplierId       String
   numero           String // PC-00125 (sequencial por tenant)
   status           PurchaseOrderStatus @default(RASCUNHO)
+  origem           PurchaseOrderOrigem @default(MANUAL)
   previsaoEntrega  DateTime?
   valorTotal       Decimal             @default(0) @db.Decimal(12, 2) // soma cacheada dos itens
   observacao       String?
-  financeiroGerado Boolean             @default(false) // gancho Contas a Pagar (stub)
+  financeiroGerado Boolean             @default(false) // títulos a pagar já emitidos
+
+  // Cotação que originou. Uma cotação pode virar N pedidos (um por fornecedor
+  // vencedor), então o vínculo mora aqui e não na cotação.
+  quotationId String?
+
+  // Saldo do que chegou só em parte. `origemPedidoId` encadeia o backorder:
+  // pedido novo aponta para o pedido cujo corte o gerou.
+  origemPedidoId   String?
+  saldoResolucao   SaldoPedidoResolucao @default(PENDENTE)
+  saldoResolvidoEm DateTime?
+  saldoMotivo      String?
   enviadoEm        DateTime?
   confirmadoEm     DateTime?
   emTransitoEm     DateTime?
   recebidoEm       DateTime?
   canceladoEm      DateTime?
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @default(now()) @updatedAt // última mudança (status, itens…)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @default(now()) @updatedAt // última mudança (status, itens…)
   createdBy        String?
 
-  site        Site                         @relation(fields: [siteId], references: [id])
-  supplier    Supplier                     @relation(fields: [supplierId], references: [id])
-  items       PurchaseOrderItem[]
-  entradas    Purchase[]
-  inbounds    FiscalInbound[]
-  conciliacao PurchaseReconciliationItem[]
-  eventos     PurchaseEvent[]
+  site         Site                         @relation(fields: [siteId], references: [id])
+  supplier     Supplier                     @relation(fields: [supplierId], references: [id])
+  quotation    Quotation?                   @relation(fields: [quotationId], references: [id], onDelete: SetNull)
+  origemPedido PurchaseOrder?               @relation("SaldoPedido", fields: [origemPedidoId], references: [id], onDelete: SetNull)
+  pedidosSaldo PurchaseOrder[]              @relation("SaldoPedido")
+  items        PurchaseOrderItem[]
+  entradas     Purchase[]
+  inbounds     FiscalInbound[]
+  conciliacao  PurchaseReconciliationItem[]
+  eventos      PurchaseEvent[]
+  titulos      AccountPayable[]
+  devolucoes   SupplierReturn[]
 
   @@unique([tenantId, numero])
   @@index([tenantId])
   @@index([siteId])
   @@index([supplierId])
   @@index([status])
+  @@index([quotationId])
+  @@index([origemPedidoId])
+  @@index([tenantId, status, saldoResolucao])
 }
 
 model PurchaseOrderItem {
@@ -1551,6 +1669,208 @@ model PurchaseItem {
 
   @@index([tenantId])
   @@index([purchaseId])
+  @@index([productId])
+}
+
+/// Contador de documento por tenant. Existe porque `count() + 1` não é
+/// sequencial: dois operadores criando pedido no mesmo segundo leem a MESMA
+/// contagem e o segundo estoura o unique de `numero`. Aqui o incremento é um
+/// `UPDATE … RETURNING` atômico — o banco serializa, não a esperança.
+///
+/// `tipo` é o prefixo do documento ("PC", "COT", "DEV"). Uma linha por tipo,
+/// por tenant; nunca é apagada, e o valor só sobe.
+model DocumentCounter {
+  tenantId String
+  tipo     String // "PC" | "COT" | "DEV"
+  valor    Int    @default(0)
+
+  @@id([tenantId, tipo])
+  @@index([tenantId])
+}
+
+// ============================================================
+// FINANCEIRO DE COMPRAS E DEVOLUÇÃO AO FORNECEDOR
+//
+// A mercadoria que entra tem duas consequências que o estoque sozinho não
+// cobre: o dinheiro que vai sair (AccountPayable) e a mercadoria que volta
+// (SupplierReturn). Ambos penduram no mesmo documento de compra.
+// ============================================================
+
+/// Título a pagar ao fornecedor. Nasce das duplicatas da NF-e — uma linha por
+/// parcela do boleto — ou, quando a nota não traz duplicata, como parcela
+/// única no vencimento derivado do prazo do fornecedor. É o elo entre a
+/// mercadoria que entrou e o dinheiro que sai.
+model AccountPayable {
+  id              String               @id @default(cuid())
+  tenantId        String
+  supplierId      String?
+  purchaseId      String?
+  purchaseOrderId String?
+  inboundId       String?
+  numeroDocumento String? // "12548/1" — nota que originou
+  parcela         String? // nDup da NF-e ("001")
+  descricao       String
+  vencimento      DateTime
+  valor           Decimal              @db.Decimal(12, 2)
+  valorPago       Decimal              @default(0) @db.Decimal(12, 2)
+  status          AccountPayableStatus @default(ABERTO)
+  pagoEm          DateTime?
+  observacao      String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  createdBy       String?
+
+  supplier      Supplier?               @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  purchase      Purchase?               @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  purchaseOrder PurchaseOrder?          @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  inbound       FiscalInbound?          @relation(fields: [inboundId], references: [id], onDelete: SetNull)
+  baixas        AccountPayablePayment[]
+
+  @@index([tenantId])
+  @@index([tenantId, status, vencimento])
+  @@index([supplierId])
+  @@index([purchaseId])
+  @@index([purchaseOrderId])
+  @@index([inboundId])
+}
+
+/// Cada baixa de um título, com autor e data. `AccountPayable.valorPago` é o
+/// saldo cacheado; a VERDADE de quem pagou o quê, quando, mora aqui.
+///
+/// Sem isto, dinheiro saía sem autor: o título virava PAGO e não havia como
+/// responder "quem deu baixa nisso?" — a pergunta que só aparece no dia em que
+/// o boleto foi pago duas vezes.
+model AccountPayablePayment {
+  id         String      @id @default(cuid())
+  tenantId   String
+  payableId  String
+  origem     BaixaOrigem @default(PAGAMENTO)
+  valor      Decimal     @db.Decimal(12, 2)
+  pagoEm     DateTime
+  /// Devolução que gerou o crédito, quando `origem = CREDITO_DEVOLUCAO`.
+  returnId   String?
+  observacao String?
+  createdAt  DateTime    @default(now())
+  createdBy  String?
+
+  titulo AccountPayable @relation(fields: [payableId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, pagoEm])
+  @@index([payableId])
+}
+
+/// Título a receber. A outra metade do caixa: sem ela, "dia 10 eu tenho
+/// dinheiro para o boleto?" não tem resposta — só se enxergava o que sai.
+///
+/// Hoje a origem prática é o lançamento manual (venda a prazo para PJ,
+/// comodato, aluguel de espaço). Quando o PDV ganhar fiado, a venda passa a
+/// gerar título aqui pelo mesmo caminho que a NF-e gera conta a pagar.
+model AccountReceivable {
+  id              String                  @id @default(cuid())
+  tenantId        String
+  customerId      String?
+  saleId          String?
+  origem          AccountReceivableOrigem @default(MANUAL)
+  numeroDocumento String?
+  parcela         String?
+  descricao       String
+  vencimento      DateTime
+  valor           Decimal                 @db.Decimal(12, 2)
+  valorRecebido   Decimal                 @default(0) @db.Decimal(12, 2)
+  status          AccountReceivableStatus @default(ABERTO)
+  recebidoEm      DateTime?
+  observacao      String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  createdBy       String?
+
+  customer Customer?                  @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  sale     Sale?                      @relation(fields: [saleId], references: [id], onDelete: SetNull)
+  baixas   AccountReceivablePayment[]
+
+  @@index([tenantId])
+  @@index([tenantId, status, vencimento])
+  @@index([customerId])
+  @@index([saleId])
+}
+
+/// Cada recebimento de um título, com autor e data — espelho de
+/// `AccountPayablePayment`. `valorRecebido` é saldo cacheado; a verdade mora aqui.
+model AccountReceivablePayment {
+  id           String      @id @default(cuid())
+  tenantId     String
+  receivableId String
+  origem       BaixaOrigem @default(PAGAMENTO)
+  valor        Decimal     @db.Decimal(12, 2)
+  recebidoEm   DateTime
+  observacao   String?
+  createdAt    DateTime    @default(now())
+  createdBy    String?
+
+  titulo AccountReceivable @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, recebidoEm])
+  @@index([receivableId])
+}
+
+/// Devolução ao fornecedor — o inverso do recebimento. Sai do estoque, aponta
+/// para a entrada/nota que trouxe a mercadoria e, quando há título em aberto,
+/// abate o que se deve. Só CONFIRMADA movimenta estoque.
+model SupplierReturn {
+  id               String               @id @default(cuid())
+  tenantId         String
+  siteId           String
+  supplierId       String
+  numero           String // DEV-00012 (sequencial por tenant)
+  status           SupplierReturnStatus @default(RASCUNHO)
+  motivo           SupplierReturnMotivo @default(OUTRO)
+  purchaseId       String? // entrada que trouxe a mercadoria
+  purchaseOrderId  String? // pedido de origem, quando houve
+  inboundId        String? // nota de entrada de origem
+  numeroNota       String? // nota de devolução emitida por nós
+  chaveNfe         String?
+  /// NF-e de devolução emitida pelo módulo fiscal. Nulo = nota digitada à mão
+  /// (ou ainda não emitida) — os dois casos existem no mundo real.
+  fiscalDocumentId String?              @unique
+  observacao       String // motivo em texto — obrigatório, é o que o fornecedor lê
+  valorTotal       Decimal              @default(0) @db.Decimal(12, 2)
+  confirmadaEm     DateTime?
+  canceladaEm      DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  createdBy        String?
+
+  site           Site                 @relation(fields: [siteId], references: [id])
+  supplier       Supplier             @relation(fields: [supplierId], references: [id])
+  purchase       Purchase?            @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  purchaseOrder  PurchaseOrder?       @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  inbound        FiscalInbound?       @relation(fields: [inboundId], references: [id], onDelete: SetNull)
+  fiscalDocument FiscalDocument?      @relation(fields: [fiscalDocumentId], references: [id], onDelete: SetNull)
+  items          SupplierReturnItem[]
+
+  @@unique([tenantId, numero])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([siteId])
+  @@index([supplierId])
+  @@index([purchaseId])
+}
+
+model SupplierReturnItem {
+  id            String  @id @default(cuid())
+  tenantId      String
+  returnId      String
+  productId     String
+  quantidade    Decimal @db.Decimal(12, 3) // sempre em unidade base
+  custoUnitario Decimal @default(0) @db.Decimal(12, 2)
+  observacao    String?
+
+  devolucao SupplierReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([returnId])
   @@index([productId])
 }
 
@@ -1747,13 +2067,14 @@ model Sale {
   createdAt DateTime  @default(now())
   paidAt    DateTime?
 
-  site        Site             @relation(fields: [siteId], references: [id])
-  cashSession CashSession?     @relation(fields: [cashSessionId], references: [id])
-  customer    Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  totemDevice TotemDevice?     @relation(fields: [totemDeviceId], references: [id], onDelete: SetNull)
+  site        Site                @relation(fields: [siteId], references: [id])
+  cashSession CashSession?        @relation(fields: [cashSessionId], references: [id])
+  customer    Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  totemDevice TotemDevice?        @relation(fields: [totemDeviceId], references: [id], onDelete: SetNull)
   items       SaleItem[]
   payments    Payment[]
   fiscalDocs  FiscalDocument[]
+  titulos     AccountReceivable[]
 
   @@index([tenantId])
   @@index([siteId])
@@ -1993,6 +2314,7 @@ model Customer {
   comodatoLoans      ComodatoLoan[]
   containerMovements ContainerMovement[]
   fiscalDocuments    FiscalDocument[]
+  titulos            AccountReceivable[]
 
   @@unique([tenantId, cpf])
   @@index([tenantId])
@@ -2237,6 +2559,8 @@ enum FiscalInboundStatus {
   CONCILIADO // todos os itens têm produto — pronto para gerar entrada
   RECEBIDO // entrada gerada (Purchase criada, estoque movimentado)
   DESCARTADO // nota que não vira entrada (já lançada, devolvida, erro)
+  SEM_ESTOQUE // documento sem mercadoria (CT-e de frete, nota de serviço)
+  VINCULADO // documenta entrada já lançada à mão — não movimenta de novo
 }
 
 enum ManifestacaoTipo {
@@ -2393,6 +2717,11 @@ model FiscalDocument {
   dataEmissao      DateTime  @default(now())
   dataAutorizacao  DateTime?
 
+  /// Chave da NF-e referenciada (refNFe). Devolução PRECISA apontar para a nota
+  /// que trouxe a mercadoria — sem isso a SEFAZ aceita, mas o fisco cruza a
+  /// entrada com a saída e não fecha.
+  chaveReferenciada String?
+
   saleId     String?
   purchaseId String?
   customerId String?
@@ -2421,13 +2750,14 @@ model FiscalDocument {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  site     Site                 @relation(fields: [siteId], references: [id])
-  sale     Sale?                @relation(fields: [saleId], references: [id], onDelete: SetNull)
-  purchase Purchase?            @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
-  customer Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  supplier Supplier?            @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  items    FiscalDocumentItem[]
-  eventos  FiscalEvent[]
+  site      Site                 @relation(fields: [siteId], references: [id])
+  sale      Sale?                @relation(fields: [saleId], references: [id], onDelete: SetNull)
+  purchase  Purchase?            @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  customer  Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  supplier  Supplier?            @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  items     FiscalDocumentItem[]
+  eventos   FiscalEvent[]
+  devolucao SupplierReturn?
 
   @@unique([tenantId, idempotencyKey])
   @@unique([tenantId, chave])
@@ -2549,6 +2879,22 @@ model FiscalInbound {
   manifestacao  ManifestacaoTipo?
   manifestadoEm DateTime?
 
+  // Documento que não movimenta estoque (CT-e, nota de serviço) ou nota que só
+  // documentou uma entrada já lançada à mão. Guardar o porquê evita que a
+  // próxima pessoa reimporte achando que a nota "sumiu".
+  semEstoqueMotivo String?
+
+  /// Frete que chegou em CT-e separado e foi rateado para esta nota. Entra no
+  /// custo junto com o `valorFrete` da própria NF-e — a mercadoria custa o que
+  /// custou para chegar, esteja o frete em um documento ou em dois.
+  ///
+  /// `freteCteRateadoEm` nulo com valor > 0 = o CT-e chegou DEPOIS da entrada:
+  /// o valor fica registrado mas não entra no custo médio, porque reprocessar
+  /// razão fechada é pior do que mostrar a diferença.
+  freteCteValor     Decimal   @default(0) @db.Decimal(12, 2)
+  freteCteChave     String?
+  freteCteRateadoEm DateTime?
+
   xmlUrl       String?
   observacao   String?
   importadoPor String?
@@ -2564,6 +2910,8 @@ model FiscalInbound {
   duplicatas    FiscalInboundDuplicata[]
   conciliacao   PurchaseReconciliationItem[]
   eventos       PurchaseEvent[]
+  titulos       AccountPayable[]
+  devolucoes    SupplierReturn[]
 
   @@unique([tenantId, chave])
   @@index([tenantId])
@@ -2732,6 +3080,11 @@ enum PurchaseEventType {
   CONFERENCIA_CONCLUIDA
   ESTOQUE_ATUALIZADO
   PEDIDO_CANCELADO
+  SALDO_ENCERRADO // o que faltou não vem mais
+  SALDO_REPEDIDO // o saldo virou pedido novo
+  TITULOS_GERADOS // contas a pagar emitidas
+  DEVOLUCAO_REGISTRADA // mercadoria voltou ao fornecedor
+  DOCUMENTO_VINCULADO // XML documentou uma entrada já lançada à mão
 }
 
 model PurchaseEvent {
@@ -3305,6 +3658,7 @@ model Quotation {
   site      Site                @relation(fields: [siteId], references: [id])
   items     QuotationItem[]
   suppliers QuotationSupplier[]
+  pedidos   PurchaseOrder[]
 
   @@unique([tenantId, numero])
   @@index([tenantId])

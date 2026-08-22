@@ -53,7 +53,10 @@ export type AlertKind =
   | "cliente-risco"
   | "nota-parada"
   | "canal-nfe"
-  | "certificado";
+  | "certificado"
+  | "entrada-sem-documento"
+  | "saldo-pendente"
+  | "titulo-vencido";
 
 /** Ajuste do Tenant que o alerta lê. Serve de rastro na tela de configuração. */
 export type ChaveConfig =
@@ -101,7 +104,11 @@ export const CONFIG_ONDE: Record<ChaveConfig, { tela: string; href: string } | n
 };
 
 /** Limiares cujo dono é a tela de Notificações. */
-export type ChaveLimiar = "inventarioAtrasoDias" | "novoSemMovDias";
+export type ChaveLimiar =
+  | "inventarioAtrasoDias"
+  | "novoSemMovDias"
+  | "entradaSemDocumentoDias"
+  | "saldoPendenteDias";
 
 export const LIMIARES: Record<
   ChaveLimiar,
@@ -120,6 +127,22 @@ export const LIMIARES: Record<
     min: 1,
     max: 90,
     padrao: 7,
+  },
+  // Carência antes de cobrar o XML: nota de fornecedor costuma chegar no dia
+  // seguinte. Avisar na mesma hora transformaria o alerta em ruído diário.
+  entradaSemDocumentoDias: {
+    label: "Cobrar o XML depois de",
+    sufixo: "dias",
+    min: 1,
+    max: 60,
+    padrao: 3,
+  },
+  saldoPendenteDias: {
+    label: "Cobrar decisão do saldo depois de",
+    sufixo: "dias",
+    min: 1,
+    max: 60,
+    padrao: 5,
   },
 };
 
@@ -369,6 +392,42 @@ export const CATALOGO: Record<AlertKind, DefAlerta> = {
     estrategias: "todas",
     rotulo: "Certificado A1 vencendo",
     ajuda: "Certificado digital perto do vencimento — sem ele para a emissão e a consulta à SEFAZ.",
+  },
+  // ── Documento de Compra ────────────────────────────────────
+  // As três pendências que a espinha de compras criou. Nascem aqui, e não como
+  // faixa solta na tela, porque assim ganham config por tipo, push e o card do
+  // dashboard de graça — e porque um aviso que só existe numa tela é um aviso
+  // que só quem abre aquela tela vê.
+  "entrada-sem-documento": {
+    kind: "entrada-sem-documento",
+    categoria: "operacao",
+    prioridade: "alto",
+    icone: "documento-pendente",
+    estrategias: "todas",
+    rotulo: "Entrada sem documento fiscal",
+    ajuda:
+      "Mercadoria lançada à mão sem nota. Quando o XML chegar, precisa ser vinculado — receber de novo dobraria o estoque.",
+    limiar: "entradaSemDocumentoDias",
+  },
+  "saldo-pendente": {
+    kind: "saldo-pendente",
+    categoria: "operacao",
+    prioridade: "medio",
+    icone: "saldo-pendente",
+    estrategias: "todas",
+    rotulo: "Saldo de pedido sem decisão",
+    ajuda:
+      "Pedido chegou só em parte e ninguém disse o que acontece com o resto — ele fica contando mercadoria que talvez não venha.",
+    limiar: "saldoPendenteDias",
+  },
+  "titulo-vencido": {
+    kind: "titulo-vencido",
+    categoria: "financeiro",
+    prioridade: "critico",
+    icone: "titulo-vencido",
+    estrategias: "todas",
+    rotulo: "Título vencido",
+    ajuda: "Conta a pagar de fornecedor passou do vencimento e continua em aberto.",
   },
 };
 

@@ -26,6 +26,11 @@ export type Permissao =
   | "compras.ver"
   | "compras.pedir"
   | "compras.receber"
+  | "compras.devolver" // devolver mercadoria ao fornecedor
+  // Financeiro de compras — ver o que se deve é rotina de quem compra; dar
+  // baixa em título mexe em dinheiro e fica com quem responde pelo caixa.
+  | "financeiro.ver"
+  | "financeiro.pagar"
   // Fornecedores
   | "fornecedor.ver"
   | "fornecedor.editar"
@@ -67,6 +72,9 @@ const TODAS: readonly Permissao[] = [
   "compras.ver",
   "compras.pedir",
   "compras.receber",
+  "compras.devolver",
+  "financeiro.ver",
+  "financeiro.pagar",
   "fornecedor.ver",
   "fornecedor.editar",
   "venda.registrar",
@@ -101,6 +109,8 @@ export const MATRIZ: Record<Perfil, readonly Permissao[]> = {
     "estoque.transferir",
     "compras.ver",
     "compras.receber",
+    // Quem confere a carga é quem vê a avaria e devolve na hora.
+    "compras.devolver",
     "fornecedor.ver",
     // Entrada por XML é recebimento de mercadoria — quem confere, importa.
     "fiscal.ver",
@@ -130,6 +140,8 @@ export const MATRIZ: Record<Perfil, readonly Permissao[]> = {
     "produto.custo",
     "compras.ver",
     "compras.pedir",
+    "financeiro.ver",
+    "financeiro.pagar",
     "fornecedor.ver",
     "fornecedor.editar",
     "cliente.ver",
@@ -143,6 +155,8 @@ export const MATRIZ: Record<Perfil, readonly Permissao[]> = {
 
   CONTADOR: [
     "produto.ver",
+    // Vê o que a empresa deve; não dá baixa em nada.
+    "financeiro.ver",
     "relatorio.ver",
     "relatorio.exportar",
     "fiscal.ver",
@@ -165,7 +179,7 @@ export const PERFIL_DESCRICAO: Record<Perfil, string> = {
   ADMINISTRADOR: "Acesso total: configurações, equipe, preços, custos e todas as lojas.",
   ESTOQUISTA: "Contagem, recebimento, ajuste e transferência de estoque.",
   CAIXA: "Abre e fecha caixa, registra vendas e sangrias.",
-  FINANCEIRO: "Compras, fornecedores, custos e relatórios financeiros.",
+  FINANCEIRO: "Compras, fornecedores, custos, contas a pagar e relatórios financeiros.",
   CONTADOR: "Somente leitura: relatórios e dados fiscais para exportação.",
 };
 

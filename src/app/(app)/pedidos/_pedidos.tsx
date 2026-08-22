@@ -32,6 +32,7 @@ import {
   QrCode,
   ClipboardCheck,
   History,
+  PackageX,
 } from "lucide-react";
 import { cn, moneyToMask, parseMoney } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
@@ -57,6 +58,7 @@ import { fmtMoney, fmtQtd, previsaoLabel, relDiaHora, Thumb } from "../cotacoes/
 import { PurchaseItemCard, PurchaseListHeader, defaultPackaging, precoSugerido } from "./_purchase-item";
 import { BonusItemCard, BonusItemSidePanel, BonusListHeader, type BonusDraftItem } from "./_bonus";
 import { type MotivoBonificacao, type TipoItemPedido } from "./_types";
+import { SaldoPedidoSheet } from "./_saldo";
 
 // ── Tipos ─────────────────────────────────────────────────────
 
@@ -103,6 +105,13 @@ export type PedidoView = {
   totalItems: number;
   /** Tem NF-e vinculada (XML já importado) — decide se receber é conferir ou digitar. */
   temNota: boolean;
+  /** De onde o pedido nasceu: compra planejada × documento retroativo. */
+  origem: string;
+  temBonificacao: boolean;
+  /** Quanto ainda falta chegar, em dinheiro. */
+  valorSaldo: number;
+  /** Parcial cuja pendência ninguém resolveu. */
+  saldoPendente: boolean;
   items: ItemView[];
 };
 
@@ -159,6 +168,7 @@ export function PedidoDrawer({
   const [reenviar, setReenviar] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const [bonusOpen, setBonusOpen] = useState(false);
+  const [saldoOpen, setSaldoOpen] = useState(false);
   const [produtosAbertos, setProdutosAbertos] = useState(true);
   const [bonusAbertos, setBonusAbertos] = useState(true);
   const [stepAberto, setStepAberto] = useState<StepKey | null>(null);
@@ -377,6 +387,19 @@ export function PedidoDrawer({
           <AcaoBtn key="conferir" tone="primary" icon={PackageCheck} label="Conferir recebimento" tooltip="Lançar o restante da mercadoria recebida" onClick={() => onReceber(p)} />,
         );
       }
+      // Sem esta saída o pedido parcial fica aberto para sempre: ninguém sabe
+      // se o resto vem, e a reposição segue contando mercadoria que não chega.
+      botoes.push(
+        <AcaoBtn
+          key="saldo"
+          tone="secondary"
+          icon={PackageX}
+          label="Resolver saldo"
+          tooltip="Decidir o que acontece com o que não chegou"
+          disabled={pending !== null}
+          onClick={() => setSaldoOpen(true)}
+        />,
+      );
       botoes.push(
         <AcaoBtn
           key="cancelar"
@@ -619,6 +642,10 @@ export function PedidoDrawer({
           products={products}
           onAdd={adicionarBonificacao}
         />
+      )}
+
+      {p && saldoOpen && (
+        <SaldoPedidoSheet pedidoId={p.id} onClose={() => setSaldoOpen(false)} />
       )}
     </Sheet>
   );

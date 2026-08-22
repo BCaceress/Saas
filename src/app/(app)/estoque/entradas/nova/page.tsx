@@ -8,7 +8,16 @@ export default async function NovaEntradaPage() {
   const opts = await withTenant(ctx, async (c) => {
     // Garante ao menos um local antes de carregar as opções do formulário.
     await getOrCreateDefaultSite(c.tenant.id);
-    return loadEntradaFormOptions();
+    const o = await loadEntradaFormOptions();
+    return {
+      ...o,
+      // O formulário mostra um nome só; a razão social é o nome do papel.
+      suppliers: o.suppliers.map((s) => ({
+        id: s.id,
+        nome: s.nomeFantasia || s.razaoSocial,
+        prazoPagamentoDias: s.prazoPagamentoDias ?? null,
+      })),
+    };
   });
 
   return (

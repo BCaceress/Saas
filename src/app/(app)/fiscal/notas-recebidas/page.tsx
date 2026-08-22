@@ -30,6 +30,7 @@ export default async function NotasRecebidasPage() {
         purchaseOrderId: true,
         purchaseId: true,
         observacao: true,
+        semEstoqueMotivo: true,
         purchaseOrder: { select: { numero: true } },
         items: {
           orderBy: { ordem: "asc" },
@@ -102,6 +103,7 @@ export default async function NotasRecebidasPage() {
           purchaseOrderId: n.purchaseOrderId,
           temEntrada: Boolean(n.purchaseId),
           observacao: n.observacao,
+          semEstoqueMotivo: n.semEstoqueMotivo,
           itens: n.items.map((i) => ({
             id: i.id,
             ordem: i.ordem,

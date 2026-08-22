@@ -9,6 +9,7 @@ import {
 import { custoDoItem } from "@/lib/fiscal/custo";
 import { atualizarCustoDeReferencia } from "@/lib/fiscal/enriquecer-produto";
 import { registrarEvento } from "./eventos";
+import { gerarTitulosDaNota } from "@/lib/financeiro/contas-pagar";
 import { TOL_QTD, vereditoDaLinha } from "./conciliacao-regras";
 import type {
   PurchaseOrderStatus,
@@ -621,6 +622,7 @@ export async function criarPedidoDaNota(input: {
       supplierId: inbound.supplierId,
       previsaoEntrega: inbound.dataEmissao,
       observacao: `Pedido gerado a partir da nota ${inbound.numero}/${inbound.serie}.`,
+      origem: "XML",
       items,
     },
     { createdBy: userId ?? undefined },
@@ -1137,6 +1139,28 @@ export async function confirmarEntradaConciliada(input: {
     where: { id: inboundId },
     data: { status: "RECEBIDO", purchaseId: purchaseId || null },
   });
+
+  // Estoque e financeiro são o mesmo fato visto de dois lados. As duplicatas da
+  // nota viram títulos aqui, no instante em que a mercadoria passa a ser nossa.
+  const titulos = await gerarTitulosDaNota({
+    tenantId,
+    inboundId,
+    purchaseId: purchaseId || null,
+    userId,
+  });
+  if (titulos.criados > 0) {
+    await registrarEvento({
+      tenantId,
+      purchaseOrderId: pedido.id,
+      inboundId,
+      tipo: "TITULOS_GERADOS",
+      descricao: titulos.estimado
+        ? `1 título a pagar de R$ ${titulos.valorTotal.toFixed(2)} — a nota não trouxe duplicata, o vencimento veio do prazo do fornecedor.`
+        : `${titulos.criados} título(s) a pagar, somando R$ ${titulos.valorTotal.toFixed(2)}.`,
+      meta: { criados: titulos.criados, valorTotal: titulos.valorTotal },
+      createdBy: userId,
+    });
+  }
 
   // Custo de referência do produto: agora o dinheiro é real, então o que a
   // nota cobrou vira o custo do cadastro. (Custo médio quem move é o serviço

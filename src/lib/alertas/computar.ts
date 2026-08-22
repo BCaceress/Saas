@@ -23,6 +23,8 @@ import { loadCouponCandidates } from "@/app/(app)/clientes/_data";
 
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 const fmtQtd = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 0 });
+const fmtBRL = (v: number) =>
+  v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
 type CamposAlerta = {
   titulo: string;
@@ -138,6 +140,9 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
   // Aprendendo: emite só o que independe de giro (saldo negativo e zerado).
   const aprendendo = estaAprendendo(policy, diasHistorico);
 
+  const semDocumentoMs = (tenant.entradaSemDocumentoDias || 3) * DIA;
+  const saldoPendenteMs = (tenant.saldoPendenteDias || 5) * DIA;
+
   const janelaValidade = new Date(agora + (tenant.validadeAlertaDias || 30) * DIA);
   const olhaValidade = prefs["validade-vencida"].ligado || prefs["validade-proxima"].ligado;
 
@@ -153,6 +158,9 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
     caixasComFalha,
     certificados,
     cotacoes,
+    entradasSemDocumento,
+    pedidosSemDecisao,
+    titulosVencidos,
   ] = await Promise.all([
     db.product.findMany({
       where: { ativo: true },
@@ -255,6 +263,59 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
         createdAt: true,
         siteId: true,
         suppliers: { select: { status: true } },
+      },
+    }),
+    // ── Documento de Compra ──────────────────────────────────
+    // Entrada lançada à mão que ainda espera o XML. É a pendência mais cara de
+    // descobrir tarde: quando a nota chega e alguém recebe, o estoque dobra.
+    db.purchase.findMany({
+      where: {
+        aguardandoDocumento: true,
+        chaveNfe: null,
+        data: { lt: new Date(agora - semDocumentoMs) },
+      },
+      orderBy: { data: "asc" },
+      take: 20,
+      select: {
+        id: true,
+        data: true,
+        siteId: true,
+        numeroNota: true,
+        supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+        items: { select: { custoTotal: true } },
+      },
+    }),
+    // Pedido parcial que ninguém resolveu: o resto vem, não vem, ou virou
+    // pedido novo? Sem decisão ele fica na fila para sempre.
+    db.purchaseOrder.findMany({
+      where: {
+        status: "RECEBIDO_PARCIAL",
+        saldoResolucao: "PENDENTE",
+        updatedAt: { lt: new Date(agora - saldoPendenteMs) },
+      },
+      orderBy: { updatedAt: "asc" },
+      take: 20,
+      select: {
+        id: true,
+        numero: true,
+        siteId: true,
+        updatedAt: true,
+        supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+        items: { select: { qtdPedida: true, qtdRecebida: true, custoUnitario: true } },
+      },
+    }),
+    // Conta a pagar que passou do vencimento. Agrupa por fornecedor no emissor:
+    // dez parcelas do mesmo distribuidor são UM problema, não dez alertas.
+    db.accountPayable.findMany({
+      where: { status: "ABERTO", vencimento: { lt: new Date() } },
+      orderBy: { vencimento: "asc" },
+      take: 100,
+      select: {
+        supplierId: true,
+        vencimento: true,
+        valor: true,
+        valorPago: true,
+        supplier: { select: { razaoSocial: true, nomeFantasia: true } },
       },
     }),
   ]);
@@ -493,6 +554,78 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
         });
       }
     }
+  }
+
+  // ── Documento de Compra: o que entrou sem fechar o ciclo ───
+  for (const entrada of entradasSemDocumento) {
+    const dias = Math.floor((agora - entrada.data.getTime()) / DIA);
+    const valor = entrada.items.reduce((a, i) => a + Number(i.custoTotal), 0);
+    const fornecedor =
+      entrada.supplier?.nomeFantasia || entrada.supplier?.razaoSocial || "sem fornecedor";
+    emitir(alerts, "entrada-sem-documento", entrada.id, {
+      titulo: "Entrada sem documento fiscal",
+      descricao: comLocal(
+        entrada.siteId,
+        `${fornecedor} · ${fmtBRL(valor)} — lançada à mão há ${dias} dias e o XML não chegou.`,
+      ),
+      at: entrada.data.toISOString(),
+      href: "/fiscal/notas-recebidas",
+      acaoLabel: "Procurar a nota",
+    });
+  }
+
+  for (const pedido of pedidosSemDecisao) {
+    const dias = Math.floor((agora - pedido.updatedAt.getTime()) / DIA);
+    const falta = pedido.items.reduce(
+      (a, i) => a + Math.max(0, Number(i.qtdPedida) - Number(i.qtdRecebida)) * Number(i.custoUnitario),
+      0,
+    );
+    const fornecedor = pedido.supplier.nomeFantasia || pedido.supplier.razaoSocial;
+    emitir(alerts, "saldo-pendente", pedido.id, {
+      titulo: "Saldo de pedido sem decisão",
+      descricao: comLocal(
+        pedido.siteId,
+        `${pedido.numero} · ${fornecedor} — faltam ${fmtBRL(falta)} há ${dias} dias. O resto vem?`,
+      ),
+      at: pedido.updatedAt.toISOString(),
+      href: "/pedidos",
+      acaoLabel: "Resolver saldo",
+    });
+  }
+
+  // Um alerta por FORNECEDOR: dez parcelas vencidas do mesmo distribuidor são
+  // uma conversa só, e dez linhas no sino esconderiam os outros avisos.
+  const vencidoPorFornecedor = new Map<
+    string,
+    { nome: string; total: number; parcelas: number; maisAntigo: Date }
+  >();
+  for (const t of titulosVencidos) {
+    const chave = t.supplierId ?? "sem-fornecedor";
+    const nome = t.supplier?.nomeFantasia || t.supplier?.razaoSocial || "Fornecedor não informado";
+    const saldo = Math.max(0, Number(t.valor) - Number(t.valorPago));
+    const atual = vencidoPorFornecedor.get(chave);
+    if (atual) {
+      atual.total += saldo;
+      atual.parcelas += 1;
+      if (t.vencimento < atual.maisAntigo) atual.maisAntigo = t.vencimento;
+    } else {
+      vencidoPorFornecedor.set(chave, {
+        nome,
+        total: saldo,
+        parcelas: 1,
+        maisAntigo: t.vencimento,
+      });
+    }
+  }
+  for (const [chave, v] of vencidoPorFornecedor) {
+    const dias = Math.floor((agora - v.maisAntigo.getTime()) / DIA);
+    emitir(alerts, "titulo-vencido", chave, {
+      titulo: v.parcelas === 1 ? "Título vencido" : `${v.parcelas} títulos vencidos`,
+      descricao: `${v.nome} · ${fmtBRL(v.total)} em aberto — o mais antigo venceu há ${dias} dia(s).`,
+      at: v.maisAntigo.toISOString(),
+      href: "/financeiro/contas-a-pagar?status=VENCIDO",
+      acaoLabel: "Ver contas",
+    });
   }
 
   // ── Entrada de NF-e: a automação está viva? ────────────────

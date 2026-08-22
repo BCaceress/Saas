@@ -309,7 +309,14 @@ export async function criarPedidoDoScannerAction(
     for (const [supplierId, items] of porFornecedor) {
       const id = await criarPedidoCompra(
         ctx.tenant.id,
-        { siteId, supplierId, previsaoEntrega: null, observacao: "Aberto pelo celular", items },
+        {
+          siteId,
+          supplierId,
+          previsaoEntrega: null,
+          observacao: "Aberto pelo celular",
+          origem: "REPOSICAO",
+          items,
+        },
         { enviar: d.enviar, createdBy: ctx.user.id ?? "" },
       );
       const pedido = await db.purchaseOrder.findFirst({

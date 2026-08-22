@@ -416,6 +416,7 @@ export async function gerarPedidosAction(input: z.input<typeof fecharSchema>) {
           supplierId: grupo.supplierId,
           previsaoEntrega: d.previsaoEntrega ? new Date(d.previsaoEntrega) : null,
           observacao: d.observacao ?? "Gerado pelo comparador de fornecedores.",
+          origem: "CARRINHO",
           items: itens.map((i) => ({
             productId: i.productId as string,
             qtdPedida: i.quantidade,

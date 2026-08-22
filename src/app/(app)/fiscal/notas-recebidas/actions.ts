@@ -16,6 +16,10 @@ import {
   type ResultadoImportacao,
 } from "@/lib/fiscal/entrada";
 import { registrarImportacoes } from "@/lib/fiscal/import-log";
+import {
+  entradasAguardandoDocumento,
+  vincularNotaAEntradaManual,
+} from "@/lib/compras/documento";
 import { buscarProdutosParaRelacionar } from "@/lib/compras/busca-produto";
 import {
   sincronizarDistribuicao,
@@ -162,16 +166,75 @@ export async function vincularPedidoAction(input: {
   });
 }
 
-export async function receberNotaAction(inboundId: string) {
+export async function receberNotaAction(inboundId: string, ignorarDuplicidade = false) {
   return tx("fiscal.importar", async (ctx) => {
     const purchaseId = await gerarEntradaDaNota({
       tenantId: ctx.tenant.id,
       inboundId,
       userId: ctx.user.id,
+      // Chegou pela SEFAZ/e-mail: ninguém pediu, o fornecedor mandou. A origem
+      // fica registrada no pedido retroativo que a entrada cria.
+      origem: "DFE",
+      ignorarDuplicidade,
     });
     ok();
     revalidatePath("/estoque");
+    revalidatePath("/pedidos", "layout");
+    revalidatePath("/financeiro", "layout");
     return purchaseId;
+  });
+}
+
+/**
+ * Entradas lançadas à mão que esta nota pode estar documentando. A tela
+ * pergunta antes de receber — depois vira divergência de inventário.
+ */
+export async function candidatasEntradaManualAction(inboundId: string) {
+  return tx("fiscal.ver", async () => {
+    const nota = await db.fiscalInbound.findFirst({
+      where: { id: inboundId },
+      select: {
+        siteId: true,
+        supplierId: true,
+        dataEmissao: true,
+        valorTotal: true,
+        items: { select: { productId: true } },
+      },
+    });
+    if (!nota) return [];
+    return entradasAguardandoDocumento({
+      supplierId: nota.supplierId,
+      siteId: nota.siteId,
+      dataEmissao: nota.dataEmissao,
+      valorTotal: Number(nota.valorTotal),
+      produtoIds: nota.items.map((i) => i.productId).filter((i): i is string => Boolean(i)),
+    });
+  });
+}
+
+const vincularManualSchema = z.object({
+  inboundId: z.string().min(1),
+  purchaseId: z.string().min(1),
+});
+
+/**
+ * "Esta nota é aquela entrada que eu já lancei." Fecha o par sem tocar no
+ * estoque — que é exatamente o ponto: a mercadoria já entrou uma vez.
+ */
+export async function vincularEntradaManualAction(
+  input: z.input<typeof vincularManualSchema>,
+) {
+  const d = vincularManualSchema.parse(input);
+  return tx("fiscal.importar", async (ctx) => {
+    await vincularNotaAEntradaManual({
+      tenantId: ctx.tenant.id,
+      inboundId: d.inboundId,
+      purchaseId: d.purchaseId,
+      userId: ctx.user.id,
+    });
+    ok();
+    revalidatePath("/estoque");
+    revalidatePath("/pedidos", "layout");
   });
 }
 

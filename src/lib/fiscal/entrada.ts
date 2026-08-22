@@ -12,6 +12,14 @@ import { custoDoItem } from "./custo";
 import { ratearTotaisDaNota } from "./rateio";
 import { enriquecerProdutoComNota, atualizarCustoDeReferencia } from "./enriquecer-produto";
 import { conciliarComPedidoSugerido } from "@/lib/compras/conciliacao";
+import { classificarDocumento, ehConhecimentoDeTransporte } from "./tipo-documento";
+import { importarCte, freteCteDaNota } from "./cte-entrada";
+import {
+  entradasAguardandoDocumento,
+  garantirPedidoDaNota,
+  type CandidatoEntradaManual,
+} from "@/lib/compras/documento";
+import { gerarTitulosDaNota } from "@/lib/financeiro/contas-pagar";
 import {
   sincronizarFornecedorComNota,
   vincularSincronizacaoAoInbound,
@@ -47,8 +55,28 @@ export type ResultadoImportacao = {
   pedidosCandidatos?: number;
   /** O que a nota fez pelo cadastro do fornecedor — vira o painel de revisão. */
   sincronizacao?: ResumoSincronizacao;
+  /**
+   * Documento sem mercadoria (CT-e, nota de serviço): entrou como despesa, não
+   * como estoque. A tela precisa dizer isso — senão o operador procura os itens.
+   */
+  semEstoque?: string | null;
+  /** CT-e: quanto de frete entrou e em quantas notas da carga ele coube. */
+  frete?: {
+    valor: number;
+    notasRateadas: number;
+    notasNaoEncontradas: number;
+    naoRateado: number;
+  };
+  /**
+   * Entradas lançadas à mão que esta nota pode estar documentando. Enquanto
+   * houver candidata, receber a nota duplicaria estoque — a tela pergunta antes.
+   */
+  candidatasManuais?: CandidatoEntradaManual[];
   motivo?: string;
 };
+
+const fmtMoeda = (v: number) =>
+  v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
 type ItemResolvido = {
   productId: string | null;
@@ -167,6 +195,36 @@ async function importarUmXml(input: {
   cnpjDestino?: string | null;
 }): Promise<ResultadoImportacao> {
   const { tenantId, siteId, xml, userId, cnpjDestino } = input;
+
+  // CT-e vem no mesmo e-mail da nota e o operador sobe os dois. Não tem
+  // mercadoria — mas o frete É custo da carga, então entra por um caminho
+  // próprio: vira despesa e se rateia entre as notas que ele transportou.
+  if (ehConhecimentoDeTransporte(xml.conteudo)) {
+    const cte = await importarCte({ tenantId, siteId, xml, userId, cnpjDestino });
+    const rateadas = cte.notasVinculadas.filter((n) => !n.jaRecebida).length;
+    return {
+      arquivo: xml.nome,
+      status: "IMPORTADA",
+      chave: cte.chave,
+      inboundId: cte.inboundId,
+      itensResolvidos: 0,
+      itensTotal: 0,
+      semEstoque:
+        `Frete de ${fmtMoeda(cte.valorFrete)} — ` +
+        (rateadas > 0
+          ? `rateado entre ${rateadas} nota(s) da carga e virou conta a pagar.`
+          : cte.freteNaoRateado > 0
+            ? `as notas desta carga já viraram entrada, então o valor entrou só como conta a pagar.`
+            : "entrou como conta a pagar."),
+      frete: {
+        valor: cte.valorFrete,
+        notasRateadas: rateadas,
+        notasNaoEncontradas: cte.notasNaoEncontradas,
+        naoRateado: cte.freteNaoRateado,
+      },
+    };
+  }
+
   const nota = parseNotaXml(xml.conteudo);
 
   // Mesma nota duas vezes = estoque dobrado. A chave é a trava.
@@ -205,11 +263,17 @@ async function importarUmXml(input: {
     desconto: nota.valorDesconto,
   });
 
+  // Nota de serviço não tem mercadoria: guardamos o documento (é despesa real,
+  // com duplicata a pagar) mas ele não entra na fila de relacionar itens.
+  const classificacao = classificarDocumento({ modelo: nota.modelo, itens: nota.itens });
+
   const resolvidos = await Promise.all(
     nota.itens.map(async (item, i) => ({
       item,
       encargos: rateio[i],
-      resolucao: await resolverItem(supplierId, item),
+      resolucao: classificacao.movimentaEstoque
+        ? await resolverItem(supplierId, item)
+        : { productId: null, packagingId: null, fatorConversao: 1 },
     })),
   );
 
@@ -218,7 +282,10 @@ async function importarUmXml(input: {
       tenantId,
       siteId,
       supplierId,
-      status: statusPorItens(resolvidos.map((r) => r.resolucao)),
+      status: classificacao.movimentaEstoque
+        ? statusPorItens(resolvidos.map((r) => r.resolucao))
+        : "SEM_ESTOQUE",
+      semEstoqueMotivo: classificacao.motivo,
       chave: nota.chave,
       modelo: nota.modelo,
       numero: nota.numero,
@@ -282,12 +349,42 @@ async function importarUmXml(input: {
   // origem — é o que liga "endereço atualizado" ao documento que o mudou.
   await vincularSincronizacaoAoInbound(nota.chave, criada.id);
 
+  // Documento de despesa termina aqui: vira título a pagar e não volta a
+  // pedir atenção do operador. Não há pedido para conciliar nem item para
+  // relacionar — insistir nisso é o que fazia essas notas ficarem PENDENTE
+  // para sempre.
+  if (!classificacao.movimentaEstoque) {
+    await gerarTitulosDaNota({ tenantId, inboundId: criada.id, userId });
+    return {
+      arquivo: xml.nome,
+      status: "IMPORTADA",
+      chave: nota.chave,
+      inboundId: criada.id,
+      itensResolvidos: 0,
+      itensTotal: resolvidos.length,
+      semEstoque: classificacao.motivo,
+      sincronizacao,
+    };
+  }
+
   // Achar o pedido é trabalho do sistema, não do operador: quando um candidato
   // se destaca com folga, a nota já nasce conciliada.
   const vinculo = await conciliarComPedidoSugerido({
     tenantId,
     inboundId: criada.id,
     userId,
+  });
+
+  // Esta nota pode estar documentando algo que já foi lançado à mão. Perguntar
+  // agora custa uma tela; descobrir depois custa um inventário.
+  const candidatasManuais = await entradasAguardandoDocumento({
+    supplierId,
+    siteId,
+    dataEmissao: nota.dataEmissao,
+    valorTotal: nota.valorTotal,
+    produtoIds: resolvidos
+      .map((r) => r.resolucao.productId)
+      .filter((id): id is string => Boolean(id)),
   });
 
   return {
@@ -299,6 +396,7 @@ async function importarUmXml(input: {
     itensTotal: resolvidos.length,
     pedidoNumero: vinculo.numero,
     pedidosCandidatos: vinculo.sugestoes.length,
+    candidatasManuais,
     sincronizacao,
   };
 }
@@ -340,6 +438,12 @@ export async function relacionarItemInbound(input: {
   if (!item) throw new Error("Item não encontrado.");
   if (item.inbound.status === "RECEBIDO") {
     throw new Error("Esta nota já gerou entrada de estoque — não dá para trocar o produto.");
+  }
+  if (item.inbound.status === "SEM_ESTOQUE") {
+    throw new Error("Este documento é de serviço/frete: não há mercadoria para relacionar.");
+  }
+  if (item.inbound.status === "VINCULADO") {
+    throw new Error("Esta nota documenta uma entrada já lançada — o de-para dela não muda o saldo.");
   }
 
   // A nota sabe em que embalagem o fornecedor vende, com que código de barras
@@ -436,6 +540,14 @@ export async function gerarEntradaDaNota(input: {
   tenantId: string;
   inboundId: string;
   userId?: string | null;
+  /** De onde a nota veio — define a origem do pedido criado retroativamente. */
+  origem?: "XML" | "DFE";
+  /**
+   * O operador viu a lista de entradas manuais candidatas e disse que esta nota
+   * não é nenhuma delas. Sem esta confirmação, uma candidata forte barra a
+   * entrada — duplicar estoque em silêncio é pior do que uma pergunta a mais.
+   */
+  ignorarDuplicidade?: boolean;
 }): Promise<string> {
   const { tenantId, inboundId, userId } = input;
 
@@ -445,8 +557,11 @@ export async function gerarEntradaDaNota(input: {
       id: true,
       siteId: true,
       status: true,
+      chave: true,
       numero: true,
       serie: true,
+      dataEmissao: true,
+      valorTotal: true,
       supplierId: true,
       purchaseOrderId: true,
       emitRazaoSocial: true,
@@ -470,6 +585,16 @@ export async function gerarEntradaDaNota(input: {
   if (!nota) throw new Error("Nota não encontrada.");
   if (nota.status === "RECEBIDO") throw new Error("Esta nota já gerou entrada de estoque.");
   if (nota.status === "DESCARTADO") throw new Error("Esta nota foi descartada.");
+  if (nota.status === "VINCULADO") {
+    throw new Error(
+      "Esta nota documenta uma entrada lançada à mão — o estoque já subiu por ela.",
+    );
+  }
+  if (nota.status === "SEM_ESTOQUE") {
+    throw new Error(
+      "Este documento não tem mercadoria (serviço/frete). Ele já virou conta a pagar.",
+    );
+  }
 
   const semProduto = nota.items.filter((i) => !i.productId);
   if (semProduto.length > 0) {
@@ -481,40 +606,90 @@ export async function gerarEntradaDaNota(input: {
     );
   }
 
-  const itens: EntradaItem[] = nota.items.map((i) => ({
-    productId: i.productId as string,
-    // Convertemos aqui e mandamos packagingId null de propósito: o fator do
-    // de-para pode divergir do cadastro da embalagem (fornecedor muda o fardo),
-    // e deixar `registrarEntrada` converter de novo dobraria a quantidade.
-    quantidade: Number(i.quantidade) * Number(i.fatorConversao),
-    custoTotal: custoDoItem({
-      valorTotal: Number(i.valorTotal),
-      valorDesconto: Number(i.valorDesconto),
-      valorIcmsSt: Number(i.valorIcmsSt),
-      valorFcpSt: Number(i.valorFcpSt),
-      valorIpi: Number(i.valorIpi),
-      valorFrete: Number(i.valorFrete),
-      bonificacao: i.bonificacao,
-    }),
-    packagingId: null,
-  }));
+  // Frete que veio em CT-e separado, já rateado para esta nota. É custo da
+  // mercadoria como o frete da própria NF-e: quem paga a entrega em documento
+  // à parte não paga menos pela carga.
+  const freteCte = await freteCteDaNota(inboundId);
+  const baseRateio = nota.items.reduce((a, i) => a + Number(i.valorTotal), 0);
+
+  const itens: EntradaItem[] = nota.items.map((i) => {
+    // Proporcional ao valor do item, mesma régua do rateio da nota. Bonificação
+    // fica de fora: item sem custo não pode ganhar custo pelo frete.
+    const parteCte =
+      freteCte > 0 && baseRateio > 0 && !i.bonificacao
+        ? (freteCte * Number(i.valorTotal)) / baseRateio
+        : 0;
+
+    return {
+      productId: i.productId as string,
+      // Convertemos aqui e mandamos packagingId null de propósito: o fator do
+      // de-para pode divergir do cadastro da embalagem (fornecedor muda o fardo),
+      // e deixar `registrarEntrada` converter de novo dobraria a quantidade.
+      quantidade: Number(i.quantidade) * Number(i.fatorConversao),
+      custoTotal: custoDoItem({
+        valorTotal: Number(i.valorTotal),
+        valorDesconto: Number(i.valorDesconto),
+        valorIcmsSt: Number(i.valorIcmsSt),
+        valorFcpSt: Number(i.valorFcpSt),
+        valorIpi: Number(i.valorIpi),
+        valorFrete: Number(i.valorFrete) + parteCte,
+        bonificacao: i.bonificacao,
+      }),
+      packagingId: null,
+    };
+  });
+
+  // Antes de somar no estoque: esta mercadoria já entrou à mão? A pergunta só
+  // é cara aqui; depois vira divergência de inventário que ninguém explica.
+  if (!input.ignorarDuplicidade) {
+    const candidatas = await entradasAguardandoDocumento({
+      supplierId: nota.supplierId,
+      siteId: nota.siteId,
+      dataEmissao: nota.dataEmissao,
+      valorTotal: Number(nota.valorTotal),
+      produtoIds: nota.items.map((i) => i.productId as string),
+    });
+    const forte = candidatas.find((c) => c.score >= 80);
+    if (forte) {
+      throw new Error(
+        `Há uma entrada lançada à mão em ${forte.data.toLocaleDateString("pt-BR")} que parece ser esta mesma nota. Vincule as duas ou confirme que são compras diferentes antes de receber.`,
+      );
+    }
+  }
+
+  // Todo o que entra tem documento: nota sem pedido ganha um retroativo, com a
+  // origem real registrada. É o que faz o histórico do fornecedor e o
+  // financeiro enxergarem a compra que ninguém planejou.
+  const purchaseOrderId =
+    nota.purchaseOrderId ??
+    (await garantirPedidoDaNota({
+      tenantId,
+      inboundId,
+      origem: input.origem ?? "XML",
+      userId,
+    }));
 
   const soBonificacao = nota.items.every((i) => i.bonificacao);
 
   const purchaseId = await registrarEntrada(tenantId, nota.siteId, itens, {
     tipo: "FORNECEDOR",
-    motivo: soBonificacao ? "BONIFICACAO" : nota.purchaseOrderId ? null : "COMPRA_SEM_PEDIDO",
+    motivo: soBonificacao ? "BONIFICACAO" : purchaseOrderId ? null : "COMPRA_SEM_PEDIDO",
     supplierId: nota.supplierId,
-    purchaseOrderId: nota.purchaseOrderId,
+    purchaseOrderId,
     numeroNota: `${nota.numero}/${nota.serie}`,
     observacao: `Entrada por XML — ${nota.emitRazaoSocial}`,
     createdBy: userId ?? undefined,
+    chaveNfe: nota.chave,
   });
 
   await db.fiscalInbound.update({
     where: { id: inboundId },
-    data: { status: "RECEBIDO", purchaseId },
+    data: { status: "RECEBIDO", purchaseId, purchaseOrderId },
   });
+
+  // O dinheiro que vai sair nasce junto com a mercadoria que entrou: uma linha
+  // por duplicata da nota, ou parcela única quando o fornecedor não parcelou.
+  await gerarTitulosDaNota({ tenantId, inboundId, purchaseId, userId });
 
   // O que a nota cobrou vira o custo de referência do produto — mesma regra do
   // recebimento conciliado, para os dois caminhos deixarem o cadastro igual.
@@ -542,6 +717,16 @@ export async function descartarNota(input: {
   if (nota.status === "RECEBIDO") {
     throw new Error(
       "Esta nota já movimentou estoque. Para desfazer, registre uma devolução ou um ajuste.",
+    );
+  }
+  if (nota.status === "VINCULADO") {
+    throw new Error(
+      "Esta nota documenta uma entrada já lançada. Descartá-la deixaria a entrada sem documento.",
+    );
+  }
+  if (nota.status === "SEM_ESTOQUE") {
+    throw new Error(
+      "Este documento virou conta a pagar. Cancele o título em Contas a pagar, não a nota.",
     );
   }
   await db.fiscalInbound.update({

@@ -19,6 +19,8 @@ import { ConvitesCotacao } from "./_convites";
 import { ComparativoCotacao } from "./_comparativo";
 import { ResumoCotacaoPainel } from "./_resumo";
 import { RevisarCotacao } from "./_revisar";
+import { EconomiaCotacaoPainel } from "./_economia";
+import type { EconomiaCotacao } from "@/lib/compras/cotacao-economia";
 import { andamento, statusVisivel } from "../_status";
 
 // ── Cotação, tela inteira ───────────────────────────────────
@@ -44,6 +46,7 @@ export function CotacaoDetalheClient({
   fornecedores,
   sites,
   resumo,
+  economia,
   podePedir,
   usaMinimo,
 }: {
@@ -52,6 +55,8 @@ export function CotacaoDetalheClient({
   /** Lojas ativas: com uma só, o nome dela não informa nada e some da tela. */
   sites: { id: string; nome: string }[];
   resumo: ResumoCotacao;
+  /** Só existe depois de decidida — economia de uma escolha que já foi feita. */
+  economia: EconomiaCotacao | null;
   podePedir: boolean;
   usaMinimo: boolean;
 }) {
@@ -151,6 +156,9 @@ export function CotacaoDetalheClient({
       )}
       {painel === "comparativo" && (
         <>
+          {/* Depois de decidida, a pergunta muda: não é mais "de quem comprar",
+              é "o que isso rendeu" — e se quem ganhou cobrou o que prometeu. */}
+          {economia && <EconomiaCotacaoPainel economia={economia} />}
           {/* Antes da tabela: a leitura vem primeiro, os números confirmam. */}
           <ResumoCotacaoPainel resumo={resumo} />
           <ComparativoCotacao cotacao={cotacao} podePedir={podePedir} />
