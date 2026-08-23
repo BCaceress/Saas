@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { Smartphone, X } from "lucide-react";
-import { usarVersaoMobileAction } from "@/app/(mobile)/m/mais/actions";
+import { usarVersaoMobileAction } from "@/app/(mobile)/m/menu/actions";
 
 const DISPENSADO = "nohub:mobile:dispensado";
 /**

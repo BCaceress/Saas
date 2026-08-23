@@ -66,7 +66,7 @@ export type ShellData = {
 
 /**
  * Memoizado por requisição (e por `comCaixa`, que é o que muda o resultado):
- * o layout de `/m` chama isto e a página chama de novo — `/m/mais` fazia o
+ * o layout de `/m` chama isto e a página chama de novo — `/m/menu` fazia o
  * trabalho inteiro duas vezes. `cache()` do React resolve sem que nenhuma das
  * duas precise passar contexto pela árvore.
  */

@@ -191,7 +191,7 @@ export default async function ConfiguracoesMobilePage() {
       <MobilePageHeader
         titulo="Configurações"
         descricao={tenant.nome}
-        voltar="/m/mais"
+        voltar="/m/menu"
       />
 
       {grupos.map((grupo) => {

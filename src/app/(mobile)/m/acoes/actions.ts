@@ -38,6 +38,12 @@ export type ContextoAcoes = {
   podeTransferir: boolean;
   podePreco: boolean;
   podePedir: boolean;
+  /**
+   * Contagens paradas no meio, na loja ativa. A folha "Nova operação" usa isto
+   * para dizer "retomar contagem" em vez de "Inventário" — os dois estados
+   * levavam ao mesmo lugar sem avisar que havia trabalho em aberto.
+   */
+  inventariosAbertos: number;
 };
 
 /**
@@ -50,6 +56,14 @@ export async function contextoAcoesAction(): Promise<ContextoAcoes> {
 
   return runWithTenant(ctx.tenant.id, async () => {
     const [sites, siteAtivo] = await Promise.all([listSites(), getActiveSiteId()]);
+    // `count` indexado, e só para quem conta inventário — quem não tem a
+    // permissão nem veria o aviso de retomada.
+    const inventariosAbertos = podeEmAlguma(ctx.acessos, "estoque.inventario")
+      ? await db.inventory.count({
+          where: { status: "ABERTO", ...(siteAtivo ? { siteId: siteAtivo } : {}) },
+        })
+      : 0;
+
     return {
       sites: sites.map((s) => ({ id: s.id, nome: s.nome })),
       siteAtivo,
@@ -57,6 +71,7 @@ export async function contextoAcoesAction(): Promise<ContextoAcoes> {
       podeTransferir: podeEmAlguma(ctx.acessos, "estoque.transferir"),
       podePreco: podeEmAlguma(ctx.acessos, "produto.preco"),
       podePedir: podeEmAlguma(ctx.acessos, "compras.pedir"),
+      inventariosAbertos,
     };
   });
 }

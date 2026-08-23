@@ -24,7 +24,7 @@ export default async function PedidoMobilePage() {
       <MobilePageHeader
         titulo="Pedido de compra"
         descricao="Bipe o que está faltando."
-        voltar="/m/mais"
+        voltar="/m/menu"
       />
       <PedidoClient sites={sites} siteAtivo={siteAtivo} />
     </>

@@ -29,7 +29,7 @@ export default async function IaMobilePage() {
       <MobilePageHeader
         titulo="NoHub IA"
         descricao="Pergunte sobre vendas, estoque, compras e relatórios."
-        voltar="/m/mais"
+        voltar="/m/menu"
       />
       <IaClient />
     </>

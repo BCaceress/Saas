@@ -6,6 +6,7 @@ import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { db } from "@/lib/prisma";
 import { MobilePageHeader } from "@/components/mobile/page-header";
 import { FichaProdutoView, AcoesFicha } from "@/components/mobile/ficha-produto";
+import { acaoDaUrl } from "@/components/mobile/acao-url";
 import { montarFicha, SELECT_FICHA, type ProdutoCru } from "../../_produto-data";
 
 /**
@@ -30,10 +31,11 @@ export default async function ProdutoMobilePage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ de?: string }>;
+  searchParams: Promise<{ de?: string; acao?: string }>;
 }) {
   const { id } = await params;
-  const { de } = await searchParams;
+  const { de, acao } = await searchParams;
+  const intencao = acaoDaUrl(acao);
   const ctx = await requirePermissaoMobile("produto.ver");
   const policy = policyDoTenant(ctx.tenant);
 
@@ -63,7 +65,9 @@ export default async function ProdutoMobilePage({
       <MobilePageHeader titulo="Produto" voltar={voltarPara(de)} />
       <div className="space-y-3">
         <FichaProdutoView ficha={ficha} />
-        <AcoesFicha ficha={ficha} />
+        {/* A intenção sobrevive ao desvio pela lista "qual deles?": quem veio
+            registrar perda cai aqui com a folha da perda já aberta. */}
+        <AcoesFicha ficha={ficha} inicial={intencao ? { chave: intencao } : null} />
       </div>
     </>
   );

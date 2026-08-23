@@ -53,7 +53,16 @@ type Estado =
   | { tela: "sem-produto"; codigo: string }
   | { tela: "escolher"; termo: string; resultados: ProdutoResumo[] };
 
-export function ScanClient() {
+export function ScanClient({
+  acaoInicial = null,
+}: {
+  /**
+   * Intenção que veio na URL (`/m/scan?acao=perda`). O bipe abre a ficha com a
+   * folha correspondente JÁ aberta — mesmo caminho que o ditado por voz usa,
+   * só que a intenção chega do menu em vez do microfone.
+   */
+  acaoInicial?: AcaoInicial["chave"] | null;
+} = {}) {
   const router = useRouter();
   const [estado, setEstado] = React.useState<Estado>({ tela: "lendo" });
   const [ocupado, setOcupado] = React.useState(false);
@@ -95,7 +104,11 @@ export function ScanClient() {
           return;
         }
 
-        if (await abrirProduto(lido.valor)) return;
+        // A intenção da URL entra aqui: achou o produto, a folha da ação já
+        // sobe junto com a ficha.
+        if (await abrirProduto(lido.valor, acaoInicial ? { chave: acaoInicial } : null)) {
+          return;
+        }
 
         // EAN que não casou é um código órfão; texto que não casou é busca.
         if (lido.tipo === "ean") {
@@ -113,7 +126,7 @@ export function ScanClient() {
         setOcupado(false);
       }
     },
-    [abrirProduto, router],
+    [abrirProduto, router, acaoInicial],
   );
 
   /** Fala → intenção → a MESMA sheet que o dedo abriria. */
@@ -297,7 +310,9 @@ export function ScanClient() {
               : "Qual deles?"}
           </p>
           <p className="text-[13px] text-muted">procurando por “{estado.termo}”</p>
-          {estado.resultados.length > 0 && <Lista produtos={estado.resultados} />}
+          {estado.resultados.length > 0 && (
+            <Lista produtos={estado.resultados} acao={acaoInicial} />
+          )}
         </Card>
       )}
     </div>
@@ -326,13 +341,22 @@ function acaoDoComando(cmd: ComandoVoz): AcaoInicial | null {
   }
 }
 
-function Lista({ produtos }: { produtos: ProdutoResumo[] }) {
+function Lista({
+  produtos,
+  acao = null,
+}: {
+  produtos: ProdutoResumo[];
+  /** A intenção sobrevive à escolha: quem veio registrar perda continua nela. */
+  acao?: AcaoInicial["chave"] | null;
+}) {
+  const de = acao ? `/m/scan?acao=${acao}` : "/m/scan";
+
   return (
     <ul className="divide-y divide-line rounded-lg border border-line">
       {produtos.map((p) => (
         <li key={p.id}>
           <Link
-            href={`/m/produto/${p.id}?de=/m/scan`}
+            href={`/m/produto/${p.id}?de=${encodeURIComponent(de)}${acao ? `&acao=${acao}` : ""}`}
             className="flex min-h-12 items-center gap-2 px-3 py-2 text-[13px] hover:bg-surface-2"
           >
             <span className="min-w-0 flex-1">

@@ -93,7 +93,7 @@ export default async function MobileHome() {
         </div>
 
         <Link
-          href="/m/mais"
+          href="/m/menu"
           className="tap flex min-w-0 shrink-0 items-center gap-2 rounded-full py-0.5 pl-1 text-right focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
         >
           <span className="min-w-0 max-w-[8rem] truncate text-[13px] font-medium text-ink-2">
@@ -187,7 +187,7 @@ function Atalhos({ acessos }: { acessos: Acesso[] }) {
       mostrar: podeEmAlguma(acessos, "compras.receber"),
     },
     // Caixa saiu do celular: abrir/fechar caixa é trabalho de PDV, feito na
-    // máquina que tem gaveta e impressora (ver `/m/mais` e `nav.ts`).
+    // máquina que tem gaveta e impressora (ver `/m/menu` e `nav.ts`).
     {
       href: "/m/produtos",
       label: "Produtos",

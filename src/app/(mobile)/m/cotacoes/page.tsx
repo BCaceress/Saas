@@ -26,7 +26,7 @@ export default async function CotacoesMobilePage() {
       <MobilePageHeader
         titulo="Cotações"
         descricao="Peça preço a vários fornecedores."
-        voltar="/m/mais"
+        voltar="/m/menu"
       />
       <CotacoesMobile
         linhas={linhas}

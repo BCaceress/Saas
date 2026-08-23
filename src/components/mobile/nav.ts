@@ -56,7 +56,7 @@ export type MobileTab = {
  * A ordem separa as duas metades da barra: à esquerda o que é MEU (o dia da
  * loja, o estoque), à direita o que me COBRA (alertas) e o resto do app. Início
  * e Alertas já ficaram grudados na esquerda — duas telas de olhar no mesmo
- * canto, com o par da direita desperdiçado num único "Mais".
+ * canto, com o par da direita desperdiçado num único "Menu".
  */
 const TABS: MobileTab[] = [
   // A home mostra faturamento e margem — sem `relatorio.ver` ela seria uma
@@ -83,7 +83,9 @@ const TABS: MobileTab[] = [
     pronto: true,
   },
   { href: "/m/alertas", label: "Alertas", icon: Bell, pronto: true },
-  { href: "/m/mais", label: "Mais", icon: Menu, pronto: true },
+  // "Menu", não "Mais": a tela é o mapa do app, não uma sobra. "Mais" só
+  // dizia que existia algo além da barra, sem dizer o quê.
+  { href: "/m/menu", label: "Menu", icon: Menu, pronto: true },
 ];
 
 /**

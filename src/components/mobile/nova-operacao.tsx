@@ -15,6 +15,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BottomSheet } from "@/components/mobile/bottom-sheet";
+import { useContextoAcoes } from "@/components/mobile/contexto-acoes";
+import {
+  registrarOperacao,
+  useOperacoesRecentes,
+} from "@/components/mobile/recentes-operacoes";
 import { useAlerts } from "@/components/app/alerts-provider";
 import { podeEmAlguma, type Acesso, type Permissao } from "@/lib/permissoes";
 import type { NavToggles } from "@/components/app/nav-config";
@@ -26,9 +31,9 @@ import type { NavToggles } from "@/components/app/nav-config";
 // Por isso os rótulos são verbos e a ordem é a frequência de quem está de pé na
 // loja, não a ordem dos módulos no menu do desktop.
 //
-// A divisão com o "Mais" é essa e não tem exceção: aqui só entra operação de
+// A divisão com o "Menu" é essa e não tem exceção: aqui só entra operação de
 // CHÃO — algo que se faz com o produto na mão, quase sempre começando por um
-// bipe. Lugar (lista, cadastro, relatório) mora no "Mais". Enquanto os dois
+// bipe. Lugar (lista, cadastro, relatório) mora no "Menu". Enquanto os dois
 // menus repetiam os mesmos cinco destinos, ninguém aprendia qual abrir.
 //
 // Escanear é o primeiro e o maior: quase toda operação começa por um produto, e
@@ -38,69 +43,94 @@ import type { NavToggles } from "@/components/app/nav-config";
 // ============================================================
 
 type Operacao = {
+  /** Id estável — chave da memória de uso recente. Não muda com o rótulo. */
+  chave: string;
   href: string;
   label: string;
   descricao: string;
   icone: LucideIcon;
-  permissao?: Permissao;
+  /** TODAS exigidas. Ação que passa pelo scanner também precisa de `produto.ver`. */
+  permissoes?: Permissao[];
   mostrar?: (t: NavToggles) => boolean;
   /** Só faz sentido com mais de um local: transferir para onde, senão? */
   exigeMultiSite?: boolean;
+  /**
+   * A linha mostra o número de alertas do destino.
+   *
+   * Só onde o href É o assunto. "Registrar perda" aponta para o scanner, e as
+   * duas que apontavam para `/m/estoque` exibiam o total de alertas de estoque
+   * — o mesmo número nas duas, sem relação nenhuma com perda ou transferência.
+   */
+  badge?: boolean;
 };
 
 const OPERACOES: Operacao[] = [
   {
+    chave: "receber",
     href: "/m/receber",
     label: "Receber mercadoria",
     descricao: "Conferir pedido item a item",
     icone: Truck,
-    permissao: "compras.receber",
+    permissoes: ["compras.receber"],
+    badge: true,
   },
   {
+    chave: "inventario",
     href: "/m/estoque/contagem",
     label: "Inventário",
     descricao: "Contar a prateleira",
     icone: ClipboardList,
-    permissao: "estoque.inventario",
+    permissoes: ["estoque.inventario"],
+    badge: true,
   },
+  // Perda, transferência e ajuste precisam de um PRODUTO, e o produto vem da
+  // câmera. Antes apontavam para `/m/estoque`, onde a pessoa caía numa lista
+  // sem nenhuma pista de como executar o que o menu prometeu — a folha de ação
+  // só abre a partir de uma linha da lista. Agora o bipe carrega a intenção
+  // (`?acao=`) e a folha certa sobe junto com a ficha.
   {
-    href: "/m/estoque?filtro=transferir",
+    chave: "transferencia",
+    href: "/m/scan?acao=transferencia",
     label: "Transferência",
-    descricao: "Mandar para outra loja",
+    descricao: "Bipe o produto que vai para outra loja",
     icone: ArrowLeftRight,
-    permissao: "estoque.transferir",
+    permissoes: ["estoque.transferir", "produto.ver"],
     exigeMultiSite: true,
   },
   {
-    href: "/m/estoque",
+    chave: "perda",
+    href: "/m/scan?acao=perda",
     label: "Registrar perda",
     descricao: "Quebra, vencimento, avaria",
     icone: TriangleAlert,
-    permissao: "estoque.ajustar",
+    permissoes: ["estoque.ajustar", "produto.ver"],
   },
   {
+    chave: "preco",
     href: "/m/encarte",
     label: "Alterar preço",
     descricao: "Um produto ou um encarte inteiro",
     icone: ImageIcon,
-    permissao: "produto.preco",
+    permissoes: ["produto.preco"],
   },
   {
+    chave: "etiquetas",
     href: "/m/etiquetas",
     label: "Etiquetas",
     descricao: "Fila de impressão",
     icone: Tag,
-    permissao: "produto.preco",
+    permissoes: ["produto.preco"],
   },
   {
+    chave: "pedido",
     href: "/m/pedido",
     label: "Pedido de compra",
     descricao: "Bipar o que falta",
     icone: ShoppingCart,
-    permissao: "compras.pedir",
+    permissoes: ["compras.pedir"],
   },
   // Cotação NÃO entra: é trabalho de mesa, com tela própria e botão de criar
-  // dentro dela — nada aqui começa com o produto na mão. Ela vive no "Mais",
+  // dentro dela — nada aqui começa com o produto na mão. Ela vive no "Menu",
   // como lugar.
 ];
 
@@ -120,22 +150,38 @@ export function NovaOperacaoSheet({
 }) {
   const router = useRouter();
   const { contar } = useAlerts();
+  const recentes = useOperacoesRecentes();
+  // Só para saber se há contagem parada. Memorizado por aba (`contexto-acoes`),
+  // e a ficha do produto já paga essa viagem — aqui costuma vir do cache.
+  const ctx = useContextoAcoes();
 
-  const visiveis = React.useMemo(
-    () =>
-      OPERACOES.filter(
-        (o) =>
-          (!o.mostrar || o.mostrar(toggles)) &&
-          (!o.exigeMultiSite || multiSite) &&
-          (!o.permissao || podeEmAlguma(acessos, o.permissao)),
-      ),
-    [acessos, toggles, multiSite],
-  );
+  const visiveis = React.useMemo(() => {
+    const permitidas = OPERACOES.filter(
+      (o) =>
+        (!o.mostrar || o.mostrar(toggles)) &&
+        (!o.exigeMultiSite || multiSite) &&
+        (o.permissoes ?? []).every((p) => podeEmAlguma(acessos, p)),
+    );
 
-  function ir(href: string) {
+    // Recentes primeiro, na ordem de uso; o resto mantém a ordem canônica —
+    // que é a memória de posição de quem já decorou a folha.
+    const posicao = (o: Operacao) => {
+      const i = recentes.indexOf(o.chave);
+      return i === -1 ? recentes.length : i;
+    };
+    return permitidas
+      .map((o, i) => ({ o, i }))
+      .sort((a, b) => posicao(a.o) - posicao(b.o) || a.i - b.i)
+      .map(({ o }) => o);
+  }, [acessos, toggles, multiSite, recentes]);
+
+  function ir(o: Operacao) {
+    registrarOperacao(o.chave);
     onClose();
-    router.push(href);
+    router.push(o.href);
   }
+
+  const contagensAbertas = ctx?.inventariosAbertos ?? 0;
 
   return (
     <BottomSheet open={open} onClose={onClose} titulo="Nova operação">
@@ -143,7 +189,10 @@ export function NovaOperacaoSheet({
         {podeEmAlguma(acessos, "produto.ver") && (
           <button
             type="button"
-            onClick={() => ir("/m/scan")}
+            onClick={() => {
+              onClose();
+              router.push("/m/scan");
+            }}
             className={cn(
               "flex min-h-16 w-full cursor-pointer items-center gap-3 rounded-xl bg-brand px-4 text-left text-on-brand",
               "focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
@@ -164,18 +213,30 @@ export function NovaOperacaoSheet({
         {visiveis.length > 0 && (
           <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
             {visiveis.map((o) => {
-              const alertas = contar(o.href.split("?")[0]);
+              // Contagem parada troca o rótulo: "Inventário" e "retomar" levam
+              // ao mesmo lugar, mas só um avisa que há trabalho pela metade.
+              const retomar = o.chave === "inventario" && contagensAbertas > 0;
+              const alertas = o.badge ? contar(o.href.split("?")[0]) : 0;
+
               return (
-                <li key={o.label}>
+                <li key={o.chave}>
                   <button
                     type="button"
-                    onClick={() => ir(o.href)}
+                    onClick={() => ir(o)}
                     className="flex min-h-14 w-full cursor-pointer items-center gap-3 bg-surface px-4 py-2 text-left transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] focus-visible:outline-none"
                   >
                     <o.icone className="h-5 w-5 shrink-0 text-ink-2" aria-hidden />
                     <span className="min-w-0 flex-1">
-                      <span className="block text-sm font-medium text-ink">{o.label}</span>
-                      <span className="block text-xs text-muted">{o.descricao}</span>
+                      <span className="block text-sm font-medium text-ink">
+                        {retomar ? "Retomar contagem" : o.label}
+                      </span>
+                      <span className="block text-xs text-muted">
+                        {retomar
+                          ? contagensAbertas === 1
+                            ? "Uma contagem parada no meio"
+                            : `${contagensAbertas} contagens paradas no meio`
+                          : o.descricao}
+                      </span>
                     </span>
                     {/* O que já está esperando por você entra como número, não
                         como bolinha: "2 pedidos" muda a decisão, "tem algo" não. */}

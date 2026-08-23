@@ -15,7 +15,7 @@ import type { Acesso } from "@/lib/permissoes";
  * aparelho (o `viewportFit: "cover"` do root layout é o que dá valor a
  * `env(safe-area-inset-bottom)`).
  *
- * Não tem botão de gaveta: o mapa completo é uma tela (`/m/mais`) — gaveta em
+ * Não tem botão de gaveta: o mapa completo é uma tela (`/m/menu`) — gaveta em
  * cima de barra fixa é dois níveis de sobreposição no mesmo canto do polegar.
  * (A casca `(app)` tinha uma barra assim, com hambúrguer; ela morreu, e o `/m`
  * é a única superfície de mão.)
