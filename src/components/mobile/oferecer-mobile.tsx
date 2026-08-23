@@ -59,9 +59,14 @@ function dispensar() {
 }
 
 /**
- * Convite discreto, no topo do `/inicio`, para quem abriu o app completo num
- * celular. Não redireciona sozinho — a escolha é da pessoa, e um gestor pode
- * ter aberto o link de um relatório específico de propósito.
+ * Convite discreto, no topo de QUALQUER tela do app completo, para quem o
+ * abriu num aparelho de mão. Montado no `AppShell` — vivia só no `/inicio`, e
+ * quem entrava por um link direto (relatório, pedido, cotação) nunca via a
+ * oferta e ficava no layout apertado, agora sem nem a barra inferior que essa
+ * casca tinha.
+ *
+ * Não redireciona sozinho — a escolha é da pessoa, e um gestor pode ter aberto
+ * o link de um relatório específico de propósito.
  *
  * Aceitar grava o cookie de superfície: dali em diante, abrir a raiz do
  * subdomínio cai no `/m`.
@@ -73,7 +78,9 @@ export function OferecerMobile() {
   return (
     // Sem `md:hidden`: em tablet o convite precisa aparecer, e quem decide se
     // ele existe é a media query do store, não o breakpoint do layout.
-    <div className="relative flex items-center gap-3 rounded-[var(--radius-lg)] border border-line bg-brand-soft p-3">
+    // `print:hidden` porque agora o convite acompanha todas as telas —
+    // inclusive os relatórios que saem em PDF.
+    <div className="relative flex items-center gap-3 rounded-[var(--radius-lg)] border border-line bg-brand-soft p-3 print:hidden">
       <Smartphone className="h-5 w-5 shrink-0 text-brand-strong" aria-hidden />
 
       <div className="min-w-0 flex-1">

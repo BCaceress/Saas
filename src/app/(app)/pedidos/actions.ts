@@ -9,7 +9,8 @@ import { criarPedidoCompra } from "@/lib/estoque";
 import { db } from "@/lib/prisma";
 import { listarEventos } from "@/lib/compras/eventos";
 import { loadHistoricoCompraProduto } from "../cotacoes/_data";
-import { loadComprasFormOptions } from "../estoque/_data";
+import { loadComprasFormOptions, loadPedidosAReceber } from "../estoque/_data";
+import { getActiveSiteId } from "@/lib/sites";
 
 /** Baseline de leitura do módulo. Escrita usa `txp` com a loja de destino. */
 async function tx<T>(fn: (tid: string, userId: string) => Promise<T>): Promise<T> {
@@ -142,4 +143,135 @@ export async function buscarCodigosDeBarrasAction(
 
 export async function carregarFormOptionsAction() {
   return tx(() => loadComprasFormOptions());
+}
+
+// ── Pedidos abertos para receber (p/ o painel "Receber mercadoria") ──
+// Quem chega pela porta "escanear"/"manual" sem ter clicado num pedido
+// precisa escolher um ali mesmo. Sem isto, as duas portas ficavam
+// desabilitadas explicando o motivo num `title` que celular nenhum mostra.
+
+export async function listarPedidosAReceberAction() {
+  return tx(async () => {
+    const siteId = await getActiveSiteId();
+    const pedidos = await loadPedidosAReceber(siteId);
+    return pedidos.map((p) => ({
+      ...p,
+      previsaoEntrega: p.previsaoEntrega?.toISOString() ?? null,
+      createdAt: p.createdAt.toISOString(),
+      updatedAt: p.updatedAt.toISOString(),
+      enviadoEm: p.enviadoEm?.toISOString() ?? null,
+      confirmadoEm: p.confirmadoEm?.toISOString() ?? null,
+      emTransitoEm: p.emTransitoEm?.toISOString() ?? null,
+      recebidoEm: p.recebidoEm?.toISOString() ?? null,
+      canceladoEm: p.canceladoEm?.toISOString() ?? null,
+    }));
+  });
+}
+
+// ── Busca de produto na conferência (item fora do pedido) ─────
+// Deliberadamente magra: o catálogo inteiro (`carregarFormOptionsAction`) é
+// caro e existe para montar pedido. Na porta, o que se procura é UM item que
+// veio a mais — por nome, SKU ou o código que acabou de ser bipado.
+
+export type ProdutoRecebimento = {
+  id: string;
+  nome: string;
+  sku: string;
+  ean: string | null;
+  imagemUrl: string | null;
+  custoMedio: number | null;
+  packagings: { id: string; nome: string; fatorConversao: number; isCompraDefault: boolean }[];
+};
+
+const selectProdutoRecebimento = {
+  id: true,
+  nome: true,
+  sku: true,
+  ean: true,
+  imagemUrl: true,
+  custoMedio: true,
+  packagings: {
+    select: { id: true, nome: true, fatorConversao: true, isCompraDefault: true },
+    orderBy: { fatorConversao: "asc" },
+  },
+} as const;
+
+type ProdutoCru = {
+  id: string;
+  nome: string;
+  sku: string;
+  ean: string | null;
+  imagemUrl: string | null;
+  custoMedio: unknown;
+  packagings: { id: string; nome: string; fatorConversao: unknown; isCompraDefault: boolean }[];
+};
+
+const serialProduto = (p: ProdutoCru): ProdutoRecebimento => ({
+  id: p.id,
+  nome: p.nome,
+  sku: p.sku,
+  ean: p.ean,
+  imagemUrl: p.imagemUrl,
+  custoMedio: p.custoMedio == null ? null : Number(p.custoMedio),
+  packagings: p.packagings.map((pk) => ({
+    id: pk.id,
+    nome: pk.nome,
+    fatorConversao: Number(pk.fatorConversao) || 1,
+    isCompraDefault: pk.isCompraDefault,
+  })),
+});
+
+export async function buscarProdutosRecebimentoAction(termo: string): Promise<ProdutoRecebimento[]> {
+  const q = termo.trim();
+  if (q.length < 2) return [];
+  return tx(async () => {
+    const produtos = await db.product.findMany({
+      where: {
+        ativo: true,
+        tipo: { in: ["SIMPLES", "INSUMO"] },
+        OR: [
+          { nome: { contains: q, mode: "insensitive" } },
+          { sku: { contains: q, mode: "insensitive" } },
+          { ean: { contains: q } },
+        ],
+      },
+      select: selectProdutoRecebimento,
+      orderBy: { nome: "asc" },
+      take: 20,
+    });
+    return produtos.map(serialProduto);
+  });
+}
+
+/**
+ * Código bipado que não estava no pedido. Antes disso o bipe só dizia "fora
+ * deste pedido" e morria ali — mas fornecedor mandar item a mais é rotina, e
+ * quem está na porta precisa registrar o que tem na mão, não brigar com a tela.
+ */
+export async function buscarProdutoPorCodigoAction(codigo: string): Promise<{
+  produto: ProdutoRecebimento;
+  packagingId: string | null;
+} | null> {
+  const c = codigo.trim();
+  if (!c) return null;
+  return tx(async () => {
+    const porEan = await db.product.findFirst({
+      where: { ativo: true, OR: [{ ean: c }, { sku: { equals: c, mode: "insensitive" } }] },
+      select: selectProdutoRecebimento,
+    });
+    if (porEan) return { produto: serialProduto(porEan), packagingId: null };
+
+    // O código pode ser da CAIXA, não da unidade — aí a embalagem já vem
+    // escolhida, e a quantidade digitada é em caixas.
+    const pkg = await db.productPackaging.findFirst({
+      where: { ean: c },
+      select: { id: true, productId: true },
+    });
+    if (!pkg) return null;
+    const produto = await db.product.findFirst({
+      where: { id: pkg.productId, ativo: true },
+      select: selectProdutoRecebimento,
+    });
+    return produto ? { produto: serialProduto(produto), packagingId: pkg.id } : null;
+  });
 }

@@ -455,12 +455,30 @@ const recebimentoCompraSchema = z.object({
   pedidoId: z.string().min(1),
   numeroNota: z.string().optional().nullable(),
   gerarFinanceiro: z.boolean().default(false),
+  /** Vencimento do título, quando o operador tem o boleto na mão. */
+  vencimento: z.string().optional().nullable(),
   items: z.array(z.object({
     itemId: z.string().min(1),
     qtdRecebida: z.number().nonnegative(),
     validade: z.string().optional().nullable(),
     lote: z.string().trim().max(60).optional().nullable(),
+    custoUnitario: z.number().nonnegative().optional().nullable(),
+    motivoDivergencia: z.string().trim().max(300).optional().nullable(),
   })).min(1),
+  /** Mercadoria que chegou fora do pedido — vira linha nova com qtdPedida 0. */
+  extras: z
+    .array(
+      z.object({
+        productId: z.string().min(1),
+        packagingId: z.string().optional().nullable(),
+        quantidade: z.number().positive(),
+        custoUnitario: z.number().nonnegative().default(0),
+        validade: z.string().optional().nullable(),
+        lote: z.string().trim().max(60).optional().nullable(),
+        motivo: z.string().trim().min(3, "Diga por que este item veio fora do pedido."),
+      }),
+    )
+    .default([]),
 });
 
 export async function receberPedidoCompraAction(input: z.input<typeof recebimentoCompraSchema>) {
@@ -468,12 +486,34 @@ export async function receberPedidoCompraAction(input: z.input<typeof recebiment
   // Receber é do estoquista; pedir é de quem compra. Permissões diferentes.
   return txpDepois("compras.receber", async (tid, userId, exigirLoja) => {
     exigirLoja(await siteDoPedido(d.pedidoId));
-    await receberPedidoCompra(tid, d.pedidoId, d.items, {
+    const r = await receberPedidoCompra(tid, d.pedidoId, d.items, {
       numeroNota: d.numeroNota,
       gerarFinanceiro: d.gerarFinanceiro,
+      extras: d.extras,
       createdBy: userId,
     });
+
+    // "Marcar a pagar" só levantava uma bandeira no pedido — a dívida nunca
+    // nascia. Aqui ela nasce junto com a mercadoria, que é o fato único que as
+    // duas coisas descrevem.
+    if (d.gerarFinanceiro && r.purchaseId && r.valorRecebido > 0) {
+      await gerarTituloDaEntradaManual({
+        tenantId: tid,
+        purchaseId: r.purchaseId,
+        supplierId: r.supplierId,
+        purchaseOrderId: d.pedidoId,
+        valor: r.valorRecebido,
+        numeroNota: d.numeroNota ?? null,
+        data: new Date(),
+        vencimento: d.vencimento ? new Date(`${d.vencimento}T12:00:00`) : null,
+        userId,
+      });
+      revalidatePath("/financeiro", "layout");
+    }
+
     ok();
+    revalidatePath("/pedidos", "layout");
+    return { completo: r.completo, valorRecebido: r.valorRecebido };
   });
 }
 

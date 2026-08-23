@@ -46,7 +46,9 @@ import { podeEmAlguma, type Acesso, type Permissao } from "@/lib/permissoes";
 
 /**
  * Mapa único de navegação do app — fonte de verdade para sidebar, drawer do
- * mobile, barra inferior, abas de módulo, badges e paleta de comandos.
+ * celular, abas de módulo, badges e paleta de comandos. A barra de polegar da
+ * superfície `/m` NÃO sai daqui: ela tem config própria em
+ * `components/mobile/nav.ts`.
  *
  * O mapa é COMPLETO: descreve também as telas que não cabem na sidebar
  * (`ocultoNoMenu`). Cada consumidor filtra o que precisa — assim menu, abas e
@@ -78,11 +80,6 @@ export type NavItem = {
   permissao?: Permissao;
   /** Frase curta: subtítulo da aba do módulo, do flyout e da linha na paleta. */
   descricao?: string;
-  /**
-   * Aparece na barra inferior do mobile. Três no app inteiro — mais que isso e
-   * os alvos ficam menores que o polegar.
-   */
-  mobile?: boolean;
   /**
    * Existe para as abas do módulo e para a paleta, mas não entra na sidebar.
    * É como o mapa fica completo sem o menu virar uma lista de 40 linhas.
@@ -136,7 +133,6 @@ export const NAV_GROUPS: NavGroup[] = [
         label: "PDV",
         icon: ShoppingCart,
         enabled: true,
-        mobile: true,
         show: (t) => t.moduloPdv,
         permissao: "venda.registrar",
         descricao: "Registrar vendas e fechar o caixa.",
@@ -168,7 +164,6 @@ export const NAV_GROUPS: NavGroup[] = [
         label: "Estoque",
         icon: Warehouse,
         enabled: true,
-        mobile: true,
         // O guard mora em estoque/layout.tsx (`estoque.ver`) — toda filha herda.
         children: [
           {
@@ -281,7 +276,6 @@ export const NAV_GROUPS: NavGroup[] = [
         label: "Cotações",
         icon: Handshake,
         enabled: true,
-        mobile: true,
         // Cotações é o planejamento: o que comprar, de quem e por quanto. A
         // configuração de cada fornecedor (integração, catálogo, condições)
         // mora em /fornecedores/[id]. Pedidos e Recebimentos já foram um
@@ -744,10 +738,9 @@ export function navTabs(moduloHref: string): NavItem[] {
   return modulo?.children ?? [];
 }
 
-/** Itens da barra inferior do mobile, na ordem em que aparecem no menu. */
-export function navMobile(): NavItem[] {
-  return NAV_ITEMS_FLAT.filter((i) => i.mobile);
-}
+// `navMobile()` saiu junto com a barra inferior desta casca: a superfície de
+// mão é o `/m`, que tem config própria (`components/mobile/nav.ts`). Duas
+// barras mobile diferentes ensinavam caminhos que a outra tela não tinha.
 
 /**
  * Trilha da rota atual: [pai, filha] quando a tela mora numa gaveta, [item]

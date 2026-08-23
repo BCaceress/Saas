@@ -16,7 +16,7 @@ import { ReceberMercadoriaPanel } from "./_receber-mercadoria";
 // (XML / escanear / manual) e, depois do XML, a conferência abre em tela
 // cheia — que é onde o trabalho de verdade acontece.
 
-export function ComprasAcoes({ podeReceber }: { podeReceber: boolean }) {
+export function ComprasAcoes({ podeReceber, cega }: { podeReceber: boolean; cega: boolean }) {
   const abrirNovoPedido = useAbrirNovoPedido();
   const [recebendo, setRecebendo] = useState(false);
 
@@ -39,6 +39,7 @@ export function ComprasAcoes({ podeReceber }: { podeReceber: boolean }) {
           <ReceberMercadoriaPanel
             pedido={null}
             etapaInicial="escolha"
+            cega={cega}
             open={recebendo}
             onClose={() => setRecebendo(false)}
           />

@@ -2,107 +2,23 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import {
-  ArrowLeftRight,
-  ClipboardList,
-  Handshake,
-  Image as ImageIcon,
-  ScanLine,
-  ShoppingCart,
-  Tag,
-  Truck,
-  TriangleAlert,
-  type LucideIcon,
-} from "lucide-react";
+import { ScanLine } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BottomSheet } from "@/components/mobile/bottom-sheet";
+import { operacoesVisiveis } from "@/components/mobile/operacoes";
 import { useAlerts } from "@/components/app/alerts-provider";
-import { podeEmAlguma, type Acesso, type Permissao } from "@/lib/permissoes";
+import { podeEmAlguma, type Acesso } from "@/lib/permissoes";
 import type { NavToggles } from "@/components/app/nav-config";
 
 // ============================================================
-// Nova operação — o menu do botão do meio.
-//
-// A lista responde "o que eu vim fazer aqui", e não "para qual módulo eu vou".
-// Por isso os rótulos são verbos e a ordem é a frequência de quem está de pé na
-// loja, não a ordem dos módulos no menu do desktop.
+// Nova operação — a folha do botão do meio. A LISTA mora em `operacoes.ts`,
+// que é módulo neutro: o `/m/mais` (server) também precisa consultá-la.
 //
 // Escanear é o primeiro e o maior: quase toda operação começa por um produto, e
 // a maioria das telas abaixo abre a câmera de qualquer jeito. Quem só quer
 // consultar não deveria pagar dois toques — daí o alvo grande no topo, separado
 // da grade.
 // ============================================================
-
-type Operacao = {
-  href: string;
-  label: string;
-  descricao: string;
-  icone: LucideIcon;
-  permissao?: Permissao;
-  mostrar?: (t: NavToggles) => boolean;
-  /** Só faz sentido com mais de um local: transferir para onde, senão? */
-  exigeMultiSite?: boolean;
-};
-
-const OPERACOES: Operacao[] = [
-  {
-    href: "/m/receber",
-    label: "Receber mercadoria",
-    descricao: "Conferir pedido item a item",
-    icone: Truck,
-    permissao: "compras.receber",
-  },
-  {
-    href: "/m/estoque/contagem",
-    label: "Inventário",
-    descricao: "Contar a prateleira",
-    icone: ClipboardList,
-    permissao: "estoque.inventario",
-  },
-  {
-    href: "/m/estoque?filtro=transferir",
-    label: "Transferência",
-    descricao: "Mandar para outra loja",
-    icone: ArrowLeftRight,
-    permissao: "estoque.transferir",
-    exigeMultiSite: true,
-  },
-  {
-    href: "/m/estoque",
-    label: "Registrar perda",
-    descricao: "Quebra, vencimento, avaria",
-    icone: TriangleAlert,
-    permissao: "estoque.ajustar",
-  },
-  {
-    href: "/m/encarte",
-    label: "Alterar preço",
-    descricao: "Um produto ou um encarte inteiro",
-    icone: ImageIcon,
-    permissao: "produto.preco",
-  },
-  {
-    href: "/m/etiquetas",
-    label: "Etiquetas",
-    descricao: "Fila de impressão",
-    icone: Tag,
-    permissao: "produto.preco",
-  },
-  {
-    href: "/m/pedido",
-    label: "Pedido de compra",
-    descricao: "Bipar o que falta",
-    icone: ShoppingCart,
-    permissao: "compras.pedir",
-  },
-  {
-    href: "/m/cotacoes",
-    label: "Cotação",
-    descricao: "Pedir preço a vários fornecedores",
-    icone: Handshake,
-    permissao: "compras.pedir",
-  },
-];
 
 export function NovaOperacaoSheet({
   open,
@@ -122,13 +38,7 @@ export function NovaOperacaoSheet({
   const { contar } = useAlerts();
 
   const visiveis = React.useMemo(
-    () =>
-      OPERACOES.filter(
-        (o) =>
-          (!o.mostrar || o.mostrar(toggles)) &&
-          (!o.exigeMultiSite || multiSite) &&
-          (!o.permissao || podeEmAlguma(acessos, o.permissao)),
-      ),
+    () => operacoesVisiveis(acessos, toggles, multiSite),
     [acessos, toggles, multiSite],
   );
 

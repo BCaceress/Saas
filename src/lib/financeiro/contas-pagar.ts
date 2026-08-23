@@ -128,6 +128,8 @@ export async function gerarTituloDaEntradaManual(input: {
   valor: number;
   numeroNota?: string | null;
   data: Date;
+  /** Vencimento informado na conferência. Sem ele, vale o prazo do fornecedor. */
+  vencimento?: Date | null;
   userId?: string | null;
 }): Promise<ResumoTitulos> {
   const { tenantId, purchaseId, supplierId, valor } = input;
@@ -150,14 +152,16 @@ export async function gerarTituloDaEntradaManual(input: {
       purchaseOrderId: input.purchaseOrderId ?? null,
       numeroDocumento: input.numeroNota ?? null,
       descricao: `Entrada manual — ${nome}`,
-      vencimento: vencimentoPadrao(input.data, fornecedor?.prazoPagamentoDias),
+      vencimento: input.vencimento ?? vencimentoPadrao(input.data, fornecedor?.prazoPagamentoDias),
       valor,
-      observacao: "Vencimento estimado pelo prazo do fornecedor — confira ao receber o boleto.",
+      observacao: input.vencimento
+        ? null
+        : "Vencimento estimado pelo prazo do fornecedor — confira ao receber o boleto.",
       createdBy: input.userId ?? null,
     },
   });
 
-  return { criados: 1, valorTotal: valor, estimado: true };
+  return { criados: 1, valorTotal: valor, estimado: !input.vencimento };
 }
 
 /**

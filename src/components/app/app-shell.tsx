@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Sidebar, type SidebarToggles } from "@/components/app/sidebar";
 import { Navbar } from "@/components/app/navbar";
 import { MobileNav } from "@/components/app/mobile-nav";
-import { BottomNav } from "@/components/app/bottom-nav";
 import { CommandPalette } from "@/components/app/command-palette";
+import { OferecerMobile } from "@/components/mobile/oferecer-mobile";
 import { AlertsProvider } from "@/components/app/alerts-provider";
 import type { CaixaInfo } from "@/components/app/caixa-sheet";
 import type { PaymentMethod } from "@/generated/prisma";
@@ -146,18 +146,21 @@ export function AppShell({
           />
           <main
             id="conteudo"
-            className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-1 pb-20 sm:px-2 md:pb-2"
+            className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-1 pb-2 sm:px-2"
           >
+            {/* Não há barra de abas no rodapé desta casca: no aparelho de mão o
+                app é o `/m`, e duas navegações mobile diferentes (uma com PDV,
+                Estoque e Cotações; outra com Início, Estoque, Alertas) só
+                ensinavam caminhos que a outra tela não tem. Aqui embaixo de
+                768px sobra o hambúrguer da navbar, que abre o mapa inteiro — e
+                este convite, que leva para a superfície certa.
+
+                Vivia só no `/inicio`: quem caía num link direto de relatório ou
+                de pedido nunca via a oferta e ficava no layout apertado. */}
+            <OferecerMobile />
             {children}
           </main>
         </div>
-
-        <BottomNav
-          toggles={toggles}
-          acessos={acessos}
-          onAbrirMenu={() => setDrawerAberto(true)}
-          menuAberto={drawerAberto}
-        />
 
         <CommandPalette
           open={buscaAberta}

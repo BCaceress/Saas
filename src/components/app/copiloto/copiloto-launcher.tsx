@@ -20,10 +20,9 @@ export function CopilotoLauncher({
 }: {
   podeVer: boolean;
   /**
-   * Posição do botão. O padrão sobe acima da `BottomNav` do app e desce no
-   * desktop; a superfície `/m` passa a sua, porque lá a barra de polegar é
-   * flutuante e existe em TODA largura — inclusive no tablet, onde o `md:` do
-   * padrão jogaria o botão para cima dela.
+   * Posição do botão. O padrão é o canto inferior direito — a casca `(app)`
+   * não tem mais barra no rodapé para desviar. A superfície `/m` passa a sua,
+   * porque lá a barra de polegar é flutuante e existe em TODA largura.
    */
   posicao?: string;
 }) {
@@ -45,7 +44,7 @@ export function CopilotoLauncher({
           aria-label="Abrir NoHub IA"
           className={cn(
             "fixed z-45 flex h-14 w-14 cursor-pointer items-center justify-center rounded-full bg-brand text-on-brand shadow-[var(--shadow-2)] transition-transform hover:scale-105 print:hidden",
-            posicao ?? "bottom-20 right-4 md:bottom-5 md:right-5",
+            posicao ?? "bottom-5 right-4 md:right-5",
           )}
         >
           <Sparkles size={22} />

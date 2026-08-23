@@ -120,7 +120,7 @@ export default async function ComprasPage({
             actions={
               /* Receber mercadoria é permissão à parte de "ver pedidos": quem
                  só acompanha compra não confere carga na porta. */
-              <ComprasAcoes podeReceber={podeEmAlguma(ctx.acessos, "compras.receber")} />
+              <ComprasAcoes podeReceber={podeEmAlguma(ctx.acessos, "compras.receber")} cega={ctx.tenant.conferenciaCega} />
             }
           >
             <div className="flex justify-end print:hidden">
@@ -155,6 +155,7 @@ export default async function ComprasPage({
             transferencias={transfersSerial}
             empresa={ctx.tenant.nome}
             initialView={view}
+            conferenciaCega={ctx.tenant.conferenciaCega}
           />
         </div>
       </NovoPedidoProvider>

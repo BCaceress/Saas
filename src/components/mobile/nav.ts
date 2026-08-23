@@ -13,11 +13,12 @@ import type { NavToggles } from "@/components/app/nav-config";
 /**
  * Navegação da superfície mobile (`/m`).
  *
- * Config PRÓPRIA, separada do `nav-config.ts` de propósito. Lá, o flag
- * `mobile: true` alimenta a barra inferior do app de desktop, as abas de módulo
- * e a paleta de comandos — pendurar hrefs `/m/*` naquela lista poluiria os três
- * e ainda estragaria `rotaInicial`. Aqui a lista é curta e existe para uma coisa
- * só: cinco alvos de polegar.
+ * Config PRÓPRIA, separada do `nav-config.ts` de propósito. Lá vive o mapa da
+ * tela de mesa — sidebar, abas de módulo, paleta de comandos —, e pendurar
+ * hrefs `/m/*` naquela lista poluiria os três e ainda estragaria `rotaInicial`.
+ * Aqui a lista é curta e existe para uma coisa só: cinco alvos de polegar.
+ * (A casca `(app)` já teve uma barra inferior própria abaixo de 768px; ela
+ * morreu porque duas navegações mobile divergentes é pior que uma.)
  *
  * Os tipos e o `podeEmAlguma` vêm de lá — a fonte de verdade de permissão
  * continua sendo uma só.
@@ -51,12 +52,23 @@ export type MobileTab = {
  * Cinco no máximo: abaixo disso sobra espaço, acima os alvos ficam menores que
  * o polegar. "Escanear" no centro porque é o gesto mais repetido de quem está
  * de pé na gôndola.
+ *
+ * A ordem separa as duas metades da barra: à esquerda o que é MEU (o dia da
+ * loja, o estoque), à direita o que me COBRA (alertas) e o resto do app. Início
+ * e Alertas já ficaram grudados na esquerda — duas telas de olhar no mesmo
+ * canto, com o par da direita desperdiçado num único "Mais".
  */
 const TABS: MobileTab[] = [
   // A home mostra faturamento e margem — sem `relatorio.ver` ela seria uma
   // tela vazia, então some da barra em vez de virar beco sem saída.
   { href: "/m", label: "Início", icon: Home, permissao: "relatorio.ver", pronto: true },
-  { href: "/m/alertas", label: "Alertas", icon: Bell, pronto: true },
+  {
+    href: "/m/estoque",
+    label: "Estoque",
+    icon: Warehouse,
+    permissao: "estoque.ver",
+    pronto: true,
+  },
   // O centro deixou de ser um destino e virou o começo de qualquer operação:
   // escanear, receber, contar, transferir, dar baixa, mudar preço, pedir. O
   // scanner continua sendo o primeiro item da folha, em alvo grande — é o que
@@ -70,13 +82,7 @@ const TABS: MobileTab[] = [
     abreOperacoes: true,
     pronto: true,
   },
-  {
-    href: "/m/estoque",
-    label: "Estoque",
-    icon: Warehouse,
-    permissao: "estoque.ver",
-    pronto: true,
-  },
+  { href: "/m/alertas", label: "Alertas", icon: Bell, pronto: true },
   { href: "/m/mais", label: "Mais", icon: Menu, pronto: true },
 ];
 
@@ -108,8 +114,9 @@ export function abasMobile(acessos: Acesso[], toggles: NavToggles): MobileTab[] 
 
   const temEstoque = base.some((t) => t.href === "/m/estoque");
   if (!temEstoque && visivel(TAB_VENDA, acessos, toggles)) {
-    // Antes de "Mais", para a última posição continuar sendo o menu.
-    const i = base.findIndex((t) => t.href === "/m/mais");
+    // No slot que era do Estoque — antes do alvo de destaque, não no fim. O "+"
+    // precisa continuar no centro da barra, senão o polegar perde a referência.
+    const i = base.findIndex((t) => t.destaque);
     base.splice(i === -1 ? base.length : i, 0, TAB_VENDA);
   }
 

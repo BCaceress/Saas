@@ -611,14 +611,60 @@ export async function excluirPedidoCompra(tenantId: string, pedidoId: string): P
 // Chave é o id do PurchaseOrderItem (não o productId) — um pedido pode ter
 // mais de uma linha do mesmo produto (ex.: 10 caixas compradas + 2 de
 // bonificação), e productId sozinho não distingue as duas na conferência.
-export type RecebimentoCompraInput = { itemId: string; qtdRecebida: number; validade?: string | null; lote?: string | null };
+export type RecebimentoCompraInput = {
+  itemId: string;
+  qtdRecebida: number;
+  validade?: string | null; // ISO date (yyyy-mm-dd)
+  lote?: string | null;
+  /**
+   * Custo REAL por unidade de compra, quando a mercadoria chegou por outro
+   * preço. Ausente = vale o negociado no pedido. O pedido não é reescrito: o
+   * negociado continua sendo a prova do que foi combinado, e este número é o
+   * que entra no estoque e no custo médio.
+   */
+  custoUnitario?: number | null;
+  /** Por que a conferência divergiu do pedido. Vai para a timeline. */
+  motivoDivergencia?: string | null;
+};
+
+/**
+ * Mercadoria que chegou sem estar no pedido. Vira uma LINHA NOVA do pedido com
+ * `qtdPedida = 0` — assim a diferença fica visível para sempre (pedido 0,
+ * recebido 6) em vez de sumir dentro de um ajuste de estoque sem dono.
+ */
+export type RecebimentoExtraInput = {
+  productId: string;
+  packagingId?: string | null;
+  quantidade: number;
+  custoUnitario: number;
+  validade?: string | null;
+  lote?: string | null;
+  motivo: string;
+};
+
+export type ResultadoRecebimento = {
+  /** Entrada de COMPRA gerada (a que vira dívida). null = só bonificação. */
+  purchaseId: string | null;
+  /** Valor da mercadoria comprada nesta conferência, pelo custo que entrou. */
+  valorRecebido: number;
+  completo: boolean;
+  numero: string;
+  supplierId: string;
+  siteId: string;
+};
 
 export async function receberPedidoCompra(
   tenantId: string,
   pedidoId: string,
   contagem: RecebimentoCompraInput[],
-  opts: { numeroNota?: string | null; gerarFinanceiro?: boolean; createdBy?: string }
-): Promise<void> {
+  opts: {
+    numeroNota?: string | null;
+    gerarFinanceiro?: boolean;
+    createdBy?: string;
+    /** Itens fora do pedido conferidos na porta. */
+    extras?: RecebimentoExtraInput[];
+  }
+): Promise<ResultadoRecebimento> {
   const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
     include: { items: true },
@@ -628,33 +674,102 @@ export async function receberPedidoCompra(
     throw new Error("Este pedido não está aberto para recebimento.");
   }
 
+  // 0. Itens fora do pedido viram linha do pedido ANTES da conferência — daí
+  //    em diante eles são item normal, e todo o resto (entrada, custo médio,
+  //    status, timeline) funciona sem saber que chegaram depois.
+  const extras = (opts.extras ?? []).filter((e) => e.quantidade > 0);
+  const linhasExtras: { id: string; input: RecebimentoExtraInput }[] = [];
+  if (extras.length > 0) {
+    await basePrisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`;
+      for (const e of extras) {
+        const linha = await tx.purchaseOrderItem.create({
+          data: {
+            tenantId,
+            purchaseOrderId: po.id,
+            productId: e.productId,
+            packagingId: e.packagingId ?? null,
+            tipo: "COMPRA",
+            qtdPedida: 0,
+            custoUnitario: e.custoUnitario,
+            qtdRecebida: 0,
+            observacao: `Fora do pedido — ${e.motivo}`,
+          },
+          select: { id: true },
+        });
+        linhasExtras.push({ id: linha.id, input: e });
+      }
+    });
+  }
+
+  const itensDoPedido = [
+    ...po.items,
+    ...linhasExtras.map((l) => ({
+      id: l.id,
+      productId: l.input.productId,
+      packagingId: l.input.packagingId ?? null,
+      tipo: "COMPRA" as TipoItemPedido,
+      qtdPedida: 0,
+      qtdRecebida: 0,
+      custoUnitario: l.input.custoUnitario,
+    })),
+  ];
+
+  const contagemCompleta: RecebimentoCompraInput[] = [
+    ...contagem,
+    ...linhasExtras.map((l) => ({
+      itemId: l.id,
+      qtdRecebida: l.input.quantidade,
+      validade: l.input.validade ?? null,
+      lote: l.input.lote ?? null,
+      custoUnitario: l.input.custoUnitario,
+      motivoDivergencia: `Fora do pedido: ${l.input.motivo}`,
+    })),
+  ];
+
   // Itens efetivamente recebidos nesta conferência (qtd na unidade de compra).
-  const recebidos = po.items
+  const recebidos = itensDoPedido
     .map((it) => {
-      const conta = contagem.find((c) => c.itemId === it.id);
+      const conta = contagemCompleta.find((c) => c.itemId === it.id);
       const qtd = conta ? Math.max(0, conta.qtdRecebida) : 0;
-      return { it, qtd, validade: conta?.validade ?? null, lote: conta?.lote ?? null };
+      // Custo negociado × custo que chegou. Bonificação nunca tem custo.
+      const negociado = Number(it.custoUnitario);
+      const custo =
+        it.tipo === "COMPRA" && conta?.custoUnitario != null && conta.custoUnitario >= 0
+          ? conta.custoUnitario
+          : negociado;
+      return {
+        it,
+        qtd,
+        custo,
+        negociado,
+        validade: conta?.validade ?? null,
+        lote: conta?.lote ?? null,
+        motivo: conta?.motivoDivergencia?.trim() || null,
+      };
     })
     .filter((r) => r.qtd > 0);
 
   if (recebidos.length === 0) throw new Error("Informe ao menos um item recebido.");
 
   // 1. Gera a entrada no estoque (reusa o motor de entrada — converte embalagem
-  //    e atualiza custo médio). custoTotal = qtd × custo unitário do pedido.
+  //    e atualiza custo médio). custoTotal = qtd × custo que REALMENTE chegou.
   //    Itens de COMPRA e itens sem custo (bonificação/brinde/troca/amostra/
   //    serviço) geram Purchases separadas — nunca a mesma entrada — para o
   //    histórico do produto e o financeiro distinguirem as duas origens.
   const comprados = recebidos.filter((r) => r.it.tipo === "COMPRA");
   const semCusto = recebidos.filter((r) => r.it.tipo !== "COMPRA");
+  const valorRecebido = comprados.reduce((a, r) => a + r.qtd * r.custo, 0);
 
+  let purchaseId: string | null = null;
   if (comprados.length > 0) {
-    await registrarEntrada(
+    purchaseId = await registrarEntrada(
       tenantId,
       po.siteId,
       comprados.map((r) => ({
         productId: r.it.productId,
         quantidade: r.qtd,
-        custoTotal: r.qtd * Number(r.it.custoUnitario),
+        custoTotal: r.qtd * r.custo,
         packagingId: r.it.packagingId,
         validade: r.validade,
         lote: r.lote,
@@ -666,6 +781,9 @@ export async function receberPedidoCompra(
         numeroNota: opts.numeroNota ?? null,
         observacao: `Recebimento do pedido ${po.numero}`,
         createdBy: opts.createdBy,
+        // Sem número de nota a entrada fica esperando o XML — é o que impede a
+        // mesma mercadoria de entrar de novo quando o documento chegar.
+        aguardandoDocumento: !opts.numeroNota?.trim(),
       }
     );
   }
@@ -688,6 +806,8 @@ export async function receberPedidoCompra(
         quantidade: r.qtd,
         custoTotal: 0,
         packagingId: r.it.packagingId,
+        validade: r.validade,
+        lote: r.lote,
       })),
       {
         tipo: "FORNECEDOR",
@@ -703,7 +823,7 @@ export async function receberPedidoCompra(
 
   // 2. Acumula qtdRecebida em cada item e recalcula o status do pedido.
   const recebidoMap = new Map(recebidos.map((r) => [r.it.id, r.qtd]));
-  const novoRecebido = po.items.map((it) => ({
+  const novoRecebido = itensDoPedido.map((it) => ({
     it,
     total: Number(it.qtdRecebida) + (recebidoMap.get(it.id) ?? 0),
   }));
@@ -724,6 +844,38 @@ export async function receberPedidoCompra(
     });
   });
 
+  // 3. Timeline. Divergência sem motivo registrado vira, meses depois, a
+  //    palavra do estoquista contra a do fornecedor — por isso cada linha que
+  //    saiu do combinado deixa a sua própria linha na história do pedido.
+  const nomes = await nomesDosProdutos(tenantId, recebidos.map((r) => r.it.productId));
+  for (const r of recebidos) {
+    const nome = nomes.get(r.it.productId) ?? "Item";
+    const restante = Math.max(0, Number(r.it.qtdPedida) - Number(r.it.qtdRecebida));
+    const difQtd = r.qtd - restante;
+    const difCusto = r.it.tipo === "COMPRA" && Math.abs(r.custo - r.negociado) > 0.004;
+
+    if (difCusto) {
+      await registrarEvento({
+        tenantId,
+        purchaseOrderId: pedidoId,
+        tipo: "CUSTO_ACEITO",
+        descricao: `${nome}: custo ${r.custo > r.negociado ? "subiu" : "caiu"} de ${brl(r.negociado)} para ${brl(r.custo)} na entrada.${r.motivo ? ` ${r.motivo}` : ""}`,
+        meta: { productId: r.it.productId, negociado: r.negociado, recebido: r.custo },
+        createdBy: opts.createdBy,
+      });
+    }
+    if (Math.abs(difQtd) > 0.0001 || (r.motivo && !difCusto)) {
+      await registrarEvento({
+        tenantId,
+        purchaseOrderId: pedidoId,
+        tipo: "DIVERGENCIA_RESOLVIDA",
+        descricao: `${nome}: pedido ${fmtNum(restante)}, recebido ${fmtNum(r.qtd)} (${difQtd > 0 ? "+" : ""}${fmtNum(difQtd)}).${r.motivo ? ` ${r.motivo}` : " Sem motivo informado."}`,
+        meta: { productId: r.it.productId, pedido: restante, recebido: r.qtd, motivo: r.motivo },
+        createdBy: opts.createdBy,
+      });
+    }
+  }
+
   await registrarEvento({
     tenantId,
     purchaseOrderId: pedidoId,
@@ -731,9 +883,33 @@ export async function receberPedidoCompra(
     descricao: completo
       ? `Conferência concluída. Pedido ${po.numero} recebido integralmente.`
       : `Conferência concluída. Pedido ${po.numero} segue com itens pendentes.`,
-    meta: { itens: recebidos.length, nota: opts.numeroNota ?? null },
+    meta: { itens: recebidos.length, nota: opts.numeroNota ?? null, extras: extras.length },
     createdBy: opts.createdBy,
   });
+
+  return {
+    purchaseId,
+    valorRecebido,
+    completo,
+    numero: po.numero,
+    supplierId: po.supplierId,
+    siteId: po.siteId,
+  };
+}
+
+const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const fmtNum = (v: number) =>
+  Number.isInteger(v) ? String(v) : v.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+
+/** Nome dos produtos citados na timeline — uma consulta para todos. */
+async function nomesDosProdutos(tenantId: string, ids: string[]): Promise<Map<string, string>> {
+  const unicos = [...new Set(ids)];
+  if (unicos.length === 0) return new Map();
+  const produtos = await comTenant(tenantId, basePrisma.product.findMany({
+    where: { id: { in: unicos }, tenantId },
+    select: { id: true, nome: true },
+  }));
+  return new Map(produtos.map((p) => [p.id, p.nome]));
 }
 
 // ── Custo médio ponderado global ────────────────────────────

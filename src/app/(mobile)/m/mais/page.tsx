@@ -1,21 +1,19 @@
 import {
   ArrowLeftRight,
   BarChart3,
-  ClipboardList,
   LogOut,
   MonitorSmartphone,
   Handshake,
   Receipt,
   Settings,
-  ShoppingCart,
   Sparkles,
   Store,
-  Tag,
-  Truck,
   Users,
   type LucideIcon,
 } from "lucide-react";
 import { carregarShell } from "@/lib/shell-context";
+import { withTenant } from "@/lib/current-tenant";
+import { db } from "@/lib/prisma";
 import { featureAtiva } from "@/lib/planos";
 import { VERSAO_APP } from "@/lib/versao";
 import { podeEmAlguma, type Permissao } from "@/lib/permissoes";
@@ -23,63 +21,121 @@ import type { NavToggles } from "@/components/app/nav-config";
 import { MobilePageHeader } from "@/components/mobile/page-header";
 import { InstalarApp } from "@/components/mobile/instalar-app";
 import { LinhaLink } from "@/components/mobile/linha-link";
+import { AbrirOperacoes } from "@/components/mobile/abrir-operacoes";
+import { temOperacoes } from "@/components/mobile/operacoes";
 import { AtivarNotificacoes } from "@/components/mobile/ativar-notificacoes";
 import { Card } from "@/components/ui/misc";
 import { signOutAction } from "@/app/(app)/actions";
 
 /**
- * O resto do app. Serve de duas coisas: dar acesso ao que não coube nas cinco
- * abas, e ser a porta de saída para a versão completa — quem abriu o `/m` num
- * tablet precisa achar isso no primeiro nível, não enterrado.
+ * O resto do app: tudo que não coube nas cinco abas da barra.
  *
- * Os destinos ainda são telas de desktop; conforme as fases entregam as
- * versões `/m`, cada linha troca de href.
+ * Só LUGARES. Verbo — contar, etiquetar, receber, mudar preço, pedir — mora na
+ * folha "Nova operação", no botão do meio. A lista já teve os dois misturados e
+ * repetia cinco destinos da folha; quem via "Contagem" nos dois menus não
+ * aprendia nenhum. A linha "Nova operação" no fim do primeiro bloco é o que
+ * ensina a divisão sem esconder as operações de quem procura por elas aqui.
+ *
+ * Os grupos são a segunda metade da arrumação: uma lista chapada de doze linhas
+ * se lê como despejo, e no celular a pessoa rola procurando em vez de mirar.
  */
 export default async function MaisPage() {
   const { ctx, toggles, planoLabel, vocabularioPonto, admin } = await carregarShell();
 
-  const modulos: Array<{
+  // Mesmo `count` do layout — barato e indexado por tenant. A folha de
+  // operações precisa dele para decidir se "Transferência" existe.
+  const multiSite = await withTenant(ctx, async () => {
+    return (await db.site.count({ where: { ativo: true } })) > 1;
+  });
+
+  type Linha = {
     href: string;
     label: string;
     icone: LucideIcon;
     permissao?: Permissao;
     mostrar?: (t: NavToggles) => boolean;
-  }> = [
-    // A IA vem primeiro porque perdeu o botão flutuante: no celular ele cobria
-    // o canto onde as telas de operação põem suas ações. O portão é o mesmo do
-    // desktop (add-on no plano + administrador), e não cabe em `permissao`
-    // nem em `mostrar`, que só olham perfil e toggles.
-    ...(featureAtiva(ctx.tenant, "ia.copiloto") && admin
-      ? [{ href: "/m/ia", label: "NoHub IA", icone: Sparkles }]
-      : []),
-    { href: "/m/vendas", label: "Vendas", icone: Receipt, permissao: "relatorio.ver" },
-    // Sem Caixa: abrir/fechar caixa mora no PDV, na máquina com gaveta e
-    // impressora. Um botão aqui só serviria para abrir caixa longe dele.
-    { href: "/m/receber", label: "Receber pedidos", icone: Truck, permissao: "compras.receber" },
-    { href: "/m/estoque/contagem", label: "Contagem", icone: ClipboardList, permissao: "estoque.inventario" },
-    { href: "/m/movimentacoes", label: "Movimentações", icone: ArrowLeftRight, permissao: "estoque.ver" },
-    { href: "/m/cotacoes", label: "Cotações", icone: Handshake, permissao: "compras.ver" },
-    { href: "/m/pedido", label: "Pedido de compra", icone: ShoppingCart, permissao: "compras.pedir" },
-    { href: "/m/etiquetas", label: "Etiquetas", icone: Tag, permissao: "produto.preco" },
-    { href: "/m/relatorios", label: "Relatórios", icone: BarChart3, permissao: "relatorio.ver" },
-    { href: "/m/produtos", label: "Produtos", icone: Store, permissao: "produto.ver" },
-    { href: "/m/clientes", label: "Clientes", icone: Users, permissao: "cliente.ver" },
+    /** Portão que não cabe em permissão nem em toggle (add-on de plano, admin). */
+    liberado?: boolean;
+  };
+
+  const secoes: Array<{ titulo: string; itens: Linha[]; operacoes?: boolean }> = [
     {
-      href: "/totem",
-      label: "Modo autoatendimento",
-      icone: MonitorSmartphone,
-      permissao: "venda.registrar",
-      mostrar: (t) => t.moduloAutoatendimento,
-      // Sem selo de "versão de computador": o quiosque é responsivo e roda no
-      // próprio tablet, que é justamente onde ele costuma ficar.
+      titulo: "Operação",
+      // Vendas, movimento e cotação são telas de CONSULTA — olha-se o que
+      // aconteceu. Por isso ficam aqui e não na folha.
+      itens: [
+        { href: "/m/vendas", label: "Vendas", icone: Receipt, permissao: "relatorio.ver" },
+        {
+          href: "/m/movimentacoes",
+          label: "Movimentações",
+          icone: ArrowLeftRight,
+          permissao: "estoque.ver",
+        },
+        // Cotação é trabalho de mesa: a lista é o destino, e criar uma é um
+        // botão dentro dela. Nada disso começa com o produto na mão.
+        { href: "/m/cotacoes", label: "Cotações", icone: Handshake, permissao: "compras.ver" },
+      ],
+      operacoes: true,
+    },
+    {
+      titulo: "Cadastros",
+      itens: [
+        { href: "/m/produtos", label: "Produtos", icone: Store, permissao: "produto.ver" },
+        { href: "/m/clientes", label: "Clientes", icone: Users, permissao: "cliente.ver" },
+      ],
+    },
+    {
+      titulo: "Análise",
+      itens: [
+        {
+          href: "/m/relatorios",
+          label: "Relatórios",
+          icone: BarChart3,
+          permissao: "relatorio.ver",
+        },
+        // A IA perdeu o botão flutuante (cobria o canto das ações das telas de
+        // operação), então o menu é o caminho dela. O portão é o mesmo do
+        // desktop: add-on no plano + administrador.
+        {
+          href: "/m/ia",
+          label: "NoHub IA",
+          icone: Sparkles,
+          liberado: featureAtiva(ctx.tenant, "ia.copiloto") && admin,
+        },
+      ],
+    },
+    {
+      titulo: "Este aparelho",
+      itens: [
+        {
+          href: "/totem",
+          label: "Modo autoatendimento",
+          icone: MonitorSmartphone,
+          permissao: "venda.registrar",
+          mostrar: (t) => t.moduloAutoatendimento,
+          // Sem selo de "versão de computador": o quiosque é responsivo e roda
+          // no próprio tablet, que é justamente onde ele costuma ficar.
+        },
+      ],
     },
   ];
 
-  const visiveis = modulos.filter(
-    (m) =>
-      (!m.mostrar || m.mostrar(toggles)) &&
-      (!m.permissao || podeEmAlguma(ctx.acessos, m.permissao)),
-  );
+  // A linha de atalho para a folha do "+" só existe se houver operação para
+  // oferecer — senão o toque termina numa folha vazia.
+  const comOperacoes = temOperacoes(ctx.acessos, toggles, multiSite);
+
+  const visiveis = secoes
+    .map((s) => ({
+      ...s,
+      operacoes: s.operacoes === true && comOperacoes,
+      itens: s.itens.filter(
+        (i) =>
+          i.liberado !== false &&
+          (!i.mostrar || i.mostrar(toggles)) &&
+          (!i.permissao || podeEmAlguma(ctx.acessos, i.permissao)),
+      ),
+    }))
+    .filter((s) => s.itens.length > 0 || s.operacoes);
 
   return (
     <div className="space-y-5">
@@ -105,19 +161,27 @@ export default async function MaisPage() {
         <AtivarNotificacoes chavePublica={process.env.VAPID_PUBLIC_KEY} />
       )}
 
-      {visiveis.length > 0 && (
-        <section className="space-y-2">
-          <h2 className="font-display text-base font-semibold text-ink">Ir para</h2>
+      {visiveis.map((secao) => (
+        <section key={secao.titulo} className="space-y-2">
+          <h2 className="font-display text-base font-semibold text-ink">{secao.titulo}</h2>
           <Card className="divide-y divide-line overflow-hidden">
-            {visiveis.map((m) => (
-              <LinhaLink key={m.href} href={m.href}>
-                <m.icone className="h-5 w-5 shrink-0 text-ink-2" aria-hidden />
-                <span className="flex-1 text-sm font-medium text-ink">{m.label}</span>
+            {secao.itens.map((i) => (
+              <LinhaLink key={i.href} href={i.href}>
+                <i.icone className="h-5 w-5 shrink-0 text-ink-2" aria-hidden />
+                <span className="flex-1 text-sm font-medium text-ink">{i.label}</span>
               </LinhaLink>
             ))}
+
+            {secao.operacoes && (
+              <AbrirOperacoes
+                acessos={ctx.acessos}
+                toggles={toggles}
+                multiSite={multiSite}
+              />
+            )}
           </Card>
         </section>
-      )}
+      ))}
 
       <section className="space-y-2">
         <h2 className="font-display text-base font-semibold text-ink">Conta</h2>

@@ -15,9 +15,10 @@ import type { Acesso } from "@/lib/permissoes";
  * aparelho (o `viewportFit: "cover"` do root layout é o que dá valor a
  * `env(safe-area-inset-bottom)`).
  *
- * Diferente da `BottomNav` do app de desktop, esta não tem botão de menu: o
- * mapa completo é uma tela (`/m/mais`), não uma gaveta — gaveta em cima de
- * barra fixa é dois níveis de sobreposição no mesmo canto do polegar.
+ * Não tem botão de gaveta: o mapa completo é uma tela (`/m/mais`) — gaveta em
+ * cima de barra fixa é dois níveis de sobreposição no mesmo canto do polegar.
+ * (A casca `(app)` tinha uma barra assim, com hambúrguer; ela morreu, e o `/m`
+ * é a única superfície de mão.)
  *
  * A exceção é o alvo do meio, que abre a folha "Nova operação". Ali a
  * sobreposição é o ponto: é uma decisão de "o que vou fazer agora", tomada de

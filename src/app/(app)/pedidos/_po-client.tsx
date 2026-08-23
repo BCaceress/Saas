@@ -51,6 +51,7 @@ export function PurchaseOrdersClient({
   transferencias,
   empresa,
   initialView,
+  conferenciaCega,
 }: {
   /** Já é a FATIA da página — filtrar e ordenar aconteceu no banco. */
   pedidos: PedidoView[];
@@ -62,6 +63,8 @@ export function PurchaseOrdersClient({
   transferencias: Transfer[];
   empresa: string;
   initialView: PoView;
+  /** Contagem às cegas: o esperado só aparece depois de contar. */
+  conferenciaCega: boolean;
 }) {
   const router = useRouter();
   const { options, garantir: garantirFormOptions } = useFormOptions();
@@ -308,6 +311,7 @@ export function PurchaseOrdersClient({
         pedido={receber}
         open={receber !== null}
         onClose={() => setReceber(null)}
+        cega={conferenciaCega}
       />
 
       <Sheet

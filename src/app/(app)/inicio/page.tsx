@@ -8,7 +8,6 @@ import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import { ReportFilters } from "@/components/app/report-filters";
-import { OferecerMobile } from "@/components/mobile/oferecer-mobile";
 import { saudacao } from "./_insights";
 import { RefreshButton } from "./_refresh-button";
 import { DashboardSettings } from "./_dashboard-settings";
@@ -74,9 +73,6 @@ export default async function DashboardPage({
 
   return (
     <div className="space-y-4 pb-6">
-      {/* Só aparece em tela de celular, e só até a pessoa escolher. */}
-      <OferecerMobile />
-
       {/* Letterhead — só aparece no PDF (window.print); sidebar/navbar/ações já somem via print:hidden. */}
       <div className="hidden print:block">
         <p className="font-display text-lg font-semibold">{ctx.tenant.nome}</p>
