@@ -164,6 +164,10 @@ const EQUIVALENTE: Array<[prefixo: string, destino: string, resto?: RegExp]> = [
   // Caixa não tem equivalente mobile de propósito: abrir/fechar caixa é
   // trabalho de PDV, na máquina com gaveta. O alerta abre a tela de mesa.
   ["/clientes", "/m/clientes"],
+  // Fornecedores fica de fora mesmo existindo `/m/fornecedores`: a tradução é
+  // por PREFIXO, então todo alerta de um fornecedor específico
+  // (`/fornecedores/[id]`, o centro de gestão de sete abas) cairia na lista e
+  // perderia o alvo. Melhor abrir a tela de mesa, que tem a resposta.
 ];
 
 /** Converte um href de alerta para o destino mobile, quando houver. */

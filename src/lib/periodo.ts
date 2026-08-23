@@ -1,8 +1,14 @@
 /**
  * Período de relatório (PRD Fase 7 §6) — presets + intervalo + período anterior
- * para a comparação. Funções puras, sem DB. Datas em horário local do servidor;
- * intervalos são [inicio, fim) (fim exclusivo → meia-noite do dia seguinte).
+ * para a comparação. Funções puras, sem DB. Intervalos são [inicio, fim) (fim
+ * exclusivo → meia-noite do dia seguinte).
+ *
+ * As fronteiras são do dia da LOJA (`lib/datas`), não do fuso do processo: o
+ * servidor da Vercel roda em UTC, e ali "hoje" começa às 21h do dia anterior no
+ * Brasil — das 21h à meia-noite todo relatório do dia mostrava o dia seguinte.
  */
+
+import { FUSO_LOJA, inicioDoDiaLoja, inicioDoDiaLojaEm, partesDoDiaLoja } from "@/lib/datas";
 
 export type PeriodPreset = "hoje" | "7d" | "30d" | "mes" | "6m" | "1a" | "custom";
 
@@ -18,8 +24,15 @@ export type Periodo = {
 
 const DIA = 24 * 60 * 60 * 1000;
 
-function meiaNoite(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+/** `YYYY-MM-DD` a partir de ano/mês/dia civis — normaliza mês fora da faixa. */
+function chaveCivil(ano: number, mes: number, dia: number): string {
+  const d = new Date(Date.UTC(ano, mes - 1, dia));
+  return diaDaLojaUTC(d);
+}
+
+/** Partes de um instante lido como UTC — só para a aritmética de calendário. */
+function diaDaLojaUTC(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
 const PRESET_LABEL: Record<Exclude<PeriodPreset, "custom">, string> = {
@@ -37,8 +50,9 @@ export function resolvePeriodo(params: {
   de?: string;
   ate?: string;
 }): Periodo {
-  const hojeZero = meiaNoite(new Date());
+  const hojeZero = inicioDoDiaLoja();
   const amanha = new Date(hojeZero.getTime() + DIA);
+  const civil = partesDoDiaLoja(hojeZero);
   const preset = (params.periodo ?? "7d") as PeriodPreset;
 
   let inicio: Date;
@@ -46,8 +60,8 @@ export function resolvePeriodo(params: {
   let label: string;
 
   if (preset === "custom" && params.de) {
-    inicio = meiaNoite(new Date(params.de));
-    fim = params.ate ? new Date(meiaNoite(new Date(params.ate)).getTime() + DIA) : amanha;
+    inicio = inicioDoDiaLojaEm(params.de);
+    fim = params.ate ? new Date(inicioDoDiaLojaEm(params.ate).getTime() + DIA) : amanha;
     label = `${fmtData(inicio)} – ${fmtData(new Date(fim.getTime() - DIA))}`;
   } else if (preset === "hoje") {
     inicio = hojeZero;
@@ -56,13 +70,13 @@ export function resolvePeriodo(params: {
     inicio = new Date(hojeZero.getTime() - 29 * DIA);
     label = PRESET_LABEL["30d"];
   } else if (preset === "mes") {
-    inicio = new Date(hojeZero.getFullYear(), hojeZero.getMonth(), 1);
+    inicio = inicioDoDiaLojaEm(chaveCivil(civil.ano, civil.mes, 1));
     label = PRESET_LABEL.mes;
   } else if (preset === "6m" || preset === "1a") {
     // Recuo em MESES, não em múltiplos de 30 dias: "6 meses" que termina no
     // dia 28 porque fevereiro tem 28 confunde quem confere o fechamento.
     const meses = preset === "6m" ? 6 : 12;
-    inicio = new Date(hojeZero.getFullYear(), hojeZero.getMonth() - meses, hojeZero.getDate());
+    inicio = inicioDoDiaLojaEm(chaveCivil(civil.ano, civil.mes - meses, civil.dia));
     label = PRESET_LABEL[preset];
   } else {
     inicio = new Date(hojeZero.getTime() - 6 * DIA);
@@ -79,11 +93,20 @@ export function resolvePeriodo(params: {
 // ── Formatação (pt-BR) ──────────────────────────────────────
 
 export function fmtData(d: Date): string {
-  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+  return d.toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: FUSO_LOJA,
+  });
 }
 
 export function fmtDataCompleta(d: Date): string {
-  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+  return d.toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: FUSO_LOJA,
+  });
 }
 
 /** Número grande compacto: 1234 → "1,2 mil", 1_200_000 → "1,2 mi". */

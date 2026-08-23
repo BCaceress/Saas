@@ -8,12 +8,11 @@ import {
   Settings,
   Sparkles,
   Store,
+  Truck,
   Users,
   type LucideIcon,
 } from "lucide-react";
 import { carregarShell } from "@/lib/shell-context";
-import { withTenant } from "@/lib/current-tenant";
-import { db } from "@/lib/prisma";
 import { featureAtiva } from "@/lib/planos";
 import { VERSAO_APP } from "@/lib/versao";
 import { podeEmAlguma, type Permissao } from "@/lib/permissoes";
@@ -21,8 +20,6 @@ import type { NavToggles } from "@/components/app/nav-config";
 import { MobilePageHeader } from "@/components/mobile/page-header";
 import { InstalarApp } from "@/components/mobile/instalar-app";
 import { LinhaLink } from "@/components/mobile/linha-link";
-import { AbrirOperacoes } from "@/components/mobile/abrir-operacoes";
-import { temOperacoes } from "@/components/mobile/operacoes";
 import { AtivarNotificacoes } from "@/components/mobile/ativar-notificacoes";
 import { Card } from "@/components/ui/misc";
 import { signOutAction } from "@/app/(app)/actions";
@@ -31,22 +28,15 @@ import { signOutAction } from "@/app/(app)/actions";
  * O resto do app: tudo que não coube nas cinco abas da barra.
  *
  * Só LUGARES. Verbo — contar, etiquetar, receber, mudar preço, pedir — mora na
- * folha "Nova operação", no botão do meio. A lista já teve os dois misturados e
- * repetia cinco destinos da folha; quem via "Contagem" nos dois menus não
- * aprendia nenhum. A linha "Nova operação" no fim do primeiro bloco é o que
- * ensina a divisão sem esconder as operações de quem procura por elas aqui.
+ * folha "Nova operação", no botão do meio, e não é repetido aqui: a lista já
+ * teve os dois misturados, e quem via "Contagem" nos dois menus não aprendia
+ * nenhum.
  *
  * Os grupos são a segunda metade da arrumação: uma lista chapada de doze linhas
  * se lê como despejo, e no celular a pessoa rola procurando em vez de mirar.
  */
 export default async function MaisPage() {
   const { ctx, toggles, planoLabel, vocabularioPonto, admin } = await carregarShell();
-
-  // Mesmo `count` do layout — barato e indexado por tenant. A folha de
-  // operações precisa dele para decidir se "Transferência" existe.
-  const multiSite = await withTenant(ctx, async () => {
-    return (await db.site.count({ where: { ativo: true } })) > 1;
-  });
 
   type Linha = {
     href: string;
@@ -58,7 +48,7 @@ export default async function MaisPage() {
     liberado?: boolean;
   };
 
-  const secoes: Array<{ titulo: string; itens: Linha[]; operacoes?: boolean }> = [
+  const secoes: Array<{ titulo: string; itens: Linha[] }> = [
     {
       titulo: "Operação",
       // Vendas, movimento e cotação são telas de CONSULTA — olha-se o que
@@ -74,14 +64,26 @@ export default async function MaisPage() {
         // Cotação é trabalho de mesa: a lista é o destino, e criar uma é um
         // botão dentro dela. Nada disso começa com o produto na mão.
         { href: "/m/cotacoes", label: "Cotações", icone: Handshake, permissao: "compras.ver" },
+        // Clientes fica em Operação, e não junto de Produtos: é a única destas
+        // telas que ESCREVE no celular (cadastra no balcão, manda cupom, chama
+        // no WhatsApp).
+        { href: "/m/clientes", label: "Clientes", icone: Users, permissao: "cliente.ver" },
       ],
-      operacoes: true,
     },
     {
-      titulo: "Cadastros",
+      // "Consultar", e não "Cadastros": no celular estas duas telas só LEEM.
+      // Produto não se cadastra aqui (dezenas de campos fiscais, de embalagem e
+      // de canal — trabalho de mesa) e fornecedor também não. O rótulo antigo
+      // prometia uma ação que a tela não entrega.
+      titulo: "Consultar",
       itens: [
         { href: "/m/produtos", label: "Produtos", icone: Store, permissao: "produto.ver" },
-        { href: "/m/clientes", label: "Clientes", icone: Users, permissao: "cliente.ver" },
+        {
+          href: "/m/fornecedores",
+          label: "Fornecedores",
+          icone: Truck,
+          permissao: "fornecedor.ver",
+        },
       ],
     },
     {
@@ -120,14 +122,9 @@ export default async function MaisPage() {
     },
   ];
 
-  // A linha de atalho para a folha do "+" só existe se houver operação para
-  // oferecer — senão o toque termina numa folha vazia.
-  const comOperacoes = temOperacoes(ctx.acessos, toggles, multiSite);
-
   const visiveis = secoes
     .map((s) => ({
       ...s,
-      operacoes: s.operacoes === true && comOperacoes,
       itens: s.itens.filter(
         (i) =>
           i.liberado !== false &&
@@ -135,7 +132,7 @@ export default async function MaisPage() {
           (!i.permissao || podeEmAlguma(ctx.acessos, i.permissao)),
       ),
     }))
-    .filter((s) => s.itens.length > 0 || s.operacoes);
+    .filter((s) => s.itens.length > 0);
 
   return (
     <div className="space-y-5">
@@ -171,14 +168,6 @@ export default async function MaisPage() {
                 <span className="flex-1 text-sm font-medium text-ink">{i.label}</span>
               </LinhaLink>
             ))}
-
-            {secao.operacoes && (
-              <AbrirOperacoes
-                acessos={ctx.acessos}
-                toggles={toggles}
-                multiSite={multiSite}
-              />
-            )}
           </Card>
         </section>
       ))}

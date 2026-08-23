@@ -2,6 +2,7 @@ import "server-only";
 import { cache } from "react";
 import { db } from "@/lib/prisma";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
+import { diaDaLoja, horaDaLoja } from "@/lib/datas";
 
 /**
  * Camada de dados dos relatórios (PRD Fase 7 §4/§5). Tudo é LEITURA agregada
@@ -151,9 +152,12 @@ export async function vendasPorDia(range: Range, siteId: SiteFilter): Promise<Po
   return [...porDia.entries()].map(([data, valor]) => ({ data, valor }));
 }
 
-function chaveDia(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
+/**
+ * Chave do dia no fuso da LOJA, não no do processo. Na Vercel (UTC) a venda
+ * das 22h caía no dia seguinte, e o gráfico atribuía o movimento da noite ao
+ * dia que ainda nem começou.
+ */
+const chaveDia = diaDaLoja;
 
 // ── Série financeira diária (receita, lucro, ticket, nº vendas) ─────
 
@@ -229,7 +233,8 @@ export async function vendasPorHora(range: Range, siteId: SiteFilter): Promise<P
   for (let h = 0; h < 24; h++) horas.set(h, 0);
   for (const s of sales) {
     if (!s.paidAt) continue;
-    horas.set(s.paidAt.getHours(), (horas.get(s.paidAt.getHours()) ?? 0) + n(s.total));
+    const h = horaDaLoja(s.paidAt);
+    horas.set(h, (horas.get(h) ?? 0) + n(s.total));
   }
   return [...horas.entries()].map(([h, valor]) => ({ data: `${String(h).padStart(2, "0")}h`, valor }));
 }

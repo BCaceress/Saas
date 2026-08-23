@@ -2,23 +2,107 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { ScanLine } from "lucide-react";
+import {
+  ArrowLeftRight,
+  ClipboardList,
+  Image as ImageIcon,
+  ScanLine,
+  ShoppingCart,
+  Tag,
+  Truck,
+  TriangleAlert,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BottomSheet } from "@/components/mobile/bottom-sheet";
-import { operacoesVisiveis } from "@/components/mobile/operacoes";
 import { useAlerts } from "@/components/app/alerts-provider";
-import { podeEmAlguma, type Acesso } from "@/lib/permissoes";
+import { podeEmAlguma, type Acesso, type Permissao } from "@/lib/permissoes";
 import type { NavToggles } from "@/components/app/nav-config";
 
 // ============================================================
-// Nova operação — a folha do botão do meio. A LISTA mora em `operacoes.ts`,
-// que é módulo neutro: o `/m/mais` (server) também precisa consultá-la.
+// Nova operação — o menu do botão do meio.
+//
+// A lista responde "o que eu vim fazer aqui", e não "para qual módulo eu vou".
+// Por isso os rótulos são verbos e a ordem é a frequência de quem está de pé na
+// loja, não a ordem dos módulos no menu do desktop.
+//
+// A divisão com o "Mais" é essa e não tem exceção: aqui só entra operação de
+// CHÃO — algo que se faz com o produto na mão, quase sempre começando por um
+// bipe. Lugar (lista, cadastro, relatório) mora no "Mais". Enquanto os dois
+// menus repetiam os mesmos cinco destinos, ninguém aprendia qual abrir.
 //
 // Escanear é o primeiro e o maior: quase toda operação começa por um produto, e
 // a maioria das telas abaixo abre a câmera de qualquer jeito. Quem só quer
 // consultar não deveria pagar dois toques — daí o alvo grande no topo, separado
 // da grade.
 // ============================================================
+
+type Operacao = {
+  href: string;
+  label: string;
+  descricao: string;
+  icone: LucideIcon;
+  permissao?: Permissao;
+  mostrar?: (t: NavToggles) => boolean;
+  /** Só faz sentido com mais de um local: transferir para onde, senão? */
+  exigeMultiSite?: boolean;
+};
+
+const OPERACOES: Operacao[] = [
+  {
+    href: "/m/receber",
+    label: "Receber mercadoria",
+    descricao: "Conferir pedido item a item",
+    icone: Truck,
+    permissao: "compras.receber",
+  },
+  {
+    href: "/m/estoque/contagem",
+    label: "Inventário",
+    descricao: "Contar a prateleira",
+    icone: ClipboardList,
+    permissao: "estoque.inventario",
+  },
+  {
+    href: "/m/estoque?filtro=transferir",
+    label: "Transferência",
+    descricao: "Mandar para outra loja",
+    icone: ArrowLeftRight,
+    permissao: "estoque.transferir",
+    exigeMultiSite: true,
+  },
+  {
+    href: "/m/estoque",
+    label: "Registrar perda",
+    descricao: "Quebra, vencimento, avaria",
+    icone: TriangleAlert,
+    permissao: "estoque.ajustar",
+  },
+  {
+    href: "/m/encarte",
+    label: "Alterar preço",
+    descricao: "Um produto ou um encarte inteiro",
+    icone: ImageIcon,
+    permissao: "produto.preco",
+  },
+  {
+    href: "/m/etiquetas",
+    label: "Etiquetas",
+    descricao: "Fila de impressão",
+    icone: Tag,
+    permissao: "produto.preco",
+  },
+  {
+    href: "/m/pedido",
+    label: "Pedido de compra",
+    descricao: "Bipar o que falta",
+    icone: ShoppingCart,
+    permissao: "compras.pedir",
+  },
+  // Cotação NÃO entra: é trabalho de mesa, com tela própria e botão de criar
+  // dentro dela — nada aqui começa com o produto na mão. Ela vive no "Mais",
+  // como lugar.
+];
 
 export function NovaOperacaoSheet({
   open,
@@ -38,7 +122,13 @@ export function NovaOperacaoSheet({
   const { contar } = useAlerts();
 
   const visiveis = React.useMemo(
-    () => operacoesVisiveis(acessos, toggles, multiSite),
+    () =>
+      OPERACOES.filter(
+        (o) =>
+          (!o.mostrar || o.mostrar(toggles)) &&
+          (!o.exigeMultiSite || multiSite) &&
+          (!o.permissao || podeEmAlguma(acessos, o.permissao)),
+      ),
     [acessos, toggles, multiSite],
   );
 

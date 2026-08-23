@@ -8,7 +8,21 @@
  *
  * Funções puras, sem DB e sem `server-only`: o mesmo módulo alimenta o
  * carregamento no servidor e os rótulos do seletor no cliente.
+ *
+ * O dia é o da LOJA (`lib/datas`), nunca o do processo. O servidor da Vercel
+ * roda em UTC: com `new Date(ano, mês, dia)`, das 21h à meia-noite o "hoje"
+ * daqui virava o dia seguinte, e o movimento do dia inteiro só aparecia em
+ * "Ontem". Quem abre esta tela às 22h está fechando o caixa — é justamente a
+ * hora em que ela precisa estar certa.
  */
+
+import {
+  FUSO_LOJA,
+  diaDaLoja,
+  inicioDoDiaLoja,
+  inicioDoDiaLojaEm,
+  partesDoDiaLoja,
+} from "@/lib/datas";
 
 export type PresetVendas = "hoje" | "ontem" | "semana" | "mes" | "custom";
 
@@ -43,27 +57,29 @@ export type PeriodoVendas = {
   incluiHoje: boolean;
 };
 
-function meiaNoite(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
-/** YYYY-MM-DD em horário local — formato do `<input type="date">`. */
+/** YYYY-MM-DD no dia da loja — formato do `<input type="date">`. */
 export function paraInput(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return diaDaLoja(d);
 }
 
 function doInput(v: string | undefined): Date | null {
   if (!v) return null;
   const [a, m, d] = v.split("-").map(Number);
   if (!a || !m || !d) return null;
-  const data = new Date(a, m - 1, d);
+  const data = inicioDoDiaLojaEm(v);
   return Number.isNaN(data.getTime()) ? null : data;
 }
 
-const fmt = (d: Date) => d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+const fmt = (d: Date) =>
+  d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: FUSO_LOJA });
 
 const fmtLongo = (d: Date) =>
-  d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+  d.toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: FUSO_LOJA,
+  });
 
 /**
  * Descrição do período com ano. Recebe o fim EXCLUSIVO (meia-noite do dia
@@ -87,7 +103,7 @@ export function resolvePeriodoVendas(params: {
   de?: string;
   ate?: string;
 }): PeriodoVendas {
-  const hoje = meiaNoite(new Date());
+  const hoje = inicioDoDiaLoja();
   const amanha = new Date(hoje.getTime() + DIA);
   const preset = (params.p ?? "hoje") as PresetVendas;
 
@@ -118,7 +134,8 @@ export function resolvePeriodoVendas(params: {
   }
 
   if (preset === "mes") {
-    const primeiro = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+    const { ano, mes } = partesDoDiaLoja(hoje);
+    const primeiro = inicioDoDiaLojaEm(`${ano}-${String(mes).padStart(2, "0")}-01`);
     // Mês de 31 dias estouraria o teto no último dia — a janela encolhe, o
     // rótulo continua "Este mês" (é o mês que a pessoa pediu).
     const piso = new Date(hoje.getTime() - (MAX_DIAS - 1) * DIA);
