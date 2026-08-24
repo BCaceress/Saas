@@ -170,7 +170,7 @@ export function CotacoesMobile({
       )}
 
       {podePedir && (
-        <div className="sticky bottom-24 z-10">
+        <div className="sticky bottom-32 z-10">
           <Button onClick={nova} disabled={criando} size="lg" className="w-full">
             {criando ? (
               <Loader2 className="size-4 animate-spin" aria-hidden />

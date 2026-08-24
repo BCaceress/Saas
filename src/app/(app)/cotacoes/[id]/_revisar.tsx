@@ -121,18 +121,25 @@ export function RevisarCotacao({
         </h3>
 
         <div className="mt-3 flex flex-col gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-[12px] font-medium text-ink-2">Nome</span>
-            <input
-              value={form.titulo}
-              onChange={(e) => setForm((f) => ({ ...f, titulo: e.target.value }))}
-              disabled={!editavel}
-              placeholder="Ex.: Reposição de cervejas — agosto"
-              className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink disabled:opacity-60"
-            />
-          </label>
+          {/* Nome e prazo dividem a linha: o nome é o campo largo (uma frase),
+              o prazo é só uma data — meia tela para cada desperdiçava o topo. */}
+          <div
+            className={cn(
+              "grid gap-3",
+              sites.length > 1 ? "sm:grid-cols-[2fr_1fr_1fr]" : "sm:grid-cols-[2fr_1fr]",
+            )}
+          >
+            <label className="flex flex-col gap-1">
+              <span className="text-[12px] font-medium text-ink-2">Nome</span>
+              <input
+                value={form.titulo}
+                onChange={(e) => setForm((f) => ({ ...f, titulo: e.target.value }))}
+                disabled={!editavel}
+                placeholder="Ex.: Reposição de cervejas — agosto"
+                className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink disabled:opacity-60"
+              />
+            </label>
 
-          <div className={cn("grid gap-3", sites.length > 1 && "sm:grid-cols-2")}>
             <label className={cn("flex flex-col gap-1", sites.length <= 1 && "hidden")}>
               <span className="flex items-center gap-1.5 text-[12px] font-medium text-ink-2">
                 <Store size={12} className="text-faint" />

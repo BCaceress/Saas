@@ -290,18 +290,25 @@ function LinhaContato({
 }) {
   return (
     <div className="flex items-center gap-2 rounded-[var(--radius)] bg-surface-2 p-2">
+      {/* Nome e função na MESMA linha: "João Silva · Vendedor" se lê de uma
+          vez, e a linha de baixo fica livre para o que o polegar vai usar — o
+          WhatsApp, ou o e-mail quando não há telefone. Antes as duas coisas
+          disputavam a segunda linha e o canal sumia sempre que havia função. */}
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-1 truncate text-[13px] font-medium text-ink">
+        <p className="flex items-baseline gap-1.5 text-[13px] font-medium text-ink">
           {c.principal && (
             <Star
-              className="h-3 w-3 shrink-0 fill-accent text-accent"
+              className="h-3 w-3 shrink-0 translate-y-0.5 fill-accent text-accent"
               aria-label="Recebe as cotações"
             />
           )}
           <span className="truncate">{c.nome}</span>
+          {c.cargo && (
+            <span className="shrink-0 truncate text-[11px] font-normal text-faint">{c.cargo}</span>
+          )}
         </p>
         <p className="truncate text-[11px] text-ink-2">
-          {c.cargo || (c.telefone ? formatarTelefone(c.telefone) : c.email) || "Sem função"}
+          {c.telefone ? formatarTelefone(c.telefone) : (c.email ?? "Sem contato")}
         </p>
       </div>
 

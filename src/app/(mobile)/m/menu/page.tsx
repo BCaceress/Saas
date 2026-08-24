@@ -64,20 +64,21 @@ export default async function MaisPage() {
         // Cotação é trabalho de mesa: a lista é o destino, e criar uma é um
         // botão dentro dela. Nada disso começa com o produto na mão.
         { href: "/m/cotacoes", label: "Cotações", icone: Handshake, permissao: "compras.ver" },
-        // Clientes fica em Operação, e não junto de Produtos: é a única destas
-        // telas que ESCREVE no celular (cadastra no balcão, manda cupom, chama
-        // no WhatsApp).
-        { href: "/m/clientes", label: "Clientes", icone: Users, permissao: "cliente.ver" },
       ],
     },
     {
-      // "Consultar", e não "Cadastros": no celular estas duas telas só LEEM.
-      // Produto não se cadastra aqui (dezenas de campos fiscais, de embalagem e
-      // de canal — trabalho de mesa) e fornecedor também não. O rótulo antigo
-      // prometia uma ação que a tela não entrega.
+      // "Consultar", e não "Cadastros": produto não se cadastra aqui (dezenas
+      // de campos fiscais, de embalagem e de canal — trabalho de mesa) e
+      // fornecedor também não. O rótulo antigo prometia uma ação que a tela não
+      // entrega. Cliente é a exceção que escreve, e por isso vem por último no
+      // raciocínio: quem procura ficha procura as três no mesmo lugar.
       titulo: "Consultar",
       itens: [
         { href: "/m/produtos", label: "Produtos", icone: Store, permissao: "produto.ver" },
+        // Clientes vem logo abaixo de Produtos: quem procura uma ficha procura
+        // as duas no mesmo lugar. É a única daqui que também ESCREVE (cadastra
+        // no balcão, manda cupom, chama no WhatsApp).
+        { href: "/m/clientes", label: "Clientes", icone: Users, permissao: "cliente.ver" },
         {
           href: "/m/fornecedores",
           label: "Fornecedores",

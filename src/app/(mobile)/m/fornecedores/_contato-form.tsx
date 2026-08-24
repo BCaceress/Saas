@@ -136,23 +136,32 @@ export function FormContato({
           />
         </Campo>
 
-        <p className="px-1 text-xs text-muted">
-          Informe ao menos o WhatsApp ou o e-mail — é por onde a cotação sai.
+        {/* Canal é obrigatório, não conselho: contato sem WhatsApp nem e-mail
+            não recebe cotação, e o cadastro morre no banco sem servir a nada.
+            O aviso fica vermelho enquanto falta — o botão já está travado. */}
+        <p className={cn("px-1 text-xs", temCanal ? "text-muted" : "text-danger")}>
+          Informe o WhatsApp ou o e-mail — é por onde a cotação sai.
         </p>
 
-        <button
-          type="button"
-          onClick={() => setPrincipal((v) => !v)}
-          aria-pressed={principal}
-          className={cn(
-            "min-h-11 w-full cursor-pointer rounded-full border px-4 text-sm font-medium",
-            principal
-              ? "border-transparent bg-brand text-on-brand"
-              : "border-line-button bg-surface text-ink-2",
-          )}
-        >
-          {principal ? "Recebe as cotações deste fornecedor" : "Marcar como contato principal"}
-        </button>
+        {/* Só no cadastro. Na edição o botão virava um rótulo de estado
+            ("Recebe as cotações deste fornecedor") que ninguém lia como
+            interruptor — trocar o principal é decisão de mesa, e a tela de
+            fornecedores no desktop continua fazendo isso. */}
+        {!base && (
+          <button
+            type="button"
+            onClick={() => setPrincipal((v) => !v)}
+            aria-pressed={principal}
+            className={cn(
+              "min-h-11 w-full cursor-pointer rounded-full border px-4 text-sm font-medium",
+              principal
+                ? "border-transparent bg-brand text-on-brand"
+                : "border-line-button bg-surface text-ink-2",
+            )}
+          >
+            Marcar como contato principal
+          </button>
+        )}
 
         {erro && <p className="text-sm text-danger">{erro}</p>}
       </div>
