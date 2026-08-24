@@ -1277,7 +1277,6 @@ function HistoricoEnvios({
           ) : (
             <Mail size={11} className="shrink-0 text-faint" />
           )}
-          <span className="font-mono tabular-nums text-faint">{fmtDataHora(e.enviadoEm)}</span>
           <span className="truncate">
             {e.contatoNome ?? e.destino ?? "sem contato"}
             {e.reenvio && " · reenvio"}
@@ -1300,11 +1299,3 @@ function HistoricoEnvios({
   );
 }
 
-/** "20/08 09:15" — data e hora curtas, que é o que o operador compara. */
-function fmtDataHora(iso: string): string {
-  const d = new Date(iso);
-  return `${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString(
-    "pt-BR",
-    { hour: "2-digit", minute: "2-digit" },
-  )}`;
-}

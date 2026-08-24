@@ -13,7 +13,6 @@ import {
   MessageCircle,
   Minus,
   Plus,
-  RotateCcw,
   ScanLine,
   Search,
   Send,
@@ -52,7 +51,9 @@ import {
   enviarCotacaoAction,
   linkDoConviteAction,
   mensagemDoConviteAction,
+  mensagensDaCotacaoAction,
   removerItemAction,
+  type MensagemPronta,
   type ProdutoCotacao,
 } from "@/app/(app)/cotacoes/_compra-actions";
 import { ComparativoCotacao } from "@/app/(app)/cotacoes/[id]/_comparativo";
@@ -1245,6 +1246,31 @@ function Acompanhamento({
   /** Para quem mandar, por convite. Chave ausente = a precedência de sempre. */
   const [escolhas, setEscolhas] = React.useState<Record<string, string>>({});
   const [trocando, setTrocando] = React.useState<string | null>(null);
+  /** Mensagens já montadas, por `conviteId:contactId`. Com o texto em mãos o
+   *  toque no WhatsApp navega na hora, sem round-trip no meio do gesto. */
+  const [prontas, setProntas] = React.useState<Record<string, MensagemPronta>>({});
+
+  // Recarrega quando algum convite é enviado de novo: reenvio troca o token e
+  // o link guardado aqui morre na hora.
+  const assinatura = cotacao.convites.map((c) => `${c.id}:${c.enviadaEm ?? ""}`).join("|");
+  React.useEffect(() => {
+    let vivo = true;
+    void mensagensDaCotacaoAction(cotacao.id)
+      .then((lista) => {
+        if (!vivo) return;
+        setProntas((atual) => {
+          const novo = { ...atual };
+          for (const p of lista) novo[`${p.conviteId}:${p.contactId ?? ""}`] = p;
+          return novo;
+        });
+      })
+      .catch(() => {
+        // Sem cache o toque cai no caminho lento — não é erro para mostrar.
+      });
+    return () => {
+      vivo = false;
+    };
+  }, [cotacao.id, assinatura]);
 
   const rodando = (id: string, acao: Acao) =>
     ocupado?.id === id && ocupado.acao === acao;
@@ -1299,44 +1325,102 @@ function Acompanhamento({
    * A navegação é na MESMA aba de propósito: `window.open` depois de um await
    * perde o gesto do usuário e morre no bloqueador de pop-up do celular.
    */
-  async function abrir(c: ConviteCotacao, canal: "whatsapp" | "email") {
-    const escolhido = c.id in escolhas ? escolhas[c.id] : undefined;
-    setOcupado({ id: c.id, acao: canal });
-    try {
-      const r = await mensagemDoConviteAction(c.id, escolhido);
-      if (canal === "whatsapp") {
-        if (!r.waLink) {
-          toast.info("Sem WhatsApp", "Este contato não tem telefone cadastrado.");
-          return;
-        }
-        window.location.href = r.waLink;
+  function navegar(p: MensagemPronta, canal: "whatsapp" | "email") {
+    if (canal === "whatsapp") {
+      if (!p.waLink) {
+        toast.info("Sem WhatsApp", "Este contato não tem telefone cadastrado.");
         return;
       }
-      if (!r.email) {
-        toast.info("Sem e-mail", "Este contato não tem e-mail cadastrado.");
-        return;
-      }
-      const cortar = r.mensagem.length > LIMITE_MAILTO;
-      const corpo = cortar
-        ? `Pedido de cotação ${cotacao.numero} — ${cotacao.titulo}.
+      window.location.assign(p.waLink);
+      return;
+    }
+    if (!p.email) {
+      toast.info("Sem e-mail", "Este contato não tem e-mail cadastrado.");
+      return;
+    }
+    // Corpo longo estoura o limite de URL de vários apps de e-mail e a lista
+    // chega picada. Passando do teto, o e-mail leva o link — que é o que
+    // interessa — e o texto inteiro vai para a área de transferência.
+    const cortar = p.mensagem.length > LIMITE_MAILTO;
+    const corpo = cortar
+      ? `Pedido de cotação ${cotacao.numero} — ${cotacao.titulo}.
 
 É só preencher os preços aqui (não precisa cadastro):
-${r.link}`
-        : r.mensagem;
-      if (cortar) {
-        await copiarTexto(r.mensagem);
-        toast.info("Lista copiada", "O e-mail leva o link; cole a lista se quiser mandar junto.");
-      }
-      const assunto = `Cotação ${cotacao.numero} — ${cotacao.titulo}`;
-      window.location.href = `mailto:${r.email}?subject=${encodeURIComponent(assunto)}&body=${encodeURIComponent(corpo)}`;
-    } catch (e) {
-      toast.error(
-        "Não deu para abrir o app",
-        e instanceof Error ? e.message : "Tente de novo em instantes.",
-      );
-    } finally {
-      setOcupado(null);
+${p.link}`
+      : p.mensagem;
+    if (cortar) {
+      void copiarTexto(p.mensagem);
+      toast.info("Lista copiada", "O e-mail leva o link; cole a lista se quiser mandar junto.");
     }
+    const assunto = `Cotação ${cotacao.numero} — ${cotacao.titulo}`;
+    window.location.assign(
+      `mailto:${p.email}?subject=${encodeURIComponent(assunto)}&body=${encodeURIComponent(corpo)}`,
+    );
+  }
+
+  /** Monta a mensagem daquele contato ANTES de o dedo precisar dela — trocar
+   *  de contato é o único caso que o lote inicial não cobre. */
+  function preparar(conviteId: string, contactId: string | null) {
+    const chave = `${conviteId}:${contactId ?? ""}`;
+    if (prontas[chave]) return;
+    void mensagemDoConviteAction(conviteId, contactId)
+      .then((r) =>
+        setProntas((a) => ({
+          ...a,
+          [chave]: {
+            conviteId,
+            contactId,
+            contato: r.contato,
+            telefone: r.telefone,
+            email: r.email,
+            mensagem: r.mensagem,
+            link: r.link,
+            waLink: r.waLink,
+          },
+        })),
+      )
+      .catch(() => {
+        // Cache é conforto: sem ele o toque cai no caminho lento e funciona.
+      });
+  }
+
+  /**
+   * Abre o app com a mensagem pronta. Com o texto em cache — o caso comum — a
+   * navegação sai no MESMO gesto do toque: nada de esperar o servidor com o
+   * dedo já fora do botão.
+   */
+  function abrir(c: ConviteCotacao, canal: "whatsapp" | "email", contactId: string | null) {
+    const chave = `${c.id}:${contactId ?? ""}`;
+    const pronta = prontas[chave];
+    if (pronta) {
+      navegar(pronta, canal);
+      return;
+    }
+    setOcupado({ id: c.id, acao: canal });
+    void (async () => {
+      try {
+        const r = await mensagemDoConviteAction(c.id, contactId);
+        const nova: MensagemPronta = {
+          conviteId: c.id,
+          contactId,
+          contato: r.contato,
+          telefone: r.telefone,
+          email: r.email,
+          mensagem: r.mensagem,
+          link: r.link,
+          waLink: r.waLink,
+        };
+        setProntas((a) => ({ ...a, [chave]: nova }));
+        navegar(nova, canal);
+      } catch (e) {
+        toast.error(
+          "Não deu para abrir o app",
+          e instanceof Error ? e.message : "Tente de novo em instantes.",
+        );
+      } finally {
+        setOcupado(null);
+      }
+    })();
   }
 
   async function reenviar(conviteId: string) {
@@ -1441,6 +1525,7 @@ ${r.link}`
                         onClick={() => {
                           setEscolhas((e) => ({ ...e, [c.id]: ct.id }));
                           setTrocando(null);
+                          preparar(c.id, ct.id);
                         }}
                         className={cn(
                           "flex min-h-11 w-full items-center gap-2 rounded-[var(--radius)] border px-2.5 text-left",
@@ -1466,11 +1551,13 @@ ${r.link}`
 
               {podeAgir && (
                 <div className="mt-2.5 flex flex-wrap gap-1.5">
+                  {/* Verde da marca do WhatsApp: na lista o operador procura
+                      a cor antes de ler o rótulo. */}
                   <button
                     type="button"
-                    onClick={() => abrir(c, "whatsapp")}
+                    onClick={() => abrir(c, "whatsapp", d.contato?.id ?? null)}
                     disabled={ocupado !== null || !jaSaiu || !d.telefone}
-                    className="flex min-h-9 items-center gap-1.5 rounded-full bg-brand px-3 text-[12px] font-semibold text-on-brand disabled:opacity-50"
+                    className="flex min-h-9 items-center gap-1.5 rounded-full bg-whatsapp px-3 text-[12px] font-semibold text-on-whatsapp active:bg-whatsapp-strong disabled:opacity-50"
                   >
                     {rodando(c.id, "whatsapp") ? (
                       <Loader2 className="size-3.5 animate-spin" aria-hidden />
@@ -1479,19 +1566,21 @@ ${r.link}`
                     )}
                     WhatsApp
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => abrir(c, "email")}
-                    disabled={ocupado !== null || !jaSaiu || !d.email}
-                    className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
-                  >
-                    {rodando(c.id, "email") ? (
-                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                    ) : (
-                      <Mail className="size-3.5" aria-hidden />
-                    )}
-                    E-mail
-                  </button>
+                  {d.email && (
+                    <button
+                      type="button"
+                      onClick={() => abrir(c, "email", d.contato?.id ?? null)}
+                      disabled={ocupado !== null || !jaSaiu}
+                      className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
+                    >
+                      {rodando(c.id, "email") ? (
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      ) : (
+                        <Mail className="size-3.5" aria-hidden />
+                      )}
+                      E-mail
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => copiarLink(c.id)}
@@ -1522,19 +1611,21 @@ ${r.link}`
                     )}
                     {copiou(c.id, "mensagem") ? "Copiada" : "Copiar mensagem"}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => reenviar(c.id)}
-                    disabled={ocupado !== null}
-                    className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
-                  >
-                    {rodando(c.id, "reenviar") ? (
-                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                    ) : (
-                      <RotateCcw className="size-3.5" aria-hidden />
-                    )}
-                    {c.status === "PENDENTE" ? "Enviar" : "Reenviar"}
-                  </button>
+                  {c.status === "PENDENTE" && (
+                    <button
+                      type="button"
+                      onClick={() => reenviar(c.id)}
+                      disabled={ocupado !== null}
+                      className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
+                    >
+                      {rodando(c.id, "reenviar") ? (
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      ) : (
+                        <Send className="size-3.5" aria-hidden />
+                      )}
+                      Enviar
+                    </button>
+                  )}
                 </div>
               )}
             </Card>

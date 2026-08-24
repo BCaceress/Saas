@@ -1217,6 +1217,119 @@ export async function mensagemDoConviteAction(
   });
 }
 
+/** Uma mensagem já montada, pronta para virar wa.me ou mailto sem ida ao servidor. */
+export type MensagemPronta = {
+  conviteId: string;
+  /** Contato para quem este texto foi escrito — a chave do cache na tela. */
+  contactId: string | null;
+  contato: string | null;
+  telefone: string | null;
+  email: string | null;
+  mensagem: string;
+  link: string;
+  waLink: string | null;
+};
+
+/**
+ * As mensagens de TODOS os convites já enviados, de uma vez.
+ *
+ * Existe por causa do celular: lá o botão do WhatsApp navega para o wa.me, e
+ * navegar depois de um round-trip é meio segundo de tela parada com o dedo já
+ * fora do botão — o operador toca de novo achando que não pegou. Buscando o
+ * lote quando a lista abre, o toque vira navegação imediata.
+ *
+ * Só LÊ link vigente: abrir uma tela não pode emitir token novo, senão o
+ * endereço que o fornecedor tem aberto no celular morre sozinho.
+ */
+export async function mensagensDaCotacaoAction(quotationId: string): Promise<MensagemPronta[]> {
+  const ctx = await guardAction("compras.ver");
+  return runWithTenant(ctx.tenant.id, async () => {
+    const cotacao = await db.quotation.findFirst({
+      where: { id: quotationId },
+      select: {
+        numero: true,
+        titulo: true,
+        status: true,
+        prazoResposta: true,
+        items: {
+          select: {
+            id: true,
+            descricao: true,
+            quantidade: true,
+            packagingId: true,
+            productId: true,
+          },
+          orderBy: { ordem: "asc" },
+        },
+        suppliers: {
+          select: {
+            id: true,
+            status: true,
+            contactId: true,
+            supplier: {
+              select: {
+                razaoSocial: true,
+                nomeFantasia: true,
+                contacts: {
+                  where: { ativo: true },
+                  orderBy: [{ principal: "desc" }, { createdAt: "asc" }],
+                  select: {
+                    id: true,
+                    nome: true,
+                    telefone: true,
+                    email: true,
+                    principal: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!cotacao || cotacao.status !== "ABERTA") return [];
+
+    const unidades = await unidadesDosItens(cotacao.items);
+    const itensDoTexto = cotacao.items.map((i) => ({
+      descricao: i.descricao,
+      quantidade: quantidadeComUnidade(Number(i.quantidade), unidades.get(i.id)),
+    }));
+
+    const prontas = await Promise.all(
+      cotacao.suppliers
+        .filter((s) => s.status === "ENVIADA")
+        .map(async (s): Promise<MensagemPronta | null> => {
+          const vigente = await linkVigente(s.id);
+          if (!vigente) return null;
+          const destinatario = resolverDestinatario(s.supplier.contacts, s.contactId, null);
+          const mensagem = montarMensagem(
+            ctx.tenant.nome,
+            cotacao.numero,
+            cotacao.titulo,
+            cotacao.prazoResposta,
+            itensDoTexto,
+            vigente.url,
+            destinatario.nome,
+          );
+          const numeroWa = numeroWhatsApp(destinatario.telefone);
+          return {
+            conviteId: s.id,
+            contactId: destinatario.contactId,
+            contato: destinatario.nome,
+            telefone: destinatario.telefone,
+            email: destinatario.email,
+            mensagem,
+            link: vigente.url,
+            waLink: numeroWa
+              ? `https://wa.me/${numeroWa}?text=${encodeURIComponent(mensagem)}`
+              : null,
+          };
+        }),
+    );
+    return prontas.filter((p): p is MensagemPronta => p !== null);
+  });
+}
+
 /**
  * Devolve o link de resposta de um convite já enviado — para mandar de novo
  * por outro canal. Só gera token novo quando não existe ou já venceu: renovar

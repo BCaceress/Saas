@@ -47,6 +47,14 @@
   --accent: #c2410c;
   --accent-soft: #ffedd5;
 
+  /* WhatsApp — cor da MARCA de terceiro, não do produto. Existe porque o
+     botão precisa ser reconhecido antes de ser lido: na tela de cotação o
+     operador procura o verde, não a palavra. Texto quase-preto porque branco
+     sobre #25d366 não passa de 2:1 de contraste. Vale nos dois temas. */
+  --whatsapp: #25d366;
+  --whatsapp-strong: #1eb757;
+  --on-whatsapp: #052e16;
+
   /* Semânticos */
   --ok: #15803d;
   --ok-soft: #e4f3e9;
@@ -213,6 +221,10 @@
   --color-info-soft: var(--info-soft);
   --color-violet: var(--violet);
   --color-violet-soft: var(--violet-soft);
+
+  --color-whatsapp: var(--whatsapp);
+  --color-whatsapp-strong: var(--whatsapp-strong);
+  --color-on-whatsapp: var(--on-whatsapp);
 
   --color-tier-gold: var(--tier-gold);
   --color-tier-gold-soft: var(--tier-gold-soft);
