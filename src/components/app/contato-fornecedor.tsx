@@ -85,6 +85,12 @@ type PropsContato = {
   contato?: ContatoUI | null;
   /** Primeiro contato do fornecedor: principal é imposto, não escolhido. */
   primeiro?: boolean;
+  /**
+   * Preenche um contato NOVO. Serve ao disparo avulso: o comprador mandou a
+   * cotação para um número da agenda dele e agora salva a pessoa sem
+   * redigitar o que acabou de usar.
+   */
+  inicial?: { nome?: string | null; telefone?: string | null; email?: string | null } | null;
   onFechar: () => void;
   onSalvo?: (c: ContatoSalvo) => void;
 };
@@ -106,6 +112,7 @@ function FormularioContato({
   supplierId,
   contato,
   primeiro,
+  inicial,
   onFechar,
   onSalvo,
 }: PropsContato) {
@@ -118,7 +125,13 @@ function FormularioContato({
           email: contato.email ?? "",
           principal: contato.principal,
         }
-      : { ...VAZIO, principal: Boolean(primeiro) },
+      : {
+          ...VAZIO,
+          nome: inicial?.nome ?? "",
+          telefone: inicial?.telefone ? maskPhone(inicial.telefone) : "",
+          email: inicial?.email ?? "",
+          principal: Boolean(primeiro),
+        },
   );
   const [erro, setErro] = useState<string | null>(null);
   const [pendente, start] = useTransition();

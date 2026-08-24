@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useRef, useState, useTransition } from "react";
+import { Fragment, useRef, useState, useSyncExternalStore, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   History,
@@ -18,6 +18,8 @@ import {
   PencilLine,
   Layers,
   Plus,
+  Share2,
+  UserPlus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { copiarTexto } from "@/lib/clipboard";
@@ -27,6 +29,7 @@ import { Menu, MenuItem } from "@/components/ui/menu";
 import { EstadoVazio, SupplierAvatar, fmtMoney, fmtQtd, fmtQuando } from "../_catalogo/ui";
 import { Thumb } from "../_ui";
 import type { ConviteCotacao, CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
+import { ContatoSheet } from "@/components/app/contato-fornecedor";
 import { EnvioSheet } from "./_envio";
 import type { Envio } from "../_compra-actions";
 import {
@@ -1061,93 +1064,149 @@ function RespostaSheet({
 export function EnviosSheet({ envios, onFechar }: { envios: Envio[]; onFechar: () => void }) {
   const [copiado, setCopiado] = useState<string | null>(null);
   const [linkCopiado, setLinkCopiado] = useState<string | null>(null);
+  const [salvando, setSalvando] = useState<Envio | null>(null);
+  // A bandeja do celular resolve o contato que existe na AGENDA e não no
+  // cadastro: o operador escolhe a pessoa dentro do próprio WhatsApp. Só
+  // existe em contexto seguro (e quase só no celular), e o servidor não tem
+  // como saber — daí a leitura por store externo, que devolve false na
+  // renderização do servidor e a verdade no cliente, sem erro de hidratação.
+  const podeCompartilhar = useSyncExternalStore(
+    () => () => {},
+    () => typeof navigator !== "undefined" && typeof navigator.share === "function",
+    () => false,
+  );
 
   return (
-    <Modal
-      titulo="Mensagem pronta"
-      descricao="O link onde o fornecedor preenche os preços é o mesmo em qualquer canal — sem cadastro, direto do celular dele. O que foi por e-mail já saiu; o resto é só disparar."
-      onFechar={onFechar}
-    >
-      <ul className="flex flex-col gap-2">
-        {envios.map((e) => (
-          <li
-            key={e.conviteId}
-            className="flex flex-col gap-2 rounded-[var(--radius)] border border-line px-3 py-2.5"
-          >
-            <div className="flex items-center gap-3">
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm text-ink">{e.fornecedor}</span>
-                {e.contato && (
-                  <span className="block truncate text-[12px] text-muted">
-                    para {e.contato.nome}
-                  </span>
-                )}
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  void copiarTexto(e.mensagem).then((ok) => setCopiado(ok ? e.conviteId : null));
-                }}
-                className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
-              >
-                <Copy size={13} />
-                {copiado === e.conviteId ? "Copiado" : "Copiar"}
-              </button>
-              {e.waLink && (
-                <a
-                  href={e.waLink}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+    <>
+      <Modal
+        titulo="Mensagem pronta"
+        descricao="O link onde o fornecedor preenche os preços é o mesmo em qualquer canal — sem cadastro, direto do celular dele. O que foi por e-mail já saiu; o resto é só disparar."
+        onFechar={onFechar}
+      >
+        <ul className="flex flex-col gap-2">
+          {envios.map((e) => (
+            <li
+              key={e.conviteId}
+              className="flex flex-col gap-2 rounded-[var(--radius)] border border-line px-3 py-2.5"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm text-ink">{e.fornecedor}</span>
+                  {e.contato ? (
+                    <span className="block truncate text-[12px] text-muted">
+                      para {e.contato.nome}
+                    </span>
+                  ) : e.avulso ? (
+                    <span className="block truncate text-[12px] text-muted">
+                      para {e.avulso.nome || e.avulso.telefone || e.avulso.email} · fora do cadastro
+                    </span>
+                  ) : null}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void copiarTexto(e.mensagem).then((ok) => setCopiado(ok ? e.conviteId : null));
+                  }}
+                  className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
                 >
-                  <MessageCircle size={13} />
-                  WhatsApp
-                </a>
-              )}
-            </div>
-
-            {e.email.estado !== "nao-pedido" && (
-              <p
-                className={cn(
-                  "text-[12px]",
-                  e.email.estado === "enviado" ? "text-ok" : "text-accent",
+                  <Copy size={13} />
+                  {copiado === e.conviteId ? "Copiado" : "Copiar"}
+                </button>
+                {podeCompartilhar && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // Cancelar a bandeja rejeita a promessa — não é erro.
+                      void navigator.share({ text: e.mensagem }).catch(() => {});
+                    }}
+                    title="Escolher o contato na agenda do celular"
+                    className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
+                  >
+                    <Share2 size={13} />
+                    Compartilhar
+                  </button>
                 )}
-              >
-                {e.email.estado === "enviado"
-                  ? `E-mail enviado para ${e.email.endereco}`
-                  : e.email.estado === "sem-endereco"
-                    ? "Sem e-mail cadastrado — mande o link pelo WhatsApp ou copie acima."
-                    : "Não consegui enviar o e-mail. O link acima continua valendo."}
-              </p>
-            )}
+                {e.waLink && (
+                  <a
+                    href={e.waLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+                  >
+                    <MessageCircle size={13} />
+                    WhatsApp
+                  </a>
+                )}
+              </div>
 
-            {e.link && (
-              <button
-                type="button"
-                onClick={() => {
-                  void copiarTexto(e.link!).then((ok) => setLinkCopiado(ok ? e.conviteId : null));
-                }}
-                title={e.link}
-                className="flex items-center gap-1.5 self-start rounded-full bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-muted transition-colors hover:text-ink"
-              >
-                <LinkIcon size={12} />
-                {linkCopiado === e.conviteId ? "Link copiado" : "Copiar só o link"}
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
+              {e.email.estado !== "nao-pedido" && (
+                <p
+                  className={cn(
+                    "text-[12px]",
+                    e.email.estado === "enviado" ? "text-ok" : "text-accent",
+                  )}
+                >
+                  {e.email.estado === "enviado"
+                    ? `E-mail enviado para ${e.email.endereco}`
+                    : e.email.estado === "sem-endereco"
+                      ? "Sem e-mail cadastrado — mande o link pelo WhatsApp ou copie acima."
+                      : "Não consegui enviar o e-mail. O link acima continua valendo."}
+                </p>
+              )}
 
-      <div className="mt-5 flex justify-end">
-        <button
-          type="button"
-          onClick={onFechar}
-          className="rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-        >
-          Fechar
-        </button>
-      </div>
-    </Modal>
+              {e.avulso && !e.contato && (
+                <button
+                  type="button"
+                  onClick={() => setSalvando(e)}
+                  className="flex items-center gap-1.5 self-start rounded-full border border-dashed border-line px-2.5 py-1 text-[12px] font-medium text-brand transition-colors hover:bg-brand-soft"
+                >
+                  <UserPlus size={12} />
+                  Salvar como contato de {e.fornecedor}
+                </button>
+              )}
+
+              {e.link && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void copiarTexto(e.link!).then((ok) => setLinkCopiado(ok ? e.conviteId : null));
+                  }}
+                  title={e.link}
+                  className="flex items-center gap-1.5 self-start rounded-full bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-muted transition-colors hover:text-ink"
+                >
+                  <LinkIcon size={12} />
+                  {linkCopiado === e.conviteId ? "Link copiado" : "Copiar só o link"}
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+
+        <div className="mt-5 flex justify-end">
+          <button
+            type="button"
+            onClick={onFechar}
+            className="rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+          >
+            Fechar
+          </button>
+        </div>
+      </Modal>
+
+      {salvando && (
+        <ContatoSheet
+          aberto
+          supplierId={salvando.supplierId}
+          inicial={{
+            nome: salvando.avulso?.nome ?? "",
+            telefone: salvando.avulso?.telefone ?? "",
+            email: salvando.avulso?.email ?? "",
+          }}
+          onFechar={() => setSalvando(null)}
+          onSalvo={() => setSalvando(null)}
+        />
+      )}
+    </>
   );
 }
 

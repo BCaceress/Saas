@@ -700,6 +700,23 @@ const destinoSchema = z.object({
   /** Contato escolhido na tela. Vazio = o principal (ou a empresa, na falta dele). */
   contactId: z.string().min(1).nullable().optional(),
   canais: z.array(canalSchema).min(1),
+  /**
+   * Destino fora do cadastro: o vendedor que só existe na agenda do celular
+   * do comprador. Vale para ESTE disparo — quem manda é o que foi digitado
+   * agora, e a trilha grava o número usado (com contactId nulo), então nunca
+   * fica a dúvida de para onde foi. Virar contato é decisão de outra tela.
+   */
+  avulso: z
+    .object({
+      nome: z.string().trim().max(80).optional(),
+      telefone: z.string().trim().max(20).optional(),
+      email: z.string().trim().email("E-mail inválido.").max(120).optional(),
+    })
+    .refine((a) => Boolean(a.telefone?.trim() || a.email?.trim()), {
+      message: "Informe um WhatsApp ou um e-mail para o destino avulso.",
+      path: ["telefone"],
+    })
+    .optional(),
 });
 
 const enviarSchema = z.object({
@@ -794,9 +811,12 @@ function numeroWhatsApp(telefone: string | null): string | null {
 
 export type Envio = {
   conviteId: string;
+  supplierId: string;
   fornecedor: string;
   /** Quem recebeu — null quando o fornecedor ainda não tem contato cadastrado. */
   contato: { id: string; nome: string } | null;
+  /** Destino digitado na hora, fora do cadastro. Abre o convite de salvá-lo. */
+  avulso: { nome: string | null; telefone: string | null; email: string | null } | null;
   mensagem: string;
   link: string | null;
   waLink: string | null;
@@ -831,6 +851,7 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>): 
             id: true,
             status: true,
             contactId: true,
+            supplierId: true,
             supplier: {
               select: {
                 razaoSocial: true,
@@ -928,12 +949,23 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>): 
         const fornecedor = a.supplier.nomeFantasia || a.supplier.razaoSocial;
         const escolha = escolhas.get(a.id);
         const canais = escolha?.canais ?? d.canais;
-        const destinatario = resolverDestinatario(
-          a.supplier.contacts,
-          a.contactId,
-          escolha?.contactId ?? null,
-          { telefone: a.supplier.telefone, email: a.supplier.email },
-        );
+        // Destino avulso atropela a precedência inteira: foi digitado agora,
+        // para esta conversa. Cair no principal aqui mandaria a cotação para
+        // quem o comprador acabou de decidir não usar.
+        const avulso = escolha?.avulso ?? null;
+        const destinatario: Destinatario = avulso
+          ? {
+              contactId: null,
+              nome: avulso.nome?.trim() || null,
+              telefone: avulso.telefone?.trim() || null,
+              email: avulso.email?.trim() || null,
+            }
+          : resolverDestinatario(
+              a.supplier.contacts,
+              a.contactId,
+              escolha?.contactId ?? null,
+              { telefone: a.supplier.telefone, email: a.supplier.email },
+            );
 
         // O contato usado fica gravado no convite: o próximo reenvio já abre
         // com a mesma pessoa, sem o comprador reescolher.
@@ -1035,9 +1067,17 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>): 
 
         return {
           conviteId: a.id,
+          supplierId: a.supplierId,
           fornecedor,
           contato: destinatario.contactId
             ? { id: destinatario.contactId, nome: destinatario.nome ?? fornecedor }
+            : null,
+          avulso: avulso
+            ? {
+                nome: destinatario.nome,
+                telefone: destinatario.telefone,
+                email: destinatario.email,
+              }
             : null,
           mensagem,
           link,

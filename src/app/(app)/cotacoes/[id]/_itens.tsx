@@ -486,7 +486,7 @@ function NovoItem({
               listaAberta && ativo >= 0 ? `sugestao-${sugestoes[ativo].id}` : undefined
             }
             placeholder="Busque por nome ou SKU (mín. 3 letras)"
-            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink"
+            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-base text-ink sm:text-sm"
           />
           {listaAberta && (
             <ul

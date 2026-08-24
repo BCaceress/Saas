@@ -23,7 +23,14 @@ import { enviarCotacaoAction, type Envio } from "../_compra-actions";
 
 export type Canal = "whatsapp" | "email";
 
-type Escolha = { contactId: string | null; canais: Canal[] };
+/**
+ * Destino digitado na hora: o vendedor que está na agenda do celular do
+ * comprador e não no cadastro. Vale só para este disparo — salvar como
+ * contato é a oferta que aparece DEPOIS de enviar, quando já deu certo.
+ */
+export type Avulso = { nome: string; telefone: string; email: string };
+
+type Escolha = { contactId: string | null; avulso: Avulso | null; canais: Canal[] };
 
 const temWhatsapp = (c: { telefone: string | null } | null) => Boolean(c?.telefone?.trim());
 const temEmail = (c: { email: string | null } | null) => Boolean(c?.email?.trim());
@@ -82,6 +89,7 @@ export function EnvioSheet({
       const contato = contatoInicial(c, c.contatos);
       inicial[c.id] = {
         contactId: contato?.id ?? null,
+        avulso: null,
         canais: canaisIniciais(contato ?? { telefone: c.telefone, email: c.email }),
       };
     }
@@ -90,15 +98,21 @@ export function EnvioSheet({
 
   function destinoDe(c: ConviteCotacao): {
     contato: ContatoConvite | null;
+    avulso: Avulso | null;
     telefone: string | null;
     email: string | null;
   } {
     const escolha = escolhas[c.id];
+    // Destino avulso vem antes de tudo: foi digitado agora, para esta conversa.
+    if (escolha?.avulso) {
+      const a = escolha.avulso;
+      return { contato: null, avulso: a, telefone: a.telefone || null, email: a.email || null };
+    }
     const contato = contatosDe(c).find((x) => x.id === escolha?.contactId) ?? null;
     // Sem contato, o envio cai no telefone/e-mail da empresa — como sempre foi.
     return contato
-      ? { contato, telefone: contato.telefone, email: contato.email }
-      : { contato: null, telefone: c.telefone, email: c.email };
+      ? { contato, avulso: null, telefone: contato.telefone, email: contato.email }
+      : { contato: null, avulso: null, telefone: c.telefone, email: c.email };
   }
 
   function escolherContato(c: ConviteCotacao, contato: ContatoConvite | null) {
@@ -106,8 +120,17 @@ export function EnvioSheet({
       ...e,
       [c.id]: {
         contactId: contato?.id ?? null,
+        avulso: null,
         canais: canaisIniciais(contato ?? { telefone: c.telefone, email: c.email }),
       },
+    }));
+    setTrocando(null);
+  }
+
+  function escolherAvulso(c: ConviteCotacao, avulso: Avulso) {
+    setEscolhas((e) => ({
+      ...e,
+      [c.id]: { contactId: null, avulso, canais: canaisIniciais(avulso) },
     }));
     setTrocando(null);
   }
@@ -122,6 +145,7 @@ export function EnvioSheet({
         ...e,
         [conviteId]: {
           contactId: e[conviteId]?.contactId ?? null,
+          avulso: e[conviteId]?.avulso ?? null,
           canais: tem ? atual.filter((x) => x !== canal) : [...atual, canal],
         },
       };
@@ -134,11 +158,22 @@ export function EnvioSheet({
       try {
         const envios = await enviarCotacaoAction({
           quotationId: cotacaoId,
-          destinos: alvos.map((c) => ({
-            conviteId: c.id,
-            contactId: escolhas[c.id]?.contactId ?? null,
-            canais: escolhas[c.id]?.canais ?? ["whatsapp"],
-          })),
+          destinos: alvos.map((c) => {
+            const av = escolhas[c.id]?.avulso ?? null;
+            return {
+              conviteId: c.id,
+              contactId: escolhas[c.id]?.contactId ?? null,
+              // Campo em branco sai como undefined: o schema recusa e-mail vazio.
+              avulso: av
+                ? {
+                    nome: av.nome.trim() || undefined,
+                    telefone: av.telefone.trim() || undefined,
+                    email: av.email.trim() || undefined,
+                  }
+                : undefined,
+              canais: escolhas[c.id]?.canais ?? ["whatsapp"],
+            };
+          }),
           reenviar: reenvio,
           prazoResposta: reenvio && prazo ? prazo : undefined,
         });
@@ -232,7 +267,14 @@ export function EnvioSheet({
                         </span>
                         <span className="flex items-center gap-1 text-[12px] text-muted">
                           <UserRound size={11} className="shrink-0 text-faint" />
-                          {destino.contato ? (
+                          {destino.avulso ? (
+                            <>
+                              <span className="truncate">
+                                {destino.avulso.nome.trim() || "Outro destino"}
+                              </span>
+                              <span className="truncate text-faint">· fora do cadastro</span>
+                            </>
+                          ) : destino.contato ? (
                             <>
                               <span className="truncate">{destino.contato.nome}</span>
                               {destino.contato.cargo && (
@@ -346,6 +388,11 @@ export function EnvioSheet({
                         </button>
                       )}
 
+                      <DestinoAvulso
+                        atual={escolhas[c.id]?.avulso ?? null}
+                        onUsar={(a) => escolherAvulso(c, a)}
+                      />
+
                       <button
                         type="button"
                         onClick={() => setCadastrando(c)}
@@ -388,7 +435,11 @@ export function EnvioSheet({
             }));
             setEscolhas((e) => ({
               ...e,
-              [convite.id]: { contactId: contato.id, canais: canaisIniciais(contato) },
+              [convite.id]: {
+                contactId: contato.id,
+                avulso: null,
+                canais: canaisIniciais(contato),
+              },
             }));
             setTrocando(null);
             setCadastrando(null);
@@ -397,6 +448,92 @@ export function EnvioSheet({
         />
       )}
     </>
+  );
+}
+
+const ENTRADA =
+  "w-full rounded-[var(--radius-sm)] border border-line bg-surface px-2 py-1.5 text-base text-ink placeholder:text-faint sm:text-sm";
+
+/**
+ * Disparo para quem não está no cadastro. Existe porque metade dos vendedores
+ * vive na agenda do celular do comprador: exigir cadastro antes de mandar
+ * empurra o operador para FORA do NoHub — ele abre o WhatsApp direto e a
+ * cotação nasce sem trilha. Aqui ele manda agora; salvar vem depois.
+ */
+function DestinoAvulso({ atual, onUsar }: { atual: Avulso | null; onUsar: (a: Avulso) => void }) {
+  const [aberto, setAberto] = useState(Boolean(atual));
+  const [nome, setNome] = useState(atual?.nome ?? "");
+  const [telefone, setTelefone] = useState(atual?.telefone ? maskPhone(atual.telefone) : "");
+  const [email, setEmail] = useState(atual?.email ?? "");
+
+  const digitos = telefone.replace(/D/g, "");
+  const pode = digitos.length >= 10 || /^[^@s]+@[^@s]+.[^@s]+$/.test(email.trim());
+
+  if (!aberto) {
+    return (
+      <button
+        type="button"
+        onClick={() => setAberto(true)}
+        className="rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[13px] font-medium text-brand transition-colors hover:bg-surface"
+      >
+        + Enviar para outro número ou e-mail
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-[var(--radius-sm)] border border-line bg-surface p-2">
+      <p className="text-[11px] text-muted">
+        Vale só para este disparo. Depois de enviar dá para salvar a pessoa no fornecedor.
+      </p>
+      <input
+        value={nome}
+        onChange={(ev) => setNome(ev.target.value)}
+        placeholder="Nome (opcional)"
+        aria-label="Nome do destino avulso"
+        className={ENTRADA}
+      />
+      <div className="grid gap-1.5 sm:grid-cols-2">
+        <input
+          type="tel"
+          inputMode="tel"
+          value={telefone}
+          onChange={(ev) => setTelefone(maskPhone(ev.target.value))}
+          placeholder="WhatsApp"
+          aria-label="WhatsApp do destino avulso"
+          className={ENTRADA}
+        />
+        <input
+          type="email"
+          inputMode="email"
+          value={email}
+          onChange={(ev) => setEmail(ev.target.value)}
+          placeholder="E-mail"
+          aria-label="E-mail do destino avulso"
+          className={ENTRADA}
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={!pode}
+          onClick={() => onUsar({ nome: nome.trim(), telefone: digitos, email: email.trim() })}
+          className="rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
+        >
+          Usar este destino
+        </button>
+        <button
+          type="button"
+          onClick={() => setAberto(false)}
+          className="rounded-full px-3 py-1.5 text-[12px] font-medium text-muted transition-colors hover:text-ink"
+        >
+          Cancelar
+        </button>
+      </div>
+      {!pode && (telefone.trim() || email.trim()) && (
+        <p className="text-[11px] text-accent">Informe um WhatsApp com DDD ou um e-mail válido.</p>
+      )}
+    </div>
   );
 }
 
