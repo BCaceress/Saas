@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { Fragment, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   History,
@@ -16,10 +16,13 @@ import {
   X,
   ThumbsDown,
   PencilLine,
+  Layers,
+  Plus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { copiarTexto } from "@/lib/clipboard";
 import { mascaraMoeda, paraMascara, paraNumero } from "@/lib/moeda";
+import { MAX_FAIXAS_ITEM } from "@/lib/compras/escalas";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { EstadoVazio, SupplierAvatar, fmtMoney, fmtQtd, fmtQuando } from "../_catalogo/ui";
 import { Thumb } from "../_ui";
@@ -384,6 +387,7 @@ export function ConvitesCotacao({
         <RespostaSheet
           convite={respondendo}
           itens={cotacao.itens}
+          pedeEscala={cotacao.pedeEscala}
           pendente={pendente}
           onFechar={() => setRespondendo(null)}
           onSalvar={(payload) =>
@@ -534,12 +538,21 @@ function ConvidarSheet({
 
 type Situacao = "tem" | "parcial" | "nao";
 
+/** Uma faixa de volume enquanto está sendo digitada (texto, não número). */
+type FaixaResposta = { qtd: string; preco: string };
+
 type LinhaResposta = {
   quotationItemId: string;
   situacao: Situacao;
   preco: string;
   /** Só vale em "parcial": quanto ele consegue atender. */
   quantidade: string;
+  /**
+   * Promoção por volume que ele ditou ("de 10 pra cima é 41"). Vazia na
+   * maioria das linhas — e a coluna que a abre só existe quando a cotação
+   * pediu escala.
+   */
+  faixas: FaixaResposta[];
 };
 
 const SITUACOES: { id: Situacao; label: string }[] = [
@@ -551,12 +564,15 @@ const SITUACOES: { id: Situacao; label: string }[] = [
 function RespostaSheet({
   convite,
   itens,
+  pedeEscala,
   pendente,
   onFechar,
   onSalvar,
 }: {
   convite: ConviteCotacao;
   itens: CotacaoDetalhe["itens"];
+  /** A cotação pede promoção por volume — só então a coluna de faixas existe. */
+  pedeEscala: boolean;
   pendente: boolean;
   onFechar: () => void;
   onSalvar: (payload: {
@@ -570,6 +586,7 @@ function RespostaSheet({
       disponivel: boolean;
       precoUnitario: number;
       quantidadeOfertada: number | null;
+      faixas: { quantidadeMinima: number; precoUnitario: number }[];
     }[];
   }) => void;
 }) {
@@ -585,6 +602,10 @@ function RespostaSheet({
         situacao: anterior ? (anterior.disponivel ? (parcial ? "parcial" : "tem") : "nao") : "tem",
         preco: anterior ? paraMascara(anterior.precoUnitario) : "",
         quantidade: parcial ? String(anterior!.quantidadeOfertada) : "",
+        faixas: (anterior?.faixas ?? []).map((f) => ({
+          qtd: String(f.quantidadeMinima).replace(".", ","),
+          preco: paraMascara(f.precoUnitario),
+        })),
       };
     }),
   );
@@ -611,6 +632,35 @@ function RespostaSheet({
 
   function atualizar(id: string, patch: Partial<LinhaResposta>) {
     setLinhas((ls) => ls.map((l) => (l.quotationItemId === id ? { ...l, ...patch } : l)));
+  }
+
+  // Quais itens estão com o bloco de faixas aberto. Já nasce aberto no que veio
+  // com promoção gravada: reabrir para conferir o que já existe é o motivo
+  // mais comum de voltar nesta tela.
+  const [escalaAberta, setEscalaAberta] = useState<Set<string>>(
+    () => new Set(linhas.filter((l) => l.faixas.length > 0).map((l) => l.quotationItemId)),
+  );
+
+  function alternarEscala(id: string) {
+    const proxima = new Set(escalaAberta);
+    if (proxima.has(id)) proxima.delete(id);
+    else {
+      proxima.add(id);
+      // Abrir com uma linha em branco poupa o segundo clique — quem abriu já
+      // decidiu que tem faixa para digitar. Fora do updater de propósito:
+      // atualizar estado dentro de outro updater roda duas vezes em StrictMode.
+      const l = linhas.find((x) => x.quotationItemId === id);
+      if (l && l.faixas.length === 0) atualizar(id, { faixas: [{ qtd: "", preco: "" }] });
+    }
+    setEscalaAberta(proxima);
+  }
+
+  function alterarFaixa(id: string, indice: number, campo: Partial<FaixaResposta>) {
+    const l = linhas.find((x) => x.quotationItemId === id);
+    if (!l) return;
+    atualizar(id, {
+      faixas: l.faixas.map((f, i) => (i === indice ? { ...f, ...campo } : f)),
+    });
   }
 
   /** Quanto ele atende de fato — base do total da linha. */
@@ -662,6 +712,7 @@ function RespostaSheet({
               <th className="w-56 px-3 py-2 text-left font-medium">Ele tem?</th>
               <th className="w-36 px-3 py-2 text-right font-medium">Preço unit.</th>
               <th className="w-28 px-3 py-2 text-right font-medium">Total</th>
+              {pedeEscala && <th className="w-28 px-3 py-2 text-right font-medium">Volume</th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
@@ -671,8 +722,10 @@ function RespostaSheet({
               const indisponivel = l.situacao === "nao";
               const totalLinha =
                 preco === null || indisponivel ? 0 : preco * quantidadeEfetiva(i, l);
+              const escalaLigada = pedeEscala && !indisponivel && escalaAberta.has(item.id);
               return (
-                <tr key={item.id} className={cn(indisponivel && "bg-surface-2/50")}>
+                <Fragment key={item.id}>
+                <tr className={cn(indisponivel && "bg-surface-2/50")}>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2.5">
                       <Thumb url={item.imagemUrl} nome={item.descricao} size={32} />
@@ -774,7 +827,118 @@ function RespostaSheet({
                   <td className="px-3 py-2 text-right font-mono text-[13px] tabular-nums text-muted">
                     {totalLinha > 0 ? fmtMoney(totalLinha) : "—"}
                   </td>
+
+                  {pedeEscala && (
+                    <td className="px-3 py-2 text-right">
+                      {indisponivel ? (
+                        <span className="text-[12px] text-faint">—</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => alternarEscala(item.id)}
+                          aria-expanded={escalaAberta.has(item.id)}
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[12px] font-medium transition-colors",
+                            l.faixas.length > 0
+                              ? "border-transparent bg-accent-soft text-accent"
+                              : "border-line text-muted hover:text-ink",
+                          )}
+                        >
+                          <Layers size={12} />
+                          {l.faixas.length > 0
+                            ? `${l.faixas.length} faixa${l.faixas.length > 1 ? "s" : ""}`
+                            : "faixa"}
+                        </button>
+                      )}
+                    </td>
+                  )}
                 </tr>
+
+                {/* As faixas ficam numa segunda linha da MESMA tabela, não num
+                    modal: quem transcreve um telefonema vai e volta entre o
+                    preço e a promoção do mesmo produto, e abrir uma janela por
+                    item quebraria a digitação em série. */}
+                {escalaLigada && (
+                  <tr className="bg-surface-2/40">
+                    <td colSpan={6} className="px-3 pb-3 pt-0">
+                      <div className="rounded-[var(--radius)] border border-dashed border-line-strong bg-surface p-2.5">
+                        <p className="text-[12px] text-muted">
+                          Preço melhor por volume de{" "}
+                          <span className="font-medium text-ink">{item.descricao}</span> — a
+                          quantidade é na mesma embalagem do pedido
+                          {item.embalagemNome ? ` (${item.embalagemNome})` : ""}.
+                        </p>
+
+                        <ul className="mt-2 flex flex-col gap-1.5">
+                          {l.faixas.map((f, fi) => (
+                            <li key={fi} className="flex items-center gap-2">
+                              <span className="text-[12px] text-muted">A partir de</span>
+                              <input
+                                value={f.qtd}
+                                onChange={(e) =>
+                                  alterarFaixa(item.id, fi, { qtd: e.target.value })
+                                }
+                                inputMode="decimal"
+                                placeholder={fmtQtd(item.quantidade * 2)}
+                                aria-label={`Quantidade da faixa ${fi + 1} de ${item.descricao}`}
+                                className="w-24 rounded-[var(--radius)] border border-line bg-surface px-2 py-1 text-right font-mono text-[13px] tabular-nums text-ink"
+                              />
+                              <span className="text-[12px] text-muted">sai a</span>
+                              <div className="relative w-32">
+                                <span
+                                  aria-hidden
+                                  className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-faint"
+                                >
+                                  R$
+                                </span>
+                                <input
+                                  value={f.preco}
+                                  onChange={(e) =>
+                                    alterarFaixa(item.id, fi, {
+                                      preco: mascaraMoeda(e.target.value),
+                                    })
+                                  }
+                                  inputMode="decimal"
+                                  placeholder="0,00"
+                                  aria-label={`Preço da faixa ${fi + 1} de ${item.descricao}`}
+                                  className="w-full rounded-[var(--radius)] border border-line bg-surface py-1 pl-7 pr-2 text-right font-mono text-[13px] tabular-nums text-ink"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                aria-label={`Tirar a faixa ${fi + 1} de ${item.descricao}`}
+                                onClick={() =>
+                                  atualizar(item.id, {
+                                    faixas: l.faixas.filter((_, x) => x !== fi),
+                                  })
+                                }
+                                className="grid h-7 w-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+                              >
+                                <X size={14} />
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+
+                        {l.faixas.length < MAX_FAIXAS_ITEM && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              atualizar(item.id, {
+                                faixas: [...l.faixas, { qtd: "", preco: "" }],
+                              })
+                            }
+                            className="mt-2 inline-flex items-center gap-1 text-[12px] font-medium text-brand"
+                          >
+                            <Plus size={12} />
+                            Outra faixa
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
           </tbody>
@@ -865,6 +1029,17 @@ function RespostaSheet({
                     precoUnitario: preco ?? 0,
                     quantidadeOfertada:
                       l.situacao === "parcial" ? paraNumero(l.quantidade) : null,
+                    // Faixa pela metade some em silêncio: o operador está
+                    // transcrevendo, não preenchendo formulário, e travar o
+                    // salvamento por uma linha esquecida perderia a resposta
+                    // inteira. O servidor ainda peneira.
+                    faixas: l.faixas.flatMap((f) => {
+                      const qtd = paraNumero(f.qtd);
+                      const p = paraNumero(f.preco);
+                      return qtd !== null && qtd > 0 && p !== null && p > 0
+                        ? [{ quantidadeMinima: qtd, precoUnitario: p }]
+                        : [];
+                    }),
                   };
                 }),
               })

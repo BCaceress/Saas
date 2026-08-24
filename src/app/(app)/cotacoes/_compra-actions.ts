@@ -10,7 +10,7 @@ import { proximoNumeroDocumento } from "@/lib/numeracao";
 import { emitirLinkCotacao, linkVigente } from "@/lib/compras/cotacao-link";
 import { registrarPrecosDaCotacao } from "@/lib/compras/cotacao-precos";
 import { regrasDaCotacao } from "@/lib/compras/cotacao-regras";
-import { precoNaQuantidade } from "@/lib/compras/escalas";
+import { normalizarFaixas, precoNaQuantidade } from "@/lib/compras/escalas";
 import { quantidadeComUnidade, unidadesDosItens } from "@/lib/compras/cotacao-unidades";
 import { db } from "@/lib/prisma";
 import { enviarEmail } from "@/lib/email";
@@ -1194,6 +1194,17 @@ const respostaSchema = z.object({
         quantidadeOfertada: z.number().min(0).optional().nullable(),
         marca: z.string().trim().max(120).optional().nullable(),
         observacao: z.string().trim().max(500).optional().nullable(),
+        /** Promoção por volume ditada no telefone — mesma forma da do link. */
+        faixas: z
+          .array(
+            z.object({
+              quantidadeMinima: z.number().positive().max(9_999_999),
+              precoUnitario: z.number().positive().max(9_999_999),
+            }),
+          )
+          .max(5)
+          .optional()
+          .default([]),
       }),
     )
     .min(1, "Registre ao menos um item."),
@@ -1204,13 +1215,37 @@ export async function registrarRespostaAction(input: z.input<typeof respostaSche
   return txp("compras.pedir", null, async (tid) => {
     const convite = await db.quotationSupplier.findFirst({
       where: { id: d.conviteId },
-      select: { quotationId: true },
+      select: {
+        quotationId: true,
+        quotation: {
+          select: { pedeEscala: true, items: { select: { id: true, quantidade: true } } },
+        },
+      },
     });
     if (!convite) throw new Error("Convite não encontrado.");
     await exigirEditavel(convite.quotationId);
 
+    // Mesma peneira da resposta que vem pelo link: a faixa só vale se a cotação
+    // pede escala, e `normalizarFaixas` derruba faixa abaixo do pedido e preço
+    // que sobe com o volume. Quem digita aqui é o operador transcrevendo um
+    // telefonema — errar a ordem das faixas é o erro esperado, não o exótico.
+    const pedida = new Map(convite.quotation.items.map((i) => [i.id, Number(i.quantidade)]));
+    const faixasPorItem = new Map<string, { quantidadeMinima: number; precoUnitario: number }[]>();
+    if (convite.quotation.pedeEscala) {
+      for (const i of d.itens) {
+        if (!i.disponivel || i.faixas.length === 0) continue;
+        const limpas = normalizarFaixas(
+          pedida.get(i.quotationItemId) ?? 0,
+          i.precoUnitario,
+          i.faixas,
+        );
+        if (limpas.length > 0) faixasPorItem.set(i.quotationItemId, limpas);
+      }
+    }
+
     // Regravar por cima: corrigir um preço digitado errado é rotina, e a
-    // resposta é sempre a última que o fornecedor mandou.
+    // resposta é sempre a última que o fornecedor mandou. As faixas caem junto
+    // pelo cascade.
     await db.quotationResponse.deleteMany({ where: { quotationSupplierId: d.conviteId } });
     await db.quotationResponse.createMany({
       data: d.itens.map((i) => ({
@@ -1224,6 +1259,28 @@ export async function registrarRespostaAction(input: z.input<typeof respostaSche
         observacao: i.observacao ?? null,
       })),
     });
+
+    // Depois do createMany porque ele não devolve id — igual ao caminho do link.
+    if (faixasPorItem.size > 0) {
+      const gravadas = await db.quotationResponse.findMany({
+        where: {
+          quotationSupplierId: d.conviteId,
+          quotationItemId: { in: [...faixasPorItem.keys()] },
+        },
+        select: { id: true, quotationItemId: true },
+      });
+      await db.quotationResponseTier.createMany({
+        data: gravadas.flatMap((r) =>
+          (faixasPorItem.get(r.quotationItemId) ?? []).map((f, ordem) => ({
+            tenantId: tid,
+            quotationResponseId: r.id,
+            quantidadeMinima: f.quantidadeMinima,
+            precoUnitario: f.precoUnitario,
+            ordem,
+          })),
+        ),
+      });
+    }
     await db.quotationSupplier.updateMany({
       where: { id: d.conviteId },
       data: {
