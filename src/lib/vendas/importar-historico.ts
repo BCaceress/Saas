@@ -1,7 +1,7 @@
 import Papa from "papaparse";
 import { db } from "@/lib/prisma";
 import { requireTenantId } from "@/lib/tenant-context";
-import { pontuarProduto, type ProdutoRanqueavel } from "@/lib/compras/busca-produto-rank";
+import { criarCasadorDeProdutos } from "./casar-produto-venda";
 
 /**
  * Importação de histórico de vendas (sistema antigo → NoHub), PRD ad-hoc.
@@ -20,7 +20,6 @@ import { pontuarProduto, type ProdutoRanqueavel } from "@/lib/compras/busca-prod
  *    duplicado) — desligue com `semDedupe`.
  */
 
-const PONTOS_MINIMOS_PARA_CASAR = 60;
 export const TAMANHO_MAXIMO_CSV = 15 * 1024 * 1024;
 
 type LinhaHistoricoVenda = {
@@ -43,6 +42,12 @@ export type ItemVendaPronto = {
   total: number;
 };
 
+export type PagamentoImportado = {
+  metodo: "DINHEIRO" | "CARTAO_CREDITO" | "CARTAO_DEBITO" | "PIX" | "OUTRO";
+  valor: number;
+  troco: number | null;
+};
+
 export type VendaProntaImportar = {
   vendaIdOriginal: string;
   dataHora: Date;
@@ -50,6 +55,14 @@ export type VendaProntaImportar = {
   desconto: number;
   total: number;
   itens: ItemVendaPronto[];
+  /**
+   * Chave de idempotência gravada em `Sale.clientId` (único no banco inteiro,
+   * por isso vem prefixada pelo tenant). Reimportar o mesmo arquivo não
+   * duplica. Null = arquivo sem número de transação — sem proteção.
+   */
+  chaveExterna?: string | null;
+  /** Meio de pagamento reconstruído do arquivo. Vazio = não veio na origem. */
+  pagamentos?: PagamentoImportado[];
 };
 
 export type RelatorioImportacaoVendas = {
@@ -111,31 +124,7 @@ export async function montarImportacaoVendas(
     porVenda.set(linha.venda_id, grupo);
   }
 
-  const produtos = await db.product.findMany({
-    where: { ativo: true },
-    select: { id: true, nome: true, sku: true, ean: true, packagings: { select: { ean: true } } },
-  });
-  const ranqueaveis: (ProdutoRanqueavel & { id: string })[] = produtos.map((p) => ({
-    id: p.id,
-    nome: p.nome,
-    sku: p.sku,
-    ean: p.ean,
-    embalagens: p.packagings,
-  }));
-
-  const cacheNome = new Map<string, { id: string; nome: string } | null>();
-  function casarProduto(nomeCsv: string) {
-    const termo = nomeCsv.trim();
-    if (cacheNome.has(termo)) return cacheNome.get(termo)!;
-    let melhor: { id: string; nome: string; pontos: number } | null = null;
-    for (const p of ranqueaveis) {
-      const pontos = pontuarProduto(p, termo);
-      if (!melhor || pontos > melhor.pontos) melhor = { id: p.id, nome: p.nome, pontos };
-    }
-    const resultado = melhor && melhor.pontos >= PONTOS_MINIMOS_PARA_CASAR ? melhor : null;
-    cacheNome.set(termo, resultado);
-    return resultado;
-  }
+  const casarProduto = await criarCasadorDeProdutos();
 
   const relatorio: RelatorioImportacaoVendas = {
     vendas: [],
@@ -209,20 +198,46 @@ export async function montarImportacaoVendas(
   return relatorio;
 }
 
-/** Grava as vendas já montadas por `montarImportacaoVendas`. */
+export type ResultadoGravacao = {
+  gravadas: number;
+  /** Já existiam com a mesma `chaveExterna` — reimportação do mesmo arquivo. */
+  jaImportadas: number;
+};
+
+/**
+ * Grava as vendas já montadas. Vendas com `chaveExterna` que já existem são
+ * puladas — reimportar o mesmo arquivo não duplica nada.
+ */
 export async function gravarVendasImportadas(
   siteId: string,
   vendas: VendaProntaImportar[],
-): Promise<number> {
+): Promise<ResultadoGravacao> {
   const tenantId = requireTenantId();
+
+  const chaves = vendas.map((v) => v.chaveExterna).filter((c): c is string => !!c);
+  const existentes = new Set<string>();
+  for (let i = 0; i < chaves.length; i += 1000) {
+    const lote = await db.sale.findMany({
+      where: { clientId: { in: chaves.slice(i, i + 1000) } },
+      select: { clientId: true },
+    });
+    for (const s of lote) if (s.clientId) existentes.add(s.clientId);
+  }
+
   let gravadas = 0;
+  let jaImportadas = 0;
   for (const v of vendas) {
+    if (v.chaveExterna && existentes.has(v.chaveExterna)) {
+      jaImportadas++;
+      continue;
+    }
     await db.sale.create({
       data: {
         tenantId,
         siteId,
         origem: "IMPORTADA",
         status: "PAGA",
+        clientId: v.chaveExterna ?? null,
         subtotal: v.subtotal,
         desconto: v.desconto,
         total: v.total,
@@ -238,9 +253,23 @@ export async function gravarVendasImportadas(
             total: i.total,
           })),
         },
+        ...(v.pagamentos?.length
+          ? {
+              payments: {
+                create: v.pagamentos.map((p) => ({
+                  tenantId,
+                  metodo: p.metodo,
+                  status: "CONFIRMADO" as const,
+                  valor: p.valor,
+                  troco: p.troco,
+                  createdAt: v.dataHora,
+                })),
+              },
+            }
+          : {}),
       },
     });
     gravadas++;
   }
-  return gravadas;
+  return { gravadas, jaImportadas };
 }

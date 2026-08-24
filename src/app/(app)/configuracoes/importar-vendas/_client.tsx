@@ -9,6 +9,7 @@ import { toast } from "@/components/ui/toast";
 import {
   preVisualizarImportacaoVendas,
   confirmarImportacaoVendas,
+  type ArquivoImportacao,
   type PreVisualizacaoImportacao,
   type ResultadoImportacao,
   type LojaOpcao,
@@ -17,6 +18,19 @@ import {
 const fmtMoney = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const fmtData = (d: Date) =>
   new Date(d).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+
+/** Server Action não carrega bytes crus — o .xlsx vai em base64. */
+function lerComoBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const leitor = new FileReader();
+    leitor.onload = () => {
+      const r = String(leitor.result ?? "");
+      resolve(r.slice(r.indexOf(",") + 1));
+    };
+    leitor.onerror = () => reject(new Error("Não consegui ler o arquivo."));
+    leitor.readAsDataURL(file);
+  });
+}
 
 export function ImportarVendasClient({
   souAdmin,
@@ -29,7 +43,7 @@ export function ImportarVendasClient({
   const [pending, start] = useTransition();
   const [siteId, setSiteId] = useState(sites[0]?.id ?? "");
   const [fileName, setFileName] = useState<string | null>(null);
-  const [csvTexto, setCsvTexto] = useState<string | null>(null);
+  const [arquivo, setArquivo] = useState<ArquivoImportacao | null>(null);
   const [preview, setPreview] = useState<PreVisualizacaoImportacao | null>(null);
   const [resultado, setResultado] = useState<ResultadoImportacao | null>(null);
 
@@ -53,37 +67,51 @@ export function ImportarVendasClient({
 
   function reiniciar() {
     setFileName(null);
-    setCsvTexto(null);
+    setArquivo(null);
     setPreview(null);
     setResultado(null);
   }
 
   async function onFile(file: File) {
     reiniciar();
-    if (!file.name.toLowerCase().endsWith(".csv")) {
-      toast.error("Selecione um arquivo .csv.");
+    const nome = file.name.toLowerCase();
+
+    if (nome.endsWith(".xls")) {
+      // .xls antigo é binário BIFF, não zip — nenhum leitor daqui abre.
+      toast.error("O .xls antigo não é lido. No Excel: Salvar como → Pasta de Trabalho (.xlsx).");
       return;
     }
-    const texto = await file.text();
+    if (!/\.(csv|xlsx|xlsm)$/.test(nome)) {
+      toast.error("Selecione um arquivo .xlsx ou .csv.");
+      return;
+    }
+
+    // Sempre bytes: o servidor decodifica o texto (planilha do Windows costuma
+    // vir em latin1) e decide o layout pelo cabeçalho, não pela extensão.
+    const payload: ArquivoImportacao = {
+      formato: nome.endsWith(".csv") ? "csv" : "xlsx",
+      conteudo: await lerComoBase64(file),
+    };
+
     setFileName(file.name);
-    setCsvTexto(texto);
+    setArquivo(payload);
     start(async () => {
       try {
-        const r = await preVisualizarImportacaoVendas(texto);
+        const r = await preVisualizarImportacaoVendas(payload);
         setPreview(r);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Falha ao ler o arquivo.");
-        setCsvTexto(null);
+        setArquivo(null);
         setFileName(null);
       }
     });
   }
 
   function confirmar() {
-    if (!csvTexto || !siteId) return;
+    if (!arquivo || !siteId) return;
     start(async () => {
       try {
-        const r = await confirmarImportacaoVendas(csvTexto, siteId);
+        const r = await confirmarImportacaoVendas(arquivo, siteId);
         setResultado(r);
         toast.success(`${r.vendasImportadas} vendas importadas.`);
         router.refresh();
@@ -101,6 +129,11 @@ export function ImportarVendasClient({
           <div>
             <p className="font-semibold">{resultado.vendasImportadas} vendas importadas.</p>
             <p className="text-sm opacity-90">Total líquido: {fmtMoney(resultado.totalLiquido)}</p>
+            {resultado.jaImportadas > 0 && (
+              <p className="text-sm opacity-90">
+                {resultado.jaImportadas} já estavam no sistema e não foram duplicadas.
+              </p>
+            )}
           </div>
         </div>
         <Button variant="secondary" onClick={reiniciar} className="w-fit gap-1.5">
@@ -131,22 +164,35 @@ export function ImportarVendasClient({
         )}
         <p className="mt-3 text-xs text-muted">
           Todas as vendas do arquivo entram nesta loja. Não dá baixa no estoque atual — é só
-          histórico para relatórios e análises.
+          histórico para relatórios e análises. Quando a planilha traz só o total da transação, o
+          valor é rateado entre os itens pelo preço de venda cadastrado; o total da venda fica
+          exatamente o do arquivo.
         </p>
       </div>
 
       {!fileName && (
         <label className="flex w-full cursor-pointer flex-col items-center gap-3 rounded-[var(--radius)] border border-dashed border-line-strong bg-surface-2 px-6 py-12 text-center hover:border-brand">
           <Upload size={28} className="text-muted" />
-          <span className="text-sm text-ink">Selecione um arquivo .csv</span>
+          <span className="text-sm text-ink">Selecione um arquivo .xlsx ou .csv</span>
           <span className="max-w-md text-xs text-muted">
-            Colunas: venda_id, data_hora, produto, quantidade, preco_unitario, total_item,
-            total_liquido_item, desconto_item. O nome do produto precisa bater (ou ficar
-            parecido) com um produto já cadastrado.
+            <strong className="font-medium text-ink-2">Export do PDV</strong> (.xlsx ou .csv): uma
+            linha por transação, com as colunas No.Tran, Data, Hora, Tipo, Descrição, Vl.Produtos,
+            Desconto, Total Final, Valor Pago, Meio Pagto e Cancelado. Os itens saem da Descrição,
+            no formato <span className="font-mono">3 X Bala Fini 15g</span>.
+            <br />
+            <strong className="font-medium text-ink-2">CSV item a item</strong>: venda_id,
+            data_hora, produto, quantidade, preco_unitario, total_item, total_liquido_item,
+            desconto_item.
+            <br />
+            O layout é reconhecido pelo cabeçalho — não precisa escolher qual é. Nos dois, o nome
+            do produto precisa bater (ou ficar parecido) com um produto já cadastrado. Arquivo
+            .xls antigo: salve como .xlsx no Excel antes.
           </span>
           <input
             type="file"
-            accept=".csv,text/csv"
+            // .xls entra na lista de propósito: dá para escolher e receber o
+            // aviso de "salve como .xlsx" em vez de ficar cinza sem explicação.
+            accept=".csv,text/csv,.xlsx,.xlsm,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
             className="hidden"
             onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
           />
@@ -178,12 +224,21 @@ export function ImportarVendasClient({
             />
           </div>
 
-          {(preview.itensPulados > 0 || preview.linhasColapsadas > 0) && (
+          {(preview.itensPulados > 0 ||
+            preview.linhasColapsadas > 0 ||
+            preview.canceladas > 0 ||
+            preview.naoVendas.length > 0) && (
             <p className="text-xs text-muted">
               {preview.itensPulados > 0 &&
                 `${preview.itensPulados} item(ns) pulado(s) (quantidade zero ou produto não casado). `}
               {preview.linhasColapsadas > 0 &&
-                `${preview.linhasColapsadas} linha(s) duplicada(s) colapsada(s).`}
+                `${preview.linhasColapsadas} linha(s) duplicada(s) colapsada(s). `}
+              {preview.canceladas > 0 &&
+                `${preview.canceladas} transação(ões) cancelada(s) ficaram de fora. `}
+              {preview.naoVendas.length > 0 &&
+                `Fora do faturamento: ${preview.naoVendas
+                  .map((n) => `${n.vezes}× ${n.tipo}`)
+                  .join(", ")}.`}
             </p>
           )}
 
