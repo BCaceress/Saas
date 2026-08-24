@@ -773,14 +773,16 @@ type ContatoDoFornecedor = {
 /**
  * Quem recebe a cotação neste fornecedor, em ordem de precedência:
  * escolha da tela → contato já gravado no convite → principal → primeiro
- * contato alcançável → telefone/e-mail da empresa (fornecedor sem ninguém
- * cadastrado continua recebendo, como sempre recebeu).
+ * contato alcançável.
+ *
+ * NÃO existe queda para o telefone/e-mail da empresa. Aquele dado é do setor
+ * fiscal ou do 0800 — cotação mandada para lá some. A cotação vai para uma
+ * PESSOA; sem contato alcançável, não há destino, e quem chama trata isso.
  */
 function resolverDestinatario(
   contatos: ContatoDoFornecedor[],
   contactIdGravado: string | null,
   escolhido: string | null | undefined,
-  empresa: { telefone: string | null; email: string | null },
 ): Destinatario {
   const alcancavel = (c: ContatoDoFornecedor) => Boolean(c.telefone?.trim() || c.email?.trim());
   const contato =
@@ -799,7 +801,7 @@ function resolverDestinatario(
       email: contato.email,
     };
   }
-  return { contactId: null, nome: null, telefone: empresa.telefone, email: empresa.email };
+  return { contactId: null, nome: null, telefone: null, email: null };
 }
 
 /** 11 dígitos ou menos = número nacional; o wa.me exige o 55 na frente. */
@@ -901,6 +903,34 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>): 
       );
     }
 
+    // Cotação vai para uma PESSOA. Sem contato alcançável não há para onde
+    // mandar — e marcar o convite como enviado seria mentira que só aparece
+    // três dias depois, quando ninguém respondeu. Barra ANTES de qualquer
+    // escrita: meio envio gravado é pior que envio nenhum.
+    const destinatarios = new Map<string, Destinatario>();
+    const semContato: string[] = [];
+    for (const a of alvos) {
+      const escolha = escolhas.get(a.id);
+      const av = escolha?.avulso ?? null;
+      const destinatario: Destinatario = av
+        ? {
+            contactId: null,
+            nome: av.nome?.trim() || null,
+            telefone: av.telefone?.trim() || null,
+            email: av.email?.trim() || null,
+          }
+        : resolverDestinatario(a.supplier.contacts, a.contactId, escolha?.contactId ?? null);
+      if (!destinatario.telefone?.trim() && !destinatario.email?.trim()) {
+        semContato.push(a.supplier.nomeFantasia || a.supplier.razaoSocial);
+      }
+      destinatarios.set(a.id, destinatario);
+    }
+    if (semContato.length > 0) {
+      throw new Error(
+        `Sem contato para enviar: ${semContato.join(", ")}. Cadastre alguém com WhatsApp ou e-mail no fornecedor — a cotação vai para uma pessoa, não para a empresa.`,
+      );
+    }
+
     const agora = new Date();
 
     // Prazo novo vale para a cotação inteira — é a data que sai na mensagem e
@@ -949,23 +979,9 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>): 
         const fornecedor = a.supplier.nomeFantasia || a.supplier.razaoSocial;
         const escolha = escolhas.get(a.id);
         const canais = escolha?.canais ?? d.canais;
-        // Destino avulso atropela a precedência inteira: foi digitado agora,
-        // para esta conversa. Cair no principal aqui mandaria a cotação para
-        // quem o comprador acabou de decidir não usar.
+        // Já resolvido (e validado) antes das escritas — aqui só se usa.
         const avulso = escolha?.avulso ?? null;
-        const destinatario: Destinatario = avulso
-          ? {
-              contactId: null,
-              nome: avulso.nome?.trim() || null,
-              telefone: avulso.telefone?.trim() || null,
-              email: avulso.email?.trim() || null,
-            }
-          : resolverDestinatario(
-              a.supplier.contacts,
-              a.contactId,
-              escolha?.contactId ?? null,
-              { telefone: a.supplier.telefone, email: a.supplier.email },
-            );
+        const destinatario = destinatarios.get(a.id)!;
 
         // O contato usado fica gravado no convite: o próximo reenvio já abre
         // com a mesma pessoa, sem o comprador reescolher.
@@ -1098,10 +1114,22 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>): 
  * novo em cada conversa. Com o texto na mão ele manda pelo canal que quiser —
  * outro WhatsApp, Telegram, e-mail pessoal do vendedor — sem passar por aqui.
  */
-export async function mensagemDoConviteAction(conviteId: string): Promise<{
+export async function mensagemDoConviteAction(
+  conviteId: string,
+  /**
+   * Para QUEM montar o texto. Vazio mantém a precedência de sempre (contato
+   * gravado no convite → principal → empresa). Vindo preenchido, a saudação e
+   * o WhatsApp saem no nome de quem o operador escolheu na hora — sem isso o
+   * celular só sabia falar com o principal.
+   */
+  contactId?: string | null,
+): Promise<{
   fornecedor: string;
   /** Nome do contato a quem o texto está endereçado — null = sem contato. */
   contato: string | null;
+  /** Para onde este texto vai, já resolvido: alimenta o wa.me e o mailto. */
+  telefone: string | null;
+  email: string | null;
   mensagem: string;
   link: string;
   waLink: string | null;
@@ -1159,8 +1187,7 @@ export async function mensagemDoConviteAction(conviteId: string): Promise<{
     const destinatario = resolverDestinatario(
       convite.supplier.contacts,
       convite.contactId,
-      null,
-      { telefone: convite.supplier.telefone, email: convite.supplier.email },
+      contactId ?? null,
     );
 
     const unidades = await unidadesDosItens(convite.quotation.items);
@@ -1181,6 +1208,8 @@ export async function mensagemDoConviteAction(conviteId: string): Promise<{
     return {
       fornecedor: convite.supplier.nomeFantasia || convite.supplier.razaoSocial,
       contato: destinatario.nome,
+      telefone: destinatario.telefone,
+      email: destinatario.email,
       mensagem,
       link,
       waLink: numeroWa ? `https://wa.me/${numeroWa}?text=${encodeURIComponent(mensagem)}` : null,

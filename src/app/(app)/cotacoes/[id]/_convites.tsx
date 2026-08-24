@@ -283,20 +283,20 @@ export function ConvitesCotacao({
                           type="button"
                           onClick={() =>
                             rodar(async () => {
-                              const { url } = await linkDoConviteAction(c.id);
-                              if (!(await copiarTexto(url))) {
+                              const { mensagem } = await mensagemDoConviteAction(c.id);
+                              if (!(await copiarTexto(mensagem))) {
                                 throw new Error(
-                                  "O navegador bloqueou a cópia. Abra o link e copie da barra de endereço.",
+                                  "O navegador bloqueou a cópia. Tente pelo WhatsApp.",
                                 );
                               }
-                              setLinkCopiado(c.id);
+                              setTextoCopiado(c.id);
                             })
                           }
                           disabled={pendente}
                           className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
                         >
-                          <LinkIcon size={13} />
-                          {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
+                          <Copy size={13} />
+                          {textoCopiado === c.id ? "Mensagem copiada" : "Copiar mensagem"}
                         </button>
                       </>
                     )}
@@ -313,26 +313,26 @@ export function ConvitesCotacao({
                         </button>
                       }
                     >
-                      {/* O texto inteiro, com o link dentro: o operador manda
-                          pelo canal que ele já usa com aquele vendedor — outro
-                          número de WhatsApp, e-mail pessoal, o que for. */}
+                      {/* Só o endereço, sem o texto em volta: serve para colar
+                          numa conversa que já começou. O caminho normal é o
+                          botão "Copiar mensagem", que leva o link dentro. */}
                       {c.status === "ENVIADA" && (
                         <MenuItem
-                          icon={<Copy size={14} />}
+                          icon={<LinkIcon size={14} />}
                           disabled={pendente}
                           onClick={() =>
                             rodar(async () => {
-                              const { mensagem } = await mensagemDoConviteAction(c.id);
-                              if (!(await copiarTexto(mensagem))) {
+                              const { url } = await linkDoConviteAction(c.id);
+                              if (!(await copiarTexto(url))) {
                                 throw new Error(
-                                  "O navegador bloqueou a cópia. Tente pelo WhatsApp.",
+                                  "O navegador bloqueou a cópia. Abra o link e copie da barra de endereço.",
                                 );
                               }
-                              setTextoCopiado(c.id);
+                              setLinkCopiado(c.id);
                             })
                           }
                         >
-                          {textoCopiado === c.id ? "Mensagem copiada" : "Copiar mensagem"}
+                          {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
                         </MenuItem>
                       )}
                       {c.status === "ENVIADA" && (
@@ -1279,7 +1279,7 @@ function HistoricoEnvios({
           )}
           <span className="font-mono tabular-nums text-faint">{fmtDataHora(e.enviadoEm)}</span>
           <span className="truncate">
-            {e.contatoNome ?? "contato geral"}
+            {e.contatoNome ?? e.destino ?? "sem contato"}
             {e.reenvio && " · reenvio"}
           </span>
           {!e.sucesso && <span className="shrink-0 text-accent">falhou</span>}

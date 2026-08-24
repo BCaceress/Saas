@@ -35,10 +35,17 @@ type Escolha = { contactId: string | null; avulso: Avulso | null; canais: Canal[
 const temWhatsapp = (c: { telefone: string | null } | null) => Boolean(c?.telefone?.trim());
 const temEmail = (c: { email: string | null } | null) => Boolean(c?.email?.trim());
 
-/** Contato que abre selecionado: o gravado no convite, senão o principal. */
+/**
+ * Contato que abre selecionado: o gravado no convite, senão o principal, senão
+ * o primeiro que dá para alcançar. Abrir num contato sem WhatsApp nem e-mail
+ * mostraria a linha bloqueada tendo outra pessoa alcançável logo abaixo.
+ */
 function contatoInicial(c: ConviteCotacao, contatos: ContatoConvite[]): ContatoConvite | null {
+  const alcancavel = (x: ContatoConvite) => temWhatsapp(x) || temEmail(x);
   return (
     contatos.find((x) => x.id === c.contatoId) ??
+    contatos.find((x) => x.principal && alcancavel(x)) ??
+    contatos.find(alcancavel) ??
     contatos.find((x) => x.principal) ??
     contatos[0] ??
     null
@@ -90,7 +97,7 @@ export function EnvioSheet({
       inicial[c.id] = {
         contactId: contato?.id ?? null,
         avulso: null,
-        canais: canaisIniciais(contato ?? { telefone: c.telefone, email: c.email }),
+        canais: canaisIniciais(contato),
       };
     }
     return inicial;
@@ -109,10 +116,12 @@ export function EnvioSheet({
       return { contato: null, avulso: a, telefone: a.telefone || null, email: a.email || null };
     }
     const contato = contatosDe(c).find((x) => x.id === escolha?.contactId) ?? null;
-    // Sem contato, o envio cai no telefone/e-mail da empresa — como sempre foi.
+    // Sem contato NÃO existe destino: o telefone da empresa é o do fiscal ou um
+    // 0800, e cotação mandada para lá some. Quem não tem ninguém cadastrado
+    // aparece bloqueado na lista, com o cadastro a um toque.
     return contato
       ? { contato, avulso: null, telefone: contato.telefone, email: contato.email }
-      : { contato: null, avulso: null, telefone: c.telefone, email: c.email };
+      : { contato: null, avulso: null, telefone: null, email: null };
   }
 
   function escolherContato(c: ConviteCotacao, contato: ContatoConvite | null) {
@@ -121,7 +130,7 @@ export function EnvioSheet({
       [c.id]: {
         contactId: contato?.id ?? null,
         avulso: null,
-        canais: canaisIniciais(contato ?? { telefone: c.telefone, email: c.email }),
+        canais: canaisIniciais(contato),
       },
     }));
     setTrocando(null);
@@ -204,9 +213,10 @@ export function EnvioSheet({
         }
         footer={
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-[12px] text-muted">
+            <p className={cn("text-[12px]", semNinguem > 0 ? "text-accent" : "text-muted")}>
               {alvos.length} {alvos.length === 1 ? "fornecedor" : "fornecedores"}
-              {semNinguem > 0 && ` · ${semNinguem} sem contato — a mensagem sai para copiar`}
+              {semNinguem > 0 &&
+                ` · ${semNinguem} sem contato — escolha alguém ou um destino avulso`}
             </p>
             <div className="flex items-center gap-2">
               <button
@@ -219,7 +229,7 @@ export function EnvioSheet({
               <button
                 type="button"
                 onClick={enviar}
-                disabled={pendente || alvos.length === 0}
+                disabled={pendente || alvos.length === 0 || semNinguem > 0}
                 className="flex items-center gap-1.5 rounded-full bg-brand px-5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
               >
                 <Send size={15} />
@@ -283,10 +293,10 @@ export function EnvioSheet({
                                 </span>
                               )}
                             </>
-                          ) : destino.telefone || destino.email ? (
-                            <span className="truncate">Contato geral da empresa</span>
                           ) : (
-                            <span className="truncate text-accent">Sem contato cadastrado</span>
+                            <span className="truncate text-accent">
+                              Sem contato — cadastre alguém para poder enviar
+                            </span>
                           )}
                         </span>
                       </span>
@@ -362,31 +372,6 @@ export function EnvioSheet({
                           )}
                         </button>
                       ))}
-
-                      {(c.telefone || c.email) && (
-                        <button
-                          type="button"
-                          onClick={() => escolherContato(c, null)}
-                          className={cn(
-                            "flex items-center justify-between gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left transition-colors hover:bg-surface",
-                            escolhas[c.id]?.contactId === null && "bg-surface",
-                          )}
-                        >
-                          <span className="min-w-0">
-                            <span className="block truncate text-[13px] text-ink">
-                              Contato geral da empresa
-                            </span>
-                            <span className="block truncate text-[11px] text-muted">
-                              {[c.telefone ? maskPhone(c.telefone) : null, c.email]
-                                .filter(Boolean)
-                                .join(" · ")}
-                            </span>
-                          </span>
-                          {escolhas[c.id]?.contactId === null && (
-                            <Check size={14} className="shrink-0 text-brand" />
-                          )}
-                        </button>
-                      )}
 
                       <DestinoAvulso
                         atual={escolhas[c.id]?.avulso ?? null}

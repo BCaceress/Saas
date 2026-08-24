@@ -17,11 +17,14 @@ import {
   ScanLine,
   Search,
   Send,
+  Star,
   Trash2,
+  UserRound,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { copiarTexto } from "@/lib/clipboard";
+import { maskPhone } from "@/lib/masks";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
@@ -31,6 +34,7 @@ import { MobilePageHeader } from "@/components/mobile/page-header";
 import { BottomSheet } from "@/components/mobile/bottom-sheet";
 import { SupplierAvatar, Thumb } from "@/app/(app)/cotacoes/_ui";
 import type {
+  ContatoConvite,
   ConviteCotacao,
   CotacaoDetalhe,
   FornecedorOpcao,
@@ -247,8 +251,28 @@ function RascunhoTrilho({
   const convidados = new Set(cotacao.convites.map((c) => c.supplierId));
   const escolhidos = fornecedores.filter((f) => toques[f.id] ?? convidados.has(f.id)).length;
 
+  // Mesma história do lado dos itens: a lista do passo 1 é otimista, então o
+  // "Continuar" precisa contar o que está NA TELA. Preso à lista do servidor,
+  // ele seguia dizendo "Adicione um produto" com três produtos já na lista.
+  const [itensNaTela, setItensNaTela] = React.useState<number | null>(null);
+
+  // Quantos ainda vão receber depois que as gravações do passo 2 chegarem. Sem
+  // isso o botão do passo 3 nascia "Todos já receberam" no mesmo segundo em
+  // que o operador escolheu o primeiro fornecedor.
+  const pendentesServidor = cotacao.convites.filter((c) => c.status === "PENDENTE");
+  const pendentesPrevistos = Math.max(
+    0,
+    fornecedores.reduce((n, f) => {
+      const tocado = toques[f.id];
+      if (tocado === undefined) return n;
+      if (tocado && !convidados.has(f.id)) return n + 1;
+      if (!tocado && pendentesServidor.some((c) => c.supplierId === f.id)) return n - 1;
+      return n;
+    }, pendentesServidor.length),
+  );
+
   const feito = {
-    produtos: cotacao.itens.length > 0,
+    produtos: (itensNaTela ?? cotacao.itens.length) > 0,
     fornecedores: escolhidos > 0,
     enviar: false,
   } as Record<Passo, boolean>;
@@ -290,6 +314,7 @@ function RascunhoTrilho({
           cotacao={cotacao}
           editavel={podePedir && regras.itens.pode}
           travado={podePedir && !regras.itens.pode ? regras.itens.motivo : null}
+          onContagem={setItensNaTela}
         />
       )}
       {passo === "fornecedores" && (
@@ -302,7 +327,12 @@ function RascunhoTrilho({
         />
       )}
       {passo === "enviar" && (
-        <PassoEnviar cotacao={cotacao} editavel={podePedir} onEnviado={onEnviado} />
+        <PassoEnviar
+          cotacao={cotacao}
+          editavel={podePedir}
+          pendentesPrevistos={pendentesPrevistos}
+          onEnviado={onEnviado}
+        />
       )}
 
       {passo !== "enviar" && (
@@ -378,11 +408,15 @@ function PassoProdutos({
   cotacao,
   editavel,
   travado,
+  onContagem,
 }: {
   cotacao: CotacaoDetalhe;
   editavel: boolean;
   /** Por que a lista congelou, para quem TERIA permissão de mexer nela. */
   travado?: string | null;
+  /** Quantos itens estão na tela agora — é o que destrava o "Continuar" no
+   *  trilho do rascunho. A aba de itens da cotação enviada não usa. */
+  onContagem?: (n: number) => void;
 }) {
   const router = useRouter();
   const [lendo, setLendo] = React.useState(false);
@@ -409,6 +443,11 @@ function PassoProdutos({
   React.useEffect(() => {
     itensRef.current = itens;
   }, [itens]);
+
+  // O trilho decide o "Continuar" pela contagem da TELA, não pela do servidor.
+  React.useEffect(() => {
+    onContagem?.(itens.length);
+  }, [itens.length, onContagem]);
 
   // Um timer e uma fila por item: toques seguidos no mesmo produto viram UMA
   // gravação, e gravações do mesmo item nunca se atropelam.
@@ -899,6 +938,7 @@ function PassoFornecedores({
         <ul className="space-y-2">
           {visiveis.map((f) => {
             const escolhido = estaMarcado(f.id);
+            const contato = resumoContato(f);
             return (
               <li key={f.id}>
                 <button
@@ -916,12 +956,13 @@ function PassoFornecedores({
                   <SupplierAvatar nome={f.nome} logoUrl={f.logoUrl} size={36} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium text-ink">{f.nome}</span>
-                    <span className="block truncate text-[12px] text-muted">
-                      {f.telefone
-                        ? f.email
-                          ? `${f.telefone} · ${f.email}`
-                          : f.telefone
-                        : (f.email ?? "sem telefone nem e-mail")}
+                    <span
+                      className={cn(
+                        "block truncate text-[12px]",
+                        contato ? "text-muted" : "text-accent",
+                      )}
+                    >
+                      {contato ?? "sem contato — cadastre alguém para enviar"}
                     </span>
                   </span>
                   <span
@@ -944,15 +985,34 @@ function PassoFornecedores({
   );
 }
 
+/**
+ * Quem receberia a cotação neste fornecedor. É o que decide se dá para
+ * convidar: o telefone da empresa não serve — cotação vai para uma pessoa.
+ * Null = ninguém alcançável cadastrado.
+ */
+function resumoContato(f: FornecedorOpcao): string | null {
+  const alcancavel = (c: ContatoConvite) => Boolean(c.telefone?.trim() || c.email?.trim());
+  const contato =
+    f.contatos.find((c) => c.principal && alcancavel(c)) ?? f.contatos.find(alcancavel);
+  if (!contato) return null;
+  return [contato.nome, contato.telefone ? maskPhone(contato.telefone) : contato.email]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 // ── Passo 3: revisar e enviar ───────────────────────────────
 
 function PassoEnviar({
   cotacao,
   editavel,
+  pendentesPrevistos,
   onEnviado,
 }: {
   cotacao: CotacaoDetalhe;
   editavel: boolean;
+  /** Quantos vão receber contando os toques do passo 2 que ainda não voltaram
+   *  do servidor. É o número que o botão mostra — e o que decide se ele vive. */
+  pendentesPrevistos: number;
   onEnviado: (e: Envio[]) => void;
 }) {
   const router = useRouter();
@@ -965,7 +1025,14 @@ function PassoEnviar({
   const [enviando, setEnviando] = React.useState(false);
 
   const pendentes = cotacao.convites.filter((c) => c.status === "PENDENTE");
-  const semEmail = pendentes.length > 0 && pendentes.every((c) => !c.email);
+  const destinos = pendentes.map((c) => ({ c, d: destinatarioDoConvite(c, undefined) }));
+  const semEmail = destinos.length > 0 && destinos.every((x) => !x.d.email);
+  // Fornecedor sem ninguém cadastrado não tem para onde receber, e a Server
+  // Action recusa o lote inteiro. Melhor dizer aqui, com o nome de quem falta,
+  // do que deixar o operador tocar em "Enviar" e levar um erro seco.
+  const semContato = destinos
+    .filter((x) => !x.d.telefone && !x.d.email)
+    .map((x) => x.c.supplierNome);
 
   function alternarCanal(c: "whatsapp" | "email") {
     setCanais((atual) => {
@@ -1100,10 +1167,17 @@ function PassoEnviar({
         )}
       </div>
 
+      {semContato.length > 0 && (
+        <p className="text-[12px] text-accent">
+          Sem contato cadastrado: {semContato.join(", ")}. A cotação vai para uma pessoa —
+          cadastre alguém com WhatsApp ou e-mail no fornecedor.
+        </p>
+      )}
+
       <div className="sticky bottom-24 z-10">
         <Button
           onClick={enviar}
-          disabled={!editavel || enviando || pendentes.length === 0}
+          disabled={!editavel || enviando || pendentesPrevistos === 0 || semContato.length > 0}
           size="lg"
           className="w-full"
         >
@@ -1112,11 +1186,11 @@ function PassoEnviar({
           ) : (
             <Send className="size-4" aria-hidden />
           )}
-          {pendentes.length === 0
+          {pendentesPrevistos === 0
             ? "Todos já receberam"
             : enviando
               ? "Enviando…"
-              : `Enviar para ${pendentes.length}`}
+              : `Enviar para ${pendentesPrevistos}`}
         </Button>
       </div>
     </div>
@@ -1126,7 +1200,33 @@ function PassoEnviar({
 // ── Enviada: acompanhamento ─────────────────────────────────
 
 /** Ação de um cartão de fornecedor. Cada uma gira no próprio botão. */
-type Acao = "link" | "mensagem" | "reenviar";
+type Acao = "link" | "mensagem" | "reenviar" | "whatsapp" | "email";
+
+/** Teto do corpo de um mailto. Acima disso vários apps de e-mail cortam a URL
+ *  no meio e a lista chega picada — melhor mandar o link e copiar o resto. */
+const LIMITE_MAILTO = 1500;
+
+/**
+ * Quem, dentro do fornecedor, recebe este convite — mesma precedência do
+ * servidor: escolha da tela → contato gravado no convite → principal →
+ * primeiro alcançável. Sem contato NÃO há destino: o telefone da empresa é do
+ * fiscal ou um 0800, e cotação mandada para lá some.
+ */
+function destinatarioDoConvite(
+  c: ConviteCotacao,
+  escolhido: string | null | undefined,
+): { contato: ContatoConvite | null; telefone: string | null; email: string | null } {
+  const alcancavel = (x: ContatoConvite) => Boolean(x.telefone?.trim() || x.email?.trim());
+  const contato =
+    (escolhido ? c.contatos.find((x) => x.id === escolhido) : undefined) ??
+    (c.contatoId ? c.contatos.find((x) => x.id === c.contatoId) : undefined) ??
+    c.contatos.find((x) => x.principal && alcancavel(x)) ??
+    c.contatos.find(alcancavel) ??
+    null;
+  return contato
+    ? { contato, telefone: contato.telefone, email: contato.email }
+    : { contato: null, telefone: null, email: null };
+}
 
 function Acompanhamento({
   cotacao,
@@ -1142,6 +1242,9 @@ function Acompanhamento({
    *  que o dedo tocou, senão parece que outra coisa começou a acontecer. */
   const [ocupado, setOcupado] = React.useState<{ id: string; acao: Acao } | null>(null);
   const [copiado, setCopiado] = React.useState<{ id: string; acao: Acao } | null>(null);
+  /** Para quem mandar, por convite. Chave ausente = a precedência de sempre. */
+  const [escolhas, setEscolhas] = React.useState<Record<string, string>>({});
+  const [trocando, setTrocando] = React.useState<string | null>(null);
 
   const rodando = (id: string, acao: Acao) =>
     ocupado?.id === id && ocupado.acao === acao;
@@ -1188,6 +1291,54 @@ function Acompanhamento({
     }
   }
 
+  /**
+   * Abre o WhatsApp ou o app de e-mail com a mensagem pronta e o destinatário
+   * preenchido — o que faltava no celular, onde copiar e colar entre dois apps
+   * é justamente o trabalho que ninguém faz na frente da gôndola.
+   *
+   * A navegação é na MESMA aba de propósito: `window.open` depois de um await
+   * perde o gesto do usuário e morre no bloqueador de pop-up do celular.
+   */
+  async function abrir(c: ConviteCotacao, canal: "whatsapp" | "email") {
+    const escolhido = c.id in escolhas ? escolhas[c.id] : undefined;
+    setOcupado({ id: c.id, acao: canal });
+    try {
+      const r = await mensagemDoConviteAction(c.id, escolhido);
+      if (canal === "whatsapp") {
+        if (!r.waLink) {
+          toast.info("Sem WhatsApp", "Este contato não tem telefone cadastrado.");
+          return;
+        }
+        window.location.href = r.waLink;
+        return;
+      }
+      if (!r.email) {
+        toast.info("Sem e-mail", "Este contato não tem e-mail cadastrado.");
+        return;
+      }
+      const cortar = r.mensagem.length > LIMITE_MAILTO;
+      const corpo = cortar
+        ? `Pedido de cotação ${cotacao.numero} — ${cotacao.titulo}.
+
+É só preencher os preços aqui (não precisa cadastro):
+${r.link}`
+        : r.mensagem;
+      if (cortar) {
+        await copiarTexto(r.mensagem);
+        toast.info("Lista copiada", "O e-mail leva o link; cole a lista se quiser mandar junto.");
+      }
+      const assunto = `Cotação ${cotacao.numero} — ${cotacao.titulo}`;
+      window.location.href = `mailto:${r.email}?subject=${encodeURIComponent(assunto)}&body=${encodeURIComponent(corpo)}`;
+    } catch (e) {
+      toast.error(
+        "Não deu para abrir o app",
+        e instanceof Error ? e.message : "Tente de novo em instantes.",
+      );
+    } finally {
+      setOcupado(null);
+    }
+  }
+
   async function reenviar(conviteId: string) {
     setOcupado({ id: conviteId, acao: "reenviar" });
     try {
@@ -1219,68 +1370,177 @@ function Acompanhamento({
 
   return (
     <ul className="space-y-2">
-      {cotacao.convites.map((c) => (
-        <li key={c.id}>
-          <Card className="p-3">
-            <div className="flex items-center gap-3">
-              <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={36} />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-ink">{c.supplierNome}</p>
-                <p className="truncate text-[12px] text-muted">{situacao(c, cotacao)}</p>
-              </div>
-              <SinalConvite convite={c} />
-            </div>
+      {cotacao.convites.map((c) => {
+        const escolhido = c.id in escolhas ? escolhas[c.id] : undefined;
+        const d = destinatarioDoConvite(c, escolhido);
+        const aberto = trocando === c.id;
+        const podeAgir = podePedir && c.status !== "RESPONDIDA" && c.status !== "RECUSADA";
+        // Antes do primeiro envio não existe link para colocar na mensagem.
+        const jaSaiu = c.status !== "PENDENTE";
 
-            {podePedir && c.status !== "RESPONDIDA" && c.status !== "RECUSADA" && (
-              <div className="mt-2.5 flex flex-wrap gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => copiarLink(c.id)}
-                  disabled={ocupado !== null || c.status === "PENDENTE"}
-                  className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
-                >
-                  {rodando(c.id, "link") ? (
-                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                  ) : copiou(c.id, "link") ? (
-                    <Check className="size-3.5" aria-hidden />
-                  ) : (
-                    <LinkIcon className="size-3.5" aria-hidden />
-                  )}
-                  {copiou(c.id, "link") ? "Copiado" : "Copiar link"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => copiarMensagem(c.id)}
-                  disabled={ocupado !== null || c.status === "PENDENTE"}
-                  className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
-                >
-                  {rodando(c.id, "mensagem") ? (
-                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                  ) : copiou(c.id, "mensagem") ? (
-                    <Check className="size-3.5" aria-hidden />
-                  ) : (
-                    <Copy className="size-3.5" aria-hidden />
-                  )}
-                  {copiou(c.id, "mensagem") ? "Copiada" : "Copiar mensagem"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => reenviar(c.id)}
-                  disabled={ocupado !== null}
-                  className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
-                >
-                  {rodando(c.id, "reenviar") ? (
-                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                  ) : (
-                    <RotateCcw className="size-3.5" aria-hidden />
-                  )}
-                  {c.status === "PENDENTE" ? "Enviar" : "Reenviar"}
-                </button>
+        return (
+          <li key={c.id}>
+            <Card className="p-3">
+              <div className="flex items-center gap-3">
+                <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={36} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-ink">{c.supplierNome}</p>
+                  <p className="truncate text-[12px] text-muted">{situacao(c, cotacao)}</p>
+                </div>
+                <SinalConvite convite={c} />
               </div>
-            )}
-          </Card>
-        </li>
-      ))}
+
+              {podeAgir && (
+                <div className="mt-2.5 flex items-center gap-2 rounded-[var(--radius)] bg-surface-2 px-2.5 py-2">
+                  <UserRound className="size-3.5 shrink-0 text-faint" aria-hidden />
+                  <span className="min-w-0 flex-1">
+                    {d.contato ? (
+                      <>
+                        <span className="flex items-center gap-1">
+                          <span className="truncate text-[13px] font-medium text-ink">
+                            {d.contato.nome}
+                          </span>
+                          {d.contato.principal && (
+                            <Star
+                              className="size-3 shrink-0 fill-accent text-accent"
+                              aria-label="Contato principal"
+                            />
+                          )}
+                        </span>
+                        <span className="block truncate text-[11px] text-muted">
+                          {[d.contato.cargo, d.telefone ? maskPhone(d.telefone) : null, d.email]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="block truncate text-[12px] text-accent">
+                        Sem contato — cadastre alguém no fornecedor para enviar
+                      </span>
+                    )}
+                  </span>
+                  {c.contatos.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setTrocando(aberto ? null : c.id)}
+                      aria-expanded={aberto}
+                      className="min-h-9 shrink-0 rounded-full px-2 text-[12px] font-medium text-brand"
+                    >
+                      {aberto ? "Fechar" : "Trocar"}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {podeAgir && aberto && (
+                <ul className="mt-1.5 space-y-1">
+                  {c.contatos.map((ct) => (
+                    <li key={ct.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEscolhas((e) => ({ ...e, [c.id]: ct.id }));
+                          setTrocando(null);
+                        }}
+                        className={cn(
+                          "flex min-h-11 w-full items-center gap-2 rounded-[var(--radius)] border px-2.5 text-left",
+                          d.contato?.id === ct.id ? "border-brand bg-brand-soft" : "border-line",
+                        )}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[13px] text-ink">{ct.nome}</span>
+                          <span className="block truncate text-[11px] text-muted">
+                            {[ct.cargo, ct.telefone ? maskPhone(ct.telefone) : null, ct.email]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </span>
+                        </span>
+                        {d.contato?.id === ct.id && (
+                          <Check className="size-3.5 shrink-0 text-brand" aria-hidden />
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {podeAgir && (
+                <div className="mt-2.5 flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => abrir(c, "whatsapp")}
+                    disabled={ocupado !== null || !jaSaiu || !d.telefone}
+                    className="flex min-h-9 items-center gap-1.5 rounded-full bg-brand px-3 text-[12px] font-semibold text-on-brand disabled:opacity-50"
+                  >
+                    {rodando(c.id, "whatsapp") ? (
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                    ) : (
+                      <MessageCircle className="size-3.5" aria-hidden />
+                    )}
+                    WhatsApp
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => abrir(c, "email")}
+                    disabled={ocupado !== null || !jaSaiu || !d.email}
+                    className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
+                  >
+                    {rodando(c.id, "email") ? (
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                    ) : (
+                      <Mail className="size-3.5" aria-hidden />
+                    )}
+                    E-mail
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => copiarLink(c.id)}
+                    disabled={ocupado !== null || !jaSaiu}
+                    className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
+                  >
+                    {rodando(c.id, "link") ? (
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                    ) : copiou(c.id, "link") ? (
+                      <Check className="size-3.5" aria-hidden />
+                    ) : (
+                      <LinkIcon className="size-3.5" aria-hidden />
+                    )}
+                    {copiou(c.id, "link") ? "Copiado" : "Copiar link"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => copiarMensagem(c.id)}
+                    disabled={ocupado !== null || !jaSaiu}
+                    className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
+                  >
+                    {rodando(c.id, "mensagem") ? (
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                    ) : copiou(c.id, "mensagem") ? (
+                      <Check className="size-3.5" aria-hidden />
+                    ) : (
+                      <Copy className="size-3.5" aria-hidden />
+                    )}
+                    {copiou(c.id, "mensagem") ? "Copiada" : "Copiar mensagem"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => reenviar(c.id)}
+                    disabled={ocupado !== null}
+                    className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
+                  >
+                    {rodando(c.id, "reenviar") ? (
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                    ) : (
+                      <RotateCcw className="size-3.5" aria-hidden />
+                    )}
+                    {c.status === "PENDENTE" ? "Enviar" : "Reenviar"}
+                  </button>
+                </div>
+              )}
+            </Card>
+          </li>
+        );
+      })}
     </ul>
   );
 }

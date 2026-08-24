@@ -299,12 +299,14 @@ export function RevisarCotacao({
       </div>
 
       {cotacao.convites.some(
-        (c) => c.status === "PENDENTE" && c.contatos.length === 0 && !c.telefone && !c.email,
+        (c) =>
+          c.status === "PENDENTE" &&
+          !c.contatos.some((x) => x.telefone?.trim() || x.email?.trim()),
       ) && (
         <p className="flex items-start gap-2 rounded-[var(--radius)] border border-line bg-surface-2 px-3.5 py-2.5 text-[12px] text-ink-2">
           <AlertTriangle size={14} className="mt-0.5 shrink-0 text-accent" />
-          Tem fornecedor sem telefone nem e-mail cadastrado. A cotação é enviada do mesmo
-          jeito — a mensagem sai pronta para você copiar e mandar pelo canal que usar com ele.
+          Tem fornecedor sem contato com WhatsApp ou e-mail. A cotação vai para uma pessoa, não
+          para a empresa — cadastre o vendedor na própria tela de envio antes de mandar.
         </p>
       )}
 
@@ -353,19 +355,28 @@ export function RevisarCotacao({
   );
 }
 
-/** Quem recebe hoje: o contato escolhido, o principal, ou o telefone da empresa. */
+/**
+ * Quem recebe hoje: o contato escolhido, o principal, ou o primeiro que dá
+ * para alcançar. Sem ninguém alcançável, null — a cotação vai para uma pessoa
+ * e o telefone da empresa não entra nessa conta.
+ */
 function destinatarioDoConvite(c: {
   contatoId: string | null;
-  contatos: { id: string; nome: string; principal: boolean }[];
-  telefone: string | null;
-  email: string | null;
+  contatos: {
+    id: string;
+    nome: string;
+    principal: boolean;
+    telefone: string | null;
+    email: string | null;
+  }[];
 }): string | null {
+  const alcancavel = (x: { telefone: string | null; email: string | null }) =>
+    Boolean(x.telefone?.trim() || x.email?.trim());
   const contato =
     c.contatos.find((x) => x.id === c.contatoId) ??
-    c.contatos.find((x) => x.principal) ??
-    c.contatos[0];
-  if (contato) return contato.nome;
-  return c.telefone || c.email ? "contato geral" : null;
+    c.contatos.find((x) => x.principal && alcancavel(x)) ??
+    c.contatos.find(alcancavel);
+  return contato?.nome ?? null;
 }
 
 function Bloco({
