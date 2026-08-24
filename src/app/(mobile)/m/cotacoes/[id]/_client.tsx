@@ -1550,14 +1550,14 @@ ${p.link}`
               )}
 
               {podeAgir && (
-                <div className="mt-2.5 flex flex-wrap gap-1.5">
-                  {/* Verde da marca do WhatsApp: na lista o operador procura
-                      a cor antes de ler o rótulo. */}
+                <div className="-mx-3 mt-2.5 flex gap-1.5 overflow-x-auto px-3">
+                  {/* Ação principal do cartão — laranja do sistema, como
+                      qualquer outra ação que move a cotação adiante. */}
                   <button
                     type="button"
                     onClick={() => abrir(c, "whatsapp", d.contato?.id ?? null)}
                     disabled={ocupado !== null || !jaSaiu || !d.telefone}
-                    className="flex min-h-9 items-center gap-1.5 rounded-full bg-whatsapp px-3 text-[12px] font-semibold text-on-whatsapp active:bg-whatsapp-strong disabled:opacity-50"
+                    className="flex min-h-9 shrink-0 items-center gap-1.5 rounded-full bg-brand px-3 text-[12px] font-semibold text-on-brand active:bg-brand-strong disabled:opacity-50"
                   >
                     {rodando(c.id, "whatsapp") ? (
                       <Loader2 className="size-3.5 animate-spin" aria-hidden />
@@ -1571,7 +1571,7 @@ ${p.link}`
                       type="button"
                       onClick={() => abrir(c, "email", d.contato?.id ?? null)}
                       disabled={ocupado !== null || !jaSaiu}
-                      className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
+                      className="flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
                     >
                       {rodando(c.id, "email") ? (
                         <Loader2 className="size-3.5 animate-spin" aria-hidden />
@@ -1585,7 +1585,7 @@ ${p.link}`
                     type="button"
                     onClick={() => copiarLink(c.id)}
                     disabled={ocupado !== null || !jaSaiu}
-                    className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
+                    className="flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
                   >
                     {rodando(c.id, "link") ? (
                       <Loader2 className="size-3.5 animate-spin" aria-hidden />
@@ -1600,7 +1600,7 @@ ${p.link}`
                     type="button"
                     onClick={() => copiarMensagem(c.id)}
                     disabled={ocupado !== null || !jaSaiu}
-                    className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
+                    className="flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
                   >
                     {rodando(c.id, "mensagem") ? (
                       <Loader2 className="size-3.5 animate-spin" aria-hidden />
@@ -1616,7 +1616,7 @@ ${p.link}`
                       type="button"
                       onClick={() => reenviar(c.id)}
                       disabled={ocupado !== null}
-                      className="flex min-h-9 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
+                      className="flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border border-line-button px-3 text-[12px] font-medium text-ink-2 active:bg-surface-2 disabled:opacity-50"
                     >
                       {rodando(c.id, "reenviar") ? (
                         <Loader2 className="size-3.5 animate-spin" aria-hidden />
