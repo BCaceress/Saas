@@ -11,21 +11,26 @@ import {
   useTransition,
 } from "react";
 import {
+  Ban,
+  Barcode,
   CalendarClock,
   CheckCircle2,
-  ChevronDown,
   Loader2,
   Package,
+  Plus,
   Send,
   Store,
+  TagIcon,
   ThumbsDown,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { mascaraMoeda, paraMascara, paraNumero } from "@/lib/moeda";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
-import { Menu, MenuItem } from "@/components/ui/menu";
+import { rotuloPreco, rotuloPrecoCurto } from "@/lib/compras/rotulo-preco";
+import { MAX_FAIXAS_ITEM } from "@/lib/compras/escalas";
 import type { CotacaoPublica, ItemPublico } from "@/lib/compras/cotacao-link";
 import { recusarPeloLinkAction, responderPeloLinkAction } from "./actions";
 
@@ -39,13 +44,23 @@ import { recusarPeloLinkAction, responderPeloLinkAction } from "./actions";
 //
 //  · UM campo obrigatório: o preço do que ele diz ter. Marca e observação por
 //    item saíram — eram três toques por produto que ninguém preenchia.
-//  · Disponibilidade é ESCOLHA, não digitação: "tenho", "tenho menos", "não
-//    tenho". A quantidade parcial só aparece quando ele diz que tem menos. No
-//    celular as duas exceções moram num menu ao lado do preço; na mesa, onde
-//    sobra largura, continuam como três alvos visíveis.
+//  · Disponibilidade é SIM ou NÃO. "Tenho menos" saiu: era um terceiro alvo em
+//    toda linha para um caso raro, e a quantidade parcial que ele abria quase
+//    nunca era digitada. Quem só tem parte escreve no recado do rodapé, e o
+//    comprador resolve por telefone — como já resolvia.
 //  · A quantidade PEDIDA é o dado mais lido da tela (é o que ele precifica),
-//    então é o maior tipo do cartão — com a unidade junto, porque preço de
-//    fardo e preço de unidade não são o mesmo número.
+//    então é o maior tipo do cartão — SEMPRE com a embalagem junto ("3 ×
+//    Caixa (12 un.)"), e o campo de preço se chama pelo que está sendo pedido:
+//    "Preço da caixa (12 un.)", não "Preço unitário". Preço de fardo e preço
+//    de unidade não são o mesmo número, e o rótulo é o que evita a troca.
+//  · O EAN da unidade vai na linha do produto: nome de bebida muda de loja
+//    para loja, código de barras não — é por ele que o vendedor acha o item
+//    no catálogo dele.
+//  · PROMOÇÃO POR VOLUME ("a partir de 10 caixas, R$ 41") só aparece quando o
+//    comprador pediu, e mesmo aí nasce RECOLHIDA, atrás de um link. É a tabela
+//    que o vendedor já tem na cabeça e hoje manda por WhatsApp; oferecer o
+//    campo é de graça para ele e vale muito para o outro lado. O que não pode
+//    é custar um toque a quem não tem promoção — daí ficar fechada.
 //  · Celular e computador são layouts diferentes de verdade: no telefone, um
 //    cartão por produto; na mesa, uma grade com foto, onde a comparação entre
 //    as linhas é o que ajuda.
@@ -108,14 +123,17 @@ function faltam(iso: string | null): { texto: string; urgente: boolean } | null 
   return { texto: `faltam ${dias} dias`, urgente: dias <= 2 };
 }
 
-type Situacao = "tem" | "parcial" | "nao";
+type Situacao = "tem" | "nao";
+
+/** Uma linha de promoção enquanto está sendo digitada (texto, não número). */
+type FaixaForm = { qtd: string; preco: string };
 
 type LinhaForm = {
   itemId: string;
   situacao: Situacao;
   preco: string;
-  /** Só vale em "parcial": quanto ele consegue atender. */
-  qtd: string;
+  /** Vazio na maioria das respostas — só quem tem tabela por volume preenche. */
+  faixas: FaixaForm[];
 };
 
 /** Spinner do botão em trabalho — o retorno imediato de que o toque pegou. */
@@ -142,15 +160,14 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
     const respostaPorItem = new Map(cotacao.respostas.map((r) => [r.quotationItemId, r]));
     return cotacao.itens.map((i) => {
       const r = respostaPorItem.get(i.id);
-      const parcial =
-        r?.disponivel === true &&
-        r.quantidadeOfertada !== null &&
-        r.quantidadeOfertada < i.quantidade;
       return {
         itemId: i.id,
-        situacao: r ? (r.disponivel ? (parcial ? "parcial" : "tem") : "nao") : "tem",
+        situacao: (r ? (r.disponivel ? "tem" : "nao") : "tem") as Situacao,
         preco: r ? paraMascara(r.precoUnitario) : "",
-        qtd: parcial ? String(r!.quantidadeOfertada).replace(".", ",") : "",
+        faixas: (r?.faixas ?? []).map((f) => ({
+          qtd: String(f.quantidadeMinima).replace(".", ","),
+          preco: paraMascara(f.precoUnitario),
+        })),
       };
     });
   });
@@ -198,19 +215,12 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
     setLinhas((atual) => atual.map((l) => (l.itemId === itemId ? { ...l, ...campo } : l)));
   }, []);
 
-  /** Quantidade que ele realmente atende — base do total daquela linha. */
-  function quantidadeEfetiva(item: ItemPublico, linha: LinhaForm): number {
-    if (linha.situacao === "nao") return 0;
-    if (linha.situacao === "parcial") return paraNumero(linha.qtd) ?? 0;
-    return item.quantidade;
-  }
-
   function totalDaLinha(item: ItemPublico): number {
     const linha = porItem.get(item.id);
-    if (!linha) return 0;
+    if (!linha || linha.situacao === "nao") return 0;
     const preco = paraNumero(linha.preco);
     if (preco === null) return 0;
-    return preco * quantidadeEfetiva(item, linha);
+    return preco * item.quantidade;
   }
 
   const totalItens = cotacao.itens.reduce((acc, i) => acc + totalDaLinha(i), 0);
@@ -256,7 +266,21 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
             // comparador do outro lado, e silêncio não é informação.
             disponivel: l.situacao !== "nao" && preco !== null,
             precoUnitario: preco ?? 0,
-            quantidadeOfertada: l.situacao === "parcial" ? paraNumero(l.qtd) : null,
+            // "Tenho menos" saiu da tela: quem responde pelo link atende o
+            // pedido inteiro ou não atende. Parcial continua existindo no
+            // banco — é o operador que registra, quando o vendedor avisa.
+            quantidadeOfertada: null,
+            // Linha pela metade some aqui em vez de virar erro de formulário:
+            // o servidor ainda peneira (`normalizarFaixas`), e travar o envio
+            // por uma faixa que o vendedor começou e desistiu é o caminho mais
+            // curto para ele fechar a página.
+            faixas: l.faixas.flatMap((f) => {
+              const qtd = paraNumero(f.qtd);
+              const p = paraNumero(f.preco);
+              return qtd !== null && qtd > 0 && p !== null && p > 0
+                ? [{ quantidadeMinima: qtd, precoUnitario: p }]
+                : [];
+            }),
           };
         }),
       });
@@ -326,6 +350,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
             key={item.id}
             item={item}
             linha={porItem.get(item.id)!}
+            pedeEscala={cotacao.pedeEscala}
             onAlterar={alterar}
           />
         ))}
@@ -334,11 +359,14 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
       {/* Computador: grade com foto — aqui a comparação entre linhas ajuda. */}
       <section className="mt-6 hidden md:block">
         <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line">
-          <div className="grid grid-cols-[minmax(0,1fr)_11rem_15rem_9rem] gap-4 border-b border-line bg-surface-2 px-4 py-2.5 text-[11px] font-semibold tracking-wide text-faint uppercase">
+          {/* O cabeçalho fala genérico ("Preço pedido") porque o rótulo exato
+              muda de linha para linha — caixa numa, unidade na outra. O nome
+              certo mora dentro da célula, colado no campo que ele preenche. */}
+          <div className="grid grid-cols-[minmax(0,1fr)_12rem_13rem_9rem] gap-4 border-b border-line bg-surface-2 px-4 py-2.5 text-[11px] font-semibold tracking-wide text-faint uppercase">
             <span>Produto</span>
             <span>Quantidade pedida</span>
-            <span>Você tem?</span>
-            <span className="text-right">Preço unitário</span>
+            <span className="text-right">Preço pedido</span>
+            <span className="text-right">Tem?</span>
           </div>
           <ul className="divide-y divide-line">
             {cotacao.itens.map((item, indice) => (
@@ -347,6 +375,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
                 item={item}
                 indice={indice}
                 linha={porItem.get(item.id)!}
+                pedeEscala={cotacao.pedeEscala}
                 onAlterar={alterar}
                 onRegistrarPreco={registrarCampoPreco}
                 onTabPreco={aoTabularPreco}
@@ -601,73 +630,201 @@ function Cabecalho({
   );
 }
 
-// ── Escolha de disponibilidade ──────────────────────────────
-// Três alvos grandes no lugar de um interruptor: "tenho menos" era invisível
-// quando morava dentro de um campo de quantidade que o fornecedor tinha de
-// adivinhar que existia. Vale na visão de computador; o cartão do celular usa
-// as mesmas OPCOES dentro de um menu, para o preço ficar sozinho na linha.
+// ── Disponibilidade ─────────────────────────────────────────
+// UM interruptor, não três alvos: ter o produto é o caso normal, e o normal
+// não merece um botão em toda linha. Só a exceção — "não tenho" — pede toque,
+// e ela é reversível no mesmo lugar.
 
-const OPCOES: { id: Situacao; label: string; curto: string }[] = [
-  { id: "tem", label: "Tenho tudo", curto: "Tenho" },
-  { id: "parcial", label: "Tenho menos", curto: "Menos" },
-  { id: "nao", label: "Não tenho", curto: "Não" },
-];
-
-function Disponibilidade({
-  valor,
-  onEscolher,
-  compacto = false,
+function NaoTenho({
+  marcado,
+  onAlternar,
+  descricao,
+  className,
 }: {
-  valor: Situacao;
-  onEscolher: (s: Situacao) => void;
-  compacto?: boolean;
+  marcado: boolean;
+  onAlternar: () => void;
+  descricao: string;
+  className?: string;
 }) {
   return (
-    <div
-      role="radiogroup"
-      aria-label="Você tem este produto?"
-      className="flex gap-1 rounded-full border border-line bg-surface-2 p-1"
+    <button
+      type="button"
+      aria-pressed={marcado}
+      aria-label={`Não tenho ${descricao}`}
+      onClick={onAlternar}
+      className={cn(
+        "tap inline-flex min-h-11 items-center justify-center gap-1.5 rounded-[var(--radius)] border px-3 text-[13px] font-medium transition-colors",
+        "focus-visible:ring-1 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
+        marcado
+          ? "border-line-strong bg-surface-2 text-ink-2"
+          : "border-line-strong bg-surface text-muted hover:text-ink",
+        className,
+      )}
     >
-      {OPCOES.map((o) => {
-        const ativo = valor === o.id;
-        return (
-          <button
-            key={o.id}
-            type="button"
-            role="radio"
-            aria-checked={ativo}
-            onClick={() => onEscolher(o.id)}
-            className={cn(
-              "tap min-h-9 flex-1 rounded-full px-2 text-[13px] font-medium transition-colors",
-              "focus-visible:ring-1 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
-              ativo
-                ? o.id === "nao"
-                  ? "bg-surface text-muted shadow-[var(--shadow-m)]"
-                  : "bg-brand text-on-brand"
-                : "text-muted hover:text-ink",
-            )}
-          >
-            {compacto ? o.curto : o.label}
-          </button>
-        );
-      })}
-    </div>
+      <Ban className="size-4 shrink-0" aria-hidden />
+      {marcado ? "Não tenho" : "Não tenho"}
+    </button>
   );
 }
+
+/** "3 × Caixa (12 un.)" · "2,5 kg" · "12 un" — o número nunca sai sozinho. */
+function quantidadePedida(item: ItemPublico): { numero: string; unidade: string } {
+  const emb = item.embalagem;
+  if (emb.fator > 1) return { numero: `${fmtQtd(item.quantidade)} ×`, unidade: emb.label };
+  return {
+    numero: fmtQtd(item.quantidade),
+    unidade: emb.label === "un" && item.quantidade !== 1 ? "unidades" : emb.label,
+  };
+}
+
+/** Código de barras da linha — a única forma de o vendedor conferir o item. */
+function Codigos({ item, className }: { item: ItemPublico; className?: string }) {
+  if (!item.ean && !item.eanEmbalagem) return null;
+  return (
+    <p className={cn("flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-faint", className)}>
+      <Barcode className="size-3.5 shrink-0" aria-hidden />
+      {item.ean && (
+        <span className="font-mono">
+          <span className="font-sans">un.</span> {item.ean}
+        </span>
+      )}
+      {item.eanEmbalagem && (
+        <span className="font-mono">
+          <span className="font-sans">{item.embalagem.nome.toLowerCase()}</span>{" "}
+          {item.eanEmbalagem}
+        </span>
+      )}
+    </p>
+  );
+}
+
+// ── Promoção por volume ─────────────────────────────────────
+// Nasce fechada, atrás de um link discreto: a tabela por volume é do vendedor
+// que TEM tabela, e cobrar um toque de quem não tem seria pagar caro por um
+// campo opcional. Aberta, são duas caixas por linha — "a partir de N" e o
+// preço — porque é assim que ele já fala no telefone.
+
+const Escala = memo(function Escala({
+  item,
+  faixas,
+  onFaixas,
+}: {
+  item: ItemPublico;
+  faixas: FaixaForm[];
+  onFaixas: (f: FaixaForm[]) => void;
+}) {
+  const [aberto, setAberto] = useState(faixas.length > 0);
+  const unidade = item.embalagem.fator > 1 ? item.embalagem.nome.toLowerCase() : "un";
+
+  function alterar(indice: number, campo: Partial<FaixaForm>) {
+    onFaixas(faixas.map((f, i) => (i === indice ? { ...f, ...campo } : f)));
+  }
+
+  if (!aberto) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setAberto(true);
+          if (faixas.length === 0) onFaixas([{ qtd: "", preco: "" }]);
+        }}
+        className="tap mt-2.5 inline-flex items-center gap-1.5 text-[13px] text-muted underline-offset-4 hover:text-ink hover:underline"
+      >
+        <TagIcon className="size-3.5" aria-hidden />
+        Tem preço melhor por volume?
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-[var(--radius)] border border-dashed border-line-strong bg-surface-2/60 p-3">
+      <p className="text-[13px] font-medium text-ink">Preço melhor por volume</p>
+      <p className="mt-0.5 text-[12px] text-muted">
+        Se levar mais sai mais barato, diga a partir de quanto. Opcional.
+      </p>
+
+      <ul className="mt-2.5 flex flex-col gap-2">
+        {faixas.map((f, i) => (
+          <li key={i} className="flex items-end gap-2">
+            <Field
+              label="A partir de"
+              htmlFor={`faixa-qtd-${item.id}-${i}`}
+              className="w-[7.5rem] shrink-0"
+            >
+              <div className="relative">
+                <Input
+                  id={`faixa-qtd-${item.id}-${i}`}
+                  inputMode="decimal"
+                  placeholder={fmtQtd(item.quantidade * 2)}
+                  value={f.qtd}
+                  onChange={(e) => alterar(i, { qtd: e.target.value })}
+                  className="pr-10 font-mono text-base md:text-sm"
+                />
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[11px] text-faint"
+                >
+                  {unidade}
+                </span>
+              </div>
+            </Field>
+            <Field
+              label={rotuloPrecoCurto(item.embalagem)}
+              htmlFor={`faixa-preco-${item.id}-${i}`}
+              className="min-w-0 flex-1"
+            >
+              <CampoPreco
+                id={`faixa-preco-${item.id}-${i}`}
+                valor={f.preco}
+                onValor={(v) => alterar(i, { preco: v })}
+              />
+            </Field>
+            <button
+              type="button"
+              aria-label={`Tirar a faixa ${i + 1}`}
+              onClick={() => {
+                const restantes = faixas.filter((_, x) => x !== i);
+                onFaixas(restantes);
+                if (restantes.length === 0) setAberto(false);
+              }}
+              className="tap grid size-11 shrink-0 place-items-center rounded-[var(--radius)] border border-line-strong bg-surface text-muted transition-colors hover:text-ink"
+            >
+              <X className="size-4" aria-hidden />
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {faixas.length < MAX_FAIXAS_ITEM && (
+        <button
+          type="button"
+          onClick={() => onFaixas([...faixas, { qtd: "", preco: "" }])}
+          className="tap mt-2 inline-flex items-center gap-1.5 text-[13px] font-medium text-brand"
+        >
+          <Plus className="size-3.5" aria-hidden />
+          Outra faixa
+        </button>
+      )}
+    </div>
+  );
+});
 
 // ── Cartão (celular) ────────────────────────────────────────
 
 const CartaoItem = memo(function CartaoItem({
   item,
   linha,
+  pedeEscala,
   onAlterar,
 }: {
   item: ItemPublico;
   linha: LinhaForm;
+  /** A cotação aceita promoção por volume? Só então o bloco existe. */
+  pedeEscala: boolean;
   onAlterar: (itemId: string, campo: Partial<LinhaForm>) => void;
 }) {
   const indisponivel = linha.situacao === "nao";
-  const atual = OPCOES.find((o) => o.id === linha.situacao) ?? OPCOES[0];
+  const pedida = quantidadePedida(item);
   return (
     <article
       className={cn(
@@ -677,25 +834,27 @@ const CartaoItem = memo(function CartaoItem({
     >
       <h2 className="text-[15px] font-semibold text-ink">{item.descricao}</h2>
       {item.observacao && <p className="mt-0.5 text-[12px] text-muted">{item.observacao}</p>}
+      <Codigos item={item} className="mt-1" />
 
-      {/* A quantidade pedida é o dado que ele lê para formar o preço. */}
-      <p className="mt-2 flex items-baseline gap-1.5">
+      {/* A quantidade pedida é o dado que ele lê para formar o preço — e a
+          embalagem anda colada nela, porque "3" e "3 caixas de 12" são
+          pedidos diferentes. */}
+      <p className="mt-2 flex flex-wrap items-baseline gap-x-1.5">
         <Package className="size-4 shrink-0 self-center text-faint" aria-hidden />
-        <span className="font-display text-xl font-semibold text-ink">
-          {fmtQtd(item.quantidade)}
-        </span>
-        <span className="text-sm text-muted">
-          {item.unidade ?? (item.quantidade === 1 ? "unidade" : "unidades")}
-        </span>
+        <span className="font-display text-xl font-semibold text-ink">{pedida.numero}</span>
+        <span className="text-sm text-muted">{pedida.unidade}</span>
       </p>
 
-      {/* No celular só existe UMA coisa a fazer: digitar o preço. Ela fica na
-          frente, com o teclado numérico; as exceções ("tenho menos", "não
-          tenho") saem do caminho e viram um menu ao lado — quem tem tudo nunca
-          precisa tocar nelas. */}
+      {/* No celular só existe UMA coisa a fazer: digitar o preço — e o rótulo
+          dele diz de QUÊ é o preço. A exceção ("não tenho") sai do caminho e
+          fica ao lado, num alvo só. */}
       <div className="mt-3 flex items-end gap-2">
         {!indisponivel && (
-          <Field label="Preço unitário" htmlFor={`preco-${item.id}`} className="min-w-0 flex-1">
+          <Field
+            label={rotuloPreco(item.embalagem)}
+            htmlFor={`preco-${item.id}`}
+            className="min-w-0 flex-1"
+          >
             <CampoPreco
               id={`preco-${item.id}`}
               valor={linha.preco}
@@ -703,57 +862,26 @@ const CartaoItem = memo(function CartaoItem({
             />
           </Field>
         )}
-        <Menu
-          align="end"
-          trigger={
-            <button
-              type="button"
-              aria-haspopup="menu"
-              aria-label={`Disponibilidade de ${item.descricao}: ${atual.label}`}
-              className={cn(
-                "tap flex h-11 items-center gap-1.5 rounded-[var(--radius)] border px-3 text-[13px] font-medium transition-colors",
-                indisponivel
-                  ? "w-full justify-between border-line-strong bg-surface text-muted"
-                  : "shrink-0 border-line-strong bg-surface text-ink-2",
-              )}
-            >
-              {linha.situacao === "tem" ? "Tenho tudo" : atual.label}
-              <ChevronDown className="size-4 text-faint" aria-hidden />
-            </button>
-          }
-        >
-          {OPCOES.map((o) => (
-            <MenuItem
-              key={o.id}
-              onClick={() => onAlterar(item.id, { situacao: o.id })}
-              trailing={
-                linha.situacao === o.id ? (
-                  <CheckCircle2 className="size-4 text-ok" aria-hidden />
-                ) : undefined
-              }
-            >
-              {o.label}
-            </MenuItem>
-          ))}
-        </Menu>
+        <NaoTenho
+          marcado={indisponivel}
+          descricao={item.descricao}
+          onAlternar={() => onAlterar(item.id, { situacao: indisponivel ? "tem" : "nao" })}
+          className={indisponivel ? "w-full" : "shrink-0"}
+        />
       </div>
 
-      {!indisponivel && linha.situacao === "parcial" && (
-        <Field label="Quanto você tem" htmlFor={`qtd-${item.id}`} className="mt-2.5">
-          <Input
-            id={`qtd-${item.id}`}
-            inputMode="decimal"
-            placeholder={fmtQtd(item.quantidade)}
-            value={linha.qtd}
-            onChange={(e) => onAlterar(item.id, { qtd: e.target.value })}
-            className="font-mono text-base md:text-sm"
-          />
-        </Field>
+      {pedeEscala && !indisponivel && (
+        <Escala
+          item={item}
+          faixas={linha.faixas}
+          onFaixas={(faixas) => onAlterar(item.id, { faixas })}
+        />
       )}
 
       {indisponivel && (
         <p className="mt-3 text-[13px] text-muted">
-          Marcado como indisponível — o comprador vê que este item não foi cotado.
+          Marcado como indisponível — o comprador vê que este item não foi cotado. Toque de
+          novo para voltar atrás.
         </p>
       )}
     </article>
@@ -766,6 +894,7 @@ const LinhaItem = memo(function LinhaItem({
   item,
   indice,
   linha,
+  pedeEscala,
   onAlterar,
   onRegistrarPreco,
   onTabPreco,
@@ -773,15 +902,20 @@ const LinhaItem = memo(function LinhaItem({
   item: ItemPublico;
   indice: number;
   linha: LinhaForm;
+  pedeEscala: boolean;
   onAlterar: (itemId: string, campo: Partial<LinhaForm>) => void;
   onRegistrarPreco: (indice: number, el: HTMLInputElement | null) => void;
   onTabPreco: (e: React.KeyboardEvent<HTMLInputElement>, indice: number) => void;
 }) {
   const indisponivel = linha.situacao === "nao";
+  const pedida = quantidadePedida(item);
   return (
     <li
       className={cn(
-        "grid grid-cols-[minmax(0,1fr)_11rem_15rem_9rem] items-center gap-4 px-4 py-3",
+        // A escala é uma segunda faixa da MESMA linha (`grid-rows` implícito):
+        // fosse um `<li>` à parte, o zebrado e a borda separariam a promoção do
+        // produto a que ela pertence.
+        "grid grid-cols-[minmax(0,1fr)_12rem_13rem_9rem] items-center gap-x-4 px-4 py-3",
         indisponivel && "bg-surface-2/50",
       )}
     >
@@ -809,50 +943,55 @@ const LinhaItem = memo(function LinhaItem({
           {item.observacao && (
             <p className="truncate text-[12px] text-muted">{item.observacao}</p>
           )}
+          <Codigos item={item} />
         </div>
       </div>
 
-      <p className="flex items-baseline gap-1.5">
-        <span className="font-display text-lg font-semibold text-ink">
-          {fmtQtd(item.quantidade)}
-        </span>
-        <span className="text-[13px] text-muted">
-          {item.unidade ?? (item.quantidade === 1 ? "unidade" : "unidades")}
-        </span>
+      <p className="flex flex-wrap items-baseline gap-x-1.5">
+        <span className="font-display text-lg font-semibold text-ink">{pedida.numero}</span>
+        <span className="text-[13px] text-muted">{pedida.unidade}</span>
       </p>
 
-      <div className="flex flex-col gap-2">
-        <Disponibilidade
-          valor={linha.situacao}
-          onEscolher={(s) => onAlterar(item.id, { situacao: s })}
-          compacto
-        />
-        {linha.situacao === "parcial" && (
-          <Input
-            aria-label={`Quanto você tem de ${item.descricao}`}
-            inputMode="decimal"
-            placeholder={`tenho ${fmtQtd(item.quantidade)}`}
-            value={linha.qtd}
-            onChange={(e) => onAlterar(item.id, { qtd: e.target.value })}
-            className="font-mono text-base md:text-sm"
-          />
-        )}
-      </div>
-
+      {/* O rótulo por linha é o que impede preço de caixa entrar como preço de
+          unidade — na grade ele fica acima do campo, curto (sem o fator, que
+          já está escrito na coluna da quantidade ao lado). */}
       <div className="text-right">
         {indisponivel ? (
           <span className="text-[13px] text-faint">não cotado</span>
         ) : (
-          <CampoPreco
-            ref={(el) => onRegistrarPreco(indice, el)}
-            rotulo={`Preço unitário de ${item.descricao}`}
-            valor={linha.preco}
-            onValor={(v) => onAlterar(item.id, { preco: v })}
-            onKeyDown={(e) => onTabPreco(e, indice)}
-            alinharDireita
-          />
+          <>
+            <span className="mb-1 block text-[11px] font-medium text-muted">
+              {rotuloPrecoCurto(item.embalagem)}
+            </span>
+            <CampoPreco
+              ref={(el) => onRegistrarPreco(indice, el)}
+              rotulo={`${rotuloPreco(item.embalagem)} de ${item.descricao}`}
+              valor={linha.preco}
+              onValor={(v) => onAlterar(item.id, { preco: v })}
+              onKeyDown={(e) => onTabPreco(e, indice)}
+              alinharDireita
+            />
+          </>
         )}
       </div>
+
+      <div className="flex justify-end">
+        <NaoTenho
+          marcado={indisponivel}
+          descricao={item.descricao}
+          onAlternar={() => onAlterar(item.id, { situacao: indisponivel ? "tem" : "nao" })}
+        />
+      </div>
+
+      {pedeEscala && !indisponivel && (
+        <div className="col-span-4">
+          <Escala
+            item={item}
+            faixas={linha.faixas}
+            onFaixas={(faixas) => onAlterar(item.id, { faixas })}
+          />
+        </div>
+      )}
     </li>
   );
 });

@@ -23,7 +23,7 @@ export default async function CotacaoMobilePage({
   const ctx = await requirePermissaoMobile("compras.ver");
 
   const dados = await withTenant(ctx, async () => {
-    const cotacao = await loadCotacao(id);
+    const cotacao = await loadCotacao(id, ctx.tenant);
     if (!cotacao) return null;
     const fornecedores = await loadFornecedoresOpcao();
     return { cotacao, fornecedores };

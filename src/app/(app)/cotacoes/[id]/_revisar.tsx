@@ -2,7 +2,16 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CalendarClock, Package, Pencil, Send, Store, Users } from "lucide-react";
+import {
+  AlertTriangle,
+  CalendarClock,
+  Layers,
+  Package,
+  Pencil,
+  Send,
+  Store,
+  Users,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CotacaoDetalhe } from "../_compra-types";
 import { editarCotacaoAction, type Envio } from "../_compra-actions";
@@ -50,13 +59,15 @@ export function RevisarCotacao({
     siteId: cotacao.siteId,
     prazoResposta: paraInput(cotacao.prazoResposta),
     observacao: cotacao.observacao ?? "",
+    pedeEscala: cotacao.pedeEscala,
   });
 
   const sujo =
     form.titulo !== cotacao.titulo ||
     form.siteId !== cotacao.siteId ||
     form.prazoResposta !== paraInput(cotacao.prazoResposta) ||
-    form.observacao !== (cotacao.observacao ?? "");
+    form.observacao !== (cotacao.observacao ?? "") ||
+    form.pedeEscala !== cotacao.pedeEscala;
 
   const pendentes = cotacao.convites.filter((c) => c.status === "PENDENTE");
   const semItens = cotacao.itens.length === 0;
@@ -70,6 +81,7 @@ export function RevisarCotacao({
       siteId: form.siteId,
       prazoResposta: form.prazoResposta || null,
       observacao: form.observacao.trim() || null,
+      pedeEscala: form.pedeEscala,
     });
   }
 
@@ -168,6 +180,54 @@ export function RevisarCotacao({
               className="resize-none rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink disabled:opacity-60"
             />
           </label>
+
+          {/* A chave da escala. Fica aqui, no cabeçalho, porque vale para a
+              cotação inteira e muda o que o FORNECEDOR vê: ligada, cada item
+              ganha um campo opcional de "a partir de N, R$ X". Desligada — o
+              padrão — a tela dele continua com um preço por item, que é o
+              piso do que um vendedor responde no meio do dia. */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={form.pedeEscala}
+            disabled={!editavel}
+            onClick={() => setForm((f) => ({ ...f, pedeEscala: !f.pedeEscala }))}
+            className={cn(
+              "flex items-start gap-2.5 rounded-[var(--radius)] border p-3 text-left transition-colors disabled:opacity-60",
+              form.pedeEscala
+                ? "border-brand bg-brand-soft"
+                : "border-line bg-surface hover:bg-surface-2",
+            )}
+          >
+            <Layers
+              size={15}
+              className={cn("mt-0.5 shrink-0", form.pedeEscala ? "text-brand" : "text-faint")}
+            />
+            <span className="min-w-0">
+              <span className="block text-[13px] font-medium text-ink">
+                Perguntar preço por volume
+              </span>
+              <span className="block text-[12px] text-muted">
+                O fornecedor pode informar faixas &mdash; &ldquo;a partir de 10 caixas, R$ 41&rdquo;. No
+                comparativo, a lente &ldquo;Melhor oportunidade&rdquo; mostra quanto cada
+                promoção economiza e quantos dias de estoque ela cria.
+              </span>
+            </span>
+            <span
+              aria-hidden
+              className={cn(
+                "ml-auto mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
+                form.pedeEscala ? "bg-brand" : "bg-line-strong",
+              )}
+            >
+              <span
+                className={cn(
+                  "block size-4 rounded-full bg-surface transition-transform",
+                  form.pedeEscala && "translate-x-4",
+                )}
+              />
+            </span>
+          </button>
 
           {sujo && editavel && (
             <button

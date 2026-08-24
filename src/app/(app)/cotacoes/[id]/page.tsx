@@ -21,7 +21,7 @@ export default async function CotacaoPage({
   const ctx = await requireActiveTenant();
 
   const dados = await withTenant(ctx, async () => {
-    const cotacao = await loadCotacao(id);
+    const cotacao = await loadCotacao(id, ctx.tenant);
     if (!cotacao) return null;
     const [fornecedores, sites, referencias] = await Promise.all([
       loadFornecedoresOpcao(

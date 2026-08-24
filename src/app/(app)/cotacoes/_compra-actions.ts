@@ -10,6 +10,7 @@ import { proximoNumeroDocumento } from "@/lib/numeracao";
 import { emitirLinkCotacao, linkVigente } from "@/lib/compras/cotacao-link";
 import { registrarPrecosDaCotacao } from "@/lib/compras/cotacao-precos";
 import { regrasDaCotacao } from "@/lib/compras/cotacao-regras";
+import { precoNaQuantidade } from "@/lib/compras/escalas";
 import { quantidadeComUnidade, unidadesDosItens } from "@/lib/compras/cotacao-unidades";
 import { db } from "@/lib/prisma";
 import { enviarEmail } from "@/lib/email";
@@ -188,6 +189,8 @@ const editarSchema = z.object({
   siteId: z.string().optional().nullable(),
   prazoResposta: z.string().optional().nullable(),
   observacao: z.string().trim().max(1000).optional().nullable(),
+  /** Pedir promoção por volume ao fornecedor. Ausente = não mexe na chave. */
+  pedeEscala: z.boolean().optional(),
 });
 
 export async function editarCotacaoAction(input: z.input<typeof editarSchema>) {
@@ -205,6 +208,7 @@ export async function editarCotacaoAction(input: z.input<typeof editarSchema>) {
         siteId: d.siteId || undefined,
         prazoResposta: d.prazoResposta ? new Date(`${d.prazoResposta}T23:59:59`) : null,
         observacao: d.observacao ?? null,
+        pedeEscala: d.pedeEscala,
       },
     });
     ok();
@@ -1267,7 +1271,17 @@ const decidirSchema = z.object({
   quotationId: z.string().min(1),
   /** Item → convite escolhido. Item de fora fica sem pedido, de propósito. */
   escolhas: z
-    .array(z.object({ quotationItemId: z.string().min(1), conviteId: z.string().min(1) }))
+    .array(
+      z.object({
+        quotationItemId: z.string().min(1),
+        conviteId: z.string().min(1),
+        /**
+         * Quantidade a pedir, quando a lente "Melhor oportunidade" mandou
+         * levar uma faixa de promoção. Ausente = a quantidade cotada.
+         */
+        quantidade: z.number().positive().max(9_999_999).optional().nullable(),
+      }),
+    )
     .min(1, "Escolha ao menos um item."),
   enviar: z.boolean().default(true),
 });
@@ -1293,7 +1307,12 @@ export async function gerarPedidosAction(input: z.input<typeof decidirSchema>) {
             supplierId: true,
             prazoEntregaDias: true,
             responses: {
-              select: { quotationItemId: true, disponivel: true, precoUnitario: true },
+              select: {
+                quotationItemId: true,
+                disponivel: true,
+                precoUnitario: true,
+                faixas: { select: { quantidadeMinima: true, precoUnitario: true } },
+              },
             },
           },
         },
@@ -1325,12 +1344,27 @@ export async function gerarPedidosAction(input: z.input<typeof decidirSchema>) {
       const resposta = convite.responses.find((r) => r.quotationItemId === item.id);
       if (!resposta?.disponivel) continue;
 
+      // Comprar MENOS do que foi cotado mudaria a disputa depois de decidida —
+      // o vencedor pode ter ganho no volume. Só para cima, e o preço vem da
+      // faixa que a quantidade alcança, recalculada AQUI: preço que chega do
+      // cliente é sugestão, nunca fato.
+      const cotada = Number(item.quantidade);
+      const pedida = Math.max(cotada, escolha.quantidade ?? cotada);
+      const { preco } = precoNaQuantidade(
+        { quantidadePedida: cotada, precoBase: Number(resposta.precoUnitario) },
+        resposta.faixas.map((f) => ({
+          quantidadeMinima: Number(f.quantidadeMinima),
+          precoUnitario: Number(f.precoUnitario),
+        })),
+        pedida,
+      );
+
       const lista = porConvite.get(convite.id) ?? [];
       lista.push({
         productId: item.productId,
         packagingId: item.packagingId,
-        qtdPedida: Number(item.quantidade),
-        custoUnitario: Number(resposta.precoUnitario),
+        qtdPedida: pedida,
+        custoUnitario: preco,
       });
       porConvite.set(convite.id, lista);
     }
@@ -1434,5 +1468,38 @@ export async function criarCompraDaReposicaoAction(
     });
     ok();
     return { id: cotacao.id };
+  });
+}
+
+// ── Travas da compra por escala ─────────────────────────────
+
+const limitesEscalaSchema = z.object({
+  coberturaMaxDias: z.number().int().min(0).max(3650),
+  economiaMinPct: z.number().min(0).max(100),
+  capitalExtraMax: z.number().min(0).max(99_999_999).nullable(),
+});
+
+/**
+ * Guarda as travas que a lente "Melhor oportunidade" usa. São do TENANT e não
+ * da cotação: o teto de caixa e a paciência com estoque parado são do negócio,
+ * não desta compra. O comparativo deixa afrouxar na hora sem gravar — só este
+ * botão vira padrão.
+ */
+export async function salvarLimitesEscalaAction(
+  input: z.input<typeof limitesEscalaSchema>,
+) {
+  const d = limitesEscalaSchema.parse(input);
+  const ctx = await guardAction("compras.pedir");
+  return runWithTenant(ctx.tenant.id, async () => {
+    await db.tenant.update({
+      where: { id: ctx.tenant.id },
+      data: {
+        escalaCoberturaMaxDias: d.coberturaMaxDias,
+        escalaEconomiaMinPct: d.economiaMinPct,
+        escalaCapitalExtraMax: d.capitalExtraMax,
+      },
+    });
+    ok();
+    return { ok: true as const };
   });
 }

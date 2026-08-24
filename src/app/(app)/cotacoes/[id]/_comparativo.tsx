@@ -2,12 +2,14 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Scale, Sparkles, Trophy, TrendingDown } from "lucide-react";
+import { Layers, Scale, Sparkles, Target, Trophy, TrendingDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { precoNaQuantidade, type LimitesEscala } from "@/lib/compras/escalas";
 import { EstadoVazio, Metrica, MetricaGrid, fmtMoney, fmtPreco } from "../_catalogo/ui";
 import { SupplierAvatar } from "../_ui";
 import type { ConviteCotacao, CotacaoDetalhe, ItemCotacao } from "../_compra-types";
 import { gerarPedidosAction } from "../_compra-actions";
+import { LenteOportunidade, type Sugestao } from "./_escala";
 
 // ── Comparativo ─────────────────────────────────────────────
 // A tela onde a cotação paga o próprio custo. Cada linha é um item, cada
@@ -22,6 +24,13 @@ import { gerarPedidosAction } from "../_compra-actions";
 // No celular a tabela vira CARD POR PRODUTO. Encolher uma matriz de 6 colunas
 // não deixa ela legível — vira rolagem lateral às cegas. Um produto por vez,
 // com os fornecedores empilhados embaixo, é a mesma decisão sem a matriz.
+//
+// Quando a cotação pede ESCALA, a tela ganha uma segunda lente. Não é outra
+// tela: a escolha, o rodapé e o botão de gerar pedido são os mesmos — muda o
+// corpo. "Minha necessidade" compara o preço na quantidade que eu pedi;
+// "Melhor oportunidade" mostra as promoções por volume com a conta de quanto
+// custa levá-las. Duas perguntas diferentes sobre a mesma cotação, e o
+// operador escolhe qual está fazendo.
 
 const fmtQtd = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 
@@ -74,6 +83,63 @@ export function ComparativoCotacao({
     ),
   );
 
+  // Quanto pedir de cada item. Começa na quantidade cotada e só sobe quando o
+  // operador leva uma faixa de promoção — a lente de necessidade nunca mexe
+  // nisto, e por isso ela continua sendo a tela de sempre.
+  const [quantidades, setQuantidades] = useState<Record<string, number>>(() =>
+    Object.fromEntries(cotacao.itens.map((i) => [i.id, i.quantidade])),
+  );
+
+  const [lente, setLente] = useState<"necessidade" | "oportunidade">("necessidade");
+  const [limites, setLimites] = useState<LimitesEscala>(cotacao.limitesEscala);
+
+  /** Quantidade a pedir deste item — a cotada, ou a da faixa levada. */
+  const quantidadeDe = (item: ItemCotacao) => quantidades[item.id] ?? item.quantidade;
+
+  /**
+   * Preço do item naquele fornecedor NA QUANTIDADE ESCOLHIDA. Enquanto ninguém
+   * levou promoção é o preço-base; levada uma faixa, é o preço dela. O total
+   * do rodapé passa por aqui — senão a tela mostraria o desconto na lista e
+   * cobraria o preço cheio no fim.
+   */
+  function precoDe(item: ItemCotacao, convite: ConviteCotacao): number | null {
+    const r = convite.respostas.find((x) => x.quotationItemId === item.id);
+    if (!r?.disponivel) return null;
+    return precoNaQuantidade(
+      { quantidadePedida: item.quantidade, precoBase: r.precoUnitario },
+      r.faixas,
+      quantidadeDe(item),
+    ).preco;
+  }
+
+  /** Levar uma faixa: escolhe o fornecedor E sobe a quantidade, junto. */
+  function aplicarFaixa(itemId: string, conviteId: string, quantidade: number) {
+    setModo("manual");
+    setEscolhas((e) => ({ ...e, [itemId]: conviteId }));
+    setQuantidades((q) => ({ ...q, [itemId]: quantidade }));
+  }
+
+  function aplicarSugestoes(sugestoes: Sugestao[]) {
+    setModo("manual");
+    setEscolhas((e) => ({
+      ...e,
+      ...Object.fromEntries(sugestoes.map((x) => [x.itemId, x.conviteId])),
+    }));
+    setQuantidades((q) => ({
+      ...q,
+      ...Object.fromEntries(sugestoes.map((x) => [x.itemId, x.oportunidade.quantidade])),
+    }));
+  }
+
+  /** Itens que vão sair acima do cotado — o aviso honesto do rodapé. */
+  const comPromocao = cotacao.itens.filter(
+    (i) => escolhas[i.id] && quantidadeDe(i) > i.quantidade,
+  ).length;
+
+  /** Alguém respondeu com faixa? Sem isso a segunda lente não tem o que dizer. */
+  const temFaixa = cotacao.pedeEscala &&
+    cotacao.convites.some((c) => c.respostas.some((r) => r.disponivel && r.faixas.length > 0));
+
   // Duas formas legítimas de fechar a compra, e a tela não deve escolher pelo
   // operador:
   //
@@ -88,9 +154,15 @@ export function ComparativoCotacao({
   const [modo, setModo] = useState<"melhor" | "fornecedor" | "manual">("melhor");
   const [fornecedorUnico, setFornecedorUnico] = useState<string | null>(null);
 
+  /** Volta tudo à quantidade cotada — trocar de estratégia zera a promoção. */
+  function zerarQuantidades() {
+    setQuantidades(Object.fromEntries(cotacao.itens.map((i) => [i.id, i.quantidade])));
+  }
+
   function aplicarMelhorPreco() {
     setModo("melhor");
     setFornecedorUnico(null);
+    zerarQuantidades();
     setEscolhas(
       Object.fromEntries(
         cotacao.itens.map((i) => [i.id, melhorPorItem.get(i.id)?.conviteId ?? null]),
@@ -101,6 +173,7 @@ export function ComparativoCotacao({
   function aplicarFornecedor(conviteId: string) {
     setModo("fornecedor");
     setFornecedorUnico(conviteId);
+    zerarQuantidades();
     const convite = respondidos.find((c) => c.id === conviteId);
     setEscolhas(
       Object.fromEntries(
@@ -120,11 +193,10 @@ export function ComparativoCotacao({
   // diferença entre as duas é o que a cotação rendeu.
   const totalEscolhido = cotacao.itens.reduce((acc, item) => {
     const conviteId = escolhas[item.id];
-    if (!conviteId) return acc;
-    const r = respondidos
-      .find((c) => c.id === conviteId)
-      ?.respostas.find((x) => x.quotationItemId === item.id);
-    return r?.disponivel ? acc + r.precoUnitario * item.quantidade : acc;
+    const convite = conviteId ? respondidos.find((c) => c.id === conviteId) : undefined;
+    if (!convite) return acc;
+    const preco = precoDe(item, convite);
+    return preco === null ? acc : acc + preco * quantidadeDe(item);
   }, 0);
 
   const totaisCheios = respondidos
@@ -156,6 +228,9 @@ export function ComparativoCotacao({
             .map(([quotationItemId, conviteId]) => ({
               quotationItemId,
               conviteId: conviteId as string,
+              // O servidor reconfere o preço desta quantidade contra as faixas
+              // gravadas — aqui vai só o "quanto", nunca o "por quanto".
+              quantidade: quantidades[quotationItemId] ?? null,
             })),
           enviar: true,
         });
@@ -193,6 +268,26 @@ export function ComparativoCotacao({
 
   return (
     <div className="flex flex-col gap-4">
+      {temFaixa && (
+        <AlternadorLente lente={lente} onLente={setLente} onNecessidade={zerarQuantidades} />
+      )}
+
+      {lente === "oportunidade" && (
+        <LenteOportunidade
+          itens={cotacao.itens}
+          respondidos={respondidos}
+          limites={limites}
+          onLimites={setLimites}
+          escolhas={escolhas}
+          quantidades={quantidades}
+          editavel={podePedir && !decidida}
+          onAplicarFaixa={aplicarFaixa}
+          onAplicarTodas={aplicarSugestoes}
+        />
+      )}
+
+      {lente === "necessidade" && (
+        <>
       {podePedir && !decidida && respondidos.length > 0 && (
         <EstrategiaCompra
           modo={modo}
@@ -254,8 +349,20 @@ export function ComparativoCotacao({
                       <span className="text-[11px] text-faint">fora do catálogo</span>
                     )}
                   </td>
+                  {/* A quantidade que vai no pedido, não a que foi perguntada:
+                      levada uma promoção, elas deixam de ser a mesma coisa e a
+                      cotada continua à vista, riscada. */}
                   <td className="px-3 py-2.5 text-right font-mono text-[13px] tabular-nums text-muted">
-                    {item.quantidade}
+                    {quantidadeDe(item) > item.quantidade ? (
+                      <span className="flex flex-col items-end">
+                        <span className="font-semibold text-accent">{quantidadeDe(item)}</span>
+                        <span className="text-[11px] text-faint line-through">
+                          {item.quantidade}
+                        </span>
+                      </span>
+                    ) : (
+                      item.quantidade
+                    )}
                   </td>
 
                   {respondidos.map((c) => {
@@ -270,6 +377,13 @@ export function ComparativoCotacao({
                         </td>
                       );
                     }
+
+                    // Na quantidade escolhida — se ela alcança uma faixa deste
+                    // fornecedor, é o preço da faixa que a célula mostra. Um
+                    // preço na tela e outro no total é o que faz o operador
+                    // parar de confiar no comparativo.
+                    const preco = precoDe(item, c) ?? r.precoUnitario;
+                    const comFaixa = preco < r.precoUnitario;
 
                     return (
                       <td key={c.id} className="px-3 py-2.5 text-right">
@@ -295,7 +409,7 @@ export function ComparativoCotacao({
                           )}
                         >
                           <span className="font-mono text-[13px] font-semibold tabular-nums">
-                            {fmtPreco(r.precoUnitario)}
+                            {fmtPreco(preco)}
                           </span>
                           <span
                             className={cn(
@@ -303,8 +417,18 @@ export function ComparativoCotacao({
                               escolhido ? "text-on-brand/80" : "text-faint",
                             )}
                           >
-                            {fmtMoney(r.precoUnitario * item.quantidade)}
+                            {fmtMoney(preco * quantidadeDe(item))}
                           </span>
+                          {comFaixa && (
+                            <span
+                              className={cn(
+                                "text-[10px] font-medium",
+                                escolhido ? "text-on-brand/80" : "text-accent",
+                              )}
+                            >
+                              promoção por volume
+                            </span>
+                          )}
                           {r.marca && (
                             <span
                               className={cn(
@@ -344,12 +468,20 @@ export function ComparativoCotacao({
                 const cobreTudo = cotacao.itens.every((i) =>
                   c.respostas.some((r) => r.quotationItemId === i.id && r.disponivel),
                 );
+                // Recalculado com as quantidades da tela (e não `c.total`, que é
+                // a soma da leitura): senão a linha do total ignoraria a
+                // promoção que as células acima já estão mostrando.
+                const soma =
+                  cotacao.itens.reduce((acc, i) => {
+                    const preco = precoDe(i, c);
+                    return preco === null ? acc : acc + preco * quantidadeDe(i);
+                  }, 0) + (c.frete ?? 0);
                 return (
                   <td
                     key={c.id}
                     className="px-3 py-2.5 text-right font-mono text-[13px] font-semibold tabular-nums text-ink"
                   >
-                    {cobreTudo ? fmtMoney(c.total) : <span className="text-faint">parcial</span>}
+                    {cobreTudo ? fmtMoney(soma) : <span className="text-faint">parcial</span>}
                   </td>
                 );
               })}
@@ -364,6 +496,7 @@ export function ComparativoCotacao({
           <CardItem
             key={item.id}
             item={item}
+            quantidade={quantidadeDe(item)}
             respondidos={respondidos}
             melhorConviteId={melhorPorItem.get(item.id)?.conviteId ?? null}
             escolhido={escolhas[item.id] ?? null}
@@ -378,6 +511,8 @@ export function ComparativoCotacao({
           />
         ))}
       </ul>
+        </>
+      )}
 
       {erro && <p className="text-[13px] text-danger">{erro}</p>}
       {aviso && (
@@ -395,7 +530,9 @@ export function ComparativoCotacao({
                   modo === "fornecedor" && nomeFornecedorUnico
                     ? ` de ${nomeFornecedorUnico}`
                     : ""
-                }${foraDoFornecedor > 0 ? ` · ${foraDoFornecedor} sem cotação dele` : ""} · `}
+                }${foraDoFornecedor > 0 ? ` · ${foraDoFornecedor} sem cotação dele` : ""}${
+                  comPromocao > 0 ? ` · ${comPromocao} acima do cotado por promoção` : ""
+                } · `}
             {itensEscolhidos > 0 && (
               <span className="font-mono text-[15px] font-semibold tabular-nums text-ink">
                 {fmtMoney(totalEscolhido)}
@@ -422,6 +559,77 @@ export function ComparativoCotacao({
           Esta cotação já virou pedido de compra. Acompanhe o resto em Pedidos.
         </p>
       )}
+    </div>
+  );
+}
+
+// ── Alternador de lente ─────────────────────────────────────
+// Duas perguntas, não dois modos de comprar: "quanto custa o que eu preciso"
+// e "onde estão as promoções que valem a pena". Voltar para a primeira desfaz
+// as quantidades levadas — senão o operador olharia a promoção, voltaria, e o
+// pedido sairia maior sem que a tela dissesse por quê.
+
+function AlternadorLente({
+  lente,
+  onLente,
+  onNecessidade,
+}: {
+  lente: "necessidade" | "oportunidade";
+  onLente: (l: "necessidade" | "oportunidade") => void;
+  onNecessidade: () => void;
+}) {
+  const opcoes = [
+    {
+      id: "necessidade" as const,
+      label: "Minha necessidade",
+      icon: <Target size={13} />,
+      sub: "o preço na quantidade que pedi",
+    },
+    {
+      id: "oportunidade" as const,
+      label: "Melhor oportunidade",
+      icon: <Layers size={13} />,
+      sub: "promoções por volume que compensam",
+    },
+  ];
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Como comparar"
+      className="flex flex-col gap-2 rounded-[var(--radius-lg)] border border-line bg-surface p-1.5 sm:flex-row"
+    >
+      {opcoes.map((o) => {
+        const ativo = lente === o.id;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={ativo}
+            onClick={() => {
+              if (o.id === "necessidade") onNecessidade();
+              onLente(o.id);
+            }}
+            className={cn(
+              "flex flex-1 items-center gap-2 rounded-[var(--radius)] px-3 py-2 text-left transition-colors",
+              ativo ? "bg-brand text-on-brand" : "text-ink hover:bg-surface-2",
+            )}
+          >
+            <span className={ativo ? "text-on-brand" : "text-faint"}>{o.icon}</span>
+            <span className="min-w-0">
+              <span className="block truncate text-[13px] font-medium">{o.label}</span>
+              <span
+                className={cn(
+                  "block truncate text-[11px]",
+                  ativo ? "text-on-brand/80" : "text-muted",
+                )}
+              >
+                {o.sub}
+              </span>
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -507,6 +715,7 @@ function EstrategiaCompra({
 
 function CardItem({
   item,
+  quantidade,
   respondidos,
   melhorConviteId,
   escolhido,
@@ -514,6 +723,8 @@ function CardItem({
   onEscolher,
 }: {
   item: ItemCotacao;
+  /** Quanto vai ser pedido — sobe quando uma promoção por volume é levada. */
+  quantidade: number;
   respondidos: ConviteCotacao[];
   melhorConviteId: string | null;
   escolhido: string | null;
@@ -525,7 +736,12 @@ function CardItem({
       <div className="flex items-baseline justify-between gap-3">
         <p className="min-w-0 flex-1 text-sm font-semibold text-ink">{item.descricao}</p>
         <span className="shrink-0 font-mono text-[12px] tabular-nums text-muted">
-          {fmtQtd(item.quantidade)}
+          {quantidade > item.quantidade && (
+            <span className="mr-1.5 text-faint line-through">{fmtQtd(item.quantidade)}</span>
+          )}
+          <span className={quantidade > item.quantidade ? "font-semibold text-accent" : ""}>
+            {fmtQtd(quantidade)}
+          </span>
           {item.embalagemNome ? ` ${item.embalagemNome}` : ""}
         </span>
       </div>
@@ -536,6 +752,13 @@ function CardItem({
           const marcado = escolhido === c.id;
           const ehMelhor = melhorConviteId === c.id;
           const falta = faltaTexto(r?.quantidadeOfertada, item.quantidade);
+          const preco = r
+            ? precoNaQuantidade(
+                { quantidadePedida: item.quantidade, precoBase: r.precoUnitario },
+                r.faixas,
+                quantidade,
+              ).preco
+            : 0;
 
           if (!r?.disponivel) {
             return (
@@ -574,7 +797,12 @@ function CardItem({
                       marcado ? "text-on-brand/80" : "text-muted",
                     )}
                   >
-                    <span>{fmtMoney(r.precoUnitario * item.quantidade)} no total</span>
+                    <span>{fmtMoney(preco * quantidade)} no total</span>
+                    {preco < r.precoUnitario && (
+                      <span className={marcado ? "" : "font-medium text-accent"}>
+                        promoção por volume
+                      </span>
+                    )}
                     {r.marca && <span>{r.marca}</span>}
                     {falta && (
                       <span className={marcado ? "" : "font-medium text-accent"}>{falta}</span>
@@ -588,7 +816,7 @@ function CardItem({
                   </span>
                 </span>
                 <span className="shrink-0 font-mono text-[15px] font-semibold tabular-nums">
-                  {fmtPreco(r.precoUnitario)}
+                  {fmtPreco(preco)}
                 </span>
               </button>
             </li>

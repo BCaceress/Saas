@@ -6,6 +6,8 @@
 // operador lê é derivado da contagem de convites (ver `_status.ts`), não uma
 // coluna nova.
 
+import type { Faixa, LimitesEscala } from "@/lib/compras/escalas";
+
 export type CotacaoStatus = "RASCUNHO" | "ABERTA" | "ENCERRADA" | "DECIDIDA" | "CANCELADA";
 export type ConviteStatus = "PENDENTE" | "ENVIADA" | "RESPONDIDA" | "RECUSADA";
 
@@ -53,6 +55,20 @@ export type ItemCotacao = {
   /** Estoque na loja de destino da cotação — null quando o item não tem produto vinculado. */
   estoqueAtual: number | null;
   estoqueMinimo: number | null;
+  /**
+   * Unidades base dentro de uma embalagem pedida (caixa de 12 → 12). É o que
+   * converte "3 caixas a mais" em "36 unidades na prateleira" — sem ele a
+   * cobertura da compra por escala sairia doze vezes menor.
+   */
+  fatorEmbalagem: number;
+  /** Média diária de saída na loja de destino, em unidades. null = sem histórico. */
+  consumoDiarioUnidades: number | null;
+  /**
+   * Validade típica observada nos lotes anteriores, em dias — mediana de
+   * (validade − entrada). null = nunca teve lote com data, e aí a trava de
+   * validade não opina em vez de chutar.
+   */
+  validadeTipicaDias: number | null;
 };
 
 export type RespostaItem = {
@@ -62,6 +78,8 @@ export type RespostaItem = {
   quantidadeOfertada: number | null;
   marca: string | null;
   observacao: string | null;
+  /** Promoção por volume informada pelo fornecedor. Vazio no caso comum. */
+  faixas: Faixa[];
 };
 
 /** Pessoa do fornecedor que pode receber a cotação. */
@@ -127,6 +145,10 @@ export type CotacaoDetalhe = {
   observacao: string | null;
   criadaEm: string;
   enviadaEm: string | null;
+  /** A cotação pediu promoção por volume — liga a lente "Melhor oportunidade". */
+  pedeEscala: boolean;
+  /** Travas do comprador, do cadastro do tenant. A tela deixa afrouxar na hora. */
+  limitesEscala: LimitesEscala;
   itens: ItemCotacao[];
   convites: ConviteCotacao[];
 };

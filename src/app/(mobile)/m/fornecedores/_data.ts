@@ -21,6 +21,17 @@ const PEDIDOS_ABERTOS = [
   "RECEBIDO_PARCIAL",
 ] as const;
 
+/** Pessoa de contato do fornecedor — é para ELA que a cotação vai. */
+export type ContatoMobile = {
+  id: string;
+  nome: string;
+  cargo: string | null;
+  /** Já sem máscara — `tel:`/`wa.me` só quer dígito. */
+  telefone: string | null;
+  email: string | null;
+  principal: boolean;
+};
+
 export type FornecedorMobile = {
   id: string;
   razaoSocial: string;
@@ -39,6 +50,8 @@ export type FornecedorMobile = {
   proximaEntrega: string | null;
   /** Última nota que entrou dele, ISO — cache do próprio cadastro. */
   ultimaCompraEm: string | null;
+  /** Contatos ativos, principal primeiro. Vazio = só o telefone da empresa. */
+  contatos: ContatoMobile[];
 };
 
 const soDigitos = (v: string | null): string | null => {
@@ -48,7 +61,7 @@ const soDigitos = (v: string | null): string | null => {
 
 /** Fornecedores em ordem alfabética. Roda dentro de `runWithTenant`. */
 export async function loadFornecedoresMobile(): Promise<FornecedorMobile[]> {
-  const [suppliers, pedidos] = await Promise.all([
+  const [suppliers, pedidos, contatos] = await Promise.all([
     db.supplier.findMany({
       orderBy: { razaoSocial: "asc" },
       select: {
@@ -69,6 +82,22 @@ export async function loadFornecedoresMobile(): Promise<FornecedorMobile[]> {
       where: { status: { in: [...PEDIDOS_ABERTOS] } },
       select: { supplierId: true, previsaoEntrega: true },
     }),
+    // Uma consulta para a agenda inteira: no celular "com quem eu falo nesse
+    // fornecedor?" vem junto com "qual o telefone dele", e buscar contato por
+    // fornecedor seria uma ida ao banco por cartão aberto.
+    db.supplierContact.findMany({
+      where: { ativo: true },
+      orderBy: [{ principal: "desc" }, { nome: "asc" }],
+      select: {
+        id: true,
+        supplierId: true,
+        nome: true,
+        cargo: true,
+        telefone: true,
+        email: true,
+        principal: true,
+      },
+    }),
   ]);
 
   const abertos = new Map<string, { total: number; proxima: Date | null }>();
@@ -81,6 +110,20 @@ export async function loadFornecedoresMobile(): Promise<FornecedorMobile[]> {
       acc.proxima = p.previsaoEntrega;
     }
     abertos.set(p.supplierId, acc);
+  }
+
+  const contatosPor = new Map<string, ContatoMobile[]>();
+  for (const c of contatos) {
+    const lista = contatosPor.get(c.supplierId) ?? [];
+    lista.push({
+      id: c.id,
+      nome: c.nome,
+      cargo: c.cargo,
+      telefone: soDigitos(c.telefone),
+      email: c.email,
+      principal: c.principal,
+    });
+    contatosPor.set(c.supplierId, lista);
   }
 
   return suppliers.map((s) => {
@@ -99,6 +142,7 @@ export async function loadFornecedoresMobile(): Promise<FornecedorMobile[]> {
       pedidosAbertos: aberto?.total ?? 0,
       proximaEntrega: aberto?.proxima?.toISOString() ?? null,
       ultimaCompraEm: s.ultimaCompraEm?.toISOString() ?? null,
+      contatos: contatosPor.get(s.id) ?? [],
     };
   });
 }

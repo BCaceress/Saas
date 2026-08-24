@@ -7,6 +7,7 @@ import { runWithTenant } from "@/lib/tenant-context";
 import { consumir, mensagemBloqueio } from "@/lib/rate-limit";
 import { linkParaGravar, marcarLinkRespondido } from "@/lib/compras/cotacao-link";
 import { registrarPrecosDaCotacao } from "@/lib/compras/cotacao-precos";
+import { normalizarFaixas } from "@/lib/compras/escalas";
 
 // ============================================================
 // Resposta pública da cotação. NÃO tem sessão, NÃO tem guard de permissão:
@@ -19,6 +20,16 @@ import { registrarPrecosDaCotacao } from "@/lib/compras/cotacao-precos";
 const LIMITE_ENVIOS = 20;
 const JANELA_SEG = 60 * 60;
 
+/** Uma linha de promoção por volume: "a partir de N, R$ X". */
+const faixaSchema = z.object({
+  quantidadeMinima: z.number().positive().max(9_999_999),
+  precoUnitario: z.number().positive().max(9_999_999),
+});
+
+/** Teto por item. A tela oferece três; aqui sobra folga para quem cola uma
+ *  tabela maior, sem virar porta para payload inflado. */
+const MAX_FAIXAS = 5;
+
 const itemSchema = z.object({
   quotationItemId: z.string().min(1),
   disponivel: z.boolean().default(true),
@@ -26,6 +37,7 @@ const itemSchema = z.object({
   quantidadeOfertada: z.number().min(0).max(9_999_999).optional().nullable(),
   marca: z.string().trim().max(120).optional().nullable(),
   observacao: z.string().trim().max(500).optional().nullable(),
+  faixas: z.array(faixaSchema).max(MAX_FAIXAS).optional().default([]),
 });
 
 const respostaSchema = z.object({
@@ -63,7 +75,13 @@ export async function responderPeloLinkAction(
       select: {
         id: true,
         status: true,
-        quotation: { select: { status: true, items: { select: { id: true } } } },
+        quotation: {
+          select: {
+            status: true,
+            pedeEscala: true,
+            items: { select: { id: true, quantidade: true } },
+          },
+        },
       },
     });
     if (!convite) return { ok: false, erro: "Cotação não encontrada." };
@@ -73,14 +91,36 @@ export async function responderPeloLinkAction(
 
     // O cliente manda ids; só valem os itens DESTA cotação. Sem isto, um id
     // adivinhado gravaria resposta numa cotação de outra loja.
+    const quantidadePedida = new Map(
+      convite.quotation.items.map((i) => [i.id, Number(i.quantidade)]),
+    );
     const validos = new Set(convite.quotation.items.map((i) => i.id));
     const itens = d.itens.filter((i) => validos.has(i.quotationItemId));
     if (itens.length === 0) return { ok: false, erro: "Nenhum item válido para registrar." };
 
     // Regravar por cima, igual ao registro feito pelo operador: enquanto a
     // cotação está aberta o fornecedor pode voltar e corrigir um preço, e a
-    // resposta válida é sempre a última que ele mandou.
+    // resposta válida é sempre a última que ele mandou. As faixas caem junto
+    // pelo cascade — a promoção pertence à resposta que a originou.
     await db.quotationResponse.deleteMany({ where: { quotationSupplierId: convite.id } });
+
+    // Faixa só entra quando a cotação PEDE escala — senão um cliente adulterado
+    // gravaria promoção numa cotação que não a comporta, e o comparativo
+    // mostraria uma lente que o comprador nunca ligou. `normalizarFaixas`
+    // descarta o que não acrescenta: faixa abaixo do pedido e preço que sobe
+    // com o volume (erro de digitação que faria a tela recomendar pagar mais).
+    const faixasPorItem = new Map<string, { quantidadeMinima: number; precoUnitario: number }[]>();
+    if (convite.quotation.pedeEscala) {
+      for (const i of itens) {
+        if (!i.disponivel || i.faixas.length === 0) continue;
+        const limpas = normalizarFaixas(
+          quantidadePedida.get(i.quotationItemId) ?? 0,
+          i.precoUnitario,
+          i.faixas,
+        );
+        if (limpas.length > 0) faixasPorItem.set(i.quotationItemId, limpas);
+      }
+    }
 
     // Os três que sobram não dependem entre si — vão juntos. Em lista de 30
     // itens cada ida ao Neon é uma transação (SET LOCAL + query): serializar
@@ -112,6 +152,30 @@ export async function responderPeloLinkAction(
       }),
       marcarLinkRespondido(link.linkId),
     ]);
+
+    // As faixas vêm DEPOIS porque precisam do id da resposta, que `createMany`
+    // não devolve. Duas idas ao banco a mais — e só para quem informou
+    // promoção, que é a minoria.
+    if (faixasPorItem.size > 0) {
+      const gravadas = await db.quotationResponse.findMany({
+        where: {
+          quotationSupplierId: convite.id,
+          quotationItemId: { in: [...faixasPorItem.keys()] },
+        },
+        select: { id: true, quotationItemId: true },
+      });
+      await db.quotationResponseTier.createMany({
+        data: gravadas.flatMap((r) =>
+          (faixasPorItem.get(r.quotationItemId) ?? []).map((f, ordem) => ({
+            tenantId: link.tenantId,
+            quotationResponseId: r.id,
+            quantidadeMinima: f.quantidadeMinima,
+            precoUnitario: f.precoUnitario,
+            ordem,
+          })),
+        ),
+      });
+    }
 
     // Preço respondido vira preço vigente no catálogo do fornecedor (e ponto no
     // histórico). É a parte CARA — `ingerir` faz matching, upsert de catálogo e

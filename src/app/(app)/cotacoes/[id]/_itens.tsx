@@ -426,6 +426,12 @@ function NovoItem({
       embalagemNome: embalagem ? embalagem.nome : escolhido ? "Unidade" : null,
       estoqueAtual: null,
       estoqueMinimo: null,
+      // Provisórios pelo mesmo motivo do rótulo acima: o fator da embalagem, o
+      // giro e a validade típica são leitura de servidor. Vêm no refresh —
+      // enquanto isso, a compra por escala só não opina sobre este item.
+      fatorEmbalagem: 1,
+      consumoDiarioUnidades: null,
+      validadeTipicaDias: null,
     });
     limpar();
   }

@@ -1,6 +1,9 @@
 import { db } from "@/lib/prisma";
 import { sinaisDosLinks } from "@/lib/compras/cotacao-link";
 import { coberturaDeFornecedores } from "@/lib/fornecedores/historico";
+import { consumoPorProduto } from "@/lib/estoque-giro";
+import type { LimitesEscala } from "@/lib/compras/escalas";
+import type { Tenant } from "@/generated/prisma";
 import type {
   ConviteCotacao,
   CotacaoDetalhe,
@@ -134,7 +137,51 @@ export async function loadCotacoes(): Promise<{
 
 // ── Detalhe ─────────────────────────────────────────────────
 
-export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
+/**
+ * Mediana dos dias de prateleira observados nos lotes de cada produto —
+ * (validade − entrada). É a única fonte honesta de "quanto tempo isso dura"
+ * que o sistema tem: não existe campo de validade no cadastro, mas existe o
+ * histórico do que já entrou pela porta.
+ *
+ * Mediana e não média porque um único lote de ponta de estoque, comprado
+ * vencendo, puxaria a média para baixo e barraria promoção boa.
+ */
+async function validadeTipicaPorProduto(productIds: string[]): Promise<Map<string, number>> {
+  if (productIds.length === 0) return new Map();
+  const lotes = await db.stockLot.findMany({
+    where: { productId: { in: productIds }, validade: { not: null } },
+    select: { productId: true, validade: true, createdAt: true },
+  });
+
+  const dias = new Map<string, number[]>();
+  for (const l of lotes) {
+    if (!l.validade) continue;
+    const d = Math.round((l.validade.getTime() - l.createdAt.getTime()) / 864e5);
+    // Lote que entrou já vencido é erro de digitação, não prazo de prateleira.
+    if (d <= 0) continue;
+    const lista = dias.get(l.productId) ?? [];
+    lista.push(d);
+    dias.set(l.productId, lista);
+  }
+
+  const mediana = new Map<string, number>();
+  for (const [productId, lista] of dias) {
+    lista.sort((a, b) => a - b);
+    const meio = Math.floor(lista.length / 2);
+    mediana.set(
+      productId,
+      lista.length % 2 ? lista[meio] : Math.round((lista[meio - 1] + lista[meio]) / 2),
+    );
+  }
+  return mediana;
+}
+
+/**
+ * @param tenant cadastro do tenant — de onde saem a janela da média de venda e
+ *   as travas da compra por escala. Vem por parâmetro, e não de uma consulta
+ *   aqui dentro, porque a página já resolveu o tenant para autorizar.
+ */
+export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDetalhe | null> {
   const c = await db.quotation.findFirst({
     where: { id },
     select: {
@@ -147,6 +194,7 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
       observacao: true,
       createdAt: true,
       enviadaEm: true,
+      pedeEscala: true,
       site: { select: { nome: true } },
       items: {
         orderBy: [{ ordem: "asc" }, { descricao: "asc" }],
@@ -205,6 +253,10 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
               quantidadeOfertada: true,
               marca: true,
               observacao: true,
+              faixas: {
+                orderBy: { quantidadeMinima: "asc" },
+                select: { quantidadeMinima: true, precoUnitario: true },
+              },
             },
           },
         },
@@ -217,7 +269,10 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
   const productIds = [...new Set(c.items.flatMap((i) => (i.productId ? [i.productId] : [])))];
   const packagingIds = [...new Set(c.items.flatMap((i) => (i.packagingId ? [i.packagingId] : [])))];
 
-  const [produtos, embalagens, estoques] = await Promise.all([
+  // Giro e validade só interessam quando a cotação pede escala — são duas
+  // varreduras de tabela grande, e cobrá-las de toda cotação encareceria a
+  // tela para quem nunca vai abrir a segunda lente.
+  const [produtos, embalagens, estoques, consumo, validades] = await Promise.all([
     productIds.length
       ? db.product.findMany({
           where: { id: { in: productIds } },
@@ -238,6 +293,10 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
           select: { productId: true, estoqueFechado: true, estoqueMinimo: true },
         })
       : Promise.resolve([]),
+    c.pedeEscala && productIds.length
+      ? consumoPorProduto(tenant.periodoMediaDias, { productIds, siteId: c.siteId })
+      : Promise.resolve(new Map<string, number>()),
+    c.pedeEscala ? validadeTipicaPorProduto(productIds) : Promise.resolve(new Map<string, number>()),
   ]);
   const porProduto = new Map(produtos.map((p) => [p.id, p]));
   const porEmbalagem = new Map(embalagens.map((p) => [p.id, { nome: p.nome, fatorConversao: n(p.fatorConversao) }]));
@@ -254,9 +313,12 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
     return `${emb.nome} (${fmtUn(emb.fatorConversao)} un.)`;
   }
 
+  const janela = Math.max(1, tenant.periodoMediaDias);
+
   const itens: ItemCotacao[] = c.items.map((i) => {
     const p = i.productId ? porProduto.get(i.productId) : undefined;
     const estoque = i.productId ? porEstoque.get(i.productId) : undefined;
+    const vendido = i.productId ? consumo.get(i.productId) : undefined;
     return {
       id: i.id,
       productId: i.productId,
@@ -270,6 +332,12 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
       embalagemNome: embalagemLabel(i),
       estoqueAtual: estoque ? n(estoque.estoqueFechado) : null,
       estoqueMinimo: estoque ? n(estoque.estoqueMinimo) : null,
+      // Item sem embalagem escolhida é pedido na unidade: fator 1.
+      fatorEmbalagem: i.packagingId ? (porEmbalagem.get(i.packagingId)?.fatorConversao ?? 1) : 1,
+      // Zero venda na janela é informação ("não gira"), e não ausência de
+      // histórico — vira 0/dia, que reprova qualquer sobra pela cobertura.
+      consumoDiarioUnidades: vendido === undefined ? null : vendido / janela,
+      validadeTipicaDias: (i.productId ? validades.get(i.productId) : undefined) ?? null,
     };
   });
 
@@ -287,6 +355,10 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
       quantidadeOfertada: r.quantidadeOfertada === null ? null : n(r.quantidadeOfertada),
       marca: r.marca,
       observacao: r.observacao,
+      faixas: r.faixas.map((f) => ({
+        quantidadeMinima: n(f.quantidadeMinima),
+        precoUnitario: n(f.precoUnitario),
+      })),
     }));
     return {
       id: s.id,
@@ -333,8 +405,20 @@ export async function loadCotacao(id: string): Promise<CotacaoDetalhe | null> {
     observacao: c.observacao,
     criadaEm: c.createdAt.toISOString(),
     enviadaEm: c.enviadaEm?.toISOString() ?? null,
+    pedeEscala: c.pedeEscala,
+    limitesEscala: limitesDoTenant(tenant),
     itens,
     convites,
+  };
+}
+
+/** Travas da compra por escala como a tela precisa delas. */
+export function limitesDoTenant(tenant: Tenant): LimitesEscala {
+  return {
+    coberturaMaxDias: tenant.escalaCoberturaMaxDias,
+    economiaMinPct: n(tenant.escalaEconomiaMinPct),
+    capitalExtraMax:
+      tenant.escalaCapitalExtraMax === null ? null : n(tenant.escalaCapitalExtraMax),
   };
 }
 

@@ -176,6 +176,19 @@ model Tenant {
   validadeAlertaDias  Int                @default(30) // dias de antecedência do alerta "vencendo"
   controleEstoquePdv  ControleEstoquePdv @default(BLOQUEAR) // como o PDV trata saldo insuficiente
 
+  // ── Compra por escala (promoção por volume) ──────────────────
+  /// Travas do comprador na lente "Melhor oportunidade" do comparativo. Sem
+  /// elas "melhor promoção" vira "compre tudo": a faixa mais barata é sempre a
+  /// maior, e quem decide no olho queima caixa achando que economizou.
+  /// Quantos dias de venda a quantidade extra pode cobrir. Acima disso, a
+  /// promoção é recusada por imobilizar prateleira, não por ser cara.
+  escalaCoberturaMaxDias Int      @default(45)
+  /// Economia mínima (%) para a faixa valer a pena. Abaixo disso, o desconto
+  /// não paga o capital parado.
+  escalaEconomiaMinPct   Decimal  @default(3) @db.Decimal(5, 2)
+  /// Teto de desembolso EXTRA por cotação, em R$. Nulo = sem teto.
+  escalaCapitalExtraMax  Decimal? @db.Decimal(12, 2)
+
   // Caixa / PDV (Configurações → Caixa)
   caixaFundoTroco   Decimal? @db.Decimal(10, 2) // sugestão de abertura
   caixaLimiteGaveta Decimal? @db.Decimal(10, 2) // acima disso, sugere sangria
@@ -3646,6 +3659,12 @@ model Quotation {
   prazoResposta DateTime? // até quando o fornecedor pode responder
   observacao    String?
 
+  /// Cotação que ACEITA promoção por volume. Ligado, a tela pública abre um
+  /// bloco recolhido por item ("a partir de N, R$ X") e o comparativo ganha a
+  /// lente "Melhor oportunidade". Desligado (padrão), nada muda: o fornecedor
+  /// vê um preço só, que é o piso da tela do vendedor.
+  pedeEscala Boolean @default(false)
+
   enviadaEm   DateTime?
   encerradaEm DateTime?
   decididaEm  DateTime?
@@ -3776,12 +3795,40 @@ model QuotationResponse {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  quotationSupplier QuotationSupplier @relation(fields: [quotationSupplierId], references: [id], onDelete: Cascade)
-  quotationItem     QuotationItem     @relation(fields: [quotationItemId], references: [id], onDelete: Cascade)
+  quotationSupplier QuotationSupplier       @relation(fields: [quotationSupplierId], references: [id], onDelete: Cascade)
+  quotationItem     QuotationItem           @relation(fields: [quotationItemId], references: [id], onDelete: Cascade)
+  faixas            QuotationResponseTier[]
 
   @@unique([quotationSupplierId, quotationItemId])
   @@index([tenantId])
   @@index([quotationItemId])
+}
+
+/// Faixa de preço por volume: "a partir de 10 caixas, R$ 41,00".
+///
+/// Existe porque a cotação de quantidade exata deixa dinheiro na mesa: o
+/// distribuidor de bebida quase sempre tem uma tabela por volume, e ela nunca
+/// chegava ao comprador — vinha por WhatsApp, no meio da conversa, e morria ali.
+///
+/// A quantidade está SEMPRE na embalagem do item cotado (caixa, fardo), a mesma
+/// que o fornecedor viu no link. Misturar unidade e caixa aqui faria o
+/// comparativo eleger um vencedor doze vezes mais barato do que a realidade.
+///
+/// O preço-base da resposta é a faixa implícita da quantidade PEDIDA; estas
+/// linhas são só as faixas acima dela.
+model QuotationResponseTier {
+  id                  String  @id @default(cuid())
+  tenantId            String
+  quotationResponseId String
+  quantidadeMinima    Decimal @db.Decimal(12, 3)
+  precoUnitario       Decimal @db.Decimal(12, 4)
+  ordem               Int     @default(0)
+
+  response QuotationResponse @relation(fields: [quotationResponseId], references: [id], onDelete: Cascade)
+
+  @@unique([quotationResponseId, quantidadeMinima])
+  @@index([tenantId])
+  @@index([quotationResponseId])
 }
 
 /// Link público de resposta (/cotacao/<token>, no domínio raiz). É o que tira a

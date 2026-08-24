@@ -4,6 +4,8 @@ import { basePrisma, db } from "@/lib/prisma";
 import { runWithTenant } from "@/lib/tenant-context";
 import { rootUrl } from "@/lib/urls";
 import { rotuloEmbalagem } from "@/lib/compras/cotacao-unidades";
+import type { EmbalagemItem } from "@/lib/compras/rotulo-preco";
+import type { Faixa } from "@/lib/compras/escalas";
 
 // ============================================================
 // Link público de resposta da cotação (/cotacao/<token>).
@@ -104,8 +106,20 @@ export type ItemPublico = {
   id: string;
   descricao: string;
   quantidade: number;
-  /** Embalagem pedida ("Fardo 12"). Vazio = unidade avulsa. */
-  unidade: string | null;
+  /**
+   * O QUE está sendo pedido: caixa, fardo, unidade, kg. Sai do `packagingId`
+   * do item; sem ele, da unidade base do produto. É o que decide o rótulo do
+   * campo de preço — "Preço da caixa (12 un.)" e não "Preço unitário".
+   */
+  embalagem: EmbalagemItem;
+  /**
+   * Código de barras da UNIDADE (EAN do produto). É por ele que o vendedor
+   * confere se o item da lista é o mesmo do catálogo dele — nome de produto
+   * de bebida muda de loja para loja, EAN não.
+   */
+  ean: string | null;
+  /** EAN da própria embalagem (DUN da caixa), quando o cadastro tem. */
+  eanEmbalagem: string | null;
   observacao: string | null;
   /** Foto do produto — usada na visão de computador, onde há coluna para ela. */
   imagemUrl: string | null;
@@ -118,6 +132,8 @@ export type RespostaPublica = {
   quantidadeOfertada: number | null;
   marca: string | null;
   observacao: string | null;
+  /** Promoção por volume que ele já informou — só quando a cotação pede. */
+  faixas: Faixa[];
 };
 
 export type CotacaoPublica = {
@@ -135,6 +151,12 @@ export type CotacaoPublica = {
   contato: string | null;
   /** Já enviou uma resposta? Continua editável enquanto a cotação estiver aberta. */
   respondida: boolean;
+  /**
+   * O comprador quer ver promoção por volume. Ligado, cada item ganha um bloco
+   * recolhido de faixas; desligado, a tela segue com um preço por item — que é
+   * o piso do que o vendedor aguenta responder no meio do dia.
+   */
+  pedeEscala: boolean;
   itens: ItemPublico[];
   cabecalho: {
     prazoEntregaDias: number | null;
@@ -200,6 +222,10 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
             quantidadeOfertada: true,
             marca: true,
             observacao: true,
+            faixas: {
+              orderBy: { quantidadeMinima: "asc" },
+              select: { quantidadeMinima: true, precoUnitario: true },
+            },
           },
         },
         quotation: {
@@ -209,6 +235,7 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
             status: true,
             prazoResposta: true,
             observacao: true,
+            pedeEscala: true,
             items: {
               orderBy: { ordem: "asc" },
               select: {
@@ -265,13 +292,13 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
       packagingIds.length
         ? db.productPackaging.findMany({
             where: { id: { in: packagingIds } },
-            select: { id: true, nome: true, fatorConversao: true },
+            select: { id: true, nome: true, fatorConversao: true, ean: true },
           })
         : Promise.resolve([]),
       productIds.length
         ? db.product.findMany({
             where: { id: { in: productIds } },
-            select: { id: true, imagemUrl: true, unidadeBase: true },
+            select: { id: true, imagemUrl: true, unidadeBase: true, ean: true },
           })
         : Promise.resolve([]),
     ]);
@@ -279,15 +306,29 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
     // "Caixa (12 un.)" e não só "Caixa": o fornecedor precisa saber quantas
     // unidades vêm dentro, senão o preço que ele manda é de outra coisa. O
     // rótulo é o MESMO da mensagem de WhatsApp — uma fonte só (cotacao-unidades).
-    const nomePorEmbalagem = new Map(
-      embalagens.map((e) => [e.id, rotuloEmbalagem(e.nome, n(e.fatorConversao))] as const),
+    const porEmbalagem = new Map(
+      embalagens.map(
+        (e) =>
+          [
+            e.id,
+            {
+              nome: e.nome,
+              fator: n(e.fatorConversao) || 1,
+              label: rotuloEmbalagem(e.nome, n(e.fatorConversao)),
+              ean: e.ean,
+            },
+          ] as const,
+      ),
     );
     const imagemPorProduto = new Map(produtos.map((p) => [p.id, p.imagemUrl]));
-    // Sem embalagem escolhida, a unidade é a do cadastro (KG, L, CX…). Só "UN"
-    // vira null, porque aí a tela já escreve "unidades" por extenso.
-    const unidadePorProduto = new Map(
-      produtos.map((p) => [p.id, p.unidadeBase === "UN" ? null : p.unidadeBase.toLowerCase()]),
+    const eanPorProduto = new Map(produtos.map((p) => [p.id, p.ean]));
+    // Sem embalagem escolhida, o pedido é na unidade base do cadastro (UN, ML,
+    // G). "UN" vira "Unidade" — a palavra que o vendedor lê no rótulo do preço.
+    const basePorProduto = new Map(
+      produtos.map((p) => [p.id, p.unidadeBase === "UN" ? "Unidade" : p.unidadeBase.toLowerCase()]),
     );
+    /** Item sem produto vinculado (texto livre) é avulso: uma unidade. */
+    const AVULSO: EmbalagemItem = { nome: "Unidade", fator: 1, label: "un" };
 
     return {
       estado: "valido",
@@ -302,18 +343,25 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
         fornecedor: convite.supplier.nomeFantasia || convite.supplier.razaoSocial,
         contato: convite.contact?.nome ?? null,
         respondida: convite.status === "RESPONDIDA",
-        itens: convite.quotation.items.map((i) => ({
-          id: i.id,
-          descricao: i.descricao,
-          quantidade: n(i.quantidade),
-          unidade: i.packagingId
-            ? (nomePorEmbalagem.get(i.packagingId) ?? null)
-            : i.productId
-              ? (unidadePorProduto.get(i.productId) ?? null)
-              : null,
-          observacao: i.observacao,
-          imagemUrl: i.productId ? (imagemPorProduto.get(i.productId) ?? null) : null,
-        })),
+        pedeEscala: convite.quotation.pedeEscala,
+        itens: convite.quotation.items.map((i) => {
+          const emb = i.packagingId ? porEmbalagem.get(i.packagingId) : undefined;
+          const base = i.productId ? basePorProduto.get(i.productId) : undefined;
+          return {
+            id: i.id,
+            descricao: i.descricao,
+            quantidade: n(i.quantidade),
+            embalagem: emb
+              ? { nome: emb.nome, fator: emb.fator, label: emb.label }
+              : base
+                ? { nome: base, fator: 1, label: base === "Unidade" ? "un" : base }
+                : AVULSO,
+            ean: i.productId ? (eanPorProduto.get(i.productId) ?? null) : null,
+            eanEmbalagem: emb?.ean ?? null,
+            observacao: i.observacao,
+            imagemUrl: i.productId ? (imagemPorProduto.get(i.productId) ?? null) : null,
+          };
+        }),
         cabecalho: {
           prazoEntregaDias: convite.prazoEntregaDias,
           condicaoPagamento: convite.condicaoPagamento,
@@ -327,6 +375,10 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
           quantidadeOfertada: r.quantidadeOfertada === null ? null : n(r.quantidadeOfertada),
           marca: r.marca,
           observacao: r.observacao,
+          faixas: r.faixas.map((f) => ({
+            quantidadeMinima: n(f.quantidadeMinima),
+            precoUnitario: n(f.precoUnitario),
+          })),
         })),
       },
     };
