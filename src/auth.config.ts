@@ -2,7 +2,7 @@ import type { NextAuthConfig } from "next-auth";
 
 /**
  * Config compartilhada e edge-safe (sem adapter/Prisma/bcrypt) — usada tanto
- * pelo middleware (verificação de JWT na edge) quanto pelo auth.ts completo.
+ * pelo proxy (verificação de JWT na borda) quanto pelo auth.ts completo.
  */
 
 const rootDomain = (process.env.NEXT_PUBLIC_APP_DOMAIN ?? "lvh.me:3000").split(

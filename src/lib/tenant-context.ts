@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 /**
  * Contexto de tenant da request corrente.
- * Preenchido no middleware/handlers após resolver o subdomínio (PRD §3.2).
+ * Preenchido no proxy/handlers após resolver o subdomínio (PRD §3.2).
  * O Client Extension (lib/prisma.ts) lê daqui para injetar tenantId em toda query.
  */
 export type TenantContext = {

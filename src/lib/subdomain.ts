@@ -1,5 +1,5 @@
 /**
- * Extração do subdomínio a partir do Host. Compartilhado entre middleware
+ * Extração do subdomínio a partir do Host. Compartilhado entre o proxy
  * (edge) e código de servidor — função pura, sem dependências de runtime.
  * null = domínio raiz (marketing/auth).
  */

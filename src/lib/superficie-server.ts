@@ -6,7 +6,7 @@ import { SUPERFICIE_COOKIE, homeDaSuperficie } from "@/lib/superficie";
  * Home de quem acabou de entrar: `/m` no celular, `/inicio` no computador.
  *
  * Vive fora de `lib/superficie` porque aquele módulo é importado pelo
- * middleware, e `next/headers` não existe no runtime dele.
+ * proxy, e `next/headers` não existe no runtime dele.
  */
 export async function homeDoLogin(): Promise<string> {
   const [jar, h] = await Promise.all([cookies(), headers()]);

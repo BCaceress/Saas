@@ -28,7 +28,7 @@ Toda leitura/escrita de negócio passa pelo contexto de tenant.
   findUnique só aceita campos únicos e a injeção de `tenantId` quebra. Use
   **`findFirst`** (o extension adiciona o tenantId).
 - Todo código de negócio roda dentro de `runWithTenant(tenantId, () => …)` —
-  feito no middleware/handlers após resolver o subdomínio.
+  feito no proxy/handlers após resolver o subdomínio.
 - RLS (Postgres, Camada 2) entra como hardening na Fase 2; agora só Camada 1.
 
 ## Padrões de código

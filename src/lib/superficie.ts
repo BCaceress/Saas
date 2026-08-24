@@ -17,7 +17,7 @@
  * subdomínio. Nunca layout: mudar o que a pessoa vê por header variável em rota
  * cacheável é a receita clássica de "meu computador abriu no celular".
  *
- * Módulo sem `server-only` de propósito: o middleware roda fora do runtime de
+ * Módulo sem `server-only` de propósito: o proxy roda fora do runtime de
  * servidor do Next.
  */
 

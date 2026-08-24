@@ -17,6 +17,38 @@ const nextConfig: NextConfig = {
   // bundler quebra os dois. Fica fora do bundle, resolvido em runtime no Node.
   serverExternalPackages: ["imapflow"],
 
+  // PALIATIVO, não cura. O client do Prisma é gerado DENTRO de src/
+  // (`output = ../src/generated/prisma`) e o runtime dele procura o query engine
+  // varrendo diretórios que só existem em runtime — `existsSync(path.join(o, s))`
+  // com `o` saindo de `process.cwd()`. O tracer do Turbopack não consegue provar
+  // o que aquilo lê, desiste, e passa a tratar o PROJETO INTEIRO como dependência
+  // do servidor. O sintoma é o aviso "Encountered unexpected file in NFT list",
+  // que aponta justamente este arquivo — daí ele estar na lista abaixo.
+  //
+  // O que sai daqui não é usado pelo servidor em nenhuma hipótese: teste, script
+  // de build, migration, documentação. O caminho REAL do engine continua no
+  // trace, porque o Prisma o declara em literais (`path.join(__dirname,
+  // "../query_engine-*.node")`) que o tracer entende.
+  //
+  // A cura de verdade é tirar o client gerado de dentro de src/ — enquanto ele
+  // estiver aqui, arquivos de src/ que ninguém importa continuam entrando no
+  // trace, só sem disparar o aviso. Marcar o código gerado com
+  // `/*turbopackIgnore: true*/` foi tentado e não fecha: são muitas chamadas de
+  // fs dinâmicas espalhadas pelo bundle minificado do runtime.
+  outputFileTracingExcludes: {
+    "/**": [
+      "next.config.ts",
+      "docs/**",
+      "tests/**",
+      "scripts/**",
+      "electron/**",
+      "prisma/migrations/**",
+      "tmp/**",
+      "**/*.csv",
+      "**/*.tsbuildinfo",
+    ],
+  },
+
   images: {
     // Allowlist do otimizador (hoje: miniaturas do Cosmos Bluesoft, do
     // enriquecimento por EAN). Vem de `src/lib/imagem.ts` porque o cliente usa a

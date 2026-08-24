@@ -30,7 +30,7 @@ export type ActiveTenant = {
 };
 
 /**
- * Resolve o tenant ativo a partir do subdomínio (header posto no middleware)
+ * Resolve o tenant ativo a partir do subdomínio (header posto no proxy)
  * + verifica que o usuário logado é membro. Usa o client cru (basePrisma) de
  * propósito: a verificação acontece ANTES de entrar no contexto de tenant.
  * Retorna null se algo falhar (sem subdomínio, sem sessão, sem membership).
