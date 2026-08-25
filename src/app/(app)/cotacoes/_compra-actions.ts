@@ -387,8 +387,12 @@ export type ProdutoCotacao = {
   estoque: number | null;
   /** Quanto falta para o mínimo — vira a quantidade sugerida do item. */
   sugerido: number;
-  /** Embalagens de compra (fardo, caixa) — o item é cotado numa delas. */
-  embalagens: { id: string; nome: string; isCompraDefault: boolean }[];
+  /**
+   * Embalagens de compra (fardo, caixa) — o item é cotado numa delas. O
+   * `fator` vem junto porque é ele que transforma "2" em "2 caixas de 12":
+   * sem o número na tela, quem digita a quantidade está adivinhando.
+   */
+  embalagens: { id: string; nome: string; isCompraDefault: boolean; fator: number }[];
 };
 
 async function montarProdutos(
@@ -398,7 +402,7 @@ async function montarProdutos(
     sku: string;
     imagemUrl: string | null;
     stocks: { estoqueFechado: unknown; estoqueAberto: unknown; estoqueMinimo: unknown }[];
-    packagings: { id: string; nome: string; isCompraDefault: boolean }[];
+    packagings: { id: string; nome: string; isCompraDefault: boolean; fatorConversao: unknown }[];
   }[],
 ): Promise<ProdutoCotacao[]> {
   const num = (v: unknown) => Number(v ?? 0);
@@ -413,7 +417,13 @@ async function montarProdutos(
       imagemUrl: p.imagemUrl,
       estoque: saldo,
       sugerido: saldo === null ? 0 : Math.max(0, Math.ceil(minimo - saldo)),
-      embalagens: p.packagings,
+      embalagens: p.packagings.map((e) => ({
+        id: e.id,
+        nome: e.nome,
+        isCompraDefault: e.isCompraDefault,
+        // Decimal do Prisma não atravessa a fronteira do client: vira número aqui.
+        fator: Number(e.fatorConversao ?? 1) || 1,
+      })),
     };
   });
 }
@@ -453,7 +463,7 @@ export async function buscarProdutosCotacaoAction(
           take: 1,
           select: { estoqueFechado: true, estoqueAberto: true, estoqueMinimo: true },
         },
-        packagings: { select: { id: true, nome: true, isCompraDefault: true } },
+        packagings: { select: { id: true, nome: true, isCompraDefault: true, fatorConversao: true } },
       },
     });
     return montarProdutos(produtos);
@@ -479,7 +489,7 @@ export async function buscarProdutoPorCodigoCotacaoAction(
         take: 1,
         select: { estoqueFechado: true, estoqueAberto: true, estoqueMinimo: true },
       },
-      packagings: { select: { id: true, nome: true, isCompraDefault: true } },
+      packagings: { select: { id: true, nome: true, isCompraDefault: true, fatorConversao: true } },
     };
     // Unidade, SKU e, por último, o EAN da caixa/fardo — quem bipa no depósito
     // costuma ter a embalagem na mão, não a unidade.

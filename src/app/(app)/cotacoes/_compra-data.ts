@@ -13,6 +13,7 @@ import type {
   OpcoesCotacao,
   ResumoCompras,
 } from "./_compra-types";
+import { rotuloEmbalagemPedida } from "./_catalogo/format";
 
 // ============================================================
 // Leituras das Compras (evolução do Quotation/RFQ). Tudo roda dentro de
@@ -28,7 +29,6 @@ function praca(municipio: string | null, uf: string | null): string | null {
   if (cidade && estado) return `${cidade} — ${estado}`;
   return cidade || estado || null;
 }
-const fmtUn = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 
 /** Preço vezes quantidade pedida, item a item, mais o frete. */
 function totalDoConvite(
@@ -327,7 +327,7 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
     if (!i.packagingId) return "Unidade";
     const emb = porEmbalagem.get(i.packagingId);
     if (!emb) return null;
-    return `${emb.nome} (${fmtUn(emb.fatorConversao)} un.)`;
+    return rotuloEmbalagemPedida(emb.nome, Number(emb.fatorConversao));
   }
 
   const janela = Math.max(1, tenant.periodoMediaDias);

@@ -439,6 +439,7 @@ export function ConvitesCotacao({
       {enviando && (
         <EnvioSheet
           alvos={pendentes}
+          itens={cotacao.itens}
           prazoAtual={cotacao.prazoResposta}
           onFechar={() => setEnviando(false)}
           onConcluir={() => setEnviando(false)}
@@ -448,6 +449,7 @@ export function ConvitesCotacao({
       {reenviando && (
         <EnvioSheet
           alvos={reenviando === "todos" ? aguardando : [reenviando]}
+          itens={cotacao.itens}
           reenvio
           prazoAtual={cotacao.prazoResposta}
           onFechar={() => setReenviando(null)}

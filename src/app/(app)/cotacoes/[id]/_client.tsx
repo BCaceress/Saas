@@ -128,6 +128,7 @@ export function CotacaoDetalheClient({
       {enviando && (
         <EnvioSheet
           alvos={enviando.alvos}
+          itens={cotacao.itens}
           reenvio={enviando.reenvio}
           prazoAtual={cotacao.prazoResposta}
           onFechar={() => setEnviando(null)}

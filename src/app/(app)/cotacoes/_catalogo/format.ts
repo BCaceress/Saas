@@ -34,6 +34,14 @@ export function fmtQuando(iso: string | null): string {
 // que o fornecedor está cotando. Todo lugar que mostra quantidade de item de
 // cotação mostra a embalagem junto, sempre com a mesma régua.
 
+/**
+ * Rótulo da embalagem em que o item é PEDIDO: "Caixa (12 un.)". O fator vai
+ * sempre junto — "Caixa" sozinho não diz o preço de quê o fornecedor cota — e
+ * é o mesmo texto que o servidor devolve na lista (ver `_compra-data`).
+ */
+export const rotuloEmbalagemPedida = (nome: string, fator: number) =>
+  `${nome} (${fmtQtd(fator)} un.)`;
+
 /** "Caixa (60 un.)" → "Caixa". O que vem dentro é detalhe de outra linha. */
 export const embalagemBase = (nome: string | null) =>
   (nome ?? "").replace(/\s*\(.*\)\s*$/, "").trim();

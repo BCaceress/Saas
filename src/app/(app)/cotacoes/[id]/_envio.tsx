@@ -23,7 +23,8 @@ import { copiarTexto } from "@/lib/clipboard";
 import { maskPhone } from "@/lib/masks";
 import { ContatoSheet } from "@/components/app/contato-fornecedor";
 import { SupplierAvatar } from "../_ui";
-import type { ConviteCotacao, ContatoConvite } from "../_compra-types";
+import { fmtQtdEmbalagem } from "../_catalogo/ui";
+import type { CotacaoDetalhe, ConviteCotacao, ContatoConvite } from "../_compra-types";
 import {
   confirmarEnvioAction,
   prepararEnvioAction,
@@ -108,6 +109,7 @@ function sugerido(contatos: ContatoConvite[], canal: Canal): string | null {
 
 export function EnvioSheet({
   alvos,
+  itens,
   reenvio = false,
   prazoAtual,
   onFechar,
@@ -115,6 +117,8 @@ export function EnvioSheet({
 }: {
   /** Convites que vão receber agora. */
   alvos: ConviteCotacao[];
+  /** O que está sendo perguntado — conferido aqui, antes de sair. */
+  itens: CotacaoDetalhe["itens"];
   /** Reenvio: quem já recebeu volta para a fila com um link novo. */
   reenvio?: boolean;
   prazoAtual: string | null;
@@ -289,8 +293,17 @@ export function EnvioSheet({
         }
         // WhatsApp em aba nova (é web ou app); e-mail troca a navegação, que é
         // como o `mailto:` acorda o cliente do sistema sem deixar aba órfã.
+        //
+        // O `window.open` acontece DEPOIS do await da Server Action, ou seja,
+        // fora do gesto do usuário: no celular o navegador barra a aba nova e
+        // o WhatsApp simplesmente não abria (no desktop, abria). Sem janela de
+        // volta, a navegação direta faz o mesmo trabalho — o app assume o
+        // link e a página fica no histórico, atrás dele.
         if (canal === "email") window.location.href = p.url;
-        else window.open(p.url, "_blank", "noopener,noreferrer");
+        else {
+          const aba = window.open(p.url, "_blank", "noopener,noreferrer");
+          if (!aba || aba.closed) window.location.href = p.url;
+        }
         mexer(c.id, { perguntando: contato.id });
       } catch (err) {
         setErro((x) => ({
@@ -440,6 +453,8 @@ export function EnvioSheet({
       >
         <div className="flex flex-col gap-4">
           <Progresso feitos={totalFeitos} total={totalFila} />
+
+          <ItensQueVao itens={itens} />
 
           {reenvio && prazoAtual && (
             <p className="flex items-start gap-2 rounded-[var(--radius)] border border-line bg-surface-2 px-3 py-2 text-[12px] text-ink-2">
@@ -599,6 +614,51 @@ export function EnvioSheet({
         />
       )}
     </>
+  );
+}
+
+// ── O que está sendo perguntado ─────────────────────────────
+// A mensagem só aparece em "Ver mensagem", fornecedor por fornecedor — e é lá
+// que a lista está. Antes do primeiro disparo, o operador não tinha onde
+// conferir o que vai sair. A quantidade nunca vem sozinha: "2" pode ser duas
+// garrafas ou duas caixas de doze, e é o preço disso que o fornecedor cota.
+
+/** Itens que a folha mostra antes de pedir "ver todos". */
+const PREVIA_ITENS = 4;
+
+function ItensQueVao({ itens }: { itens: CotacaoDetalhe["itens"] }) {
+  const [aberto, setAberto] = useState(false);
+  if (itens.length === 0) return null;
+
+  const mostrados = aberto ? itens : itens.slice(0, PREVIA_ITENS);
+  const restantes = itens.length - mostrados.length;
+
+  return (
+    <div className="rounded-[var(--radius)] border border-line bg-surface-2">
+      <p className="px-3 pt-2.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
+        O que vai na cotação · {itens.length} {itens.length === 1 ? "item" : "itens"}
+      </p>
+      <ul className="flex flex-col px-3 py-1.5">
+        {mostrados.map((i) => (
+          <li key={i.id} className="flex items-baseline gap-2 py-0.5 text-[12px]">
+            <span className="min-w-0 flex-1 truncate text-ink-2">{i.descricao}</span>
+            <span className="shrink-0 font-mono tabular-nums text-ink">
+              {fmtQtdEmbalagem(i.quantidade, i.embalagemNome)}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {(restantes > 0 || aberto) && (
+        <button
+          type="button"
+          onClick={() => setAberto((v) => !v)}
+          aria-expanded={aberto}
+          className="w-full cursor-pointer rounded-b-[var(--radius)] border-t border-line px-3 py-1.5 text-[12px] font-medium text-brand transition-colors hover:bg-surface"
+        >
+          {aberto ? "Ver menos" : `Ver os outros ${restantes}`}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -782,6 +842,7 @@ function CartaoFornecedor({
               contatos={contatos}
               selecionados={e?.selecionados ?? []}
               feitos={feitos}
+              trabalhando={trabalhando}
               onAlternar={(id) => {
                 const atual = e?.selecionados ?? [];
                 onMexer({
@@ -790,6 +851,16 @@ function CartaoFornecedor({
                     : [...atual, id],
                   perguntando: null,
                 });
+              }}
+              onEnviar={(ct) => {
+                // Disparar por um contato é escolhê-lo: sem entrar na lista, o
+                // "enviado" que vem depois ficaria fora da conta `0/2` e a
+                // fila diria que falta mandar para quem já recebeu.
+                const atual = e?.selecionados ?? [];
+                if (!atual.includes(ct.id)) {
+                  onMexer({ selecionados: [...atual, ct.id], perguntando: null });
+                }
+                onAbrir(ct);
               }}
             />
           ) : (
@@ -959,12 +1030,17 @@ function ListaWhatsApp({
   contatos,
   selecionados,
   feitos,
+  trabalhando,
   onAlternar,
+  onEnviar,
 }: {
   contatos: ContatoConvite[];
   selecionados: string[];
   feitos: Record<string, Feito>;
+  trabalhando: boolean;
   onAlternar: (id: string) => void;
+  /** Abrir o WhatsApp DESTE contato agora, sem passar pela fila. */
+  onEnviar: (contato: ContatoConvite) => void;
 }) {
   return (
     <div className="flex flex-col gap-0.5">
@@ -986,6 +1062,16 @@ function ListaWhatsApp({
                 marcado={marcado}
                 forma="caixa"
                 onClick={() => podeReceber && !feito && onAlternar(ct.id)}
+                // WhatsApp é conversa individual: o botão na própria linha é o
+                // caminho mais curto entre ver o nome e abrir a conversa dele
+                // — no celular, onde a fila "1 de 3" obriga a marcar, rolar e
+                // procurar o botão principal, é o único que se usa.
+                acao={
+                  podeReceber && !feito
+                    ? { rotulo: `Abrir WhatsApp de ${ct.nome}`, onClick: () => onEnviar(ct) }
+                    : undefined
+                }
+                trabalhando={trabalhando}
               />
             </li>
           );
@@ -1084,6 +1170,8 @@ function LinhaContato({
   marcado,
   forma,
   onClick,
+  acao,
+  trabalhando = false,
 }: {
   contato: ContatoConvite;
   canal: Canal;
@@ -1093,6 +1181,9 @@ function LinhaContato({
   /** Caixa = vários (WhatsApp, CC); ponto = um só (Para). */
   forma: "caixa" | "ponto";
   onClick: () => void;
+  /** Disparo direto desta linha, quando o canal tem um (WhatsApp). */
+  acao?: { rotulo: string; onClick: () => void };
+  trabalhando?: boolean;
 }) {
   const dado = canal === "whatsapp" ? foneVisivel(ct) : ct.email;
   // Nome à esquerda, destino à direita, uma linha só. Empilhar nome e telefone
@@ -1158,18 +1249,37 @@ function LinhaContato({
     );
   }
 
+  // Marcar e disparar são dois botões IRMÃOS: um dentro do outro é HTML
+  // inválido, e o clique do de dentro subiria para o de fora desmarcando o
+  // contato no mesmo gesto que manda para ele.
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={marcado}
+    <div
       className={cn(
-        "flex w-full cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] px-1.5 py-1 text-left transition-colors hover:bg-surface-2",
+        "flex items-center gap-1 rounded-[var(--radius-sm)] pr-1 transition-colors",
         marcado && "bg-surface-2",
       )}
     >
-      {conteudo}
-    </button>
+      <button
+        type="button"
+        onClick={onClick}
+        aria-pressed={marcado}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] px-1.5 py-1 text-left transition-colors hover:bg-surface-2"
+      >
+        {conteudo}
+      </button>
+      {acao && (
+        <button
+          type="button"
+          onClick={acao.onClick}
+          disabled={trabalhando}
+          title={acao.rotulo}
+          aria-label={acao.rotulo}
+          className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full text-whatsapp transition-colors hover:bg-whatsapp/10 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <MessageCircle size={16} />
+        </button>
+      )}
+    </div>
   );
 }
 

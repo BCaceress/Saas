@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { EstadoVazio, fmtQtd, unidadeDaQtd } from "../_catalogo/ui";
+import { EstadoVazio, fmtQtd, rotuloEmbalagemPedida, unidadeDaQtd } from "../_catalogo/ui";
 import { Thumb } from "../_ui";
 import type { CotacaoAnterior, CotacaoDetalhe } from "../_compra-types";
 import {
@@ -748,9 +748,7 @@ function NovoItem({
 }) {
   const [busca, setBusca] = useState("");
   const [escolhido, setEscolhido] = useState<ProdutoCotacao | null>(null);
-  const [embalagens, setEmbalagens] = useState<
-    { id: string; nome: string; isCompraDefault: boolean }[]
-  >([]);
+  const [embalagens, setEmbalagens] = useState<ProdutoCotacao["embalagens"]>([]);
   const [packagingId, setPackagingId] = useState("");
   const [quantidade, setQuantidade] = useState("1");
   const [descricaoLivre, setDescricaoLivre] = useState("");
@@ -797,6 +795,19 @@ function NovoItem({
   }, [ativo, listaAberta]);
 
   const qtd = Number(quantidade.replace(",", ".")) || 0;
+  /** Embalagem selecionada — null enquanto o pedido é na unidade. */
+  const embalagemEscolhida = embalagens.find((e) => e.id === packagingId) ?? null;
+  /** O rótulo que a lista vai mostrar depois de salvar, mostrado já aqui. */
+  const unidadePedida = embalagemEscolhida
+    ? rotuloEmbalagemPedida(embalagemEscolhida.nome, embalagemEscolhida.fator)
+    : "Unidade";
+  /**
+   * O que falta para o mínimo vem em UNIDADES; comprado em caixa, vira caixas
+   * (arredondando para cima — meia caixa ninguém pede).
+   */
+  const sugeridoNaEmbalagem = embalagemEscolhida
+    ? Math.ceil((escolhido?.sugerido ?? 0) / embalagemEscolhida.fator)
+    : (escolhido?.sugerido ?? 0);
   const podeSalvar =
     qtd > 0 && (escolhido !== null || descricaoLivre.trim().length >= 2) && !pendente;
 
@@ -804,11 +815,17 @@ function NovoItem({
     setEscolhido(p);
     setBusca(p.nome);
     setEmbalagens(p.embalagens);
-    setPackagingId(p.embalagens.find((e) => e.isCompraDefault)?.id ?? "");
+    const padrao = p.embalagens.find((e) => e.isCompraDefault) ?? null;
+    setPackagingId(padrao?.id ?? "");
     setAtivo(-1);
     // A quantidade já vem do que falta para o mínimo — quem está repondo não
-    // deveria ter de calcular de cabeça.
-    if (p.sugerido > 0) setQuantidade(String(p.sugerido));
+    // deveria ter de calcular de cabeça. O que falta é contado em UNIDADES:
+    // com a compra em caixa, o número vira caixas aqui, senão o campo pediria
+    // 24 caixas onde faltam 24 garrafas.
+    if (p.sugerido > 0) {
+      const fator = padrao?.fator ?? 1;
+      setQuantidade(String(Math.ceil(p.sugerido / fator)));
+    }
   }
 
   // Escolhido o produto, a única pergunta que sobra é "quantos?" — o foco vai
@@ -843,15 +860,16 @@ function NovoItem({
       ordem: 0,
       sku: escolhido?.sku ?? null,
       imagemUrl: escolhido?.imagemUrl ?? null,
-      // Sem o fator em mãos aqui, o rótulo provisório é o nome da embalagem; o
-      // servidor devolve "Caixa (12 un.)" no refresh seguinte.
-      embalagemNome: embalagem ? embalagem.nome : escolhido ? "Unidade" : null,
+      embalagemNome: embalagem
+        ? rotuloEmbalagemPedida(embalagem.nome, embalagem.fator)
+        : escolhido
+          ? "Unidade"
+          : null,
       estoqueAtual: null,
       estoqueMinimo: null,
-      // Provisórios pelo mesmo motivo do rótulo acima: o fator da embalagem, o
-      // giro e a validade típica são leitura de servidor. Vêm no refresh —
-      // enquanto isso, a compra por escala só não opina sobre este item.
-      fatorEmbalagem: 1,
+      fatorEmbalagem: embalagem ? embalagem.fator : 1,
+      // Provisórios: giro e validade típica são leitura de servidor. Vêm no
+      // refresh — enquanto isso, a escala só não opina sobre este item.
       custoUnitario: null,
       consumoDiarioUnidades: null,
       validadeTipicaDias: null,
@@ -861,7 +879,7 @@ function NovoItem({
 
   return (
     <div className="rounded-[var(--radius-lg)] border border-line bg-surface p-4">
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_7rem_auto] md:items-end">
+      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_11rem_7rem_auto] md:items-end">
         <div className="relative flex flex-col gap-1">
           <span className="text-[12px] font-medium text-ink-2">Produto</span>
           {/* A busca vai ao servidor: sem sinal de que ela está correndo, a
@@ -981,16 +999,19 @@ function NovoItem({
 
         <label className="flex flex-col gap-1">
           <span className="text-[12px] font-medium text-ink-2">Embalagem</span>
+          {/* "Caixa" sozinho não é escolha informada: o fator vai no rótulo,
+              porque é ele que separa 2 garrafas de 2 caixas de doze — e é o
+              preço disso que o fornecedor vai cotar. */}
           <select
             value={packagingId}
             onChange={(e) => setPackagingId(e.target.value)}
             disabled={!escolhido}
             className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink disabled:opacity-50"
           >
-            <option value="">Unidade</option>
+            <option value="">Unidade (1 un.)</option>
             {embalagens.map((e) => (
               <option key={e.id} value={e.id}>
-                {e.nome}
+                {rotuloEmbalagemPedida(e.nome, e.fator)}
               </option>
             ))}
           </select>
@@ -1013,13 +1034,29 @@ function NovoItem({
             inputMode="decimal"
             className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-right font-mono text-sm tabular-nums text-ink"
           />
+          {/* A pergunta que o campo não respondia: "2 do quê?" — e, pedindo em
+              caixa, quantas unidades isso dá, que é a conta que o operador
+              faria de cabeça para saber se cabe na prateleira. */}
+          {escolhido && (
+            <span className="text-[11px] font-medium text-ink-2">
+              {unidadeDaQtd(qtd || 1, unidadePedida)}
+              {embalagemEscolhida && qtd > 0 && (
+                <span className="font-normal text-faint">
+                  {" "}
+                  · {fmtQtd(qtd * embalagemEscolhida.fator)} un.
+                </span>
+              )}
+            </span>
+          )}
           {/* O campo já vinha preenchido com o que falta para o mínimo, mas em
               silêncio: número que aparece sozinho parece defeito. Dizer de onde
               veio transforma mágica em informação — e deixa claro que dá para
               trocar. */}
           {escolhido && escolhido.sugerido > 0 && (
             <span className="text-[11px] text-faint">
-              sugerido {fmtQtd(escolhido.sugerido)} — falta para o mínimo
+              sugerido {fmtQtd(sugeridoNaEmbalagem)}{" "}
+              {unidadeDaQtd(sugeridoNaEmbalagem, unidadePedida)} — faltam{" "}
+              {fmtQtd(escolhido.sugerido)} un. para o mínimo
             </span>
           )}
         </label>
