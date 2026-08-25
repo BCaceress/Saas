@@ -1,7 +1,14 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { AlertTriangle, CalendarClock, Layers, TrendingDown, Wallet } from "lucide-react";
+import {
+  AlertTriangle,
+  CalendarClock,
+  Layers,
+  SlidersHorizontal,
+  TrendingDown,
+  Wallet,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   TEXTO_RECUSA,
@@ -11,6 +18,7 @@ import {
   type LimitesEscala,
   type Oportunidade,
 } from "@/lib/compras/escalas";
+import { BottomSheet } from "@/components/mobile/bottom-sheet";
 import { EstadoVazio, Metrica, MetricaGrid, fmtMoney, fmtPreco, fmtQtd } from "../_catalogo/ui";
 import { SupplierAvatar } from "../_ui";
 import type { ConviteCotacao, ItemCotacao } from "../_compra-types";
@@ -41,6 +49,7 @@ export type Sugestao = {
 export function LenteOportunidade({
   itens,
   respondidos,
+  superficie = "desktop",
   limites,
   onLimites,
   escolhas,
@@ -51,6 +60,12 @@ export function LenteOportunidade({
 }: {
   itens: ItemCotacao[];
   respondidos: ConviteCotacao[];
+  /**
+   * No celular as travas descem para uma folha e as três métricas viram uma
+   * tira compacta: config e resumo somavam ~330px acima do conteúdo — antes
+   * de a primeira promoção aparecer na tela.
+   */
+  superficie?: "desktop" | "mobile";
   limites: LimitesEscala;
   onLimites: (l: LimitesEscala) => void;
   escolhas: Record<string, string | null>;
@@ -111,6 +126,9 @@ export function LenteOportunidade({
     [analise],
   );
 
+  const mobile = superficie === "mobile";
+  const [travasAbertas, setTravasAbertas] = useState(false);
+
   const resumo = somarOportunidades(recomendadas.map((s) => s.oportunidade));
   const comFaixa = analise.filter((a) => a.porFornecedor.length > 0);
 
@@ -126,40 +144,72 @@ export function LenteOportunidade({
 
   return (
     <div className="flex flex-col gap-4">
-      <Travas limites={limites} onLimites={onLimites} editavel={editavel} />
+      {mobile ? (
+        <>
+          {/* A régua vira UMA linha: o que ela está fazendo agora, e um toque
+              para mexer. Três campos numéricos abertos empurravam a primeira
+              promoção para fora da tela. */}
+          <button
+            type="button"
+            onClick={() => setTravasAbertas(true)}
+            aria-haspopup="dialog"
+            className="flex min-h-11 items-center gap-2 rounded-[var(--radius-lg)] border border-line bg-surface px-3 py-2 text-left"
+          >
+            <SlidersHorizontal size={14} className="shrink-0 text-muted" aria-hidden />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[12px] font-medium text-ink">Até onde vale a pena</span>
+              <span className="block truncate font-mono text-[11px] tabular-nums text-muted">
+                {resumoLimites(limites)}
+              </span>
+            </span>
+            <span className="shrink-0 text-[12px] font-medium text-brand">ajustar</span>
+          </button>
 
-      <MetricaGrid className="lg:grid-cols-3">
-        <Metrica
-          label="Economia se levar as promoções"
-          valor={fmtMoney(resumo.economia)}
-          sub={
-            resumo.itens === 0
-              ? "nenhuma faixa passou nas suas travas"
-              : `${resumo.itens} ${resumo.itens === 1 ? "item" : "itens"} com promoção que compensa`
-          }
-          tom="ok"
-          icon={<TrendingDown size={13} />}
-        />
-        <Metrica
-          label="Sai do caixa a mais, hoje"
-          valor={fmtMoney(resumo.investimentoExtra)}
-          sub="contra comprar só o que foi cotado"
-          tom="brand"
-          icon={<Wallet size={13} />}
-        />
-        <Metrica
-          label="Maior cobertura resultante"
-          valor={resumo.maiorCoberturaDias === null ? "—" : `${resumo.maiorCoberturaDias} dias`}
-          sub="o item que mais fica na prateleira"
-          icon={<CalendarClock size={13} />}
-        />
-      </MetricaGrid>
+          <TiraResumoEscala resumo={resumo} />
+        </>
+      ) : (
+        <>
+          <Travas limites={limites} onLimites={onLimites} editavel={editavel} />
+
+          <MetricaGrid className="grid-cols-1 sm:grid-cols-3 lg:grid-cols-3">
+            <Metrica
+              label="Economia se levar as promoções"
+              valor={fmtMoney(resumo.economia)}
+              sub={
+                resumo.itens === 0
+                  ? "nenhuma faixa passou nas suas travas"
+                  : `${resumo.itens} ${resumo.itens === 1 ? "item" : "itens"} com promoção que compensa`
+              }
+              tom="ok"
+              icon={<TrendingDown size={13} />}
+            />
+            <Metrica
+              label="Sai do caixa a mais, hoje"
+              valor={fmtMoney(resumo.investimentoExtra)}
+              sub="contra comprar só o que foi cotado"
+              tom="brand"
+              icon={<Wallet size={13} />}
+            />
+            <Metrica
+              label="Maior cobertura resultante"
+              valor={
+                resumo.maiorCoberturaDias === null ? "—" : `${resumo.maiorCoberturaDias} dias`
+              }
+              sub="o item que mais fica na prateleira"
+              icon={<CalendarClock size={13} />}
+            />
+          </MetricaGrid>
+        </>
+      )}
 
       {editavel && recomendadas.length > 0 && (
         <button
           type="button"
           onClick={() => onAplicarTodas(recomendadas)}
-          className="self-start rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+          className={cn(
+            "min-h-11 rounded-full bg-brand px-4 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong",
+            mobile ? "w-full" : "self-start py-2",
+          )}
         >
           Levar as {recomendadas.length} que compensam
         </button>
@@ -178,7 +228,85 @@ export function LenteOportunidade({
           />
         ))}
       </ul>
+
+      {mobile && (
+        <BottomSheet
+          open={travasAbertas}
+          onClose={() => setTravasAbertas(false)}
+          titulo="Até onde vale a pena"
+          descricao="Sem limite, a promoção mais barata é sempre a maior — e a conta some no capital parado."
+          rodape={
+            <button
+              type="button"
+              onClick={() => setTravasAbertas(false)}
+              className="min-h-12 w-full rounded-full bg-brand text-sm font-semibold text-on-brand"
+            >
+              Aplicar
+            </button>
+          }
+        >
+          <Travas limites={limites} onLimites={onLimites} editavel={editavel} semMoldura />
+        </BottomSheet>
+      )}
     </div>
+  );
+}
+
+/** A régua em uma linha, para caber no botão que abre a folha. */
+function resumoLimites(l: LimitesEscala): string {
+  return [
+    `≥ ${l.economiaMinPct}% de desconto`,
+    `até ${l.coberturaMaxDias} dias de estoque`,
+    l.capitalExtraMax === null ? "sem teto de caixa" : `até ${fmtMoney(l.capitalExtraMax)}`,
+  ].join(" · ");
+}
+
+/**
+ * Os três números do resumo no celular. `MetricaGrid` é `grid-cols-2` na base:
+ * com três filhos ela deixava o terceiro pendurado em meia largura, e a 19px
+ * um `R$ 1.234,56` não cabe em 120px de coluna. Rótulo à esquerda, número à
+ * direita, uma linha cada.
+ */
+function TiraResumoEscala({
+  resumo,
+}: {
+  resumo: ReturnType<typeof somarOportunidades>;
+}) {
+  const linhas = [
+    {
+      icone: <TrendingDown size={13} aria-hidden />,
+      label: "Economia se levar",
+      valor: fmtMoney(resumo.economia),
+      cor: "text-ok",
+    },
+    {
+      icone: <Wallet size={13} aria-hidden />,
+      label: "Sai do caixa hoje",
+      valor: fmtMoney(resumo.investimentoExtra),
+      cor: "text-brand",
+    },
+    {
+      icone: <CalendarClock size={13} aria-hidden />,
+      label: "Maior cobertura",
+      valor: resumo.maiorCoberturaDias === null ? "—" : `${resumo.maiorCoberturaDias} dias`,
+      cor: "text-ink",
+    },
+  ];
+
+  return (
+    <ul className="flex flex-col divide-y divide-line overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
+      {linhas.map((l) => (
+        <li key={l.label} className="flex items-center justify-between gap-3 px-3.5 py-2">
+          <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-muted">
+            {l.icone}
+            <span className="truncate">{l.label}</span>
+          </span>
+          <span className={cn("shrink-0 font-mono text-[14px] font-semibold tabular-nums", l.cor)}>
+            {l.valor}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -188,10 +316,13 @@ function Travas({
   limites,
   onLimites,
   editavel,
+  semMoldura = false,
 }: {
   limites: LimitesEscala;
   onLimites: (l: LimitesEscala) => void;
   editavel: boolean;
+  /** Dentro da folha a borda e o título já existem em volta. */
+  semMoldura?: boolean;
 }) {
   const [salvando, startSalvar] = useTransition();
   /** `null` = ainda não salvou nesta sessão; string = o que foi gravado. */
@@ -199,14 +330,21 @@ function Travas({
   const assinatura = JSON.stringify(limites);
 
   return (
-    <div className="flex flex-col gap-2.5 rounded-[var(--radius-lg)] border border-line bg-surface p-3.5">
-      <div>
-        <p className="text-[13px] font-medium text-ink">Até onde vale a pena</p>
-        <p className="text-[12px] text-muted">
-          Sem limite, a promoção mais barata é sempre a maior — e a conta some no capital
-          parado. Estes são os seus.
-        </p>
-      </div>
+    <div
+      className={cn(
+        "flex flex-col gap-2.5",
+        !semMoldura && "rounded-[var(--radius-lg)] border border-line bg-surface p-3.5",
+      )}
+    >
+      {!semMoldura && (
+        <div>
+          <p className="text-[13px] font-medium text-ink">Até onde vale a pena</p>
+          <p className="text-[12px] text-muted">
+            Sem limite, a promoção mais barata é sempre a maior — e a conta some no capital
+            parado. Estes são os seus.
+          </p>
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Trava
@@ -388,6 +526,14 @@ function CardEscala({
   );
 }
 
+/**
+ * Uma faixa de promoção.
+ *
+ * Era `flex-wrap justify-between`: em 390px os quatro números caíam em ordem
+ * imprevisível e os três da direita viravam um bolo sem rótulo. Agora são duas
+ * linhas fixas — a oferta em cima, a conta embaixo numa grade de três colunas
+ * com o rótulo por escrito. O que decide não pode depender da largura da tela.
+ */
 function LinhaFaixa({
   o,
   emb,
@@ -413,7 +559,7 @@ function LinhaFaixa({
         onClick={onAplicar}
         aria-pressed={ativa}
         className={cn(
-          "flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-[var(--radius)] border px-2.5 py-2 text-left transition-colors",
+          "flex min-h-11 w-full flex-col gap-1.5 rounded-[var(--radius)] border px-2.5 py-2 text-left transition-colors",
           ativa
             ? "border-brand bg-brand text-on-brand"
             : barrada
@@ -422,24 +568,35 @@ function LinhaFaixa({
           (!editavel || barrada) && "cursor-default",
         )}
       >
-        <span className="flex min-w-0 items-baseline gap-1.5">
-          <span
-            className={cn(
-              "font-mono text-[13px] font-semibold tabular-nums",
-              ativa ? "" : barrada ? "text-muted line-through" : "text-ink",
-            )}
-          >
-            {fmtQtd(o.quantidade)} {emb}
+        <span className="flex items-baseline justify-between gap-2">
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            <span
+              className={cn(
+                "font-mono text-[13px] font-semibold tabular-nums",
+                ativa ? "" : barrada ? "text-muted line-through" : "text-ink",
+              )}
+            >
+              {fmtQtd(o.quantidade)} {emb}
+            </span>
+            <span
+              className={cn(
+                "font-mono text-[13px] tabular-nums",
+                ativa ? "text-on-brand/80" : barrada ? "text-faint" : "text-accent",
+              )}
+            >
+              {fmtPreco(o.precoUnitario)}
+            </span>
           </span>
           <span
             className={cn(
-              "font-mono text-[13px] tabular-nums",
-              ativa ? "text-on-brand/80" : barrada ? "text-faint" : "text-accent",
+              "shrink-0 rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums",
+              ativa
+                ? "bg-on-brand/15 text-on-brand"
+                : barrada
+                  ? "text-faint"
+                  : "bg-accent-soft text-accent",
             )}
           >
-            {fmtPreco(o.precoUnitario)}
-          </span>
-          <span className={cn("text-[11px]", ativa ? "text-on-brand/80" : "text-faint")}>
             −{o.economiaPct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%
           </span>
         </span>
@@ -452,15 +609,28 @@ function LinhaFaixa({
         ) : (
           <span
             className={cn(
-              "flex flex-wrap items-center gap-x-2.5 text-[11px] tabular-nums",
-              ativa ? "text-on-brand/80" : "text-muted",
+              "grid grid-cols-3 gap-2 border-t pt-1.5 text-[11px] tabular-nums",
+              ativa ? "border-on-brand/20 text-on-brand/80" : "border-line text-muted",
             )}
           >
-            <span className={ativa ? "" : "font-medium text-ok"}>
-              economiza {fmtMoney(o.economia)}
+            <span className="flex min-w-0 flex-col">
+              <span className={cn("truncate", ativa ? "" : "text-faint")}>economiza</span>
+              <span className={cn("font-mono font-semibold", ativa ? "" : "text-ok")}>
+                {fmtMoney(o.economia)}
+              </span>
             </span>
-            <span>+{fmtMoney(o.investimentoExtra)} hoje</span>
-            {o.coberturaTotalDias !== null && <span>{o.coberturaTotalDias} dias de estoque</span>}
+            <span className="flex min-w-0 flex-col">
+              <span className={cn("truncate", ativa ? "" : "text-faint")}>sai hoje</span>
+              <span className={cn("font-mono font-semibold", ativa ? "" : "text-ink-2")}>
+                +{fmtMoney(o.investimentoExtra)}
+              </span>
+            </span>
+            <span className="flex min-w-0 flex-col">
+              <span className={cn("truncate", ativa ? "" : "text-faint")}>estoque</span>
+              <span className={cn("font-mono font-semibold", ativa ? "" : "text-ink-2")}>
+                {o.coberturaTotalDias === null ? "—" : `${o.coberturaTotalDias} dias`}
+              </span>
+            </span>
           </span>
         )}
       </button>

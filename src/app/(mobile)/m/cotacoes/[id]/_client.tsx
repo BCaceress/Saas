@@ -135,6 +135,23 @@ export function CotacaoMobileDetalhe({
   );
   const [envios, setEnvios] = React.useState<Envio[] | null>(null);
 
+  /**
+   * Quantos itens já foram decididos lá dentro do comparativo. O chip dizia
+   * "Comparar (3)" — o número de fornecedores que responderam, que não é a
+   * pergunta em aberto de quem está no meio da escolha.
+   *
+   * `useCallback` porque o comparativo espelha isto num efeito: uma função
+   * nova a cada render viraria laço.
+   */
+  const [progresso, setProgresso] = React.useState<{
+    escolhidos: number;
+    total: number;
+  } | null>(null);
+  const onProgresso = React.useCallback(
+    (p: { escolhidos: number; total: number }) => setProgresso(p),
+    [],
+  );
+
   const respondidos = cotacao.convites.filter((c) => c.status === "RESPONDIDA").length;
   const recusados = cotacao.convites.filter((c) => c.status === "RECUSADA").length;
   // Mesma régua do servidor: depois da primeira resposta a lista congela.
@@ -229,7 +246,10 @@ export function CotacaoMobileDetalhe({
               Fornecedores ({cotacao.convites.length})
             </Chip>
             <Chip ativo={aba === "comparar"} onClick={() => setAba("comparar")}>
-              Comparar ({respondidos})
+              Comparar{" "}
+              {progresso
+                ? `(${progresso.escolhidos}/${progresso.total})`
+                : `(${respondidos})`}
             </Chip>
           </div>
 
@@ -247,12 +267,32 @@ export function CotacaoMobileDetalhe({
               onEnviado={setEnvios}
             />
           )}
-          {aba === "comparar" && (
-            <ComparativoCotacao
-              cotacao={cotacao}
-              resumo={resumo}
-              podePedir={podePedir}
-            />
+          {/* MONTADO o tempo todo, escondido por CSS: desmontar ao trocar de
+              aba jogava fora as escolhas — dar uma olhada em "Itens" custava a
+              decisão inteira. É também o que mantém o contador do chip vivo
+              enquanto outra aba está à frente. */}
+          {respondidos > 0 && (
+            <div className={aba === "comparar" ? undefined : "hidden"}>
+              <ComparativoCotacao
+                cotacao={cotacao}
+                resumo={resumo}
+                podePedir={podePedir}
+                superficie="mobile"
+                onProgresso={onProgresso}
+              />
+            </div>
+          )}
+
+          {/* Sem resposta nenhuma o comparativo não existe: a aba explica em
+              vez de mostrar uma lista vazia de fornecedores. */}
+          {aba === "comparar" && respondidos === 0 && (
+            <Card className="p-6 text-center">
+              <p className="text-sm font-medium text-ink">Ninguém respondeu ainda</p>
+              <p className="mt-1 text-[13px] text-muted">
+                Assim que a primeira resposta chegar, o comparativo aparece aqui com o melhor
+                preço de cada item.
+              </p>
+            </Card>
           )}
         </div>
       )}

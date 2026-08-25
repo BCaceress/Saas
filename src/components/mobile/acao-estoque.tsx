@@ -281,7 +281,9 @@ export function Chip({
       onClick={onClick}
       aria-pressed={ativo}
       className={cn(
-        "min-h-9 cursor-pointer rounded-full border px-3 text-[13px] font-medium",
+        // 44px: abaixo disso o polegar erra o alvo, e o chip é filtro — quem
+        // erra troca de filtro sem querer no meio da leitura.
+        "min-h-11 cursor-pointer rounded-full border px-3 text-[13px] font-medium",
         ativo
           ? "border-transparent bg-brand text-on-brand"
           : "border-line-button bg-surface text-ink-2",

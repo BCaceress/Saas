@@ -1,8 +1,10 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
+  ChevronDown,
+  ChevronRight,
   Layers,
   Scale,
   Target,
@@ -11,6 +13,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { precoNaQuantidade, type LimitesEscala } from "@/lib/compras/escalas";
+import { BottomSheet } from "@/components/mobile/bottom-sheet";
+import { toast } from "@/components/ui/toast";
 import { EstadoVazio, fmtMoney, fmtPreco, unidadeDaQtd } from "../_catalogo/ui";
 import { SupplierAvatar, Thumb } from "../_ui";
 import type { ConviteCotacao, CotacaoDetalhe, ItemCotacao } from "../_compra-types";
@@ -41,6 +45,20 @@ import type { ResumoCotacao } from "@/lib/compras/cotacao-resumo";
 // operador escolhe qual está fazendo.
 
 const fmtQtd = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
+
+/**
+ * Filtro da lista de cards. Só existe no celular: na matriz o olho varre a
+ * coluna e acha sozinho o que falta decidir; empilhado, doze itens são meio
+ * metro de rolagem sem atalho.
+ */
+type FiltroItens = "todos" | "pendentes" | "promocao" | "marca";
+
+const ROTULO_FILTRO: Record<FiltroItens, string> = {
+  todos: "Todos",
+  pendentes: "Sem escolha",
+  promocao: "Com promoção",
+  marca: "Marca divergente",
+};
 
 /**
  * Aviso de quantidade parcial: o fornecedor respondeu que só atende parte do
@@ -82,16 +100,43 @@ export function ComparativoCotacao({
   cotacao,
   resumo,
   podePedir,
+  superficie = "desktop",
+  onProgresso,
 }: {
   cotacao: CotacaoDetalhe;
   /** Leitura em texto do que os números dizem — fica logo abaixo do totalizador. */
   resumo: ResumoCotacao;
   podePedir: boolean;
+  /**
+   * Onde esta tela está rodando. No `/m` a matriz NUNCA aparece — nem em
+   * tablet, onde o `md:` do desktop a traria de volta com 52rem de largura
+   * dentro de uma casca de 4 de padding. Além disso o rodapé sobe acima da
+   * barra de abas flutuante e erro/aviso viram toast, porque no fim de uma
+   * lista longa eles nascem fora da tela.
+   */
+  superficie?: "desktop" | "mobile";
+  /** Espelha "quantos itens já foram decididos" para quem desenha a aba. */
+  onProgresso?: (p: { escolhidos: number; total: number }) => void;
 }) {
+  const mobile = superficie === "mobile";
   const router = useRouter();
   const [pendente, startTransition] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
+
+  /**
+   * No celular a mensagem vai para o toast: erro e aviso moram logo acima do
+   * rodapé, e com doze itens na lista isso é meia tela abaixo do polegar.
+   */
+  function avisar(tom: "erro" | "aviso", texto: string) {
+    if (mobile) {
+      if (tom === "erro") toast.error(texto);
+      else toast.info(texto);
+      return;
+    }
+    if (tom === "erro") setErro(texto);
+    else setAviso(texto);
+  }
 
   const respondidos = cotacao.convites.filter((c) => c.status === "RESPONDIDA");
 
@@ -125,6 +170,13 @@ export function ComparativoCotacao({
   );
 
   const [lente, setLente] = useState<"necessidade" | "oportunidade">("necessidade");
+
+  // Celular: a estratégia e a confirmação do pedido moram em folhas. Empilhadas
+  // no rodapé fixo elas comiam 40% de uma tela de 390px — e o rodapé é onde a
+  // compra fecha, não onde ela é explicada.
+  const [estrategiaAberta, setEstrategiaAberta] = useState(false);
+  const [confirmando, setConfirmando] = useState(false);
+  const [filtro, setFiltro] = useState<FiltroItens>("todos");
 
   const [limites, setLimites] = useState<LimitesEscala>(cotacao.limitesEscala);
 
@@ -285,6 +337,16 @@ export function ComparativoCotacao({
   const itensEscolhidos = Object.entries(escolhas).filter(([, v]) => v !== null).length;
 
   /**
+   * O chip da aba no celular dizia "Comparar (3)" — fornecedores que
+   * responderam, que não é a pergunta em aberto. Quantos itens ainda faltam
+   * decidir só existe aqui dentro, então sai por aqui.
+   */
+  const totalItens = cotacao.itens.length;
+  useEffect(() => {
+    onProgresso?.({ escolhidos: itensEscolhidos, total: totalItens });
+  }, [onProgresso, itensEscolhidos, totalItens]);
+
+  /**
    * O que a estratégia atual rende contra comprar tudo do fornecedor único mais
    * barato. É a pergunta do rodapé — "vale a pena dividir?" — e não a economia
    * contra a pior proposta, que já está no totalizador lá em cima.
@@ -310,13 +372,17 @@ export function ComparativoCotacao({
           enviar: true,
         });
         if (r.semProduto.length > 0) {
-          setAviso(
+          avisar(
+            "aviso",
             `Ficaram de fora ${r.semProduto.length} ${r.semProduto.length === 1 ? "item que não está" : "itens que não estão"} vinculados ao catálogo: ${r.semProduto.join(", ")}.`,
           );
+        } else if (mobile) {
+          toast.success("Pedidos gerados");
         }
+        setConfirmando(false);
         router.refresh();
       } catch (e) {
-        setErro(e instanceof Error ? e.message : "Não foi possível gerar os pedidos.");
+        avisar("erro", e instanceof Error ? e.message : "Não foi possível gerar os pedidos.");
       }
     });
   }
@@ -341,6 +407,72 @@ export function ComparativoCotacao({
       ? cotacao.itens.filter((i) => escolhas[i.id] === null).length
       : 0;
 
+  /** A estratégia em uma linha — é o que a barra do celular mostra. */
+  const rotuloModo =
+    modo === "melhor"
+      ? "Melhor preço por item"
+      : modo === "fornecedor"
+        ? (nomeFornecedorUnico ?? "Um único fornecedor")
+        : "Escolha personalizada";
+
+  /**
+   * O parágrafo do rodapé do desktop concatena tudo numa frase. Em 390px ela
+   * embrulha em quatro linhas e empurra o botão para fora — aqui vira uma
+   * linha só, truncada, com o total assumindo o destaque sozinho.
+   */
+  const detalheRodape =
+    itensEscolhidos === 0
+      ? "Escolha de quem comprar cada item."
+      : [
+          `${itensEscolhidos}/${cotacao.itens.length} escolhidos`,
+          foraDoFornecedor > 0 ? `${foraDoFornecedor} sem cotação dele` : null,
+          comPromocao > 0 ? `${comPromocao} acima do cotado` : null,
+          economiaDividindo > 0.005 ? `economia ${fmtMoney(economiaDividindo)}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+
+  /** Em quantos pedidos a escolha vai virar, e de quanto cada um. */
+  const pedidosPrevistos = respondidos
+    .map((c) => {
+      const itens = cotacao.itens.filter((i) => escolhas[i.id] === c.id);
+      return {
+        id: c.id,
+        nome: c.supplierNome,
+        logoUrl: c.supplierLogoUrl,
+        itens: itens.length,
+        total: itens.reduce((acc, i) => {
+          const preco = precoDe(i, c);
+          return preco === null ? acc : acc + preco * quantidadeDe(i);
+        }, 0),
+      };
+    })
+    .filter((x) => x.itens > 0);
+
+  /** Alguém ofereceu promoção por volume neste item? */
+  function temPromocaoNoItem(item: ItemCotacao): boolean {
+    return respondidos.some((c) => {
+      const r = c.respostas.find((x) => x.quotationItemId === item.id);
+      return !!r?.disponivel && r.faixas.length > 0;
+    });
+  }
+
+  function passaNoFiltro(item: ItemCotacao, f: FiltroItens): boolean {
+    if (f === "pendentes") return !escolhas[item.id];
+    if (f === "promocao") return temPromocaoNoItem(item);
+    if (f === "marca") return marcasDivergemNoItem(item.id);
+    return true;
+  }
+
+  const contagemFiltro = {
+    todos: cotacao.itens.length,
+    pendentes: cotacao.itens.filter((i) => passaNoFiltro(i, "pendentes")).length,
+    promocao: cotacao.itens.filter((i) => passaNoFiltro(i, "promocao")).length,
+    marca: cotacao.itens.filter((i) => passaNoFiltro(i, "marca")).length,
+  } satisfies Record<FiltroItens, number>;
+
+  const itensVisiveis = cotacao.itens.filter((i) => passaNoFiltro(i, filtro));
+
   return (
     <div className="flex flex-col gap-4">
       {temFaixa && (
@@ -357,6 +489,7 @@ export function ComparativoCotacao({
         <LenteOportunidade
           itens={cotacao.itens}
           respondidos={respondidos}
+          superficie={superficie}
           limites={limites}
           onLimites={setLimites}
           escolhas={escolhas}
@@ -369,7 +502,15 @@ export function ComparativoCotacao({
 
       {lente === "necessidade" && (
         <>
-      <div className="hidden overflow-x-auto rounded-[var(--radius-lg)] border border-line bg-surface md:block">
+      <div
+        className={cn(
+          "overflow-x-auto rounded-[var(--radius-lg)] border border-line bg-surface",
+          // A matriz não volta em NENHUMA largura da superfície mobile: dentro
+          // da casca do /m, 52rem de tabela é rolagem lateral às cegas — que é
+          // exatamente o que o card por produto existe para evitar.
+          mobile ? "hidden" : "hidden md:block",
+        )}
+      >
         {/* A largura mínima cresceu junto com a coluna de total: espremida,
             a coluna do item truncava o nome no terceiro caractere. */}
         <table className="w-full min-w-[52rem] text-sm">
@@ -641,28 +782,84 @@ export function ComparativoCotacao({
       </div>
 
       {/* Celular: um produto por vez. */}
-      <ul className="flex flex-col gap-3 md:hidden">
-        {cotacao.itens.map((item) => (
-          <CardItem
-            key={item.id}
-            item={item}
-            quantidade={quantidadeDe(item)}
-            respondidos={respondidos}
-            precoDe={(c) => precoDe(item, c)}
-            melhorConviteId={melhorPorItem.get(item.id)?.conviteId ?? null}
-            escolhido={escolhas[item.id] ?? null}
-            editavel={podePedir && !decidida}
-            mostrarMarca={marcasDivergemNoItem(item.id)}
-            onEscolher={(conviteId) => {
-              setModo("manual");
-              setEscolhas((e) => ({
-                ...e,
-                [item.id]: e[item.id] === conviteId ? null : conviteId,
-              }));
-            }}
-          />
-        ))}
-      </ul>
+      <div className={cn("flex flex-col gap-3", !mobile && "md:hidden")}>
+        {/* Com lista curta o filtro é mais UI do que ajuda; a partir de cinco
+            itens ele é o que responde "o que ainda falta decidir?". */}
+        {mobile && cotacao.itens.length >= 5 && (
+          <div
+            role="radiogroup"
+            aria-label="Filtrar itens"
+            className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-0.5"
+          >
+            {(Object.keys(ROTULO_FILTRO) as FiltroItens[]).map((f) => {
+              const ativo = filtro === f;
+              const n = contagemFiltro[f];
+              if (n === 0 && f !== "todos") return null;
+              return (
+                <button
+                  key={f}
+                  type="button"
+                  role="radio"
+                  aria-checked={ativo}
+                  onClick={() => setFiltro(f)}
+                  className={cn(
+                    "min-h-11 shrink-0 rounded-full border px-3 text-[13px] font-medium transition-colors",
+                    ativo
+                      ? "border-transparent bg-brand text-on-brand"
+                      : "border-line bg-surface text-ink-2",
+                  )}
+                >
+                  {ROTULO_FILTRO[f]}{" "}
+                  <span
+                    className={cn(
+                      "font-mono tabular-nums",
+                      ativo ? "text-on-brand/80" : "text-faint",
+                    )}
+                  >
+                    {n}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {itensVisiveis.length === 0 ? (
+          <p className="rounded-[var(--radius-lg)] border border-dashed border-line px-4 py-6 text-center text-[13px] text-muted">
+            Nenhum item neste filtro.{" "}
+            <button
+              type="button"
+              onClick={() => setFiltro("todos")}
+              className="font-medium text-brand underline-offset-4 hover:underline"
+            >
+              Ver todos
+            </button>
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-3">
+            {itensVisiveis.map((item) => (
+              <CardItem
+                key={item.id}
+                item={item}
+                quantidade={quantidadeDe(item)}
+                respondidos={respondidos}
+                precoDe={(c) => precoDe(item, c)}
+                melhorConviteId={melhorPorItem.get(item.id)?.conviteId ?? null}
+                escolhido={escolhas[item.id] ?? null}
+                editavel={podePedir && !decidida}
+                mostrarMarca={marcasDivergemNoItem(item.id)}
+                onEscolher={(conviteId) => {
+                  setModo("manual");
+                  setEscolhas((e) => ({
+                    ...e,
+                    [item.id]: e[item.id] === conviteId ? null : conviteId,
+                  }));
+                }}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
         </>
       )}
 
@@ -674,64 +871,229 @@ export function ComparativoCotacao({
       )}
 
       {podePedir && !decidida && (
-        <div className="sticky bottom-0 z-20 flex flex-col gap-2.5 rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-3 shadow-[var(--shadow-float)]">
+        <div
+          style={
+            mobile
+              ? // A barra de abas do /m é `fixed bottom-0` com 64px de pílula
+                // mais a área segura. Com `bottom-0`, o total e o botão de
+                // gerar ficavam ATRÁS dela: a ação principal da tela, coberta.
+                { bottom: "calc(4rem + max(0.75rem, env(safe-area-inset-bottom)) + 0.5rem)" }
+              : undefined
+          }
+          className={cn(
+            "sticky z-20 flex flex-col rounded-[var(--radius-lg)] border border-line bg-surface shadow-[var(--shadow-float)]",
+            mobile ? "gap-2 px-3 py-2.5" : "bottom-0 gap-2.5 px-4 py-3",
+          )}
+        >
           {/* Escolher a estratégia e fechar a compra são o mesmo gesto, e agora
               moram no mesmo lugar: o operador decide "de quem" e "gerar" sem
-              subir a tela de volta. */}
-          {respondidos.length > 0 && (
-            <EstrategiaCompra
-              modo={modo}
-              respondidos={respondidos}
-              totalItens={cotacao.itens.length}
-              fornecedorUnico={fornecedorUnico}
-              onMelhorPreco={aplicarMelhorPreco}
-              onFornecedor={aplicarFornecedor}
-            />
-          )}
+              subir a tela de volta.
 
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-2.5">
-            <p className="text-[13px] text-muted">
-              {itensEscolhidos === 0
-                ? "Escolha de quem comprar cada item."
-                : `${itensEscolhidos} ${itensEscolhidos === 1 ? "item escolhido" : "itens escolhidos"}${
-                    modo === "fornecedor" && nomeFornecedorUnico
-                      ? ` de ${nomeFornecedorUnico}`
-                      : ""
-                  }${foraDoFornecedor > 0 ? ` · ${foraDoFornecedor} sem cotação dele` : ""}${
-                    comPromocao > 0 ? ` · ${comPromocao} acima do cotado por promoção` : ""
-                  } · `}
-              {itensEscolhidos > 0 && (
-                <span className="font-mono text-[15px] font-semibold tabular-nums text-ink">
-                  {fmtMoney(totalEscolhido)}
+              No celular a escolha da estratégia desce para uma folha: as duas
+              opções, a fila de fornecedores e o parágrafo somavam quase metade
+              de uma tela de 390px em cima de onde a compra fecha. */}
+          {mobile ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setEstrategiaAberta(true)}
+                aria-haspopup="dialog"
+                className="flex min-h-11 items-center gap-2 rounded-[var(--radius)] border border-line px-3 py-1.5 text-left transition-colors active:bg-surface-2"
+              >
+                <span className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-faint">
+                  Como comprar
                 </span>
-              )}
-              {/* O que dividir a compra rende contra fechar tudo com o mais
-                  barato. Zero não vira selo: dizer "economia de R$ 0,00" só
-                  ensina o operador a ignorar o rótulo. */}
-              {economiaDividindo > 0.005 && (
-                <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-ok-soft px-2 py-0.5 text-[12px] font-medium text-ok">
-                  <TrendingDown size={12} />
-                  Economia estimada{" "}
-                  <span className="font-mono font-semibold tabular-nums">
-                    {fmtMoney(economiaDividindo)}
-                  </span>
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
+                  {rotuloModo}
                 </span>
+                <ChevronRight size={15} className="shrink-0 text-muted" aria-hidden />
+              </button>
+
+              <div className="flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="font-mono text-[17px] font-semibold leading-none tabular-nums text-ink">
+                    {itensEscolhidos === 0 ? "—" : fmtMoney(totalEscolhido)}
+                  </p>
+                  <p className="mt-1 truncate text-[11px] text-muted">{detalheRodape}</p>
+                </div>
+                {/* Gerar pedido é irreversível e o botão está colado no
+                    polegar: no celular ele abre a conferência, não dispara. */}
+                <button
+                  type="button"
+                  onClick={() => setConfirmando(true)}
+                  disabled={pendente || itensEscolhidos === 0}
+                  aria-haspopup="dialog"
+                  className="min-h-11 shrink-0 rounded-full bg-brand px-5 text-sm font-semibold text-on-brand transition-colors disabled:opacity-50"
+                >
+                  {pendente ? "Gerando…" : "Gerar"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              {respondidos.length > 0 && (
+                <EstrategiaCompra
+                  modo={modo}
+                  respondidos={respondidos}
+                  totalItens={cotacao.itens.length}
+                  fornecedorUnico={fornecedorUnico}
+                  onMelhorPreco={aplicarMelhorPreco}
+                  onFornecedor={aplicarFornecedor}
+                />
               )}
-            </p>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-2.5">
+                <p className="text-[13px] text-muted">
+                  {itensEscolhidos === 0
+                    ? "Escolha de quem comprar cada item."
+                    : `${itensEscolhidos} ${itensEscolhidos === 1 ? "item escolhido" : "itens escolhidos"}${
+                        modo === "fornecedor" && nomeFornecedorUnico
+                          ? ` de ${nomeFornecedorUnico}`
+                          : ""
+                      }${foraDoFornecedor > 0 ? ` · ${foraDoFornecedor} sem cotação dele` : ""}${
+                        comPromocao > 0 ? ` · ${comPromocao} acima do cotado por promoção` : ""
+                      } · `}
+                  {itensEscolhidos > 0 && (
+                    <span className="font-mono text-[15px] font-semibold tabular-nums text-ink">
+                      {fmtMoney(totalEscolhido)}
+                    </span>
+                  )}
+                  {/* O que dividir a compra rende contra fechar tudo com o mais
+                      barato. Zero não vira selo: dizer "economia de R$ 0,00" só
+                      ensina o operador a ignorar o rótulo. */}
+                  {economiaDividindo > 0.005 && (
+                    <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-ok-soft px-2 py-0.5 text-[12px] font-medium text-ok">
+                      <TrendingDown size={12} />
+                      Economia estimada{" "}
+                      <span className="font-mono font-semibold tabular-nums">
+                        {fmtMoney(economiaDividindo)}
+                      </span>
+                    </span>
+                  )}
+                </p>
+                <button
+                  type="button"
+                  onClick={gerar}
+                  disabled={pendente || itensEscolhidos === 0}
+                  className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
+                >
+                  {pendente
+                    ? "Gerando…"
+                    : modo === "fornecedor" && nomeFornecedorUnico
+                      ? `Gerar pedido para ${nomeFornecedorUnico}`
+                      : "Gerar pedidos de compra"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ── Folha: como deseja comprar? ───────────────────── */}
+      {mobile && podePedir && !decidida && (
+        <BottomSheet
+          open={estrategiaAberta}
+          onClose={() => setEstrategiaAberta(false)}
+          titulo="Como deseja comprar?"
+          descricao="Dividir entre fornecedores rende mais no papel; fechar com um só resolve em uma entrega."
+          rodape={
+            <button
+              type="button"
+              onClick={() => setEstrategiaAberta(false)}
+              className="min-h-12 w-full rounded-full bg-brand text-sm font-semibold text-on-brand"
+            >
+              Pronto
+            </button>
+          }
+        >
+          <EstrategiaCompra
+            modo={modo}
+            respondidos={respondidos}
+            totalItens={cotacao.itens.length}
+            fornecedorUnico={fornecedorUnico}
+            onMelhorPreco={aplicarMelhorPreco}
+            onFornecedor={aplicarFornecedor}
+            comTitulo={false}
+          />
+        </BottomSheet>
+      )}
+
+      {/* ── Folha: conferência antes de gerar ─────────────── */}
+      {mobile && podePedir && !decidida && (
+        <BottomSheet
+          open={confirmando}
+          onClose={() => setConfirmando(false)}
+          titulo="Gerar pedidos de compra"
+          descricao={
+            <span className="flex items-baseline gap-2">
+              <span>
+                {pedidosPrevistos.length}{" "}
+                {pedidosPrevistos.length === 1 ? "pedido" : "pedidos"}
+              </span>
+              <span className="font-mono font-semibold tabular-nums text-ink">
+                {fmtMoney(totalEscolhido)}
+              </span>
+            </span>
+          }
+          rodape={
             <button
               type="button"
               onClick={gerar}
-              disabled={pendente || itensEscolhidos === 0}
-              className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
+              disabled={pendente}
+              className="min-h-12 w-full rounded-full bg-brand text-sm font-semibold text-on-brand disabled:opacity-50"
             >
               {pendente
                 ? "Gerando…"
-                : modo === "fornecedor" && nomeFornecedorUnico
-                  ? `Gerar pedido para ${nomeFornecedorUnico}`
-                  : "Gerar pedidos de compra"}
+                : `Confirmar e enviar ${pedidosPrevistos.length === 1 ? "o pedido" : `os ${pedidosPrevistos.length} pedidos`}`}
             </button>
-          </div>
-        </div>
+          }
+        >
+          <ul className="flex flex-col gap-2">
+            {pedidosPrevistos.map((x) => (
+              <li
+                key={x.id}
+                className="flex items-center gap-2.5 rounded-[var(--radius)] border border-line px-3 py-2.5"
+              >
+                <SupplierAvatar nome={x.nome} logoUrl={x.logoUrl} size={24} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-medium text-ink">
+                    {x.nome}
+                  </span>
+                  <span className="block text-[11px] text-muted">
+                    {x.itens} {x.itens === 1 ? "item" : "itens"}
+                  </span>
+                </span>
+                <span className="shrink-0 font-mono text-[14px] font-semibold tabular-nums text-ink">
+                  {fmtMoney(x.total)}
+                </span>
+              </li>
+            ))}
+          </ul>
+
+          {/* O que a barra truncou: aqui há espaço para dizer inteiro, e é o
+              último momento em que dá para voltar atrás. */}
+          {(foraDoFornecedor > 0 || comPromocao > 0) && (
+            <ul className="mt-3 flex flex-col gap-1 text-[12px] text-accent">
+              {foraDoFornecedor > 0 && (
+                <li>
+                  {foraDoFornecedor} {foraDoFornecedor === 1 ? "item fica" : "itens ficam"} de
+                  fora — o fornecedor escolhido não cotou.
+                </li>
+              )}
+              {comPromocao > 0 && (
+                <li>
+                  {comPromocao} {comPromocao === 1 ? "item sai" : "itens saem"} acima da
+                  quantidade cotada, por promoção de volume.
+                </li>
+              )}
+            </ul>
+          )}
+
+          <p className="mt-3 text-[12px] leading-relaxed text-muted">
+            Os pedidos são criados e enviados aos fornecedores. A partir daí a cotação fica
+            decidida.
+          </p>
+        </BottomSheet>
       )}
     </div>
   );
@@ -818,6 +1180,7 @@ function EstrategiaCompra({
   fornecedorUnico,
   onMelhorPreco,
   onFornecedor,
+  comTitulo = true,
 }: {
   modo: "melhor" | "fornecedor" | "manual";
   respondidos: ConviteCotacao[];
@@ -825,10 +1188,14 @@ function EstrategiaCompra({
   fornecedorUnico: string | null;
   onMelhorPreco: () => void;
   onFornecedor: (conviteId: string) => void;
+  /** Dentro da folha o título já é o cabeçalho dela — repetido, vira eco. */
+  comTitulo?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-[12px] font-medium text-ink">Como deseja comprar?</span>
+      {comTitulo && (
+        <span className="text-[12px] font-medium text-ink">Como deseja comprar?</span>
+      )}
 
       <div role="radiogroup" aria-label="Como deseja comprar" className="grid gap-2 sm:grid-cols-2">
         <OpcaoCompra
@@ -861,7 +1228,7 @@ function EstrategiaCompra({
                 onClick={() => onFornecedor(c.id)}
                 aria-pressed={ativo}
                 className={cn(
-                  "flex shrink-0 items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors",
+                  "flex min-h-11 shrink-0 items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors",
                   ativo
                     ? "bg-brand text-on-brand"
                     : "border border-line bg-surface text-ink hover:bg-surface-2",
@@ -935,7 +1302,10 @@ function OpcaoCompra({
         >
           {titulo}
         </span>
-        <span className="mt-0.5 hidden text-[11px] leading-snug text-muted sm:block">
+        {/* A descrição NÃO some no celular: sem ela sobram dois rótulos crus
+            e ninguém descobre que uma das opções parte a compra em N pedidos —
+            que é justamente a decisão sendo pedida. */}
+        <span className="mt-0.5 block text-[11px] leading-snug text-muted">
           {descricao}
         </span>
       </span>
@@ -945,6 +1315,16 @@ function OpcaoCompra({
 
 
 // ── Card de item (celular) ──────────────────────────────────
+//
+// Um produto por vez, e os fornecedores ORDENADOS PELO PREÇO. Na matriz o olho
+// varre a coluna e acha o menor sozinho; empilhado na ordem do convite, ele
+// precisa ler todos e comparar de cabeça — que é o trabalho que a tela deveria
+// fazer. Quem não tem o item desce para o fim, numa linha só: são fornecedores
+// que nunca vão ser escolhidos ocupando o lugar da decisão.
+//
+// Decidido, o card FECHA. Doze itens × quatro fornecedores é meio metro de
+// rolagem onde o resolvido pesa igual ao pendente; fechado, ele vira a linha
+// que responde "quem levou, por quanto" e devolve a tela ao que falta.
 
 function CardItem({
   item,
@@ -970,80 +1350,171 @@ function CardItem({
   mostrarMarca: boolean;
   onEscolher: (conviteId: string) => void;
 }) {
+  const linhas = respondidos.map((c) => ({
+    convite: c,
+    resposta: c.respostas.find((x) => x.quotationItemId === item.id),
+    preco: precoDe(c),
+  }));
+
+  const disponiveis = linhas
+    .filter((l) => l.resposta?.disponivel && l.preco !== null)
+    .sort((a, b) => (a.preco as number) - (b.preco as number));
+  const ausentes = linhas.filter((l) => !l.resposta?.disponivel);
+
   // Mesma base do desktop: a diferença de cada proposta contra a melhor da
   // linha só existe quando há com o que comparar.
-  const precosDaLinha = respondidos
-    .map((c) => precoDe(c))
-    .filter((x): x is number => x !== null);
+  const precosDaLinha = disponiveis.map((l) => l.preco as number);
+
+  const escolha = disponiveis.find((l) => l.convite.id === escolhido) ?? null;
+  const totalItem = escolha ? (escolha.preco as number) * quantidade : null;
+
+  // Escolheu → fecha; desmarcou → reabre. Trocar de estratégia lá no rodapé
+  // chega aqui como mudança de `escolhido`, e o card acompanha sem que a
+  // pessoa precise fechar doze cards à mão.
+  const [aberto, setAberto] = useState(!escolhido);
+  const anterior = useRef(escolhido);
+  useEffect(() => {
+    if (anterior.current === escolhido) return;
+    anterior.current = escolhido;
+    setAberto(!escolhido);
+  }, [escolhido]);
+
+  // Escolha que não tem preço nesta quantidade não pode virar resumo fechado:
+  // o card ficaria mudo. Nesse caso ele fica aberto, dizendo o que sabe.
+  const expandido = aberto || escolha === null;
+
   return (
     <li className="rounded-[var(--radius-lg)] border border-line bg-surface p-3.5">
-      <div className="flex items-baseline justify-between gap-3">
-        <p className="min-w-0 flex-1 text-sm font-semibold text-ink">{item.descricao}</p>
-        <span className="shrink-0 font-mono text-[12px] tabular-nums text-muted">
-          {quantidade > item.quantidade && (
-            <span className="mr-1.5 text-faint line-through">{fmtQtd(item.quantidade)}</span>
-          )}
-          <span className={quantidade > item.quantidade ? "font-semibold text-accent" : ""}>
-            {fmtQtd(quantidade)}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold leading-tight text-ink">{item.descricao}</p>
+          <p className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 font-mono text-[12px] tabular-nums text-muted">
+            {quantidade > item.quantidade && (
+              <span className="text-faint line-through">{fmtQtd(item.quantidade)}</span>
+            )}
+            <span className={quantidade > item.quantidade ? "font-semibold text-accent" : ""}>
+              {fmtQtd(quantidade)}
+            </span>
+            <span className="font-sans text-faint">
+              {unidadeDaQtd(quantidade, item.embalagemNome)}
+            </span>
+          </p>
+        </div>
+
+        {/* O total DESTE item. No desktop é uma coluna inteira; aqui ele estava
+            enterrado em 11px dentro da linha escolhida, onde ninguém lê. */}
+        <div className="shrink-0 text-right">
+          <span className="block text-[10px] uppercase tracking-wide text-faint">total</span>
+          <span className="font-mono text-[15px] font-semibold tabular-nums text-ink">
+            {totalItem === null ? "—" : fmtMoney(totalItem)}
           </span>
-          <span className="ml-1 font-sans text-faint">
-            {unidadeDaQtd(quantidade, item.embalagemNome)}
-          </span>
-        </span>
+        </div>
       </div>
 
-      <ul className="mt-2.5 flex flex-col gap-1.5">
-        {respondidos.map((c) => {
-          const r = c.respostas.find((x) => x.quotationItemId === item.id);
-          const marcado = escolhido === c.id;
-          const ehMelhor = melhorConviteId === c.id;
-          const falta = faltaTexto(r?.quantidadeOfertada, item.quantidade);
-          const preco = precoDe(c) ?? 0;
-          const dif = diferencaNaLinha(precosDaLinha, preco);
+      {!expandido && escolha && (
+        <button
+          type="button"
+          onClick={() => setAberto(true)}
+          aria-expanded={false}
+          className="mt-2 flex min-h-11 w-full items-center gap-2 rounded-[var(--radius)] border border-brand/40 bg-brand-soft px-3 py-2 text-left"
+        >
+          <SupplierAvatar
+            nome={escolha.convite.supplierNome}
+            logoUrl={escolha.convite.supplierLogoUrl}
+            size={20}
+          />
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-brand">
+            {escolha.convite.supplierNome}
+          </span>
+          <span className="shrink-0 font-mono text-[13px] font-semibold tabular-nums text-brand">
+            {fmtPreco(escolha.preco as number)}
+          </span>
+          <ChevronDown size={15} className="shrink-0 text-brand/70" aria-hidden />
+          <span className="sr-only">Trocar fornecedor deste item</span>
+        </button>
+      )}
 
-          if (!r?.disponivel) {
+      {expandido && (
+        <ul className="mt-2.5 flex flex-col gap-1.5">
+          {disponiveis.map(({ convite: c, resposta, preco: precoBruto }) => {
+            const r = resposta!;
+            const preco = precoBruto as number;
+            const marcado = escolhido === c.id;
+            const ehMelhor = melhorConviteId === c.id;
+            const falta = faltaTexto(r.quantidadeOfertada, item.quantidade);
+            const dif = diferencaNaLinha(precosDaLinha, preco);
+            const comFaixa = preco < r.precoUnitario;
+
+            /**
+             * UMA nota por linha, na mesma ordem de gravidade da célula do
+             * desktop: o que impede a compra antes do que a barateia, e o
+             * contexto por último. Tudo junto num `flex-wrap` de 11px virava
+             * três linhas de sopa embaixo do nome do fornecedor.
+             */
+            const nota = falta
+              ? { texto: falta, forte: true }
+              : comFaixa
+                ? { texto: "promoção por volume", forte: true }
+                : mostrarMarca && r.marca
+                  ? { texto: r.marca, forte: false }
+                  : null;
+
             return (
-              <li
-                key={c.id}
-                className="flex items-center justify-between gap-3 rounded-[var(--radius)] border border-dashed border-line px-3 py-2"
-              >
-                <span className="min-w-0 truncate text-[13px] text-faint">{c.supplierNome}</span>
-                <span className="shrink-0 text-[12px] text-faint">não tem</span>
-              </li>
-            );
-          }
+              <li key={c.id}>
+                <button
+                  type="button"
+                  disabled={!editavel}
+                  onClick={() => onEscolher(c.id)}
+                  aria-pressed={marcado}
+                  className={cn(
+                    "flex min-h-12 w-full items-center gap-2.5 rounded-[var(--radius)] border px-3 py-2 text-left transition-colors",
+                    marcado
+                      ? "border-brand bg-brand text-on-brand"
+                      : "border-line bg-surface",
+                    !editavel && "cursor-default",
+                  )}
+                >
+                  <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={22} />
 
-          return (
-            <li key={c.id}>
-              <button
-                type="button"
-                disabled={!editavel}
-                onClick={() => onEscolher(c.id)}
-                aria-pressed={marcado}
-                className={cn(
-                  "flex w-full items-center justify-between gap-3 rounded-[var(--radius)] border px-3 py-2 text-left transition-colors",
-                  marcado
-                    ? "border-brand bg-brand text-on-brand"
-                    : "border-line bg-surface hover:bg-surface-2",
-                  !editavel && "cursor-default",
-                )}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium">
-                    {c.supplierNome}
-                  </span>
-                  <span
-                    className={cn(
-                      "mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px]",
-                      marcado ? "text-on-brand/80" : "text-muted",
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="min-w-0 truncate text-[13px] font-medium">
+                        {c.supplierNome}
+                      </span>
+                      {/* Selo no canto do nome, não texto no meio da sopa: é
+                          um estado do fornecedor, não mais uma observação. */}
+                      {ehMelhor && !marcado && (
+                        <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+                          <Trophy size={9} aria-hidden />
+                          melhor
+                        </span>
+                      )}
+                    </span>
+                    {nota && (
+                      <span
+                        className={cn(
+                          "mt-0.5 block truncate text-[11px]",
+                          marcado
+                            ? "text-on-brand/80"
+                            : nota.forte
+                              ? "font-medium text-accent"
+                              : "text-muted",
+                        )}
+                      >
+                        {nota.texto}
+                      </span>
                     )}
-                  >
-                    <span>{fmtMoney(preco * quantidade)} no total</span>
+                  </span>
+
+                  <span className="shrink-0 text-right">
+                    <span className="block font-mono text-[15px] font-semibold tabular-nums">
+                      {fmtPreco(preco)}
+                    </span>
                     {dif && (
                       <span
                         className={cn(
-                          "inline-flex items-center gap-0.5 font-medium",
-                          marcado ? "" : dif.ganho ? "text-ok" : "text-faint",
+                          "block font-mono text-[11px] tabular-nums",
+                          marcado ? "text-on-brand/80" : dif.ganho ? "text-ok" : "text-faint",
                         )}
                       >
                         {/* Sem seta: em 11px ela vira sujeira antes de virar
@@ -1052,31 +1523,23 @@ function CardItem({
                         {fmtPreco(dif.valor)}
                       </span>
                     )}
-                    {preco < r.precoUnitario && (
-                      <span className={marcado ? "" : "font-medium text-accent"}>
-                        promoção por volume
-                      </span>
-                    )}
-                    {mostrarMarca && r.marca && <span>{r.marca}</span>}
-                    {falta && (
-                      <span className={marcado ? "" : "font-medium text-accent"}>{falta}</span>
-                    )}
-                    {ehMelhor && !marcado && (
-                      <span className="inline-flex items-center gap-1 font-medium text-accent">
-                        <Trophy size={11} />
-                        melhor preço
-                      </span>
-                    )}
                   </span>
-                </span>
-                <span className="shrink-0 font-mono text-[15px] font-semibold tabular-nums">
-                  {fmtPreco(preco)}
-                </span>
-              </button>
+                </button>
+              </li>
+            );
+          })}
+
+          {/* Quem não tem o item não disputa nada: uma linha para todos, no
+              fim, em vez de N caixas tracejadas no meio da decisão. */}
+          {ausentes.length > 0 && (
+            <li className="rounded-[var(--radius)] border border-dashed border-line px-3 py-2 text-[11px] leading-snug text-faint">
+              {ausentes.length === 1
+                ? `${ausentes[0].convite.supplierNome} não tem`
+                : `Não têm: ${ausentes.map((l) => l.convite.supplierNome).join(", ")}`}
             </li>
-          );
-        })}
-      </ul>
+          )}
+        </ul>
+      )}
     </li>
   );
 }
