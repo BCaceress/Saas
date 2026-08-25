@@ -449,6 +449,18 @@ export function ComparativoCotacao({
     })
     .filter((x) => x.itens > 0);
 
+  /**
+   * Um pedido ou vários? A resposta é a contagem de fornecedores escolhidos, e
+   * não o modo: "melhor preço por item" pode terminar com um fornecedor só, e
+   * aí o plural prometeria uma divisão que não vai acontecer.
+   */
+  const umPedidoSo = pedidosPrevistos.length === 1;
+  const rotuloGerar = umPedidoSo
+    ? `Gerar pedido para ${pedidosPrevistos[0].nome}`
+    : pedidosPrevistos.length > 1
+      ? `Gerar ${pedidosPrevistos.length} pedidos de compra`
+      : "Gerar pedido de compra";
+
   /** Alguém ofereceu promoção por volume neste item? */
   function temPromocaoNoItem(item: ItemCotacao): boolean {
     return respondidos.some((c) => {
@@ -925,7 +937,7 @@ export function ComparativoCotacao({
                   aria-haspopup="dialog"
                   className="min-h-11 shrink-0 rounded-full bg-brand px-5 text-sm font-semibold text-on-brand transition-colors disabled:opacity-50"
                 >
-                  {pendente ? "Gerando…" : "Gerar"}
+                  {pendente ? "Gerando…" : umPedidoSo ? "Gerar pedido" : "Gerar pedidos"}
                 </button>
               </div>
             </>
@@ -977,11 +989,7 @@ export function ComparativoCotacao({
                   disabled={pendente || itensEscolhidos === 0}
                   className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
                 >
-                  {pendente
-                    ? "Gerando…"
-                    : modo === "fornecedor" && nomeFornecedorUnico
-                      ? `Gerar pedido para ${nomeFornecedorUnico}`
-                      : "Gerar pedidos de compra"}
+                  {pendente ? "Gerando…" : rotuloGerar}
                 </button>
               </div>
             </>
@@ -1023,7 +1031,7 @@ export function ComparativoCotacao({
         <BottomSheet
           open={confirmando}
           onClose={() => setConfirmando(false)}
-          titulo="Gerar pedidos de compra"
+          titulo={umPedidoSo ? "Gerar pedido de compra" : "Gerar pedidos de compra"}
           descricao={
             <span className="flex items-baseline gap-2">
               <span>
@@ -1044,7 +1052,9 @@ export function ComparativoCotacao({
             >
               {pendente
                 ? "Gerando…"
-                : `Confirmar e enviar ${pedidosPrevistos.length === 1 ? "o pedido" : `os ${pedidosPrevistos.length} pedidos`}`}
+                : umPedidoSo
+                  ? "Confirmar e enviar o pedido"
+                  : `Confirmar e enviar os ${pedidosPrevistos.length} pedidos`}
             </button>
           }
         >
