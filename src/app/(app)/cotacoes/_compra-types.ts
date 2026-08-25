@@ -61,6 +61,13 @@ export type ItemCotacao = {
    * cobertura da compra por escala sairia doze vezes menor.
    */
   fatorEmbalagem: number;
+  /**
+   * Custo por unidade BASE do produto (médio, ou o de cadastro quando não há
+   * média). É o que sustenta o "previsto" do rodapé antes de existir resposta:
+   * quantidade × fatorEmbalagem × custo. null = produto sem custo conhecido, e
+   * aí a previsão diz que está incompleta em vez de chutar zero.
+   */
+  custoUnitario: number | null;
   /** Média diária de saída na loja de destino, em unidades. null = sem histórico. */
   consumoDiarioUnidades: number | null;
   /**
@@ -96,8 +103,12 @@ export type ContatoConvite = {
 export type EnvioConvite = {
   id: string;
   canal: "WHATSAPP" | "EMAIL";
+  /** Contato que recebeu. É por ele que a fila sabe quem já foi. */
+  contactId: string | null;
   contatoNome: string | null;
   destino: string | null;
+  /** Quem entrou em cópia (só e-mail), já formatado para leitura. */
+  copias: string | null;
   reenvio: boolean;
   sucesso: boolean;
   erro: string | null;
@@ -109,6 +120,16 @@ export type ConviteCotacao = {
   supplierId: string;
   supplierNome: string;
   supplierLogoUrl: string | null;
+  /** "Porto Alegre — RS". null quando o cadastro não tem endereço. */
+  supplierPraca: string | null;
+  /**
+   * Valor mínimo de pedido exigido pelo fornecedor. Cotação abaixo disso nasce
+   * morta — e dá para avisar enquanto a lista está sendo montada, não depois
+   * de a resposta chegar.
+   */
+  supplierPedidoMinimo: number | null;
+  /** Prazo de pagamento: o negociado do cadastro, ou o praticado nas notas. */
+  supplierPrazoPagamentoDias: number | null;
   telefone: string | null;
   email: string | null;
   status: ConviteStatus;
@@ -122,6 +143,15 @@ export type ConviteCotacao = {
   respondidaEm: string | null;
   /** Quando o fornecedor ABRIU o link. Separa "ignorou" de "está pensando". */
   abertoEm: string | null;
+  /**
+   * De onde vieram os preços. `"link"` = o próprio fornecedor preencheu na
+   * tela pública; `"manual"` = o comprador digitou aqui, a partir de um áudio,
+   * uma foto ou um telefonema. Null enquanto não há resposta.
+   *
+   * Não é detalhe: proposta digitada por terceiro carrega erro de transcrição
+   * e não tem o fornecedor por trás dela se o preço for contestado.
+   */
+  origemResposta: "link" | "manual" | null;
   prazoEntregaDias: number | null;
   condicaoPagamento: string | null;
   frete: number | null;
@@ -141,6 +171,8 @@ export type CotacaoDetalhe = {
   status: CotacaoStatus;
   siteId: string;
   siteNome: string;
+  /** Data do documento, declarada pelo comprador. Cai no `criadaEm` enquanto ninguém mexeu. */
+  dataCotacao: string;
   prazoResposta: string | null;
   observacao: string | null;
   criadaEm: string;
@@ -177,6 +209,19 @@ export type FornecedorOpcao = {
   jaForneceu: number;
   /** Última nota dele com algum item da lista. */
   ultimaCompraEm: string | null;
+};
+
+/**
+ * A cotação anterior que serve de molde. Compra de mercado se repete: a lista
+ * de cerveja da semana passada é quase a desta semana, e digitar tudo de novo
+ * é o trabalho que o sistema existe para não cobrar.
+ */
+export type CotacaoAnterior = {
+  id: string;
+  numero: string;
+  titulo: string;
+  totalItens: number;
+  criadaEm: string;
 };
 
 export type OpcoesCotacao = {

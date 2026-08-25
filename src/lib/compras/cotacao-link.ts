@@ -86,17 +86,27 @@ export async function linkVigente(
   return { url: cotacaoLinkUrl(link.token), expiraEm: link.expiraEm, abertoEm: link.abertoEm };
 }
 
-/** Sinais de leitura de vários convites de uma vez — para a lista/Central. */
+/**
+ * Sinais de leitura de vários convites de uma vez — para a lista/Central.
+ *
+ * `respondidoEm` é o que separa as duas origens de uma proposta: preenchida
+ * pelo FORNECEDOR no link público, ou digitada pelo COMPRADOR a partir de um
+ * áudio, uma foto ou um telefonema. Nulo com resposta gravada = digitada aqui
+ * dentro, e isso muda o quanto se confia no número.
+ */
 export async function sinaisDosLinks(
   quotationSupplierIds: string[],
-): Promise<Map<string, { abertoEm: Date | null; expiraEm: Date }>> {
+): Promise<Map<string, { abertoEm: Date | null; respondidoEm: Date | null; expiraEm: Date }>> {
   if (quotationSupplierIds.length === 0) return new Map();
   const links = await basePrisma.quotationLink.findMany({
     where: { quotationSupplierId: { in: quotationSupplierIds } },
-    select: { quotationSupplierId: true, abertoEm: true, expiraEm: true },
+    select: { quotationSupplierId: true, abertoEm: true, respondidoEm: true, expiraEm: true },
   });
   return new Map(
-    links.map((l) => [l.quotationSupplierId, { abertoEm: l.abertoEm, expiraEm: l.expiraEm }]),
+    links.map((l) => [
+      l.quotationSupplierId,
+      { abertoEm: l.abertoEm, respondidoEm: l.respondidoEm, expiraEm: l.expiraEm },
+    ]),
   );
 }
 

@@ -6,6 +6,7 @@ import type { LimitesEscala } from "@/lib/compras/escalas";
 import type { Tenant } from "@/generated/prisma";
 import type {
   ConviteCotacao,
+  CotacaoAnterior,
   CotacaoDetalhe,
   CotacaoRow,
   ItemCotacao,
@@ -19,6 +20,14 @@ import type {
 // ============================================================
 
 const n = (v: unknown) => Number(v ?? 0);
+
+/** "Porto Alegre — RS", "Porto Alegre" ou "RS", conforme o cadastro tiver. */
+function praca(municipio: string | null, uf: string | null): string | null {
+  const cidade = municipio?.trim();
+  const estado = uf?.trim().toUpperCase();
+  if (cidade && estado) return `${cidade} — ${estado}`;
+  return cidade || estado || null;
+}
 const fmtUn = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 
 /** Preço vezes quantidade pedida, item a item, mais o frete. */
@@ -190,6 +199,7 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
       titulo: true,
       status: true,
       siteId: true,
+      dataCotacao: true,
       prazoResposta: true,
       observacao: true,
       createdAt: true,
@@ -229,6 +239,11 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
               logoUrl: true,
               telefone: true,
               email: true,
+              municipio: true,
+              uf: true,
+              pedidoMinimo: true,
+              prazoPagamentoDias: true,
+              prazoMedioDias: true,
               contacts: SELECT_CONTATOS,
             },
           },
@@ -237,8 +252,10 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
             select: {
               id: true,
               canal: true,
+              contactId: true,
               contatoNome: true,
               destino: true,
+              copias: true,
               reenvio: true,
               sucesso: true,
               erro: true,
@@ -276,7 +293,7 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
     productIds.length
       ? db.product.findMany({
           where: { id: { in: productIds } },
-          select: { id: true, sku: true, imagemUrl: true },
+          select: { id: true, sku: true, imagemUrl: true, custoMedio: true, custo: true },
         })
       : Promise.resolve([]),
     packagingIds.length
@@ -334,6 +351,9 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
       estoqueMinimo: estoque ? n(estoque.estoqueMinimo) : null,
       // Item sem embalagem escolhida é pedido na unidade: fator 1.
       fatorEmbalagem: i.packagingId ? (porEmbalagem.get(i.packagingId)?.fatorConversao ?? 1) : 1,
+      // Médio primeiro: é o que a operação pagou de fato. O custo de cadastro
+      // entra quando ainda não houve entrada para formar média.
+      custoUnitario: p?.custoMedio ? n(p.custoMedio) : p?.custo ? n(p.custo) : null,
       // Zero venda na janela é informação ("não gira"), e não ausência de
       // histórico — vira 0/dia, que reprova qualquer sobra pela cobertura.
       consumoDiarioUnidades: vendido === undefined ? null : vendido / janela,
@@ -365,6 +385,13 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
       supplierId: s.supplierId,
       supplierNome: s.supplier.nomeFantasia || s.supplier.razaoSocial,
       supplierLogoUrl: s.supplier.logoUrl,
+      // Praça do fornecedor: é o que separa dois distribuidores de nome
+      // parecido e explica frete e prazo antes de qualquer um chegar.
+      supplierPraca: praca(s.supplier.municipio, s.supplier.uf),
+      supplierPedidoMinimo:
+        s.supplier.pedidoMinimo === null ? null : n(s.supplier.pedidoMinimo),
+      // Negociado primeiro (é a promessa), praticado depois (é o que acontece).
+      supplierPrazoPagamentoDias: s.supplier.prazoPagamentoDias ?? s.supplier.prazoMedioDias,
       telefone: s.supplier.telefone,
       email: s.supplier.email,
       contatoId: s.contactId,
@@ -372,14 +399,24 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
       envios: s.envios.map((e) => ({
         id: e.id,
         canal: e.canal,
+        contactId: e.contactId,
         contatoNome: e.contatoNome,
         destino: e.destino,
+        copias: e.copias,
         reenvio: e.reenvio,
         sucesso: e.sucesso,
         erro: e.erro,
         enviadoEm: e.enviadoEm.toISOString(),
       })),
       abertoEm: sinais.get(s.id)?.abertoEm?.toISOString() ?? null,
+      // Só existe origem quando existe proposta. Link respondido = o próprio
+      // fornecedor preencheu; sem isso, alguém digitou por ele aqui dentro.
+      origemResposta:
+        s.status !== "RESPONDIDA"
+          ? null
+          : sinais.get(s.id)?.respondidoEm
+            ? "link"
+            : "manual",
       status: s.status,
       enviadaEm: s.enviadaEm?.toISOString() ?? null,
       respondidaEm: s.respondidaEm?.toISOString() ?? null,
@@ -401,6 +438,9 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
     status: c.status,
     siteId: c.siteId,
     siteNome: c.site.nome,
+    // Nunca declarada: a data do documento é a da criação — sem isso a tela
+    // abriria com o campo vazio numa cotação que existe desde a semana passada.
+    dataCotacao: (c.dataCotacao ?? c.createdAt).toISOString(),
     prazoResposta: c.prazoResposta?.toISOString() ?? null,
     observacao: c.observacao,
     criadaEm: c.createdAt.toISOString(),
@@ -409,6 +449,42 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
     limitesEscala: limitesDoTenant(tenant),
     itens,
     convites,
+  };
+}
+
+/**
+ * A última cotação com lista montada, tirando a que está aberta na tela.
+ *
+ * Serve ao estado vazio: quem acabou de criar a cotação de reposição da semana
+ * quer a lista da semana passada, não uma tela em branco e trinta buscas de
+ * produto. Null quando ainda não existe histórico — e aí o estado vazio não
+ * promete um atalho que não tem para onde ir.
+ */
+export async function loadUltimaCotacaoComItens(
+  excetoId: string,
+): Promise<CotacaoAnterior | null> {
+  const c = await db.quotation.findFirst({
+    where: {
+      id: { not: excetoId },
+      status: { not: "CANCELADA" },
+      items: { some: {} },
+    },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      numero: true,
+      titulo: true,
+      createdAt: true,
+      _count: { select: { items: true } },
+    },
+  });
+  if (!c) return null;
+  return {
+    id: c.id,
+    numero: c.numero,
+    titulo: c.titulo,
+    totalItens: c._count.items,
+    criadaEm: c.createdAt.toISOString(),
   };
 }
 

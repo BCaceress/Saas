@@ -17,6 +17,7 @@ import {
   ThumbsDown,
   PencilLine,
   Layers,
+  Loader2,
   Plus,
   Share2,
   UserPlus,
@@ -83,7 +84,7 @@ export function ConvitesCotacao({
   editavel,
   podeConvidar,
   podeRemover,
-  onVerComparativo,
+  compacto = false,
 }: {
   cotacao: CotacaoDetalhe;
   fornecedores: FornecedorOpcao[];
@@ -93,7 +94,11 @@ export function ConvitesCotacao({
   podeConvidar: boolean;
   /** Tirar alguém da cotação — só em rascunho, antes de o convite existir lá fora. */
   podeRemover: boolean;
-  onVerComparativo: () => void;
+  /**
+   * Coluna estreita da tela de acompanhamento: uma linha por fornecedor, sem a
+   * barra de ações do topo (que na página inteira é o rodapé da tela).
+   */
+  compacto?: boolean;
 }) {
   const router = useRouter();
   const [pendente, startTransition] = useTransition();
@@ -128,7 +133,7 @@ export function ConvitesCotacao({
 
   return (
     <div className="flex flex-col gap-4">
-      {editavel && (
+      {editavel && !compacto && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
           {podeConvidar && (
@@ -190,13 +195,20 @@ export function ConvitesCotacao({
           }
         />
       ) : (
-        <ul className="grid gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+        <ul className={cn("grid gap-2.5", !compacto && "md:grid-cols-2 xl:grid-cols-3")}>
           {cotacao.convites.map((c) => (
             <li
               key={c.id}
-              className="flex items-start gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4"
+              className={cn(
+                "flex items-start gap-3 rounded-[var(--radius-lg)] border border-line bg-surface",
+                compacto ? "p-3" : "p-4",
+              )}
             >
-              <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={38} />
+              <SupplierAvatar
+                nome={c.supplierNome}
+                logoUrl={c.supplierLogoUrl}
+                size={compacto ? 30 : 38}
+              />
 
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
@@ -229,14 +241,17 @@ export function ConvitesCotacao({
                 {c.envios.length > 0 && <HistoricoEnvios envios={c.envios} />}
 
                 {c.status === "RESPONDIDA" && (
-                  <p className="mt-1.5 flex flex-wrap items-baseline gap-x-3 text-[12px] text-muted">
-                    <span className="font-mono text-[15px] font-semibold tabular-nums text-ink">
-                      {fmtMoney(c.total)}
-                    </span>
-                    {c.prazoEntregaDias !== null && <span>entrega em {c.prazoEntregaDias}d</span>}
-                    {c.condicaoPagamento && <span>{c.condicaoPagamento}</span>}
-                    {c.frete ? <span>frete {fmtMoney(c.frete)}</span> : null}
-                  </p>
+                  <>
+                    <p className="mt-1.5 flex flex-wrap items-baseline gap-x-3 text-[12px] text-muted">
+                      <span className="font-mono text-[15px] font-semibold tabular-nums text-ink">
+                        {fmtMoney(c.total)}
+                      </span>
+                      {c.prazoEntregaDias !== null && <span>entrega em {c.prazoEntregaDias}d</span>}
+                      {c.condicaoPagamento && <span>{c.condicaoPagamento}</span>}
+                      {c.frete ? <span>frete {fmtMoney(c.frete)}</span> : null}
+                    </p>
+                    <OrigemDaResposta origem={c.origemResposta} />
+                  </>
                 )}
 
                 {editavel && (
@@ -244,21 +259,26 @@ export function ConvitesCotacao({
                     {/* Uma ação principal por cartão. Cinco botões iguais
                         obrigavam a ler todos antes de agir; aqui a ação que
                         move a cotação adiante é a única com peso visual, o
-                        apoio fica em contorno e o resto some no menu. */}
+                        apoio fica em contorno e o resto some no menu.
+
+                        Respondido, sobra corrigir: o "Ver no comparativo" que
+                        ficava aqui era de quando o comparativo era outra aba.
+                        Ele está na mesma tela, ao lado — o botão levava a
+                        pessoa para onde ela já estava. */}
                     {c.status === "RESPONDIDA" ? (
                       <button
                         type="button"
-                        onClick={onVerComparativo}
-                        className="rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+                        onClick={() => setRespondendo(c)}
+                        className="cursor-pointer rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
                       >
-                        Ver no comparativo
+                        Corrigir preços
                       </button>
                     ) : (
                       cotacao.itens.length > 0 && (
                         <button
                           type="button"
                           onClick={() => setRespondendo(c)}
-                          className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+                          className="flex cursor-pointer items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
                         >
                           <PencilLine size={13} />
                           Registrar resposta
@@ -266,111 +286,123 @@ export function ConvitesCotacao({
                       )
                     )}
 
-                    {c.status === "RESPONDIDA" && (
+                    {c.status === "ENVIADA" && (
                       <button
                         type="button"
-                        onClick={() => setRespondendo(c)}
-                        className="rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
+                        onClick={() => setReenviando(c)}
+                        className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
                       >
-                        Corrigir preços
+                        <RotateCcw size={13} />
+                        Reenviar
                       </button>
                     )}
 
-                    {c.status === "ENVIADA" && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => setReenviando(c)}
-                          className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
-                        >
-                          <RotateCcw size={13} />
-                          Reenviar
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            rodar(async () => {
-                              const { mensagem } = await mensagemDoConviteAction(c.id);
-                              if (!(await copiarTexto(mensagem))) {
-                                throw new Error(
-                                  "O navegador bloqueou a cópia. Tente pelo WhatsApp.",
-                                );
-                              }
-                              setTextoCopiado(c.id);
-                            })
-                          }
-                          disabled={pendente}
-                          className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
-                        >
-                          <Copy size={13} />
-                          {textoCopiado === c.id ? "Mensagem copiada" : "Copiar mensagem"}
-                        </button>
-                      </>
+                    {/* Com a proposta na mão o menu SOME: tudo que ele oferece
+                        — copiar mensagem, copiar link, marcar recusa, tirar da
+                        cotação — é conversa de quem ainda está sendo cobrado.
+                        Depois do preço, o trabalho é comparar, e as duas ações
+                        que importam já estão em botão. */}
+                    {c.status !== "RESPONDIDA" && (
+                      <Menu
+                        trigger={
+                          <button
+                            type="button"
+                            aria-label={`Mais ações de ${c.supplierNome}`}
+                            aria-haspopup="menu"
+                            className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+                          >
+                            <MoreVertical size={15} />
+                          </button>
+                        }
+                      >
+                        {/* O texto pronto, com o link dentro. Era botão na linha
+                            de ações e virou item de menu: quem está cobrando usa
+                            "Reenviar", que abre a central; copiar serve a quem
+                            vai colar numa conversa já começada. */}
+                        {c.status === "ENVIADA" && (
+                          <MenuItem
+                            icon={<Copy size={14} />}
+                            disabled={pendente}
+                            onClick={() =>
+                              rodar(async () => {
+                                const { mensagem } = await mensagemDoConviteAction(c.id);
+                                if (!(await copiarTexto(mensagem))) {
+                                  throw new Error(
+                                    "O navegador bloqueou a cópia. Tente pelo WhatsApp.",
+                                  );
+                                }
+                                setTextoCopiado(c.id);
+                              })
+                            }
+                          >
+                            {textoCopiado === c.id ? "Mensagem copiada" : "Copiar mensagem"}
+                          </MenuItem>
+                        )}
+                        {/* Só o endereço, sem o texto em volta: serve para colar
+                            numa conversa que já começou. */}
+                        {c.status === "ENVIADA" && (
+                          <MenuItem
+                            icon={<LinkIcon size={14} />}
+                            disabled={pendente}
+                            onClick={() =>
+                              rodar(async () => {
+                                const { url } = await linkDoConviteAction(c.id);
+                                if (!(await copiarTexto(url))) {
+                                  throw new Error(
+                                    "O navegador bloqueou a cópia. Abra o link e copie da barra de endereço.",
+                                  );
+                                }
+                                setLinkCopiado(c.id);
+                              })
+                            }
+                          >
+                            {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
+                          </MenuItem>
+                        )}
+                        {c.status === "ENVIADA" && (
+                          <MenuItem
+                            icon={<ThumbsDown size={14} />}
+                            disabled={pendente}
+                            onClick={() => rodar(() => recusarConviteAction(c.id))}
+                          >
+                            {'Marcar "Não vai cotar"'}
+                          </MenuItem>
+                        )}
+                        {/* O menu inteiro já não existe depois da resposta — aqui
+                            sobra a permissão. */}
+                        {podeRemover && (
+                          <MenuItem
+                            danger
+                            icon={<Trash2 size={14} />}
+                            disabled={pendente}
+                            onClick={() => rodar(() => removerConviteAction(c.id))}
+                          >
+                            Remover da cotação
+                          </MenuItem>
+                        )}
+                      </Menu>
                     )}
-
-                    <Menu
-                      trigger={
-                        <button
-                          type="button"
-                          aria-label={`Mais ações de ${c.supplierNome}`}
-                          aria-haspopup="menu"
-                          className="grid h-7 w-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-                        >
-                          <MoreVertical size={15} />
-                        </button>
-                      }
-                    >
-                      {/* Só o endereço, sem o texto em volta: serve para colar
-                          numa conversa que já começou. O caminho normal é o
-                          botão "Copiar mensagem", que leva o link dentro. */}
-                      {c.status === "ENVIADA" && (
-                        <MenuItem
-                          icon={<LinkIcon size={14} />}
-                          disabled={pendente}
-                          onClick={() =>
-                            rodar(async () => {
-                              const { url } = await linkDoConviteAction(c.id);
-                              if (!(await copiarTexto(url))) {
-                                throw new Error(
-                                  "O navegador bloqueou a cópia. Abra o link e copie da barra de endereço.",
-                                );
-                              }
-                              setLinkCopiado(c.id);
-                            })
-                          }
-                        >
-                          {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
-                        </MenuItem>
-                      )}
-                      {c.status === "ENVIADA" && (
-                        <MenuItem
-                          icon={<ThumbsDown size={14} />}
-                          disabled={pendente}
-                          onClick={() => rodar(() => recusarConviteAction(c.id))}
-                        >
-                          {'Marcar "Não vai cotar"'}
-                        </MenuItem>
-                      )}
-                      {/* Sair da cotação só antes do envio: depois disso o
-                          fornecedor já foi incomodado, e apagar o convite some
-                          com o link que ele pode estar preenchendo agora. */}
-                      {podeRemover && c.status !== "RESPONDIDA" && (
-                        <MenuItem
-                          danger
-                          icon={<Trash2 size={14} />}
-                          disabled={pendente}
-                          onClick={() => rodar(() => removerConviteAction(c.id))}
-                        >
-                          Remover da cotação
-                        </MenuItem>
-                      )}
-                    </Menu>
                   </div>
                 )}
               </div>
             </li>
           ))}
         </ul>
+      )}
+
+      {/* Na coluna estreita a barra do topo não existe — mas chamar mais um
+          para a disputa continua valendo até a cotação fechar, e sem isso a
+          ação sumia junto com a barra. */}
+      {compacto && editavel && podeConvidar && cotacao.convites.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setConvidando(true)}
+          disabled={disponiveis.length === 0}
+          className="flex cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <UserPlus size={14} />
+          {disponiveis.length === 0 ? "Todos já estão na cotação" : "Convidar fornecedor"}
+        </button>
       )}
 
       {convidando && (
@@ -406,33 +438,54 @@ export function ConvitesCotacao({
 
       {enviando && (
         <EnvioSheet
-          cotacaoId={cotacao.id}
           alvos={pendentes}
           prazoAtual={cotacao.prazoResposta}
           onFechar={() => setEnviando(false)}
-          onEnviado={(r) => {
-            setEnviando(false);
-            setEnvios(r);
-          }}
+          onConcluir={() => setEnviando(false)}
         />
       )}
 
       {reenviando && (
         <EnvioSheet
-          cotacaoId={cotacao.id}
           alvos={reenviando === "todos" ? aguardando : [reenviando]}
           reenvio
           prazoAtual={cotacao.prazoResposta}
           onFechar={() => setReenviando(null)}
-          onEnviado={(r) => {
-            setReenviando(null);
-            setEnvios(r);
-          }}
+          onConcluir={() => setReenviando(null)}
         />
       )}
 
       {envios && <EnviosSheet envios={envios} onFechar={() => setEnvios(null)} />}
     </div>
+  );
+}
+
+// ── De onde veio o preço ────────────────────────────────────
+// Proposta preenchida pelo FORNECEDOR na tela pública e proposta DIGITADA
+// pelo comprador (a partir de um áudio, uma foto, um telefonema) valem coisas
+// diferentes na hora de decidir: a segunda passou por uma transcrição, e não
+// tem o fornecedor por trás dela se o preço for contestado depois.
+//
+// A régua é o link: respondido lá fora = dele. Sem isso, alguém digitou aqui.
+
+function OrigemDaResposta({ origem }: { origem: "link" | "manual" | null }) {
+  if (!origem) return null;
+  const doLink = origem === "link";
+  return (
+    <p
+      className={cn(
+        "mt-1 flex items-center gap-1 text-[11px]",
+        doLink ? "text-muted" : "text-accent",
+      )}
+      title={
+        doLink
+          ? "O fornecedor preencheu os preços no link que recebeu."
+          : "Os preços foram digitados aqui dentro, não pelo fornecedor."
+      }
+    >
+      {doLink ? <LinkIcon size={10} className="shrink-0" /> : <PencilLine size={10} className="shrink-0" />}
+      {doLink ? "Preenchido pelo fornecedor" : "Digitado manualmente"}
+    </p>
   );
 }
 
@@ -528,6 +581,265 @@ function ConvidarSheet({
         </button>
       </div>
     </Modal>
+  );
+}
+
+// ── Fornecedores dentro da revisão ──────────────────────────
+// A coluna estreita (30%) ao lado dos itens. Aqui não se envia, não se cobra e
+// não se registra resposta: a pergunta é só "quem vai receber esta lista?".
+// Cada linha responde com o nome fantasia, a praça e as condições do cadastro
+// — e o que não cabe nessa pergunta ficou no passo "Fornecedores".
+
+/**
+ * A cesta prevista não chega ao pedido mínimo deste fornecedor. Só vale a pena
+ * dizer enquanto a cotação está sendo montada: depois de enviada, quem recusa
+ * por valor mínimo é o próprio fornecedor, e já se perdeu a semana.
+ */
+function abaixoDoMinimo(c: ConviteCotacao, previsto: number): boolean {
+  return (
+    c.status === "PENDENTE" &&
+    c.supplierPedidoMinimo !== null &&
+    previsto > 0 &&
+    previsto < c.supplierPedidoMinimo
+  );
+}
+
+export function FornecedoresDaCotacaoCard({
+  cotacao,
+  fornecedores,
+  podeConvidar,
+  podeRemover,
+  previsto,
+  alerta,
+}: {
+  cotacao: CotacaoDetalhe;
+  fornecedores: FornecedorOpcao[];
+  podeConvidar: boolean;
+  podeRemover: boolean;
+  /**
+   * Quanto a cesta deve custar pelo custo já conhecido. Serve para confrontar
+   * o pedido mínimo de cada fornecedor ANTES de a cotação sair — descobrir
+   * isso pela resposta dele é uma semana perdida.
+   */
+  previsto: number;
+  /** Validação da revisão ("Selecione pelo menos um fornecedor."). */
+  alerta?: string | null;
+}) {
+  const router = useRouter();
+  const [pendente, startTransition] = useTransition();
+  const [erro, setErro] = useState<string | null>(null);
+  const [convidando, setConvidando] = useState(false);
+  /** Fornecedor que vai ganhar um contato agora, sem sair da revisão. */
+  const [cadastrandoContato, setCadastrandoContato] = useState<ConviteCotacao | null>(null);
+  /** Tirar da cotação também pergunta antes — o alvo aqui é pequeno. */
+  const [aRemover, setARemover] = useState<ConviteCotacao | null>(null);
+
+  const jaConvidados = new Set(cotacao.convites.map((c) => c.supplierId));
+  const disponiveis = fornecedores.filter((f) => !jaConvidados.has(f.id));
+
+  function rodar(fn: () => Promise<unknown>) {
+    setErro(null);
+    startTransition(async () => {
+      try {
+        await fn();
+        router.refresh();
+      } catch (e) {
+        setErro(e instanceof Error ? e.message : "Não foi possível concluir.");
+      }
+    });
+  }
+
+  return (
+    <section
+      aria-labelledby="revisao-fornecedores-titulo"
+      aria-busy={pendente || undefined}
+      // Sem esmaecer o card: `opacity` cria contexto de empilhamento e muda o
+      // bloco de contenção — o modal de confirmação e a folha de contato, que
+      // são `fixed` e nascem aqui dentro, ficariam presos e apagados junto.
+      className={cn(
+        "flex flex-col rounded-[var(--radius-lg)] border bg-surface",
+        alerta ? "border-danger" : "border-line",
+      )}
+    >
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+        <div className="min-w-0">
+          <h3
+            id="revisao-fornecedores-titulo"
+            className="font-display text-[15px] font-semibold text-ink"
+          >
+            Fornecedores
+          </h3>
+          <p className="mt-0.5 flex items-center gap-1.5 text-[12px] text-muted">
+            {cotacao.convites.length}{" "}
+            {cotacao.convites.length === 1 ? "selecionado" : "selecionados"}
+            {pendente && (
+              <span aria-live="polite" className="flex items-center gap-1 text-faint">
+                <Loader2 size={11} aria-hidden className="motion-safe:animate-spin" />
+                salvando…
+              </span>
+            )}
+          </p>
+        </div>
+      </header>
+
+      <div className="flex flex-col gap-3 p-4">
+        {alerta && <p className="text-[13px] font-medium text-danger">{alerta}</p>}
+        {erro && <p className="text-[13px] text-danger">{erro}</p>}
+
+        {cotacao.convites.length === 0 ? (
+          <p className="rounded-[var(--radius)] border border-dashed border-line px-3 py-6 text-center text-[13px] text-muted">
+            Ninguém foi convidado ainda. Escolha de quem você quer o preço.
+          </p>
+        ) : (
+          <>
+            <ul className="flex flex-col gap-2">
+            {cotacao.convites.map((c) => {
+              // A cotação vai para uma PESSOA. Sem telefone nem e-mail de
+              // ninguém, este fornecedor não recebe nada — e o lugar de dizer
+              // isso é a linha dele, não um aviso no rodapé que não diz qual.
+              const semContato =
+                c.status === "PENDENTE" &&
+                !c.contatos.some((x) => x.telefone?.trim() || x.email?.trim());
+              return (
+                <li
+                  key={c.id}
+                  className={cn(
+                    "flex items-start gap-2.5 rounded-[var(--radius)] border px-3 py-2.5",
+                    semContato ? "border-accent/50 bg-accent-soft" : "border-line bg-surface-2",
+                  )}
+                >
+                  <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={28} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-medium text-ink">{c.supplierNome}</p>
+                    {/* Praça em vez do contato: o comprador reconhece o
+                        distribuidor pela cidade — é o que separa dois nomes
+                        parecidos e o que explica frete e prazo. Quem recebe a
+                        mensagem é decidido na folha de envio. */}
+                    <p className="truncate text-[12px] text-muted">
+                      {c.supplierPraca ?? "sem endereço no cadastro"}
+                    </p>
+                    {semContato && (
+                      <button
+                        type="button"
+                        onClick={() => setCadastrandoContato(c)}
+                        className="mt-1 flex cursor-pointer items-center gap-1 text-[12px] font-medium text-accent underline-offset-2 hover:underline"
+                      >
+                        <UserPlus size={12} />
+                        Sem contato — cadastrar vendedor
+                      </button>
+                    )}
+                    {/* Condições do cadastro: pedido mínimo e prazo. Duas
+                        linhas de texto que evitam uma cotação inteira perdida
+                        num fornecedor que não atende esse tamanho de compra. */}
+                    {(c.supplierPedidoMinimo !== null ||
+                      c.supplierPrazoPagamentoDias !== null) && (
+                      <p className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-faint">
+                        {c.supplierPedidoMinimo !== null && (
+                          <span title="Valor mínimo de pedido exigido pelo fornecedor">
+                            pedido mín. {fmtMoney(c.supplierPedidoMinimo)}
+                          </span>
+                        )}
+                        {c.supplierPrazoPagamentoDias !== null && (
+                          <span title="Prazo de pagamento negociado com o fornecedor">
+                            paga em {c.supplierPrazoPagamentoDias} dias
+                          </span>
+                        )}
+                      </p>
+                    )}
+                    {abaixoDoMinimo(c, previsto) && (
+                      <p className="mt-1 text-[11px] font-medium text-accent">
+                        A cesta prevista ({fmtMoney(previsto)}) não alcança o pedido mínimo.
+                      </p>
+                    )}
+                  </div>
+                  {podeRemover && (
+                    <button
+                      type="button"
+                      onClick={() => setARemover(c)}
+                      disabled={pendente}
+                      aria-label={`Tirar ${c.supplierNome} da cotação`}
+                      title="Tirar da cotação"
+                      className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-danger-soft hover:text-danger disabled:opacity-50"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+            </ul>
+          </>
+        )}
+
+        {podeConvidar && (
+          <button
+            type="button"
+            onClick={() => setConvidando(true)}
+            disabled={disponiveis.length === 0}
+            className="flex cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <UserPlus size={14} />
+            {disponiveis.length === 0 ? "Todos já estão na cotação" : "Adicionar fornecedor"}
+          </button>
+        )}
+      </div>
+
+      <ContatoSheet
+        aberto={cadastrandoContato !== null}
+        supplierId={cadastrandoContato?.supplierId ?? ""}
+        primeiro={cadastrandoContato?.contatos.length === 0}
+        onFechar={() => setCadastrandoContato(null)}
+        onSalvo={() => {
+          setCadastrandoContato(null);
+          router.refresh();
+        }}
+      />
+
+      {aRemover && (
+        <Modal titulo="Tirar da cotação" onFechar={() => setARemover(null)}>
+          <p className="text-[13px] leading-relaxed text-muted">
+            <span className="font-medium text-ink">{aRemover.supplierNome}</span> sai da cotação e
+            não vai receber a lista. Para voltar atrás, é só convidar de novo.
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setARemover(null)}
+              className="cursor-pointer rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+            >
+              Manter
+            </button>
+            <button
+              type="button"
+              autoFocus
+              onClick={() => {
+                const alvo = aRemover;
+                setARemover(null);
+                rodar(() => removerConviteAction(alvo.id));
+              }}
+              disabled={pendente}
+              className="cursor-pointer rounded-full bg-danger px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Tirar da cotação
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {convidando && (
+        <ConvidarSheet
+          disponiveis={disponiveis}
+          pendente={pendente}
+          onFechar={() => setConvidando(false)}
+          onConfirmar={(ids) => {
+            setConvidando(false);
+            rodar(() =>
+              convidarFornecedoresAction({ quotationId: cotacao.id, supplierIds: ids }),
+            );
+          }}
+        />
+      )}
+    </section>
   );
 }
 
@@ -1406,7 +1718,9 @@ function HistoricoEnvios({
       {visiveis.map((e) => (
         <li key={e.id} className="flex items-center gap-1.5 text-[11px] text-muted">
           {e.canal === "WHATSAPP" ? (
-            <MessageCircle size={11} className="shrink-0 text-faint" />
+            /* Verde do WhatsApp: no histórico o canal é o que se lê primeiro,
+               e a cor identifica antes do texto. */
+            <MessageCircle size={11} className="shrink-0 text-whatsapp" />
           ) : (
             <Mail size={11} className="shrink-0 text-faint" />
           )}

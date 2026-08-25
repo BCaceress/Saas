@@ -3,20 +3,21 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ArrowUpRight, Ban, Check, CheckCheck, Lock, Unlock } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Ban, CheckCheck, Lock, Trash2, Unlock } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
+import type { CotacaoAnterior, CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
 import {
   cancelarCotacaoAction,
   descartarSeVaziaAction,
   encerrarCotacaoAction,
+  excluirCotacaoAction,
   reabrirCotacaoAction,
 } from "../_compra-actions";
 import type { ResumoCotacao } from "@/lib/compras/cotacao-resumo";
 import { regrasDaCotacao } from "@/lib/compras/cotacao-regras";
-import { ItensCotacao } from "./_itens";
-import { ConvitesCotacao, EnviosSheet } from "./_convites";
-import { ComparativoCotacao } from "./_comparativo";
+import { EnviosSheet } from "./_convites";
+import { EnvioSheet } from "./_envio";
+import { AcompanhamentoCotacao } from "./_acompanhamento";
 import { RevisarCotacao } from "./_revisar";
 import type { PedidoDaCotacao } from "@/lib/compras/cotacao-economia";
 import type { Envio } from "../_compra-actions";
@@ -25,20 +26,14 @@ import { andamento, statusVisivel } from "../_status";
 // ── Cotação, tela inteira ───────────────────────────────────
 // A tela tem duas caras, porque o trabalho é outro antes e depois do envio.
 //
-// RASCUNHO → TRILHO de três passos (produtos → fornecedores → revisar e
-// enviar). Enquanto a cotação está sendo montada existe uma ordem certa, e
-// abas soltas obrigam o operador a descobrir sozinho qual vem primeiro.
+// RASCUNHO → TELA ÚNICA. Montar a cotação é uma coisa só: as condições, a
+// lista e quem recebe cabem juntas e se conferem umas contra as outras. O
+// trilho de três passos que existia aqui obrigava o operador a guardar de
+// cabeça o que tinha visto no passo anterior para decidir no seguinte.
 //
-// Enviada em diante → ABAS. A ordem já não manda: ele volta no que precisar,
-// e o painel que abre por padrão é o do momento em que a cotação está.
-
-type Painel = "itens" | "fornecedores" | "revisar" | "comparativo";
-
-const PASSOS: { id: Painel; label: string }[] = [
-  { id: "itens", label: "Produtos" },
-  { id: "fornecedores", label: "Fornecedores" },
-  { id: "revisar", label: "Revisar e enviar" },
-];
+// Enviada em diante → ACOMPANHAMENTO. Também uma tela só, mas com outro
+// centro: o comparativo, que é a razão de a cotação existir e que antes ficava
+// escondido atrás de uma aba, valendo o mesmo que a lista de produtos.
 
 export function CotacaoDetalheClient({
   cotacao,
@@ -46,6 +41,7 @@ export function CotacaoDetalheClient({
   sites,
   resumo,
   pedidos,
+  anterior,
   podePedir,
   usaMinimo,
 }: {
@@ -56,17 +52,30 @@ export function CotacaoDetalheClient({
   resumo: ResumoCotacao;
   /** Pedidos que a cotação virou. Vazio até ela ser decidida. */
   pedidos: PedidoDaCotacao[];
+  /** Molde para o estado vazio da lista. Null quando não há histórico. */
+  anterior: CotacaoAnterior | null;
   podePedir: boolean;
   usaMinimo: boolean;
 }) {
   const rascunho = cotacao.status === "RASCUNHO";
-  const temResposta = cotacao.convites.some((c) => c.status === "RESPONDIDA");
+  /**
+   * Central de envio, aberta a partir da revisão.
+   *
+   * Mora AQUI, e não dentro da revisão, porque o primeiro envio confirmado
+   * muda a cotação de RASCUNHO para ABERTA — a revisão desmonta e a página
+   * troca para as abas. Com o painel lá dentro, ele sumia no meio da fila,
+   * com metade dos fornecedores por mandar.
+   *
+   * Os alvos são congelados na abertura pelo mesmo motivo: depois do primeiro
+   * "marcar como enviado" eles deixam de estar PENDENTE, e recalcular a lista
+   * esvaziaria o painel a cada confirmação.
+   */
+  const [enviando, setEnviando] = useState<
+    { alvos: CotacaoDetalhe["convites"]; reenvio: boolean } | null
+  >(null);
   // Cobrar quem não respondeu sai do comparativo, mas a folha com as mensagens
   // prontas é a mesma da aba de fornecedores — ela mora aqui, acima das abas.
   const [envios, setEnvios] = useState<Envio[] | null>(null);
-  const [painel, setPainel] = useState<Painel>(
-    temResposta ? "comparativo" : rascunho ? "itens" : "fornecedores",
-  );
 
   // Mesma régua que as Server Actions aplicam (`lib/compras/cotacao-regras`):
   // depois da primeira resposta a LISTA congela — mudar o que foi perguntado
@@ -75,100 +84,56 @@ export function CotacaoDetalheClient({
   const regras = regrasDaCotacao(cotacao.status, cotacao.convites);
   const editavel = podePedir && !regras.fechada;
 
-  const PAINEIS: { id: Painel; label: string; contador: number }[] = [
-    { id: "itens", label: "Itens", contador: cotacao.itens.length },
-    { id: "fornecedores", label: "Fornecedores", contador: cotacao.convites.length },
-    {
-      id: "comparativo",
-      label: "Comparativo",
-      contador: cotacao.convites.filter((c) => c.status === "RESPONDIDA").length,
-    },
-  ];
-
-  // Passo concluído = tem o que ele pede. É o que acende o ✓ no trilho e o
-  // que libera o "Continuar" — sem isso o operador chega na revisão com uma
-  // cotação vazia e só descobre lá.
-  const feito: Record<Painel, boolean> = {
-    itens: cotacao.itens.length > 0,
-    fornecedores: cotacao.convites.length > 0,
-    revisar: false,
-    comparativo: false,
-  };
-
   return (
     <div className="flex flex-col gap-5">
-      <Cabecalho cotacao={cotacao} podePedir={podePedir} multiSite={sites.length > 1} />
-
-      {rascunho ? (
-        <Trilho atual={painel} feito={feito} onIr={setPainel} />
-      ) : (
-        <div className="flex items-center gap-1 overflow-x-auto border-b border-line">
-          {PAINEIS.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => setPainel(p.id)}
-              aria-current={painel === p.id ? "page" : undefined}
-              className={cn(
-                "flex shrink-0 items-center gap-1.5 px-3.5 py-2.5 text-sm font-medium transition-colors",
-                painel === p.id
-                  ? "border-b-2 border-brand text-brand"
-                  : "text-muted hover:text-ink",
-              )}
-            >
-              {p.label}
-              <span
-                className={cn(
-                  "rounded-full px-1.5 py-0.5 font-mono text-[10px] tabular-nums",
-                  painel === p.id ? "bg-brand-soft text-brand" : "bg-surface-2 text-faint",
-                )}
-              >
-                {p.contador}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
+      <Cabecalho
+        cotacao={cotacao}
+        podePedir={podePedir}
+        multiSite={sites.length > 1}
+        rascunho={rascunho}
+      />
 
       {pedidos.length > 0 && <VirouPedido pedidos={pedidos} />}
 
-      {painel === "itens" && (
-        <ItensCotacao
-          cotacao={cotacao}
-          editavel={editavel && regras.itens.pode}
-          travado={editavel && !regras.itens.pode ? regras.itens.motivo : null}
-          usaMinimo={usaMinimo}
-        />
-      )}
-      {painel === "revisar" && (
+      {rascunho ? (
         <RevisarCotacao
           cotacao={cotacao}
-          sites={sites}
-          editavel={editavel}
-          onIrPara={setPainel}
-        />
-      )}
-      {painel === "fornecedores" && (
-        <ConvitesCotacao
-          cotacao={cotacao}
           fornecedores={fornecedores}
+          sites={sites}
           editavel={editavel}
           podeConvidar={editavel && regras.convidar.pode}
           podeRemover={editavel && regras.desconvidar.pode}
-          onVerComparativo={() => setPainel("comparativo")}
+          itensEditaveis={editavel && regras.itens.pode}
+          itensTravados={editavel && !regras.itens.pode ? regras.itens.motivo : null}
+          usaMinimo={usaMinimo}
+          anterior={anterior}
+          onEnviar={(alvos) => setEnviando({ alvos, reenvio: false })}
         />
-      )}
-      {painel === "comparativo" && (
-        <ComparativoCotacao
+      ) : (
+        <AcompanhamentoCotacao
           cotacao={cotacao}
+          fornecedores={fornecedores}
           resumo={resumo}
-          pedidos={pedidos}
+          editavel={editavel}
           podePedir={podePedir}
-          onEnviado={setEnvios}
+          podeConvidar={editavel && regras.convidar.pode}
+          podeRemover={editavel && regras.desconvidar.pode}
+          itensEditaveis={editavel && regras.itens.pode}
+          itensTravados={editavel && !regras.itens.pode ? regras.itens.motivo : null}
+          usaMinimo={usaMinimo}
+          onCobrar={(alvos) => setEnviando({ alvos, reenvio: true })}
         />
       )}
 
-      {rascunho && <Navegacao atual={painel} feito={feito} onIr={setPainel} />}
+      {enviando && (
+        <EnvioSheet
+          alvos={enviando.alvos}
+          reenvio={enviando.reenvio}
+          prazoAtual={cotacao.prazoResposta}
+          onFechar={() => setEnviando(null)}
+          onConcluir={() => setEnviando(null)}
+        />
+      )}
 
       {envios && <EnviosSheet envios={envios} onFechar={() => setEnvios(null)} />}
     </div>
@@ -214,118 +179,24 @@ function VirouPedido({ pedidos }: { pedidos: PedidoDaCotacao[] }) {
   );
 }
 
-// ── Trilho do rascunho ──────────────────────────────────────
-
-function Trilho({
-  atual,
-  feito,
-  onIr,
-}: {
-  atual: Painel;
-  feito: Record<Painel, boolean>;
-  onIr: (p: Painel) => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-3 border-b border-line pb-3">
-      <ol className="flex items-center gap-1 overflow-x-auto">
-        {PASSOS.map((p, i) => {
-          const ativo = atual === p.id;
-          const concluido = feito[p.id];
-          return (
-            <li key={p.id} className="flex items-center">
-              {i > 0 && <span aria-hidden className="mx-1 h-px w-4 bg-line sm:w-6" />}
-              <button
-                type="button"
-                onClick={() => onIr(p.id)}
-                aria-current={ativo ? "step" : undefined}
-                className={cn(
-                  "flex shrink-0 items-center gap-2 rounded-full py-1.5 pl-1.5 pr-3.5 text-sm font-medium transition-colors",
-                  ativo ? "bg-brand-soft text-brand" : "text-muted hover:text-ink",
-                )}
-              >
-                <span
-                  className={cn(
-                    "grid h-6 w-6 shrink-0 place-items-center rounded-full font-mono text-[11px] font-semibold",
-                    ativo
-                      ? "bg-brand text-on-brand"
-                      : concluido
-                        ? "bg-ok-soft text-ok"
-                        : "bg-surface-2 text-faint",
-                  )}
-                >
-                  {concluido && !ativo ? <Check size={13} /> : i + 1}
-                </span>
-                <span className="whitespace-nowrap">{p.label}</span>
-              </button>
-            </li>
-          );
-        })}
-      </ol>
-    </div>
-  );
-}
-
-/** Rodapé do trilho: avança e volta sem obrigar a mirar no passo certo. */
-function Navegacao({
-  atual,
-  feito,
-  onIr,
-}: {
-  atual: Painel;
-  feito: Record<Painel, boolean>;
-  onIr: (p: Painel) => void;
-}) {
-  const i = PASSOS.findIndex((p) => p.id === atual);
-  if (i === -1) return null;
-  const anterior = PASSOS[i - 1];
-  const proximo = PASSOS[i + 1];
-  if (!proximo) return null;
-
-  const bloqueio = !feito[atual]
-    ? atual === "itens"
-      ? "Adicione ao menos um produto para continuar."
-      : "Convide ao menos um fornecedor para continuar."
-    : null;
-
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-      {anterior ? (
-        <button
-          type="button"
-          onClick={() => onIr(anterior.id)}
-          className="rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-        >
-          Voltar
-        </button>
-      ) : (
-        <span />
-      )}
-
-      <div className="flex items-center gap-3">
-        {bloqueio && <span className="text-[12px] text-muted">{bloqueio}</span>}
-        <button
-          type="button"
-          onClick={() => onIr(proximo.id)}
-          disabled={!!bloqueio}
-          className="rounded-full bg-brand px-5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
-        >
-          Continuar
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ── Cabeçalho da compra ─────────────────────────────────────
 
 function Cabecalho({
   cotacao,
   podePedir,
   multiSite,
+  rascunho,
 }: {
   cotacao: CotacaoDetalhe;
   podePedir: boolean;
   multiSite: boolean;
+  /**
+   * Em rascunho o cabeçalho da PÁGINA é este, e só este. O nome, a loja e o
+   * prazo que ele mostraria são campos editáveis logo abaixo — repetir aqui
+   * dava dois títulos empilhados dizendo a mesma coisa, um deles desatualizado
+   * enquanto a pessoa digita.
+   */
+  rascunho: boolean;
 }) {
   const router = useRouter();
   const [pendente, startTransition] = useTransition();
@@ -335,11 +206,27 @@ function Cabecalho({
    * encerrar fecha o link no meio do preenchimento dele, cancelar mata a
    * cotação inteira. Clique solto em botão de barra não pode disparar isso.
    */
-  const [confirmar, setConfirmar] = useState<null | "encerrar" | "reabrir" | "cancelar">(
-    null,
-  );
+  const [confirmar, setConfirmar] = useState<
+    null | "encerrar" | "reabrir" | "cancelar" | "excluir"
+  >(null);
 
   const CONFIRMACOES = {
+    /**
+     * Rascunho não se cancela: apaga.
+     *
+     * Cancelar existe para deixar rastro de uma promessa feita a fornecedor —
+     * e rascunho nunca saiu daqui. Deixar uma linha "Cancelada" na lista por
+     * uma cotação que ninguém do lado de fora viu só suja o histórico que o
+     * comprador usa para achar as de verdade.
+     */
+    excluir: {
+      titulo: "Excluir o rascunho",
+      texto:
+        "A cotação é apagada de vez, com a lista de produtos e os fornecedores escolhidos. Nenhum fornecedor foi avisado dela, então não fica rastro — e isso não se desfaz.",
+      acao: "Excluir rascunho",
+      perigo: true,
+      executar: () => excluirCotacaoAction(cotacao.id),
+    },
     encerrar: {
       titulo: "Encerrar a cotação",
       texto:
@@ -366,13 +253,15 @@ function Cabecalho({
     },
   } as const;
 
-  function rodar(fn: () => Promise<unknown>) {
+  function rodar(fn: () => Promise<unknown>, sair = false) {
     setErro(null);
     startTransition(async () => {
       try {
         await fn();
         setConfirmar(null);
-        router.refresh();
+        // Apagou: não há para onde recarregar — a cotação não existe mais.
+        if (sair) router.push("/cotacoes");
+        else router.refresh();
       } catch (e) {
         setErro(e instanceof Error ? e.message : "Não foi possível concluir.");
       }
@@ -427,28 +316,49 @@ function Cabecalho({
           )}
 
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-mono text-[12px] font-semibold text-muted">
-                {cotacao.numero}
-              </span>
-              <span
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                  rotulo.classe,
-                )}
-              >
-                {rotulo.label}
-              </span>
-            </div>
+            {/* Em rascunho o número entra no próprio título e o badge de status
+                vive no card de baixo, alinhado ao "Cotação de compra" — a
+                sobrancelha aqui era uma terceira linha para duas informações
+                que cabem onde já se está olhando. */}
+            {!rascunho && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-[12px] font-semibold text-muted">
+                  {cotacao.numero}
+                </span>
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                    rotulo.classe,
+                  )}
+                >
+                  {rotulo.label}
+                </span>
+              </div>
+            )}
             <h2 className="truncate font-display text-[19px] font-semibold leading-tight text-ink">
-              {cotacao.titulo}
+              {rascunho ? (
+                <>
+                  Revisão da cotação{" "}
+                  <span className="font-mono text-[15px] font-semibold text-muted">
+                    ({cotacao.numero})
+                  </span>
+                </>
+              ) : (
+                cotacao.titulo
+              )}
             </h2>
             <p className="mt-0.5 truncate text-[13px] text-muted">
-              {multiSite && `Entrega em ${cotacao.siteNome}`}
-              {multiSite && prazo && " · "}
-              {prazo && `Resposta até ${prazo}`}
-              {cotacao.status === "ABERTA" &&
-                ` · ${andamento(cotacao.convites.length, respondidos)}`}
+              {rascunho ? (
+                "Confira as informações, itens e fornecedores antes de criar a cotação."
+              ) : (
+                <>
+                  {multiSite && `Entrega em ${cotacao.siteNome}`}
+                  {multiSite && prazo && " · "}
+                  {prazo && `Resposta até ${prazo}`}
+                  {cotacao.status === "ABERTA" &&
+                    ` · ${andamento(cotacao.convites.length, respondidos)}`}
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -477,17 +387,20 @@ function Cabecalho({
                 Reabrir
               </button>
             )}
+            {/* Rascunho apaga; enviada em diante, cancela. São ações
+                diferentes e o rótulo diz qual é — "Cancelar" numa cotação que
+                nunca saiu prometia um rastro que não faz falta a ninguém. */}
             {(cotacao.status === "RASCUNHO" ||
               cotacao.status === "ABERTA" ||
               cotacao.status === "ENCERRADA") && (
               <button
                 type="button"
-                onClick={() => setConfirmar("cancelar")}
+                onClick={() => setConfirmar(rascunho ? "excluir" : "cancelar")}
                 disabled={pendente}
-                className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:border-danger hover:text-danger disabled:opacity-50"
+                className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:border-danger hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <Ban size={14} />
-                Cancelar
+                {rascunho ? <Trash2 size={14} /> : <Ban size={14} />}
+                {rascunho ? "Excluir rascunho" : "Cancelar"}
               </button>
             )}
             {cotacao.status === "DECIDIDA" && (
@@ -503,7 +416,9 @@ function Cabecalho({
         )}
       </div>
 
-      {cotacao.observacao && (
+      {/* Em rascunho o recado é campo editável na tela — mostrá-lo aqui também
+          era o mesmo texto duas vezes, e o de cima congelado. */}
+      {cotacao.observacao && !rascunho && (
         <p className="rounded-[var(--radius)] border border-line bg-surface-2 px-3.5 py-2 text-[13px] text-ink-2">
           {cotacao.observacao}
         </p>
@@ -519,7 +434,9 @@ function Cabecalho({
           perigo={CONFIRMACOES[confirmar].perigo}
           pendente={pendente}
           onFechar={() => setConfirmar(null)}
-          onConfirmar={() => rodar(CONFIRMACOES[confirmar].executar)}
+          onConfirmar={() =>
+            rodar(CONFIRMACOES[confirmar].executar, confirmar === "excluir")
+          }
         />
       )}
     </div>

@@ -8,6 +8,7 @@ import {
   loadCotacao,
   loadFornecedoresOpcao,
   loadReferenciasPreco,
+  loadUltimaCotacaoComItens,
 } from "../_compra-data";
 import { listSites } from "@/lib/sites";
 import { CotacaoDetalheClient } from "./_client";
@@ -23,12 +24,14 @@ export default async function CotacaoPage({
   const dados = await withTenant(ctx, async () => {
     const cotacao = await loadCotacao(id, ctx.tenant);
     if (!cotacao) return null;
-    const [fornecedores, sites, referencias] = await Promise.all([
+    const [fornecedores, sites, referencias, anterior] = await Promise.all([
       loadFornecedoresOpcao(
         cotacao.itens.map((i) => i.productId).filter((id): id is string => !!id),
       ),
       listSites(),
       loadReferenciasPreco(cotacao),
+      // Molde para o estado vazio — só faz sentido enquanto a lista está vazia.
+      cotacao.itens.length === 0 ? loadUltimaCotacaoComItens(id) : Promise.resolve(null),
     ]);
     // Só depois de decidida existem pedidos: antes disso não há o que apontar.
     const pedidos = cotacao.status === "DECIDIDA" ? await pedidosDaCotacao(id) : [];
@@ -39,6 +42,7 @@ export default async function CotacaoPage({
       sites: sites.map((s) => ({ id: s.id, nome: s.nome })),
       referencias,
       pedidos,
+      anterior,
     };
   });
 
@@ -77,6 +81,7 @@ export default async function CotacaoPage({
       sites={dados.sites}
       resumo={resumo}
       pedidos={dados.pedidos}
+      anterior={dados.anterior}
       podePedir={podeEmAlguma(ctx.acessos, "compras.pedir")}
       usaMinimo={policyDoTenant(ctx.tenant).usaMinimo}
     />

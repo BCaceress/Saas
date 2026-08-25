@@ -3731,6 +3731,11 @@ model Quotation {
   titulo   String
   status   QuotationStatus @default(RASCUNHO)
 
+  /// Dia que o comprador declara como referência da pergunta. Nasce igual ao
+  /// createdAt e é editável na revisão — quem monta hoje a cotação que vai sair
+  /// amanhã não deveria ter o carimbo do clique como data do documento.
+  dataCotacao DateTime?
+
   prazoResposta DateTime? // até quando o fornecedor pode responder
   observacao    String?
 
@@ -3838,6 +3843,11 @@ model QuotationSend {
   canal       QuotationCanal
   contatoNome String? // cópia — sobrevive à exclusão do contato
   destino     String? // número ou e-mail de fato usado
+  /// Quem entrou em CÓPIA neste disparo, como texto ("Maria Souza <maria@x>;
+  /// Carlos <carlos@x>"). Só e-mail tem cópia; no WhatsApp fica nulo. É cópia
+  /// literal pelo mesmo motivo do `contatoNome`: responde "quem mais viu isso?"
+  /// depois de o contato sair da empresa.
+  copias      String?
   reenvio     Boolean        @default(false)
   /// E-mail que voltou com erro fica registrado como tentativa falha; WhatsApp
   /// sai como mensagem pronta e por isso conta sempre como enviado.

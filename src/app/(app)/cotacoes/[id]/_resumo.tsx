@@ -1,6 +1,14 @@
 "use client";
 
-import { AlertTriangle, CheckCircle2, Info, Sparkles, TrendingDown } from "lucide-react";
+import { useState } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  Info,
+  Sparkles,
+  TrendingDown,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fmtMoney } from "../_catalogo/ui";
 import type { ResumoCotacao, TomResumo } from "@/lib/compras/cotacao-resumo";
@@ -21,41 +29,78 @@ const TOM: Record<TomResumo, { icone: typeof Info; classe: string }> = {
   info: { icone: Info, classe: "text-muted" },
 };
 
-export function ResumoCotacaoPainel({ resumo }: { resumo: ResumoCotacao }) {
+/**
+ * A leitura, sem moldura própria.
+ *
+ * Morava num cartão separado, logo abaixo do totalizador — duas caixas
+ * dizendo a mesma coisa em duas linguagens, uma em número e outra em frase.
+ * Agora ela é o rodapé do cartão dos números, que é onde a legenda pertence.
+ */
+export function LeituraDaCotacao({ resumo }: { resumo: ResumoCotacao }) {
+  /**
+   * Aberta por padrão, mas recolhível.
+   *
+   * Ela responde a pergunta da PRIMEIRA leitura ("o que esses números
+   * dizem?") — e quem já leu vai voltar à tela dez vezes para mexer na
+   * escolha, com o texto empurrando a tabela para baixo em todas elas.
+   */
+  const [aberta, setAberta] = useState(true);
+
   if (resumo.itens.length === 0) return null;
 
   return (
     <section
-      aria-label="Resumo da cotação"
+      aria-label="Leitura da cotação"
       className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface"
     >
-      <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-line px-4 py-3">
+      <button
+        type="button"
+        onClick={() => setAberta((v) => !v)}
+        aria-expanded={aberta}
+        className="flex w-full cursor-pointer flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-2.5 text-left transition-colors hover:bg-surface-2"
+      >
         <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
           <Sparkles size={12} />
           Leitura da cotação
-        </span>
-        {resumo.economia > 0 && (
-          <span className="text-[12px] text-muted">
-            Diferença entre a melhor e a pior proposta completa:{" "}
-            <span className="font-mono font-semibold text-accent">
-              {fmtMoney(resumo.economia)}
+          {/* Recolhida, o número que mais importa continua à vista: sem ele o
+              cabeçalho viraria uma linha que não diz nada. */}
+          {!aberta && (
+            <span className="ml-1 normal-case tracking-normal text-muted">
+              {resumo.itens.length}{" "}
+              {resumo.itens.length === 1 ? "observação" : "observações"}
             </span>
-          </span>
-        )}
-      </header>
+          )}
+        </span>
+        <span className="flex items-center gap-2">
+          {resumo.economia > 0 && (
+            <span className="text-[12px] text-muted">
+              Melhor contra pior proposta completa:{" "}
+              <span className="font-mono font-semibold text-accent">
+                {fmtMoney(resumo.economia)}
+              </span>
+            </span>
+          )}
+          <ChevronDown
+            size={15}
+            className={cn("shrink-0 text-muted transition-transform", aberta && "rotate-180")}
+          />
+        </span>
+      </button>
 
-      <ul className="flex flex-col divide-y divide-line">
-        {resumo.itens.map((i) => {
-          const tom = TOM[i.tom];
-          const Icone = tom.icone;
-          return (
-            <li key={i.id} className="flex items-start gap-2.5 px-4 py-3">
-              <Icone size={15} className={cn("mt-0.5 shrink-0", tom.classe)} />
-              <p className="text-[13px] leading-relaxed text-ink-2">{i.texto}</p>
-            </li>
-          );
-        })}
-      </ul>
+      {aberta && (
+        <ul className="flex flex-col gap-1 border-t border-line px-4 py-2.5">
+          {resumo.itens.map((i) => {
+            const tom = TOM[i.tom];
+            const Icone = tom.icone;
+            return (
+              <li key={i.id} className="flex items-start gap-2">
+                <Icone size={13} className={cn("mt-0.5 shrink-0", tom.classe)} />
+                <p className="text-[12px] leading-relaxed text-ink-2">{i.texto}</p>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
 }

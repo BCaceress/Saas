@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Check,
@@ -189,6 +190,34 @@ export function CotacaoMobileDetalhe({
         />
       ) : (
         <div className="space-y-4">
+          {/* Quem abre uma cotação decidida no celular está atrás de uma
+              pergunta só: "em que pedido isso foi parar?". Estava dentro do
+              comparativo; com o totalizador removido de lá, sobe para cá. */}
+          {pedidos.length > 0 && (
+            <section className="rounded-[var(--radius-lg)] border border-ok/40 bg-ok-soft px-3 py-2.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-ok">
+                {pedidos.length === 1 ? "Pedido gerado" : `${pedidos.length} pedidos gerados`}
+              </p>
+              <ul className="mt-1.5 flex flex-wrap gap-1.5">
+                {pedidos.map((p) => (
+                  <li key={p.id}>
+                    <Link
+                      href={`/m/pedidos?pedido=${p.id}`}
+                      className="flex items-center gap-2 rounded-full border border-ok/30 bg-surface px-2.5 py-1"
+                    >
+                      <span className="font-mono text-[13px] font-semibold text-ink">
+                        {p.numero}
+                      </span>
+                      <span className="max-w-[8rem] truncate text-[11px] text-muted">
+                        {p.supplierNome}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           {/* A lista de itens some depois do envio, e ela é justamente o que
               o operador quer conferir no corredor ("o que foi que eu pedi?").
               Fica como aba, com a mesma régua de edição do servidor. */}
@@ -222,9 +251,7 @@ export function CotacaoMobileDetalhe({
             <ComparativoCotacao
               cotacao={cotacao}
               resumo={resumo}
-              pedidos={pedidos}
               podePedir={podePedir}
-              onEnviado={setEnvios}
             />
           )}
         </div>

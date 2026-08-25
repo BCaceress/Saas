@@ -1,0 +1,12 @@
+-- Envio da cotação por CONTATO, não por fornecedor.
+--
+-- A cotação vai para uma pessoa. O fornecedor é só o agrupador: o número de
+-- WhatsApp e o e-mail usados no disparo pertencem ao contato escolhido, nunca
+-- ao cadastro da empresa (que é do fiscal ou de um 0800). A trilha já gravava
+-- contato, canal e destino — faltava registrar quem entrou em CÓPIA quando o
+-- disparo é por e-mail, que é o único canal com mais de um destinatário.
+--
+-- Texto e não relação: é cópia literal, como o `contatoNome` ao lado, e
+-- continua respondendo "quem mais viu isso?" depois de o vendedor sair da
+-- empresa e o contato ser apagado.
+ALTER TABLE "QuotationSend" ADD COLUMN "copias" TEXT;

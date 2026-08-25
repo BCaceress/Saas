@@ -183,15 +183,24 @@ export async function criarCotacaoAction(input: z.input<typeof criarSchema> = {}
   });
 }
 
-const editarSchema = z.object({
-  id: z.string().min(1),
-  titulo: z.string().trim().min(3),
-  siteId: z.string().optional().nullable(),
-  prazoResposta: z.string().optional().nullable(),
-  observacao: z.string().trim().max(1000).optional().nullable(),
-  /** Pedir promoção por volume ao fornecedor. Ausente = não mexe na chave. */
-  pedeEscala: z.boolean().optional(),
-});
+const editarSchema = z
+  .object({
+    id: z.string().min(1),
+    titulo: z.string().trim().min(3, "Informe o nome da cotação."),
+    siteId: z.string().optional().nullable(),
+    /** Data do documento (yyyy-mm-dd). Ausente = não mexe no que está gravado. */
+    dataCotacao: z.string().optional().nullable(),
+    prazoResposta: z.string().optional().nullable(),
+    observacao: z.string().trim().max(1000).optional().nullable(),
+    /** Pedir promoção por volume ao fornecedor. Ausente = não mexe na chave. */
+    pedeEscala: z.boolean().optional(),
+  })
+  // Prazo antes da data da cotação seria uma pergunta que vence antes de ser
+  // feita. A tela já barra; aqui é a mesma régua para quem chega pela ação.
+  .refine((d) => !d.dataCotacao || !d.prazoResposta || d.prazoResposta >= d.dataCotacao, {
+    path: ["prazoResposta"],
+    message: "O prazo de resposta não pode ser anterior à data da cotação.",
+  });
 
 export async function editarCotacaoAction(input: z.input<typeof editarSchema>) {
   const d = editarSchema.parse(input);
@@ -206,6 +215,9 @@ export async function editarCotacaoAction(input: z.input<typeof editarSchema>) {
       data: {
         titulo: d.titulo,
         siteId: d.siteId || undefined,
+        // Meio-dia UTC: a data do documento é um DIA, e gravar na virada faria
+        // o fuso do navegador mostrar o dia anterior de volta.
+        dataCotacao: d.dataCotacao ? new Date(`${d.dataCotacao}T12:00:00.000Z`) : undefined,
         prazoResposta: d.prazoResposta ? new Date(`${d.prazoResposta}T23:59:59`) : null,
         observacao: d.observacao ?? null,
         pedeEscala: d.pedeEscala,
@@ -568,6 +580,110 @@ export async function removerItemAction(id: string) {
   });
 }
 
+const reordenarSchema = z.object({
+  quotationId: z.string().min(1),
+  /** Ids na ordem final. Itens fora da lista mantêm o que tinham. */
+  ids: z.array(z.string().min(1)).min(2),
+});
+
+/**
+ * Muda a ordem da lista.
+ *
+ * A ordem importa porque a lista É o documento que o fornecedor lê: agrupar
+ * por marca ou por corredor faz ele conferir depressa e errar menos. Guardar
+ * a ordem já existia (`ordem`); faltava deixar mudá-la.
+ */
+export async function reordenarItensAction(input: z.input<typeof reordenarSchema>) {
+  const d = reordenarSchema.parse(input);
+  return tx(async () => {
+    await exigirLicenca(d.quotationId, "itens");
+    // Um update por item: são dezenas de linhas, não milhares, e a alternativa
+    // (CASE gigante em SQL cru) perderia a injeção de tenant do extension.
+    await Promise.all(
+      d.ids.map((id, ordem) =>
+        db.quotationItem.updateMany({
+          where: { id, quotationId: d.quotationId },
+          data: { ordem },
+        }),
+      ),
+    );
+    ok();
+  });
+}
+
+const copiarItensSchema = z.object({
+  quotationId: z.string().min(1),
+  origemId: z.string().min(1),
+});
+
+/**
+ * Traz a lista de uma cotação anterior para esta.
+ *
+ * Diferente de duplicar: aqui a cotação de destino JÁ existe (o operador está
+ * dentro dela) e o que se copia é só a pergunta — itens, embalagem e
+ * quantidade. Fornecedores não vêm junto: quem vende cerveja em agosto pode
+ * não ser quem vendia em julho, e essa escolha tem coluna própria na tela.
+ *
+ * O que já está na lista não duplica: repetir o clique não faz "Coca 2L"
+ * aparecer duas vezes com quantidades diferentes.
+ */
+export async function copiarItensDeAction(input: z.input<typeof copiarItensSchema>) {
+  const d = copiarItensSchema.parse(input);
+  return tx(async (tid) => {
+    await exigirLicenca(d.quotationId, "itens");
+
+    const [origem, atuais, ultimo] = await Promise.all([
+      db.quotationItem.findMany({
+        where: { quotationId: d.origemId },
+        orderBy: { ordem: "asc" },
+        select: {
+          productId: true,
+          packagingId: true,
+          descricao: true,
+          quantidade: true,
+          observacao: true,
+        },
+      }),
+      db.quotationItem.findMany({
+        where: { quotationId: d.quotationId },
+        select: { productId: true, descricao: true },
+      }),
+      db.quotationItem.findFirst({
+        where: { quotationId: d.quotationId },
+        orderBy: { ordem: "desc" },
+        select: { ordem: true },
+      }),
+    ]);
+    if (origem.length === 0) throw new Error("A cotação escolhida não tem itens para copiar.");
+
+    // Produto vinculado é a identidade quando existe; item de texto livre se
+    // reconhece pela descrição, que é tudo que ele tem.
+    const jaTem = new Set(
+      atuais.map((i) => i.productId ?? `livre:${i.descricao.trim().toLowerCase()}`),
+    );
+    const novos = origem.filter(
+      (i) => !jaTem.has(i.productId ?? `livre:${i.descricao.trim().toLowerCase()}`),
+    );
+    if (novos.length === 0) return { copiados: 0 };
+
+    let ordem = (ultimo?.ordem ?? -1) + 1;
+    await db.quotationItem.createMany({
+      data: novos.map((i) => ({
+        tenantId: tid,
+        quotationId: d.quotationId,
+        productId: i.productId,
+        packagingId: i.packagingId,
+        descricao: i.descricao,
+        quantidade: i.quantidade,
+        observacao: i.observacao,
+        ordem: ordem++,
+      })),
+    });
+    ok();
+    return { copiados: novos.length };
+  });
+}
+
 // ── Convidados ──────────────────────────────────────────────
 
 const convidarSchema = z.object({
@@ -694,6 +810,23 @@ function montarMensagem(
 
 const canalSchema = z.enum(["whatsapp", "email"]);
 
+/**
+ * Destino fora do cadastro: o vendedor que só existe na agenda do celular do
+ * comprador. Vale para ESTE disparo — quem manda é o que foi digitado agora, e
+ * a trilha grava o número usado (com contactId nulo), então nunca fica a
+ * dúvida de para onde foi. Virar contato é decisão de outra tela.
+ */
+const avulsoSchema = z
+  .object({
+    nome: z.string().trim().max(80).optional(),
+    telefone: z.string().trim().max(20).optional(),
+    email: z.string().trim().email("E-mail inválido.").max(120).optional(),
+  })
+  .refine((a) => Boolean(a.telefone?.trim() || a.email?.trim()), {
+    message: "Informe um WhatsApp ou um e-mail para o destino avulso.",
+    path: ["telefone"],
+  });
+
 /** Uma linha do modal de envio: para quem, dentro daquele fornecedor, e por onde. */
 const destinoSchema = z.object({
   conviteId: z.string().min(1),
@@ -706,17 +839,7 @@ const destinoSchema = z.object({
    * agora, e a trilha grava o número usado (com contactId nulo), então nunca
    * fica a dúvida de para onde foi. Virar contato é decisão de outra tela.
    */
-  avulso: z
-    .object({
-      nome: z.string().trim().max(80).optional(),
-      telefone: z.string().trim().max(20).optional(),
-      email: z.string().trim().email("E-mail inválido.").max(120).optional(),
-    })
-    .refine((a) => Boolean(a.telefone?.trim() || a.email?.trim()), {
-      message: "Informe um WhatsApp ou um e-mail para o destino avulso.",
-      path: ["telefone"],
-    })
-    .optional(),
+  avulso: avulsoSchema.optional(),
 });
 
 const enviarSchema = z.object({
@@ -1104,6 +1227,262 @@ export async function enviarCotacaoAction(input: z.input<typeof enviarSchema>): 
         };
       }),
     );
+  });
+}
+
+// ── Envio manual, um fornecedor por vez ─────────────────────
+// O NoHub não manda a mensagem: ele PREPARA o disparo (link + texto) e abre o
+// WhatsApp ou o cliente de e-mail do operador, que aperta o enviar dele. Por
+// isso o ato se parte em dois:
+//
+//   preparar  → gera o que vai ser mandado. Não muda status nem grava trilha:
+//               abrir o WhatsApp não é ter enviado, e marcar aqui produziria
+//               "enviada" para uma mensagem que o operador desistiu de mandar.
+//   confirmar → o operador diz que mandou. AQUI o convite vira ENVIADA, a
+//               trilha é gravada e a cotação sai de rascunho.
+//
+// A separação é o ponto todo do fluxo: só quem esteve no WhatsApp sabe se a
+// mensagem saiu, e o sistema não finge saber.
+
+const prepararEnvioSchema = z.object({
+  conviteId: z.string().min(1),
+  canal: canalSchema,
+  /** Contato que vai receber. Obrigatório: a cotação não vai para uma empresa. */
+  contactId: z.string().min(1),
+  /** Só e-mail: quem entra em cópia. Contatos do MESMO fornecedor. */
+  copiaIds: z.array(z.string().min(1)).default([]),
+});
+
+export type ContatoDoEnvio = { id: string; nome: string; email: string | null };
+
+export type EnvioPreparado = {
+  conviteId: string;
+  fornecedor: string;
+  contactId: string;
+  contatoNome: string;
+  /** Telefone (WhatsApp) ou e-mail (e-mail) que de fato vai ser usado. */
+  destino: string | null;
+  /** Contatos em cópia, resolvidos — vira a trilha depois da confirmação. */
+  copias: ContatoDoEnvio[];
+  mensagem: string;
+  link: string | null;
+  /** Endereço pronto do canal: `https://wa.me/...` ou `mailto:...`. */
+  url: string | null;
+  /** Por que não dá para abrir, quando `url` é null. */
+  impedimento: string | null;
+};
+
+/**
+ * Monta o disparo de UM contato. Não muda status nem grava trilha: abrir o
+ * WhatsApp não é ter enviado.
+ *
+ * O destino sai do CONTATO — `contact.telefone` / `contact.email`. Nunca do
+ * cadastro do fornecedor: aquele telefone é do fiscal ou de um 0800, e cotação
+ * mandada para lá some sem ninguém perceber. Sem o dado no contato, a ação
+ * recusa e a tela pede outro contato.
+ */
+export async function prepararEnvioAction(
+  input: z.input<typeof prepararEnvioSchema>,
+): Promise<EnvioPreparado> {
+  const d = prepararEnvioSchema.parse(input);
+  const ctx = await guardAction("compras.pedir");
+  return runWithTenant(ctx.tenant.id, async () => {
+    const convite = await db.quotationSupplier.findFirst({
+      where: { id: d.conviteId },
+      select: {
+        id: true,
+        quotation: {
+          select: {
+            id: true,
+            numero: true,
+            titulo: true,
+            prazoResposta: true,
+            items: {
+              orderBy: { ordem: "asc" },
+              select: {
+                id: true,
+                descricao: true,
+                quantidade: true,
+                packagingId: true,
+                productId: true,
+              },
+            },
+          },
+        },
+        supplier: {
+          select: {
+            razaoSocial: true,
+            nomeFantasia: true,
+            contacts: {
+              where: { ativo: true },
+              select: { id: true, nome: true, telefone: true, email: true },
+            },
+          },
+        },
+      },
+    });
+    if (!convite) throw new Error("Fornecedor não encontrado nesta cotação.");
+    const cotacao = convite.quotation;
+    if (cotacao.items.length === 0) throw new Error("Adicione ao menos um item antes de enviar.");
+
+    const fornecedor = convite.supplier.nomeFantasia || convite.supplier.razaoSocial;
+    // O contato precisa ser DESTE fornecedor. Sem essa checagem, um id de fora
+    // mandaria a cotação para a pessoa errada.
+    const contato = convite.supplier.contacts.find((c) => c.id === d.contactId);
+    if (!contato) throw new Error("Contato não encontrado neste fornecedor.");
+
+    const link =
+      (await linkVigente(convite.id))?.url ??
+      (await emitirLinkCotacao(ctx.tenant.id, convite.id, cotacao.prazoResposta)).url;
+
+    const unidades = await unidadesDosItens(cotacao.items);
+    const mensagem = montarMensagem(
+      ctx.tenant.nome,
+      cotacao.numero,
+      cotacao.titulo,
+      cotacao.prazoResposta,
+      cotacao.items.map((i) => ({
+        descricao: i.descricao,
+        quantidade: quantidadeComUnidade(Number(i.quantidade), unidades.get(i.id)),
+      })),
+      link,
+      contato.nome,
+    );
+
+    const base = {
+      conviteId: convite.id,
+      fornecedor,
+      contactId: contato.id,
+      contatoNome: contato.nome,
+      mensagem,
+      link,
+    };
+
+    if (d.canal === "whatsapp") {
+      const numero = numeroWhatsApp(contato.telefone);
+      return {
+        ...base,
+        destino: contato.telefone,
+        copias: [],
+        url: numero ? `https://wa.me/${numero}?text=${encodeURIComponent(mensagem)}` : null,
+        impedimento: numero
+          ? null
+          : `${contato.nome} não tem WhatsApp cadastrado. Escolha outro contato ou cadastre o número.`,
+      };
+    }
+
+    // Cópia só entra com e-mail e só de quem é deste fornecedor — mesma
+    // checagem do destinatário principal, pelo mesmo motivo.
+    const copias = convite.supplier.contacts
+      .filter((c) => d.copiaIds.includes(c.id) && c.id !== contato.id && c.email?.trim())
+      .map((c) => ({ id: c.id, nome: c.nome, email: c.email }));
+
+    if (!contato.email?.trim()) {
+      return {
+        ...base,
+        destino: null,
+        copias,
+        url: null,
+        impedimento: `${contato.nome} não tem e-mail cadastrado. Escolha outro contato ou cadastre o endereço.`,
+      };
+    }
+
+    const assunto = `Cotação ${cotacao.numero} — ${cotacao.titulo}`;
+    const cc = copias.map((c) => c.email!).join(",");
+    const url =
+      `mailto:${encodeURIComponent(contato.email)}` +
+      `?subject=${encodeURIComponent(assunto)}` +
+      (cc ? `&cc=${encodeURIComponent(cc)}` : "") +
+      `&body=${encodeURIComponent(mensagem)}`;
+
+    return { ...base, destino: contato.email, copias, url, impedimento: null };
+  });
+}
+
+const confirmarEnvioSchema = z.object({
+  conviteId: z.string().min(1),
+  canal: canalSchema,
+  contactId: z.string().min(1),
+  /** Nome de quem recebeu, COPIADO — sobrevive ao vendedor sair da empresa. */
+  contatoNome: z.string().trim().max(160),
+  /** Telefone ou e-mail que o operador usou de fato. */
+  destino: z.string().trim().max(200).nullable().optional(),
+  /** "Maria <maria@x>; Carlos <carlos@x>" — só e-mail tem cópia. */
+  copias: z.string().trim().max(1000).nullable().optional(),
+  reenvio: z.boolean().default(false),
+});
+
+/**
+ * O operador diz que mandou para ESTE contato. Só aqui a trilha é gravada.
+ *
+ * O convite vira ENVIADA no primeiro contato confirmado — o fornecedor foi
+ * procurado, mesmo que outras pessoas dele ainda estejam na fila; o painel
+ * mostra "2 de 3 contatos" a partir da trilha. A cotação sai de RASCUNHO no
+ * mesmo momento e fica em ABERTA: "aguardando respostas" continua verdade com
+ * todo mundo já avisado. Enviado não é respondido.
+ */
+export async function confirmarEnvioAction(
+  input: z.input<typeof confirmarEnvioSchema>,
+): Promise<{ enviadoEm: string }> {
+  const d = confirmarEnvioSchema.parse(input);
+  const ctx = await guardAction("compras.pedir");
+  const userId = ctx.user.id ?? null;
+  return runWithTenant(ctx.tenant.id, async () => {
+    const convite = await db.quotationSupplier.findFirst({
+      where: { id: d.conviteId },
+      select: {
+        id: true,
+        status: true,
+        quotationId: true,
+        quotation: { select: { status: true } },
+        supplier: { select: { contacts: { where: { ativo: true }, select: { id: true } } } },
+      },
+    });
+    if (!convite) throw new Error("Fornecedor não encontrado nesta cotação.");
+    if (convite.status === "RESPONDIDA" || convite.status === "RECUSADA") {
+      throw new Error("Este fornecedor já respondeu — não dá para marcar como enviado de novo.");
+    }
+    if (!convite.supplier.contacts.some((c) => c.id === d.contactId)) {
+      throw new Error("Contato não encontrado neste fornecedor.");
+    }
+
+    const agora = new Date();
+    await db.quotationSupplier.updateMany({
+      where: { id: convite.id },
+      data: {
+        status: "ENVIADA",
+        enviadaEm: agora,
+        // O contato usado fica gravado: o próximo reenvio abre com a mesma
+        // pessoa, sem o comprador reescolher.
+        contactId: d.contactId,
+      },
+    });
+    if (convite.quotation.status === "RASCUNHO") {
+      await db.quotation.updateMany({
+        where: { id: convite.quotationId },
+        data: { status: "ABERTA", enviadaEm: agora },
+      });
+    }
+    await db.quotationSend.create({
+      data: {
+        tenantId: ctx.tenant.id,
+        quotationSupplierId: convite.id,
+        contactId: d.contactId,
+        contatoNome: d.contatoNome,
+        canal: d.canal === "whatsapp" ? "WHATSAPP" : "EMAIL",
+        destino: d.destino ?? null,
+        copias: d.copias || null,
+        reenvio: d.reenvio,
+        // Envio MANUAL: o sucesso é a palavra do operador, que esteve no
+        // aplicativo. Não há retorno de gateway para contradizê-lo.
+        sucesso: true,
+        erro: null,
+        enviadoEm: agora,
+        enviadoPor: userId,
+      },
+    });
+    ok();
+    return { enviadoEm: agora.toISOString() };
   });
 }
 

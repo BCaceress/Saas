@@ -1,0 +1,11 @@
+-- Data da cotação — o dia do DOCUMENTO, não o do clique.
+--
+-- Até aqui a única data que a cotação tinha era o `createdAt`: carimbo de
+-- quando alguém tocou em "Nova cotação". Serve para auditoria, não para o
+-- comprador, que monta a lista na quinta para mandar na sexta e precisa que a
+-- cotação diga sexta. A revisão agora pergunta essa data, com hoje já
+-- preenchido.
+--
+-- Nulo = nunca foi declarada: a leitura cai no `createdAt` e nada muda para as
+-- cotações que já existem.
+ALTER TABLE "Quotation" ADD COLUMN "dataCotacao" TIMESTAMP(3);

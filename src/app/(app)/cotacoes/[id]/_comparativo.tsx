@@ -1,32 +1,23 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpRight,
-  Clock,
   Layers,
   Scale,
-  Send,
-  Sparkles,
   Target,
   Trophy,
   TrendingDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { precoNaQuantidade, type LimitesEscala } from "@/lib/compras/escalas";
-import { EstadoVazio, Metrica, fmtMoney, fmtPreco, unidadeDaQtd } from "../_catalogo/ui";
-import { SupplierAvatar } from "../_ui";
+import { EstadoVazio, fmtMoney, fmtPreco, unidadeDaQtd } from "../_catalogo/ui";
+import { SupplierAvatar, Thumb } from "../_ui";
 import type { ConviteCotacao, CotacaoDetalhe, ItemCotacao } from "../_compra-types";
-import { gerarPedidosAction, type Envio } from "../_compra-actions";
+import { gerarPedidosAction } from "../_compra-actions";
 import { LenteOportunidade, type Sugestao } from "./_escala";
-import { EnvioSheet } from "./_envio";
-import { ResumoCotacaoPainel } from "./_resumo";
+import { LeituraDaCotacao } from "./_resumo";
 import type { ResumoCotacao } from "@/lib/compras/cotacao-resumo";
-import type { PedidoDaCotacao } from "@/lib/compras/cotacao-economia";
 
 // ── Comparativo ─────────────────────────────────────────────
 // A tela onde a cotação paga o próprio custo. Cada linha é um item, cada
@@ -90,21 +81,12 @@ function diferencaNaLinha(
 export function ComparativoCotacao({
   cotacao,
   resumo,
-  pedidos,
   podePedir,
-  onEnviado,
 }: {
   cotacao: CotacaoDetalhe;
   /** Leitura em texto do que os números dizem — fica logo abaixo do totalizador. */
   resumo: ResumoCotacao;
-  /** Pedidos já gerados. Vazio enquanto a cotação não foi decidida. */
-  pedidos: PedidoDaCotacao[];
   podePedir: boolean;
-  /**
-   * A cobrança de quem ainda não respondeu sai daqui, mas a folha de mensagens
-   * prontas é a mesma do resto da tela — quem monta a página a exibe.
-   */
-  onEnviado?: (envios: Envio[]) => void;
 }) {
   const router = useRouter();
   const [pendente, startTransition] = useTransition();
@@ -143,7 +125,23 @@ export function ComparativoCotacao({
   );
 
   const [lente, setLente] = useState<"necessidade" | "oportunidade">("necessidade");
+
   const [limites, setLimites] = useState<LimitesEscala>(cotacao.limitesEscala);
+
+  /**
+   * A marca só informa quando os fornecedores DIVERGEM nela. Se os três
+   * cotaram a mesma, ela é a mesma palavra repetida na linha inteira — ruído
+   * multiplicado pelo número de colunas.
+   */
+  function marcasDivergemNoItem(itemId: string): boolean {
+    const marcas = new Set(
+      respondidos
+        .map((c) => c.respostas.find((x) => x.quotationItemId === itemId))
+        .filter((r) => r?.disponivel && r.marca)
+        .map((r) => r!.marca!.trim().toLowerCase()),
+    );
+    return marcas.size > 1;
+  }
 
   /** Quantidade a pedir deste item — a cotada, ou a da faixa levada. */
   const quantidadeDe = (item: ItemCotacao) => quantidades[item.id] ?? item.quantidade;
@@ -209,9 +207,6 @@ export function ComparativoCotacao({
   // Quem recebeu a lista e ainda não voltou. Decidir a compra sem saber que
   // falta gente é o erro caro desta tela — a proposta que não chegou pode ser
   // a boa.
-  const aguardando = cotacao.convites.filter((c) => c.status === "ENVIADA");
-  const [cobrando, setCobrando] = useState(false);
-  const [aguardarQuieto, setAguardarQuieto] = useState(false);
 
   /** Volta tudo à quantidade cotada — trocar de estratégia zera a promoção. */
   function zerarQuantidades() {
@@ -283,9 +278,6 @@ export function ComparativoCotacao({
     .filter(cobreTudo)
     .map((c) => ({ id: c.id, nome: c.supplierNome, total: totalDe(c) }));
 
-  const piorCheio = totaisCheios.length
-    ? Math.max(...totaisCheios.map((t) => t.total))
-    : null;
   const melhorCheio = totaisCheios.length
     ? totaisCheios.reduce((a, b) => (b.total < a.total ? b : a))
     : null;
@@ -355,30 +347,11 @@ export function ComparativoCotacao({
         <AlternadorLente lente={lente} onLente={setLente} onNecessidade={zerarQuantidades} />
       )}
 
-      <StatusPropostas
-        recebidas={respondidos.length}
-        recusadas={cotacao.convites.filter((c) => c.status === "RECUSADA").length}
-        aguardando={aguardando}
-        quieto={aguardarQuieto}
-        onAguardar={() => setAguardarQuieto(true)}
-        onCobrar={podePedir && !decidida ? () => setCobrando(true) : undefined}
-      />
-
-      {/* O totalizador vale para as duas lentes: a cesta é a mesma escolha,
-          e trocar de pergunta não pode fazer o total sumir da tela. */}
-      <CestaEscolhida
-        numeroCotacao={cotacao.numero}
-        total={totalEscolhido}
-        itensEscolhidos={itensEscolhidos}
-        totalItens={cotacao.itens.length}
-        melhorCheio={melhorCheio}
-        piorCheio={piorCheio}
-        pedidos={pedidos}
-      />
-
-      {/* A leitura confirma os números que acabaram de ser lidos, e só depois
-          vem a matriz — texto primeiro, tabela depois. */}
-      <ResumoCotacaoPainel resumo={resumo} />
+      {/* Os três números do totalizador saíram: "cesta escolhida" repetia o
+          rodapé fixo, "melhor fornecedor único" repetia o cabeçalho da coluna
+          vencedora e a economia contra a pior já é a primeira frase da
+          leitura. Sobra a leitura — que é o que a tabela NÃO diz. */}
+      <LeituraDaCotacao resumo={resumo} />
 
       {lente === "oportunidade" && (
         <LenteOportunidade
@@ -397,14 +370,18 @@ export function ComparativoCotacao({
       {lente === "necessidade" && (
         <>
       <div className="hidden overflow-x-auto rounded-[var(--radius-lg)] border border-line bg-surface md:block">
-        <table className="w-full min-w-[42rem] text-sm">
+        {/* A largura mínima cresceu junto com a coluna de total: espremida,
+            a coluna do item truncava o nome no terceiro caractere. */}
+        <table className="w-full min-w-[52rem] text-sm">
           <thead className="border-b border-line bg-surface-2 text-[11px] uppercase tracking-wide text-faint">
             <tr>
-              <th className="px-4 py-2.5 text-left font-medium">Item</th>
-              <th className="px-3 py-2.5 text-right font-medium">Qtd</th>
-              {/* O cabeçalho é a coluna inteira resumida: quem é, se é a
-                  melhor proposta cheia, e por quanto ele fecha. Colunas
-                  idênticas obrigam a somar de cabeça antes de decidir. */}
+              {/* Peso declarado: sem largura, o navegador dá à coluna de texto o
+                  que sobra das colunas de número — e sobra pouco. */}
+              <th className="w-[34%] min-w-[16rem] px-4 py-2 text-left font-medium">Item</th>
+              <th className="px-3 py-2 text-right font-medium">Qtd</th>
+              {/* Cabeçalho enxuto: quem é e por quanto fecha. O troféu diz o
+                  resto — quatro linhas de altura por coluna empurravam a
+                  primeira linha de preço para fora da tela. */}
               {respondidos.map((c) => {
                 const eleito = modo === "fornecedor" && fornecedorUnico === c.id;
                 const melhorGeral = melhorCheio?.id === c.id;
@@ -415,18 +392,22 @@ export function ComparativoCotacao({
                   <th
                     key={c.id}
                     aria-current={eleito ? "true" : undefined}
+                    title={
+                      cobreTudo(c)
+                        ? `${c.supplierNome} — cotou os ${cotacao.itens.length} itens`
+                        : `${c.supplierNome} — cotou só ${atende} de ${cotacao.itens.length} itens`
+                    }
                     className={cn(
-                      "px-3 py-2.5 text-right align-top font-medium",
-                      eleito && "bg-brand-soft",
+                      "px-3 py-2 text-right align-top font-medium",
+                      eleito ? "bg-brand-soft" : melhorGeral && "bg-ok-soft/40",
                     )}
                   >
-                    <span className="flex flex-col items-end gap-1">
+                    <span className="flex flex-col items-end gap-0.5">
                       <span className="flex items-center gap-1.5">
-                        <SupplierAvatar
-                          nome={c.supplierNome}
-                          logoUrl={c.supplierLogoUrl}
-                          size={18}
-                        />
+                        {/* Sem logo: o cabeçalho é uma coluna de NÚMEROS, e a
+                            imagem competia com eles pela atenção sem ajudar a
+                            comparar preço. O nome basta para identificar. */}
+                        {melhorGeral && <Trophy size={11} className="shrink-0 text-ok" />}
                         <span
                           className={cn(
                             "max-w-[9rem] truncate normal-case text-[12px]",
@@ -436,17 +417,6 @@ export function ComparativoCotacao({
                           {c.supplierNome}
                         </span>
                       </span>
-
-                      {melhorGeral ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-ok-soft px-2 py-0.5 text-[10px] font-semibold normal-case text-ok">
-                          <Trophy size={10} />
-                          Melhor opção
-                        </span>
-                      ) : eleito ? (
-                        <span className="rounded-full bg-brand px-2 py-0.5 text-[10px] font-semibold normal-case text-on-brand">
-                          Escolhido
-                        </span>
-                      ) : null}
 
                       <span
                         className={cn(
@@ -458,36 +428,62 @@ export function ComparativoCotacao({
                       </span>
                       {!cobreTudo(c) && (
                         <span className="text-[10px] normal-case text-accent">
-                          só {atende} de {cotacao.itens.length} itens
+                          {atende}/{cotacao.itens.length} itens
                         </span>
                       )}
                     </span>
                   </th>
                 );
               })}
+              {/* O total da linha saiu de dentro das células: ele pertence a
+                  UMA coluna — a escolhida —, e repetido em cada fornecedor era
+                  o mesmo número dito N vezes. */}
+              <th className="px-4 py-2 text-right font-medium">Total do item</th>
             </tr>
           </thead>
 
           <tbody className="divide-y divide-line">
-            {cotacao.itens.map((item) => {
+            {cotacao.itens.map((item, linha) => {
               const melhor = melhorPorItem.get(item.id);
               // Preços da linha na quantidade escolhida — a base da diferença
               // que cada célula mostra.
               const precosDaLinha = respondidos
                 .map((c) => precoDe(item, c))
                 .filter((x): x is number => x !== null);
+              const marcasDivergem = marcasDivergemNoItem(item.id);
+              const conviteEscolhido = escolhas[item.id];
+              const precoEscolhido = conviteEscolhido
+                ? (precoDe(item, respondidos.find((c) => c.id === conviteEscolhido)!) ?? null)
+                : null;
+
               return (
-                <tr key={item.id}>
-                  <td className="max-w-0 px-4 py-2.5">
-                    <span className="block truncate text-ink">{item.descricao}</span>
-                    {!item.productId && (
-                      <span className="text-[11px] text-faint">fora do catálogo</span>
-                    )}
+                <tr
+                  key={item.id}
+                  // Zebra em vez de pintar cada célula: a faixa separa as
+                  // linhas sem competir com a cor que marca a escolha.
+                  className={linha % 2 === 1 ? "bg-surface-2/40" : undefined}
+                >
+                  {/* Foto no ITEM, e só nele: é onde ela trabalha — o operador
+                      reconhece o produto pelo rótulo antes de ler o nome. */}
+                  <td className="px-4 py-2">
+                    <span className="flex items-center gap-2">
+                      <Thumb url={item.imagemUrl} nome={item.descricao} size={28} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-ink">{item.descricao}</span>
+                        {item.sku ? (
+                          <span className="block font-mono text-[11px] text-faint">
+                            {item.sku}
+                          </span>
+                        ) : (
+                          <span className="block text-[11px] text-faint">fora do catálogo</span>
+                        )}
+                      </span>
+                    </span>
                   </td>
                   {/* A quantidade que vai no pedido, não a que foi perguntada:
                       levada uma promoção, elas deixam de ser a mesma coisa e a
                       cotada continua à vista, riscada. */}
-                  <td className="px-3 py-2.5 text-right font-mono text-[13px] tabular-nums text-muted">
+                  <td className="px-3 py-2 text-right font-mono text-[13px] tabular-nums text-muted">
                     {quantidadeDe(item) > item.quantidade ? (
                       <span className="flex flex-col items-end">
                         <span className="font-semibold text-accent">
@@ -511,16 +507,18 @@ export function ComparativoCotacao({
                     const r = c.respostas.find((x) => x.quotationItemId === item.id);
                     const escolhido = escolhas[item.id] === c.id;
                     const ehMelhor = melhor?.conviteId === c.id;
-
                     const eleito = modo === "fornecedor" && fornecedorUnico === c.id;
+                    const colunaVencedora = melhorCheio?.id === c.id;
 
                     if (!r?.disponivel) {
                       return (
                         <td
                           key={c.id}
                           className={cn(
-                            "px-3 py-2.5 text-right text-[12px] text-faint",
-                            eleito && "bg-brand-soft/40",
+                            "px-3 py-2 text-right text-[12px] text-faint",
+                            eleito
+                              ? "bg-brand-soft/40"
+                              : colunaVencedora && "bg-ok-soft/25",
                           )}
                         >
                           não tem
@@ -535,11 +533,45 @@ export function ComparativoCotacao({
                     const preco = precoDe(item, c) ?? r.precoUnitario;
                     const comFaixa = preco < r.precoUnitario;
                     const dif = diferencaNaLinha(precosDaLinha, preco);
+                    const falta = faltaTexto(r.quantidadeOfertada, item.quantidade);
+                    const marca = marcasDivergem ? r.marca : null;
+
+                    /**
+                     * UMA nota por célula, por gravidade: o que impede a compra
+                     * vem antes do que a barateia, e o preço da escolha vem
+                     * antes de tudo que é só contexto. O resto vive no `title`.
+                     */
+                    const nota = falta
+                      ? { texto: falta, tom: "accent" as const }
+                      : comFaixa
+                        ? { texto: "promoção por volume", tom: "accent" as const }
+                        : marca
+                          ? { texto: marca, tom: "faint" as const }
+                          : // Diferença só na célula ESCOLHIDA que não é a mais
+                            // barata: é o custo consciente da decisão. Em toda
+                            // célula, ela repetia o que a coluna de números já
+                            // diz pela posição.
+                            escolhido && !ehMelhor && dif && !dif.ganho
+                            ? { texto: `+${fmtPreco(dif.valor)}`, tom: "faint" as const }
+                            : null;
+
+                    const detalhes = [
+                      falta,
+                      comFaixa ? "promoção por volume" : null,
+                      r.marca,
+                      dif ? `${dif.ganho ? "−" : "+"}${fmtPreco(dif.valor)} na linha` : null,
+                      `${fmtMoney(preco * quantidadeDe(item))} no total do item`,
+                    ].filter(Boolean);
 
                     return (
                       <td
                         key={c.id}
-                        className={cn("px-3 py-2.5 text-right", eleito && "bg-brand-soft/40")}
+                        className={cn(
+                          "px-3 py-2 text-right",
+                          eleito
+                            ? "bg-brand-soft/40"
+                            : colunaVencedora && "bg-ok-soft/25",
+                        )}
                       >
                         <button
                           type="button"
@@ -552,80 +584,54 @@ export function ComparativoCotacao({
                             }));
                           }}
                           aria-pressed={escolhido}
+                          title={detalhes.join(" · ")}
                           className={cn(
                             "inline-flex flex-col items-end gap-0.5 rounded-[var(--radius)] px-2.5 py-1 transition-colors",
                             escolhido
                               ? "bg-brand text-on-brand"
                               : ehMelhor
-                                ? "bg-accent-soft text-accent hover:bg-accent-soft/70"
+                                ? "text-ok hover:bg-surface-2"
                                 : "text-ink hover:bg-surface-2",
                             (!podePedir || decidida) && "cursor-default",
                           )}
                         >
-                          <span className="font-mono text-[13px] font-semibold tabular-nums">
+                          <span
+                            className={cn(
+                              "font-mono text-[13px] tabular-nums",
+                              escolhido || ehMelhor ? "font-semibold" : "font-normal",
+                            )}
+                          >
                             {fmtPreco(preco)}
                           </span>
-                          {/* O ganho (ou o custo) de escolher esta célula, no
-                              lugar de repetir o mesmo número embaixo. */}
-                          {dif && (
+
+                          {nota && (
                             <span
                               className={cn(
-                                "flex items-center gap-0.5 text-[11px] font-medium",
+                                "text-[10px] font-medium",
                                 escolhido
                                   ? "text-on-brand/80"
-                                  : dif.ganho
-                                    ? "text-ok"
+                                  : nota.tom === "accent"
+                                    ? "text-accent"
                                     : "text-faint",
                               )}
                             >
-                              {dif.ganho ? <ArrowDown size={10} /> : <ArrowUp size={10} />}
-                              <span className="font-mono tabular-nums">{fmtPreco(dif.valor)}</span>
-                            </span>
-                          )}
-                          {quantidadeDe(item) > 1 && (
-                            <span
-                              className={cn(
-                                "font-mono text-[11px] tabular-nums",
-                                escolhido ? "text-on-brand/80" : "text-faint",
-                              )}
-                            >
-                              {fmtMoney(preco * quantidadeDe(item))}
-                            </span>
-                          )}
-                          {comFaixa && (
-                            <span
-                              className={cn(
-                                "text-[10px] font-medium",
-                                escolhido ? "text-on-brand/80" : "text-accent",
-                              )}
-                            >
-                              promoção por volume
-                            </span>
-                          )}
-                          {r.marca && (
-                            <span
-                              className={cn(
-                                "text-[10px]",
-                                escolhido ? "text-on-brand/80" : "text-faint",
-                              )}
-                            >
-                              {r.marca}
-                            </span>
-                          )}
-                          {faltaTexto(r.quantidadeOfertada, item.quantidade) && (
-                            <span
-                              className={cn(
-                                "text-[10px] font-medium",
-                                escolhido ? "text-on-brand/80" : "text-accent",
-                              )}
-                            >
-                              {faltaTexto(r.quantidadeOfertada, item.quantidade)}
+                              {nota.texto}
                             </span>
                           )}
                         </button>
                       </td>
                     );
                   })}
+
+                  <td className="px-4 py-2 text-right">
+                    {precoEscolhido === null ? (
+                      <span className="text-[12px] text-faint">—</span>
+                    ) : (
+                      <span className="font-mono text-[13px] font-semibold tabular-nums text-ink">
+                        {fmtMoney(precoEscolhido * quantidadeDe(item))}
+                      </span>
+                    )}
+                  </td>
                 </tr>
               );
             })}
@@ -646,6 +652,7 @@ export function ComparativoCotacao({
             melhorConviteId={melhorPorItem.get(item.id)?.conviteId ?? null}
             escolhido={escolhas[item.id] ?? null}
             editavel={podePedir && !decidida}
+            mostrarMarca={marcasDivergemNoItem(item.id)}
             onEscolher={(conviteId) => {
               setModo("manual");
               setEscolhas((e) => ({
@@ -657,20 +664,6 @@ export function ComparativoCotacao({
         ))}
       </ul>
         </>
-      )}
-
-      {cobrando && (
-        <EnvioSheet
-          cotacaoId={cotacao.id}
-          alvos={aguardando}
-          reenvio
-          prazoAtual={cotacao.prazoResposta}
-          onFechar={() => setCobrando(false)}
-          onEnviado={(r) => {
-            setCobrando(false);
-            onEnviado?.(r);
-          }}
-        />
       )}
 
       {erro && <p className="text-[13px] text-danger">{erro}</p>}
@@ -744,91 +737,6 @@ export function ComparativoCotacao({
   );
 }
 
-// ── Totalizador da cesta ────────────────────────────────────
-// Os três números que fecham a decisão, num grid só com divisores — três
-// cartões soltos custam mais atenção do que informam.
-//
-// Decidida, o cartão ganha a faixa dos PEDIDOS: quem volta nesta tela depois
-// da compra não quer o total de novo, quer o número do pedido e o fornecedor
-// que ficou com ele. Por isso o número vem em mono, grande, e leva direto ao
-// pedido — o resto do cartão é contexto dele.
-
-function CestaEscolhida({
-  numeroCotacao,
-  total,
-  itensEscolhidos,
-  totalItens,
-  melhorCheio,
-  piorCheio,
-  pedidos,
-}: {
-  numeroCotacao: string;
-  total: number;
-  itensEscolhidos: number;
-  totalItens: number;
-  melhorCheio: { nome: string; total: number } | null;
-  piorCheio: number | null;
-  pedidos: PedidoDaCotacao[];
-}) {
-  return (
-    <section className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
-      <div className="grid grid-cols-1 divide-y divide-line sm:grid-cols-3 sm:divide-x sm:divide-y-0">
-        <Metrica
-          label="Cesta escolhida"
-          valor={fmtMoney(total)}
-          sub={`${itensEscolhidos} de ${totalItens} itens · cotação ${numeroCotacao}`}
-          tom="brand"
-          icon={<Sparkles size={13} />}
-        />
-        <Metrica
-          label="Melhor fornecedor único"
-          valor={melhorCheio ? fmtMoney(melhorCheio.total) : "—"}
-          sub={melhorCheio ? melhorCheio.nome : "ninguém cotou a lista inteira"}
-          icon={<Scale size={13} />}
-        />
-        <Metrica
-          label="Economia contra a pior"
-          valor={piorCheio !== null ? fmtMoney(Math.max(0, piorCheio - total)) : "—"}
-          sub="proposta cheia mais cara"
-          tom="ok"
-          icon={<TrendingDown size={13} />}
-        />
-      </div>
-
-      {pedidos.length > 0 && (
-        <div className="border-t border-line bg-surface-2 px-4 py-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-faint">
-            {pedidos.length === 1 ? "Pedido gerado" : `${pedidos.length} pedidos gerados`} · a
-            partir da cotação {numeroCotacao}
-          </p>
-          <ul className="mt-2 flex flex-wrap gap-2">
-            {pedidos.map((p) => (
-              <li key={p.id}>
-                <Link
-                  href={`/pedidos?pedido=${p.id}`}
-                  className="flex items-center gap-3 rounded-[var(--radius)] border border-line bg-surface px-3 py-2 transition-colors hover:border-line-strong hover:bg-surface-2"
-                >
-                  <span className="min-w-0">
-                    <span className="block font-mono text-[15px] font-semibold leading-tight text-ink">
-                      {p.numero}
-                    </span>
-                    <span className="mt-0.5 block max-w-[13rem] truncate text-[12px] text-muted">
-                      {p.supplierNome}
-                    </span>
-                  </span>
-                  <span className="shrink-0 font-display text-[13px] font-semibold text-ink">
-                    {fmtMoney(p.valorTotal)}
-                  </span>
-                  <ArrowUpRight size={13} className="shrink-0 text-muted" />
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </section>
-  );
-}
 
 // ── Alternador de lente ─────────────────────────────────────
 // Duas perguntas, não dois modos de comprar: "quanto custa o que eu preciso"
@@ -1035,95 +943,6 @@ function OpcaoCompra({
   );
 }
 
-// ── Quem respondeu, quem falta ──────────────────────────────
-// A compra pode estar sendo fechada antes de a melhor proposta chegar, e a
-// tela não pode deixar isso passar em silêncio. Duas saídas, as duas
-// legítimas: esperar, ou cobrar agora — e cobrar abre a mesma folha de
-// mensagens prontas que a aba de fornecedores usa.
-
-function StatusPropostas({
-  recebidas,
-  recusadas,
-  aguardando,
-  quieto,
-  onAguardar,
-  onCobrar,
-}: {
-  recebidas: number;
-  recusadas: number;
-  aguardando: ConviteCotacao[];
-  /** O operador já disse que vai esperar — o aviso encolhe e para de insistir. */
-  quieto: boolean;
-  onAguardar: () => void;
-  onCobrar?: () => void;
-}) {
-  const falta = aguardando.length;
-  return (
-    <section
-      aria-label="Propostas da cotação"
-      className="flex flex-col gap-2.5 rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-3"
-    >
-      <p className="flex flex-wrap items-baseline gap-x-2 text-[13px] text-ink">
-        <span className="font-semibold">
-          {recebidas} {recebidas === 1 ? "proposta recebida" : "propostas recebidas"}
-        </span>
-        {recusadas > 0 && (
-          <span className="text-[12px] text-muted">
-            · {recusadas} {recusadas === 1 ? "recusou cotar" : "recusaram cotar"}
-          </span>
-        )}
-      </p>
-
-      {falta > 0 &&
-        (quieto ? (
-          <p className="flex items-center gap-1.5 text-[12px] text-muted">
-            <Clock size={12} className="shrink-0" />
-            Aguardando {falta} {falta === 1 ? "fornecedor" : "fornecedores"}:{" "}
-            {aguardando.map((c) => c.supplierNome).join(", ")}.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-accent/40 bg-accent-soft px-3.5 py-2.5">
-            <p className="text-[13px] font-medium text-accent">
-              {falta}{" "}
-              {falta === 1
-                ? "fornecedor ainda não respondeu"
-                : "fornecedores ainda não responderam"}
-            </p>
-            <ul className="flex flex-wrap gap-x-3 gap-y-1">
-              {aguardando.map((c) => (
-                <li key={c.id} className="flex items-center gap-1.5">
-                  <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={18} />
-                  <span className="max-w-[14rem] truncate text-[13px] text-ink">
-                    {c.supplierNome}
-                  </span>
-                </li>
-              ))}
-            </ul>
-            <div className="flex flex-wrap items-center gap-2">
-              {onCobrar && (
-                <button
-                  type="button"
-                  onClick={onCobrar}
-                  className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-                >
-                  <Send size={13} />
-                  Reenviar solicitação
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={onAguardar}
-                className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
-              >
-                <Clock size={13} />
-                Aguardar resposta
-              </button>
-            </div>
-          </div>
-        ))}
-    </section>
-  );
-}
 
 // ── Card de item (celular) ──────────────────────────────────
 
@@ -1135,6 +954,7 @@ function CardItem({
   melhorConviteId,
   escolhido,
   editavel,
+  mostrarMarca,
   onEscolher,
 }: {
   item: ItemCotacao;
@@ -1146,6 +966,8 @@ function CardItem({
   melhorConviteId: string | null;
   escolhido: string | null;
   editavel: boolean;
+  /** Só quando os fornecedores cotaram marcas DIFERENTES — senão é repetição. */
+  mostrarMarca: boolean;
   onEscolher: (conviteId: string) => void;
 }) {
   // Mesma base do desktop: a diferença de cada proposta contra a melhor da
@@ -1224,7 +1046,9 @@ function CardItem({
                           marcado ? "" : dif.ganho ? "text-ok" : "text-faint",
                         )}
                       >
-                        {dif.ganho ? <ArrowDown size={11} /> : <ArrowUp size={11} />}
+                        {/* Sem seta: em 11px ela vira sujeira antes de virar
+                            informação, e o sinal já diz a direção. */}
+                        {dif.ganho ? "−" : "+"}
                         {fmtPreco(dif.valor)}
                       </span>
                     )}
@@ -1233,7 +1057,7 @@ function CardItem({
                         promoção por volume
                       </span>
                     )}
-                    {r.marca && <span>{r.marca}</span>}
+                    {mostrarMarca && r.marca && <span>{r.marca}</span>}
                     {falta && (
                       <span className={marcado ? "" : "font-medium text-accent"}>{falta}</span>
                     )}

@@ -59,6 +59,11 @@
   --violet: #7c3aed;
   --violet-soft: #f3edfe;
 
+  /* Marca de terceiro, não semântica: não quer dizer "sucesso", quer dizer
+     WhatsApp. Serve para o operador reconhecer o canal de relance, sem
+     confundir com o verde de "enviado". */
+  --whatsapp: #1da851;
+
   /* Níveis de fidelização — cores fora da escala laranja (metal/gema real) */
   --tier-gold: #a16207;
   --tier-gold-soft: #fef3c7;
@@ -122,6 +127,9 @@
     --info-soft: #14213a;
     --violet: #a78bfa;
     --violet-soft: #241a38;
+
+    /* Clareado para o fundo escuro: o verde oficial afunda no preto. */
+    --whatsapp: #3ddc84;
 
     --tier-gold: #eab308;
     --tier-gold-soft: #3f2d05;
@@ -211,6 +219,7 @@
   --color-danger-soft: var(--danger-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
+  --color-whatsapp: var(--whatsapp);
   --color-violet: var(--violet);
   --color-violet-soft: var(--violet-soft);
 
