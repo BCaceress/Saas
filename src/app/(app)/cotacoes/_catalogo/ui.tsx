@@ -19,7 +19,7 @@ import type { SupplierIntegrationKind, SupplierIntegrationStatus } from "@/gener
 // Formatadores vivem em ./format (módulo não-client) para que RSC também possa
 // chamá-los; re-exportados aqui pela conveniência dos clients.
 import { fmtPreco } from "./format";
-export { fmtMoney, fmtPreco, fmtQtd, fmtQuando } from "./format";
+export { fmtMoney, fmtPreco, fmtQtd, fmtQuando, unidadeDaQtd, fmtQtdEmbalagem } from "./format";
 
 // ── Fornecedor ──────────────────────────────────────────────
 

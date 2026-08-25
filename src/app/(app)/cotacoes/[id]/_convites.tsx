@@ -1,9 +1,9 @@
 "use client";
 
-import { Fragment, useRef, useState, useSyncExternalStore, useTransition } from "react";
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
-  History,
+  Check,
   MoreVertical,
   RotateCcw,
   Send,
@@ -26,7 +26,14 @@ import { copiarTexto } from "@/lib/clipboard";
 import { mascaraMoeda, paraMascara, paraNumero } from "@/lib/moeda";
 import { MAX_FAIXAS_ITEM } from "@/lib/compras/escalas";
 import { Menu, MenuItem } from "@/components/ui/menu";
-import { EstadoVazio, SupplierAvatar, fmtMoney, fmtQtd, fmtQuando } from "../_catalogo/ui";
+import {
+  EstadoVazio,
+  SupplierAvatar,
+  fmtMoney,
+  fmtQtd,
+  fmtQuando,
+  unidadeDaQtd,
+} from "../_catalogo/ui";
 import { Thumb } from "../_ui";
 import type { ConviteCotacao, CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
 import { ContatoSheet } from "@/components/app/contato-fornecedor";
@@ -344,12 +351,6 @@ export function ConvitesCotacao({
                           {'Marcar "Não vai cotar"'}
                         </MenuItem>
                       )}
-                      <MenuItem
-                        icon={<History size={14} />}
-                        onClick={() => router.push(`/fornecedores/${c.supplierId}/precos`)}
-                      >
-                        Ver histórico
-                      </MenuItem>
                       {/* Sair da cotação só antes do envio: depois disso o
                           fornecedor já foi incomodado, e apagar o convite some
                           com o link que ele pode estar preenchendo agora. */}
@@ -389,6 +390,7 @@ export function ConvitesCotacao({
       {respondendo && (
         <RespostaSheet
           convite={respondendo}
+          numero={cotacao.numero}
           itens={cotacao.itens}
           pedeEscala={cotacao.pedeEscala}
           pendente={pendente}
@@ -532,24 +534,25 @@ function ConvidarSheet({
 // ── Registrar resposta ──────────────────────────────────────
 // Quem digita aqui é o operador com o fornecedor no telefone (ou um PDF na
 // tela), e a régua é a velocidade: a mão fica no teclado, o Tab pula de preço
-// em preço e nada é obrigatório além do preço do que ele tem.
+// em preço, e o único gesto além de digitar é marcar o que ele não tem.
 //
-// Os mesmos três estados da tela pública — tem tudo, tem menos, não tem —
-// porque a resposta é a mesma coisa; muda só quem está com o teclado. Marca
-// saiu: era campo que ninguém preenchia e que empurrava o preço para fora da
-// vista em tela estreita.
-
-type Situacao = "tem" | "parcial" | "nao";
+// UMA REGRA, e ela é o modelo mental inteiro da tela:
+//
+//     preço digitado  →  o fornecedor tem o item, e ele entra no total
+//     "Não tem" marcado  →  preço bloqueado, fora do total, item respondido
+//
+// Não existe "Tem", não existe "Parcial", não existe terceiro estado. Cada
+// status a mais é uma pergunta a mais por linha, e são dezenas de linhas.
 
 /** Uma faixa de volume enquanto está sendo digitada (texto, não número). */
 type FaixaResposta = { qtd: string; preco: string };
 
 type LinhaResposta = {
   quotationItemId: string;
-  situacao: Situacao;
+  /** Texto mascarado do preço unitário. Vazio = ainda não respondido. */
   preco: string;
-  /** Só vale em "parcial": quanto ele consegue atender. */
-  quantidade: string;
+  /** O fornecedor não tem este item — preço bloqueado e fora do total. */
+  naoTem: boolean;
   /**
    * Promoção por volume que ele ditou ("de 10 pra cima é 41"). Vazia na
    * maioria das linhas — e a coluna que a abre só existe quando a cotação
@@ -558,14 +561,16 @@ type LinhaResposta = {
   faixas: FaixaResposta[];
 };
 
-const SITUACOES: { id: Situacao; label: string }[] = [
-  { id: "tem", label: "Tem" },
-  { id: "parcial", label: "Menos" },
-  { id: "nao", label: "Não tem" },
-];
+/** Respondido = tem preço, ou foi marcado como indisponível. Nada mais. */
+function respondida(l: LinhaResposta): boolean {
+  if (l.naoTem) return true;
+  const preco = paraNumero(l.preco);
+  return preco !== null && preco > 0;
+}
 
 function RespostaSheet({
   convite,
+  numero,
   itens,
   pedeEscala,
   pendente,
@@ -573,6 +578,8 @@ function RespostaSheet({
   onSalvar,
 }: {
   convite: ConviteCotacao;
+  /** Número da cotação — identifica o documento que está sendo respondido. */
+  numero: string;
   itens: CotacaoDetalhe["itens"];
   /** A cotação pede promoção por volume — só então a coluna de faixas existe. */
   pedeEscala: boolean;
@@ -596,15 +603,10 @@ function RespostaSheet({
   const [linhas, setLinhas] = useState<LinhaResposta[]>(() =>
     itens.map((i) => {
       const anterior = convite.respostas.find((r) => r.quotationItemId === i.id);
-      const parcial =
-        anterior?.disponivel === true &&
-        anterior.quantidadeOfertada !== null &&
-        anterior.quantidadeOfertada < i.quantidade;
       return {
         quotationItemId: i.id,
-        situacao: anterior ? (anterior.disponivel ? (parcial ? "parcial" : "tem") : "nao") : "tem",
-        preco: anterior ? paraMascara(anterior.precoUnitario) : "",
-        quantidade: parcial ? String(anterior!.quantidadeOfertada) : "",
+        preco: anterior?.disponivel ? paraMascara(anterior.precoUnitario) : "",
+        naoTem: anterior ? !anterior.disponivel : false,
         faixas: (anterior?.faixas ?? []).map((f) => ({
           qtd: String(f.quantidadeMinima).replace(".", ","),
           preco: paraMascara(f.precoUnitario),
@@ -620,21 +622,43 @@ function RespostaSheet({
     convite.frete === null ? "" : paraMascara(convite.frete),
   );
   const [observacao, setObservacao] = useState(convite.observacao ?? "");
+  /** Salvar com itens em branco pergunta uma vez, e só uma. */
+  const [confirmarVazios, setConfirmarVazios] = useState(false);
 
-  // Tab pula de preço em preço: sem isto ele cai nos botões de disponibilidade
-  // da linha seguinte, e uma lista de 30 itens vira 90 tabulações.
+  // Tab pula de preço em preço, saltando o que está bloqueado: sem isto ele
+  // cai no checkbox da linha seguinte, e uma lista de 30 itens vira 90
+  // tabulações.
   const camposPreco = useRef<(HTMLInputElement | null)[]>([]);
   function aoTabular(e: React.KeyboardEvent<HTMLInputElement>, indice: number) {
     if (e.key !== "Tab") return;
-    const alvo = camposPreco.current[indice + (e.shiftKey ? -1 : 1)];
-    if (!alvo) return;
-    e.preventDefault();
-    alvo.focus();
-    alvo.select();
+    const passo = e.shiftKey ? -1 : 1;
+    for (let i = indice + passo; i >= 0 && i < itens.length; i += passo) {
+      const alvo = camposPreco.current[i];
+      if (!alvo || alvo.disabled) continue;
+      e.preventDefault();
+      alvo.focus();
+      alvo.select();
+      return;
+    }
   }
+
+  // A mão já chega no teclado: o primeiro preço recebe o foco sozinho.
+  useEffect(() => {
+    const primeiro = camposPreco.current.find((c) => c && !c.disabled);
+    primeiro?.focus();
+  }, []);
 
   function atualizar(id: string, patch: Partial<LinhaResposta>) {
     setLinhas((ls) => ls.map((l) => (l.quotationItemId === id ? { ...l, ...patch } : l)));
+  }
+
+  /**
+   * Marcar "Não tem" APAGA o preço na hora. Deixar o número escondido atrás de
+   * um campo bloqueado é a receita para ele voltar sozinho quando o operador
+   * desmarcar sem querer — e aí o comparativo cobra um preço que ninguém deu.
+   */
+  function alternarNaoTem(id: string, marcado: boolean) {
+    atualizar(id, marcado ? { naoTem: true, preco: "", faixas: [] } : { naoTem: false });
   }
 
   // Quais itens estão com o bloco de faixas aberto. Já nasce aberto no que veio
@@ -666,145 +690,224 @@ function RespostaSheet({
     });
   }
 
-  /** Quanto ele atende de fato — base do total da linha. */
-  function quantidadeEfetiva(indice: number, l: LinhaResposta): number {
-    const pedida = itens[indice]?.quantidade ?? 0;
-    if (l.situacao === "nao") return 0;
-    if (l.situacao === "parcial") return paraNumero(l.quantidade) ?? 0;
-    return pedida;
+  /** Total da linha: quantidade pedida × preço. Indisponível não soma. */
+  function totalDaLinha(indice: number, l: LinhaResposta): number | null {
+    if (l.naoTem) return null;
+    const preco = paraNumero(l.preco);
+    if (preco === null || preco <= 0) return null;
+    return preco * (itens[indice]?.quantidade ?? 0);
   }
 
-  const totalItens = linhas.reduce((acc, l, i) => {
-    const preco = paraNumero(l.preco);
-    if (l.situacao === "nao" || preco === null) return acc;
-    return acc + preco * quantidadeEfetiva(i, l);
-  }, 0);
-  const total = totalItens + (paraNumero(frete) ?? 0);
+  const totalItens = linhas.reduce((acc, l, i) => acc + (totalDaLinha(i, l) ?? 0), 0);
+  const valorFrete = paraNumero(frete) ?? 0;
+  // O frete entra no total da proposta porque é o que a compra vai custar — e
+  // é assim que ela aparece no cartão do fornecedor e no comparativo. Quando
+  // existe, a tela abre a conta em vez de deixar a diferença sem explicação.
+  const total = totalItens + valorFrete;
 
-  const preenchidos = linhas.filter(
-    (l) => l.situacao === "nao" || paraNumero(l.preco) !== null,
-  ).length;
+  const respondidos = linhas.filter(respondida).length;
+  const pendentes = linhas.length - respondidos;
+  const disponiveis = linhas.filter((l) => !l.naoTem && respondida(l)).length;
+  const semDisponibilidade = linhas.filter((l) => l.naoTem).length;
+  const completo = pendentes === 0 && linhas.length > 0;
+
+  function salvar() {
+    onSalvar({
+      conviteId: convite.id,
+      prazoEntregaDias: prazo ? Number(prazo) : null,
+      condicaoPagamento: condicao.trim() || null,
+      frete: paraNumero(frete),
+      observacao: observacao.trim() || null,
+      // Item em branco NÃO vira linha: gravá-lo como indisponível diria que o
+      // fornecedor recusou algo sobre o que ele nunca falou — e reabrir esta
+      // tela mostraria a caixa "Não tem" marcada por conta própria.
+      itens: linhas.filter(respondida).map((l) => {
+        const preco = paraNumero(l.preco);
+        const disponivel = !l.naoTem && preco !== null && preco > 0;
+        return {
+          quotationItemId: l.quotationItemId,
+          disponivel,
+          precoUnitario: disponivel ? preco! : 0,
+          // A resposta não fatia quantidade: ele tem pelo preço, ou não tem.
+          quantidadeOfertada: null,
+          // Faixa pela metade some em silêncio: o operador está transcrevendo,
+          // não preenchendo formulário, e travar o salvamento por uma linha
+          // esquecida perderia a resposta inteira. O servidor ainda peneira.
+          faixas: disponivel
+            ? l.faixas.flatMap((f) => {
+                const qtd = paraNumero(f.qtd);
+                const p = paraNumero(f.preco);
+                return qtd !== null && qtd > 0 && p !== null && p > 0
+                  ? [{ quantidadeMinima: qtd, precoUnitario: p }]
+                  : [];
+              })
+            : [],
+        };
+      }),
+    });
+  }
+
+  const colunas = pedeEscala ? 6 : 5;
 
   return (
     <Modal
       titulo={`Resposta de ${convite.supplierNome}`}
-      descricao="Digite o que ele mandou por telefone, áudio ou PDF. Só o preço do que ele tem é obrigatório."
+      subtitulo={
+        <span className="flex flex-wrap items-center gap-x-1.5">
+          <span className="font-mono font-semibold text-muted">{numero}</span>
+          <span>·</span>
+          <span>
+            {itens.length} {itens.length === 1 ? "item" : "itens"}
+          </span>
+        </span>
+      }
+      descricao='Informe os preços recebidos do fornecedor. Para produtos que ele não possui, marque "Não tem".'
+      acessorio={<Contador respondidos={respondidos} total={linhas.length} />}
       largura="max-w-5xl"
       onFechar={onFechar}
+      rodape={
+        <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-3">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+            <Contador respondidos={respondidos} total={linhas.length} />
+            <p className="text-[12px] text-muted">
+              Total da proposta{" "}
+              <span className="font-mono text-[17px] font-semibold tabular-nums text-ink">
+                {fmtMoney(total)}
+              </span>
+              {valorFrete > 0 && (
+                <span className="ml-1.5 text-[11px] text-faint">
+                  {fmtMoney(totalItens)} em itens + {fmtMoney(valorFrete)} de frete
+                </span>
+              )}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {confirmarVazios && (
+              <p className="text-[12px] text-accent">
+                {pendentes} {pendentes === 1 ? "item sem resposta" : "itens sem resposta"}. Salvar
+                mesmo assim?
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={confirmarVazios ? () => setConfirmarVazios(false) : onFechar}
+              className="rounded-full border border-line bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+            >
+              {confirmarVazios ? "Voltar e preencher" : "Cancelar"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (pendentes > 0 && !confirmarVazios) {
+                  setConfirmarVazios(true);
+                  return;
+                }
+                salvar();
+              }}
+              disabled={pendente}
+              className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
+            >
+              {pendente
+                ? "Salvando…"
+                : confirmarVazios
+                  ? "Salvar mesmo assim"
+                  : "Salvar resposta"}
+            </button>
+          </div>
+        </div>
+      }
     >
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <span className="flex items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius)] border border-line bg-surface-2 px-3.5 py-2.5">
+        <span className="flex min-w-0 items-center gap-2">
           <SupplierAvatar
             nome={convite.supplierNome}
             logoUrl={convite.supplierLogoUrl}
             size={32}
           />
-          <span className="text-sm font-medium text-ink">{convite.supplierNome}</span>
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-medium text-ink">
+              {convite.supplierNome}
+            </span>
+            {(disponiveis > 0 || semDisponibilidade > 0) && (
+              <span className="block text-[11px] text-muted">
+                {disponiveis} {disponiveis === 1 ? "item disponível" : "itens disponíveis"}
+                {semDisponibilidade > 0 && ` · ${semDisponibilidade} sem disponibilidade`}
+              </span>
+            )}
+          </span>
         </span>
-        <span className="text-[13px] text-muted tabular-nums">
-          {preenchidos} de {linhas.length} itens preenchidos
+        <span className="text-right">
+          <span className="block text-[11px] font-medium uppercase tracking-wide text-faint">
+            Total da proposta
+          </span>
+          <span className="block font-mono text-[19px] font-semibold tabular-nums text-ink">
+            {fmtMoney(total)}
+          </span>
         </span>
       </div>
 
-      <div className="max-h-[52vh] overflow-y-auto rounded-[var(--radius)] border border-line">
-        <table className="w-full text-sm">
+      {/* Rolagem própria, e não a do modal: com trinta itens o cabeçalho
+          da tabela precisa continuar grudado no topo enquanto a lista corre. */}
+      <div className="max-h-[48vh] overflow-auto rounded-[var(--radius)] border border-line">
+        <table className="w-full min-w-[46rem] text-sm">
           <thead className="sticky top-0 z-10 bg-surface-2 text-[11px] uppercase tracking-wide text-faint">
             <tr>
               <th className="px-3 py-2 text-left font-medium">Produto</th>
-              <th className="w-40 px-3 py-2 text-right font-medium">Pedido</th>
-              <th className="w-56 px-3 py-2 text-left font-medium">Ele tem?</th>
+              <th className="w-36 px-3 py-2 text-right font-medium">Pedido</th>
               <th className="w-36 px-3 py-2 text-right font-medium">Preço unit.</th>
               <th className="w-28 px-3 py-2 text-right font-medium">Total</th>
+              <th className="w-32 px-3 py-2 text-left font-medium">Disponibilidade</th>
               {pedeEscala && <th className="w-28 px-3 py-2 text-right font-medium">Volume</th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
             {itens.map((item, i) => {
               const l = linhas[i];
-              const preco = paraNumero(l.preco);
-              const indisponivel = l.situacao === "nao";
-              const totalLinha =
-                preco === null || indisponivel ? 0 : preco * quantidadeEfetiva(i, l);
-              const escalaLigada = pedeEscala && !indisponivel && escalaAberta.has(item.id);
+              const linhaTotal = totalDaLinha(i, l);
+              const escalaLigada = pedeEscala && !l.naoTem && escalaAberta.has(item.id);
               return (
                 <Fragment key={item.id}>
-                <tr className={cn(indisponivel && "bg-surface-2/50")}>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center gap-2.5">
-                      <Thumb url={item.imagemUrl} nome={item.descricao} size={32} />
-                      <div className="min-w-0">
-                        <p
-                          className={cn(
-                            "text-[14px] font-medium leading-snug",
-                            indisponivel ? "text-muted" : "text-ink",
+                  <tr className={cn(l.naoTem && "bg-surface-2/50")}>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2.5">
+                        <Thumb url={item.imagemUrl} nome={item.descricao} size={32} />
+                        <div className="min-w-0">
+                          <p
+                            className={cn(
+                              "text-[14px] font-medium leading-snug",
+                              l.naoTem ? "text-muted" : "text-ink",
+                            )}
+                          >
+                            {item.descricao}
+                          </p>
+                          {item.sku && (
+                            <p className="font-mono text-[11px] text-faint">{item.sku}</p>
                           )}
-                        >
-                          {item.descricao}
-                        </p>
-                        {item.sku && (
-                          <p className="font-mono text-[11px] text-faint">{item.sku}</p>
-                        )}
+                        </div>
                       </div>
-                    </div>
-                  </td>
+                    </td>
 
-                  {/* Número sem unidade não diz se são duas garrafas ou duas
-                      caixas de doze — e é o preço disso que está sendo digitado. */}
-                  <td className="px-3 py-2 text-right">
-                    <span className="block font-mono text-[14px] font-semibold tabular-nums text-ink">
-                      {fmtQtd(item.quantidade)}
-                    </span>
-                    <span className="block text-[11px] text-faint">
-                      {item.embalagemNome ?? (item.quantidade === 1 ? "unidade" : "unidades")}
-                    </span>
-                  </td>
+                    {/* Número sem unidade não diz se são duas garrafas ou duas
+                        caixas de doze — e é o preço disso que está sendo
+                        digitado na coluna ao lado. */}
+                    <td className="px-3 py-2 text-right">
+                      <span className="block font-mono text-[14px] font-semibold tabular-nums text-ink">
+                        {fmtQtd(item.quantidade)}
+                      </span>
+                      <span className="block text-[11px] text-faint">
+                        {unidadeDaQtd(item.quantidade, item.embalagemNome)}
+                      </span>
+                    </td>
 
-                  <td className="px-3 py-2">
-                    <div className="flex flex-col gap-1.5">
-                      <div className="flex gap-1 rounded-full border border-line bg-surface-2 p-0.5">
-                        {SITUACOES.map((o) => {
-                          const ativo = l.situacao === o.id;
-                          return (
-                            <button
-                              key={o.id}
-                              type="button"
-                              onClick={() => atualizar(item.id, { situacao: o.id })}
-                              aria-pressed={ativo}
-                              className={cn(
-                                "flex-1 rounded-full px-2 py-1 text-[12px] font-medium transition-colors",
-                                ativo
-                                  ? o.id === "nao"
-                                    ? "bg-surface text-muted shadow-[var(--shadow-m)]"
-                                    : "bg-brand text-on-brand"
-                                  : "text-muted hover:text-ink",
-                              )}
-                            >
-                              {o.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      {l.situacao === "parcial" && (
-                        <input
-                          value={l.quantidade}
-                          onChange={(e) => atualizar(item.id, { quantidade: e.target.value })}
-                          inputMode="decimal"
-                          placeholder={`tem ${fmtQtd(item.quantidade)}`}
-                          aria-label={`Quanto ${convite.supplierNome} tem de ${item.descricao}`}
-                          className="w-full rounded-[var(--radius)] border border-line bg-surface px-2 py-1 text-right font-mono text-[13px] tabular-nums text-ink"
-                        />
-                      )}
-                    </div>
-                  </td>
-
-                  <td className="px-3 py-2 text-right">
-                    {indisponivel ? (
-                      <span className="text-[12px] text-faint">—</span>
-                    ) : (
+                    <td className="px-3 py-2 text-right">
                       <div className="relative">
                         <span
                           aria-hidden
-                          className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-faint"
+                          className={cn(
+                            "pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[11px]",
+                            l.naoTem ? "text-faint/50" : "text-faint",
+                          )}
                         >
                           R$
                         </span>
@@ -812,135 +915,166 @@ function RespostaSheet({
                           ref={(el) => {
                             camposPreco.current[i] = el;
                           }}
-                          value={l.preco}
+                          value={l.naoTem ? "" : l.preco}
+                          disabled={l.naoTem}
                           onChange={(e) =>
                             atualizar(item.id, { preco: mascaraMoeda(e.target.value) })
                           }
                           onKeyDown={(e) => aoTabular(e, i)}
                           onFocus={(e) => e.currentTarget.select()}
                           inputMode="decimal"
-                          placeholder="0,00"
+                          placeholder={l.naoTem ? "—" : "0,00"}
                           aria-label={`Preço de ${item.descricao}`}
-                          className="w-full rounded-[var(--radius)] border border-line bg-surface py-1 pl-7 pr-2 text-right font-mono text-[13px] tabular-nums text-ink"
+                          className={cn(
+                            "w-full rounded-[var(--radius)] border py-1.5 pl-7 pr-2 text-right font-mono text-[13px] tabular-nums",
+                            l.naoTem
+                              ? "cursor-not-allowed border-dashed border-line bg-surface-2 text-faint placeholder:text-faint"
+                              : "border-line bg-surface text-ink",
+                          )}
                         />
                       </div>
-                    )}
-                  </td>
-
-                  <td className="px-3 py-2 text-right font-mono text-[13px] tabular-nums text-muted">
-                    {totalLinha > 0 ? fmtMoney(totalLinha) : "—"}
-                  </td>
-
-                  {pedeEscala && (
-                    <td className="px-3 py-2 text-right">
-                      {indisponivel ? (
-                        <span className="text-[12px] text-faint">—</span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => alternarEscala(item.id)}
-                          aria-expanded={escalaAberta.has(item.id)}
-                          className={cn(
-                            "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[12px] font-medium transition-colors",
-                            l.faixas.length > 0
-                              ? "border-transparent bg-accent-soft text-accent"
-                              : "border-line text-muted hover:text-ink",
-                          )}
-                        >
-                          <Layers size={12} />
-                          {l.faixas.length > 0
-                            ? `${l.faixas.length} faixa${l.faixas.length > 1 ? "s" : ""}`
-                            : "faixa"}
-                        </button>
-                      )}
                     </td>
-                  )}
-                </tr>
 
-                {/* As faixas ficam numa segunda linha da MESMA tabela, não num
-                    modal: quem transcreve um telefonema vai e volta entre o
-                    preço e a promoção do mesmo produto, e abrir uma janela por
-                    item quebraria a digitação em série. */}
-                {escalaLigada && (
-                  <tr className="bg-surface-2/40">
-                    <td colSpan={6} className="px-3 pb-3 pt-0">
-                      <div className="rounded-[var(--radius)] border border-dashed border-line-strong bg-surface p-2.5">
-                        <p className="text-[12px] text-muted">
-                          Preço melhor por volume de{" "}
-                          <span className="font-medium text-ink">{item.descricao}</span> — a
-                          quantidade é na mesma embalagem do pedido
-                          {item.embalagemNome ? ` (${item.embalagemNome})` : ""}.
-                        </p>
+                    <td
+                      className={cn(
+                        "px-3 py-2 text-right font-mono text-[13px] tabular-nums",
+                        linhaTotal === null ? "text-faint" : "font-semibold text-ink",
+                      )}
+                    >
+                      {linhaTotal === null ? "—" : fmtMoney(linhaTotal)}
+                    </td>
 
-                        <ul className="mt-2 flex flex-col gap-1.5">
-                          {l.faixas.map((f, fi) => (
-                            <li key={fi} className="flex items-center gap-2">
-                              <span className="text-[12px] text-muted">A partir de</span>
-                              <input
-                                value={f.qtd}
-                                onChange={(e) =>
-                                  alterarFaixa(item.id, fi, { qtd: e.target.value })
-                                }
-                                inputMode="decimal"
-                                placeholder={fmtQtd(item.quantidade * 2)}
-                                aria-label={`Quantidade da faixa ${fi + 1} de ${item.descricao}`}
-                                className="w-24 rounded-[var(--radius)] border border-line bg-surface px-2 py-1 text-right font-mono text-[13px] tabular-nums text-ink"
-                              />
-                              <span className="text-[12px] text-muted">sai a</span>
-                              <div className="relative w-32">
-                                <span
-                                  aria-hidden
-                                  className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-faint"
-                                >
-                                  R$
-                                </span>
-                                <input
-                                  value={f.preco}
-                                  onChange={(e) =>
-                                    alterarFaixa(item.id, fi, {
-                                      preco: mascaraMoeda(e.target.value),
-                                    })
-                                  }
-                                  inputMode="decimal"
-                                  placeholder="0,00"
-                                  aria-label={`Preço da faixa ${fi + 1} de ${item.descricao}`}
-                                  className="w-full rounded-[var(--radius)] border border-line bg-surface py-1 pl-7 pr-2 text-right font-mono text-[13px] tabular-nums text-ink"
-                                />
-                              </div>
-                              <button
-                                type="button"
-                                aria-label={`Tirar a faixa ${fi + 1} de ${item.descricao}`}
-                                onClick={() =>
-                                  atualizar(item.id, {
-                                    faixas: l.faixas.filter((_, x) => x !== fi),
-                                  })
-                                }
-                                className="grid h-7 w-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-                              >
-                                <X size={14} />
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
+                    {/* Uma caixa, não um seletor de três estados: a única coisa
+                        que o preço não consegue dizer sozinho é "ele não tem". */}
+                    <td className="px-3 py-2">
+                      <label
+                        className={cn(
+                          "inline-flex cursor-pointer select-none items-center gap-2 rounded-full px-2 py-1 text-[12px] font-medium transition-colors",
+                          l.naoTem
+                            ? "bg-surface-2 text-ink-2"
+                            : "text-muted hover:bg-surface-2 hover:text-ink",
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={l.naoTem}
+                          onChange={(e) => alternarNaoTem(item.id, e.target.checked)}
+                          className="h-3.5 w-3.5 shrink-0 accent-[var(--brand)]"
+                        />
+                        Não tem
+                      </label>
+                    </td>
 
-                        {l.faixas.length < MAX_FAIXAS_ITEM && (
+                    {pedeEscala && (
+                      <td className="px-3 py-2 text-right">
+                        {l.naoTem ? (
+                          <span className="text-[12px] text-faint">—</span>
+                        ) : (
                           <button
                             type="button"
-                            onClick={() =>
-                              atualizar(item.id, {
-                                faixas: [...l.faixas, { qtd: "", preco: "" }],
-                              })
-                            }
-                            className="mt-2 inline-flex items-center gap-1 text-[12px] font-medium text-brand"
+                            onClick={() => alternarEscala(item.id)}
+                            aria-expanded={escalaAberta.has(item.id)}
+                            className={cn(
+                              "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[12px] font-medium transition-colors",
+                              l.faixas.length > 0
+                                ? "border-transparent bg-accent-soft text-accent"
+                                : "border-line text-muted hover:text-ink",
+                            )}
                           >
-                            <Plus size={12} />
-                            Outra faixa
+                            <Layers size={12} />
+                            {l.faixas.length > 0
+                              ? `${l.faixas.length} faixa${l.faixas.length > 1 ? "s" : ""}`
+                              : "faixa"}
                           </button>
                         )}
-                      </div>
-                    </td>
+                      </td>
+                    )}
                   </tr>
-                )}
+
+                  {/* As faixas ficam numa segunda linha da MESMA tabela, não num
+                      modal: quem transcreve um telefonema vai e volta entre o
+                      preço e a promoção do mesmo produto, e abrir uma janela por
+                      item quebraria a digitação em série. */}
+                  {escalaLigada && (
+                    <tr className="bg-surface-2/40">
+                      <td colSpan={colunas} className="px-3 pb-3 pt-0">
+                        <div className="rounded-[var(--radius)] border border-dashed border-line-strong bg-surface p-2.5">
+                          <p className="text-[12px] text-muted">
+                            Preço melhor por volume de{" "}
+                            <span className="font-medium text-ink">{item.descricao}</span> — a
+                            quantidade é na mesma embalagem do pedido
+                            {item.embalagemNome ? ` (${item.embalagemNome})` : ""}.
+                          </p>
+
+                          <ul className="mt-2 flex flex-col gap-1.5">
+                            {l.faixas.map((f, fi) => (
+                              <li key={fi} className="flex items-center gap-2">
+                                <span className="text-[12px] text-muted">A partir de</span>
+                                <input
+                                  value={f.qtd}
+                                  onChange={(e) =>
+                                    alterarFaixa(item.id, fi, { qtd: e.target.value })
+                                  }
+                                  inputMode="decimal"
+                                  placeholder={fmtQtd(item.quantidade * 2)}
+                                  aria-label={`Quantidade da faixa ${fi + 1} de ${item.descricao}`}
+                                  className="w-24 rounded-[var(--radius)] border border-line bg-surface px-2 py-1 text-right font-mono text-[13px] tabular-nums text-ink"
+                                />
+                                <span className="text-[12px] text-muted">sai a</span>
+                                <div className="relative w-32">
+                                  <span
+                                    aria-hidden
+                                    className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-faint"
+                                  >
+                                    R$
+                                  </span>
+                                  <input
+                                    value={f.preco}
+                                    onChange={(e) =>
+                                      alterarFaixa(item.id, fi, {
+                                        preco: mascaraMoeda(e.target.value),
+                                      })
+                                    }
+                                    inputMode="decimal"
+                                    placeholder="0,00"
+                                    aria-label={`Preço da faixa ${fi + 1} de ${item.descricao}`}
+                                    className="w-full rounded-[var(--radius)] border border-line bg-surface py-1 pl-7 pr-2 text-right font-mono text-[13px] tabular-nums text-ink"
+                                  />
+                                </div>
+                                <button
+                                  type="button"
+                                  aria-label={`Tirar a faixa ${fi + 1} de ${item.descricao}`}
+                                  onClick={() =>
+                                    atualizar(item.id, {
+                                      faixas: l.faixas.filter((_, x) => x !== fi),
+                                    })
+                                  }
+                                  className="grid h-7 w-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+
+                          {l.faixas.length < MAX_FAIXAS_ITEM && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                atualizar(item.id, {
+                                  faixas: [...l.faixas, { qtd: "", preco: "" }],
+                                })
+                              }
+                              className="mt-2 inline-flex items-center gap-1 text-[12px] font-medium text-brand"
+                            >
+                              <Plus size={12} />
+                              Outra faixa
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                 </Fragment>
               );
             })}
@@ -948,16 +1082,31 @@ function RespostaSheet({
         </table>
       </div>
 
-      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+      {!completo && pendentes > 0 && (
+        <p className="mt-2 text-[12px] text-muted">
+          {pendentes}{" "}
+          {pendentes === 1 ? "item aguardando preenchimento" : "itens aguardando preenchimento"}.
+        </p>
+      )}
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
         <label className="flex flex-col gap-1">
-          <span className="text-[12px] font-medium text-ink-2">Entrega em (dias)</span>
-          <input
-            value={prazo}
-            onChange={(e) => setPrazo(e.target.value.replace(/\D/g, "").slice(0, 3))}
-            inputMode="numeric"
-            placeholder="0"
-            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink"
-          />
+          <span className="text-[12px] font-medium text-ink-2">Prazo de entrega</span>
+          <div className="relative">
+            <input
+              value={prazo}
+              onChange={(e) => setPrazo(e.target.value.replace(/\D/g, "").slice(0, 3))}
+              inputMode="numeric"
+              placeholder="0"
+              className="w-full rounded-[var(--radius)] border border-line bg-surface py-2 pl-3 pr-12 text-sm text-ink"
+            />
+            <span
+              aria-hidden
+              className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px] text-faint"
+            >
+              dias
+            </span>
+          </div>
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-[12px] font-medium text-ink-2">Condição de pagamento</span>
@@ -990,71 +1139,33 @@ function RespostaSheet({
 
       <label className="mt-3 flex flex-col gap-1">
         <span className="text-[12px] font-medium text-ink-2">
-          Recado do fornecedor <span className="text-faint">(opcional)</span>
+          Observações do fornecedor <span className="text-faint">(opcional)</span>
         </span>
         <input
           value={observacao}
           onChange={(e) => setObservacao(e.target.value)}
-          placeholder="Ex.: pedido mínimo de 5 caixas, entrega só às terças"
+          placeholder="Ex.: pedido mínimo de 5 caixas, entrega às terças…"
           className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink"
         />
       </label>
-
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-        <p className="text-[13px] text-muted">
-          Total da proposta{" "}
-          <span className="font-mono text-[17px] font-semibold tabular-nums text-ink">
-            {fmtMoney(total)}
-          </span>
-        </p>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={onFechar}
-            className="rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-          >
-            Cancelar
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              onSalvar({
-                conviteId: convite.id,
-                prazoEntregaDias: prazo ? Number(prazo) : null,
-                condicaoPagamento: condicao.trim() || null,
-                frete: paraNumero(frete),
-                observacao: observacao.trim() || null,
-                itens: linhas.map((l) => {
-                  const preco = paraNumero(l.preco);
-                  return {
-                    quotationItemId: l.quotationItemId,
-                    disponivel: l.situacao !== "nao" && preco !== null,
-                    precoUnitario: preco ?? 0,
-                    quantidadeOfertada:
-                      l.situacao === "parcial" ? paraNumero(l.quantidade) : null,
-                    // Faixa pela metade some em silêncio: o operador está
-                    // transcrevendo, não preenchendo formulário, e travar o
-                    // salvamento por uma linha esquecida perderia a resposta
-                    // inteira. O servidor ainda peneira.
-                    faixas: l.faixas.flatMap((f) => {
-                      const qtd = paraNumero(f.qtd);
-                      const p = paraNumero(f.preco);
-                      return qtd !== null && qtd > 0 && p !== null && p > 0
-                        ? [{ quantidadeMinima: qtd, precoUnitario: p }]
-                        : [];
-                    }),
-                  };
-                }),
-              })
-            }
-            disabled={pendente}
-            className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
-          >
-            {pendente ? "Salvando…" : "Salvar resposta"}
-          </button>
-        </div>
-      </div>
     </Modal>
+  );
+}
+
+/** "4 de 6 itens respondidos" — vira ✓ quando fecha, sem virar etapa. */
+function Contador({ respondidos, total }: { respondidos: number; total: number }) {
+  const completo = total > 0 && respondidos === total;
+  return (
+    <span
+      aria-live="polite"
+      className={cn(
+        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-[12px] font-medium tabular-nums",
+        completo ? "bg-ok-soft text-ok" : "bg-surface-2 text-muted",
+      )}
+    >
+      {completo && <Check size={12} />}
+      {respondidos} de {total} itens respondidos
+    </span>
   );
 }
 
@@ -1214,43 +1325,65 @@ export function EnviosSheet({ envios, onFechar }: { envios: Envio[]; onFechar: (
 
 function Modal({
   titulo,
+  subtitulo,
   descricao,
+  acessorio,
+  rodape,
   largura = "max-w-lg",
   onFechar,
   children,
 }: {
   titulo: string;
+  /** Linha de identificação abaixo do título — número do documento, contagem. */
+  subtitulo?: React.ReactNode;
   descricao?: string;
+  /** Canto direito do cabeçalho: contadores e estados que mudam enquanto digita. */
+  acessorio?: React.ReactNode;
+  /**
+   * Rodapé que não rola com o conteúdo. Com ele o corpo ganha altura máxima e
+   * rolagem própria — numa lista de trinta itens o botão de salvar não pode
+   * ficar a trinta linhas de distância.
+   */
+  rodape?: React.ReactNode;
   largura?: string;
   onFechar: () => void;
   children: React.ReactNode;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/30 p-0 sm:items-center sm:p-4">
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/30 p-0 backdrop-blur-[2px] sm:items-center sm:p-4">
       <div
         role="dialog"
         aria-modal="true"
         aria-label={titulo}
         className={cn(
-          "w-full rounded-t-[var(--radius-xl)] border border-line bg-surface p-5 shadow-[var(--shadow-float)] sm:rounded-[var(--radius-xl)]",
+          "flex max-h-[92vh] w-full flex-col rounded-t-[var(--radius-xl)] border border-line bg-surface shadow-[var(--shadow-float)] sm:max-h-[90vh] sm:rounded-[var(--radius-xl)]",
           largura,
         )}
       >
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div>
+        <div className="flex items-start justify-between gap-3 px-5 pb-4 pt-5">
+          <div className="min-w-0">
             <h2 className="font-display text-[17px] font-semibold text-ink">{titulo}</h2>
-            {descricao && <p className="mt-0.5 text-[13px] text-muted">{descricao}</p>}
+            {subtitulo && <div className="mt-0.5 text-[12px] text-muted">{subtitulo}</div>}
+            {descricao && <p className="mt-1 text-[13px] text-muted">{descricao}</p>}
           </div>
-          <button
-            type="button"
-            onClick={onFechar}
-            aria-label="Fechar"
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-          >
-            <X size={16} />
-          </button>
+          <div className="flex shrink-0 items-start gap-2">
+            {acessorio}
+            <button
+              type="button"
+              onClick={onFechar}
+              aria-label="Fechar"
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
-        {children}
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">{children}</div>
+
+        {rodape && (
+          <div className="shrink-0 border-t border-line bg-surface-2 px-5 py-3.5">{rodape}</div>
+        )}
       </div>
     </div>
   );

@@ -57,6 +57,8 @@ import {
   type ProdutoCotacao,
 } from "@/app/(app)/cotacoes/_compra-actions";
 import { ComparativoCotacao } from "@/app/(app)/cotacoes/[id]/_comparativo";
+import type { ResumoCotacao } from "@/lib/compras/cotacao-resumo";
+import type { PedidoDaCotacao } from "@/lib/compras/cotacao-economia";
 
 // ============================================================
 // Cotação no celular — o fluxo inteiro, não um resumo.
@@ -107,10 +109,16 @@ type Envio = Awaited<ReturnType<typeof enviarCotacaoAction>>[number];
 export function CotacaoMobileDetalhe({
   cotacao,
   fornecedores,
+  resumo,
+  pedidos,
   podePedir,
 }: {
   cotacao: CotacaoDetalhe;
   fornecedores: FornecedorOpcao[];
+  /** Leitura da cotação — mesmo motor determinístico do desktop. */
+  resumo: ResumoCotacao;
+  /** Pedidos que a cotação virou. Vazio até ela ser decidida. */
+  pedidos: PedidoDaCotacao[];
   podePedir: boolean;
 }) {
   const router = useRouter();
@@ -211,7 +219,13 @@ export function CotacaoMobileDetalhe({
             />
           )}
           {aba === "comparar" && (
-            <ComparativoCotacao cotacao={cotacao} podePedir={podePedir} />
+            <ComparativoCotacao
+              cotacao={cotacao}
+              resumo={resumo}
+              pedidos={pedidos}
+              podePedir={podePedir}
+              onEnviado={setEnvios}
+            />
           )}
         </div>
       )}

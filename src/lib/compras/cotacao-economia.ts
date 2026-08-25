@@ -18,6 +18,50 @@ import { db } from "@/lib/prisma";
 // muda a próxima cotação.
 // ============================================================
 
+/** Pedido de compra que nasceu de uma cotação. */
+export type PedidoDaCotacao = {
+  id: string;
+  numero: string;
+  status: string;
+  supplierNome: string;
+  valorTotal: number;
+  /** Quanto as entradas desse pedido efetivamente custaram. */
+  valorRecebido: number;
+};
+
+/**
+ * Os pedidos gerados por uma cotação — e só eles. A tela da cotação decidida
+ * abre dizendo em que pedido a compra foi parar, e para isso basta uma
+ * consulta: cobrar a conta inteira de economia só para escrever dois números
+ * no cabeçalho sairia caro à toa.
+ */
+export async function pedidosDaCotacao(quotationId: string): Promise<PedidoDaCotacao[]> {
+  const pedidos = await db.purchaseOrder.findMany({
+    where: { quotationId },
+    select: {
+      id: true,
+      numero: true,
+      status: true,
+      valorTotal: true,
+      supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+      entradas: { select: { items: { select: { custoTotal: true } } } },
+    },
+    orderBy: { numero: "asc" },
+  });
+
+  return pedidos.map((p) => ({
+    id: p.id,
+    numero: p.numero,
+    status: p.status,
+    supplierNome: p.supplier.nomeFantasia || p.supplier.razaoSocial,
+    valorTotal: Number(p.valorTotal),
+    valorRecebido: p.entradas.reduce(
+      (a, e) => a + e.items.reduce((b, i) => b + Number(i.custoTotal), 0),
+      0,
+    ),
+  }));
+}
+
 export type EconomiaCotacao = {
   quotationId: string;
   numero: string;
@@ -31,15 +75,7 @@ export type EconomiaCotacao = {
   /** Itens que tiveram ao menos duas respostas (sem comparação não há economia). */
   itensComparados: number;
   /** Pedidos que nasceram desta cotação. */
-  pedidos: {
-    id: string;
-    numero: string;
-    status: string;
-    supplierNome: string;
-    valorTotal: number;
-    /** Quanto as entradas desse pedido efetivamente custaram. */
-    valorRecebido: number;
-  }[];
+  pedidos: PedidoDaCotacao[];
   /** Soma de `valorTotal` dos pedidos gerados. */
   valorPedido: number;
   /** Soma do que entrou de fato. Zero enquanto nada chegou. */
@@ -101,30 +137,7 @@ export async function economiaDaCotacao(quotationId: string): Promise<EconomiaCo
     if (validas.length > 1) itensComparados += 1;
   }
 
-  const pedidos = await db.purchaseOrder.findMany({
-    where: { quotationId },
-    select: {
-      id: true,
-      numero: true,
-      status: true,
-      valorTotal: true,
-      supplier: { select: { razaoSocial: true, nomeFantasia: true } },
-      entradas: { select: { items: { select: { custoTotal: true } } } },
-    },
-    orderBy: { numero: "asc" },
-  });
-
-  const linhas = pedidos.map((p) => ({
-    id: p.id,
-    numero: p.numero,
-    status: p.status,
-    supplierNome: p.supplier.nomeFantasia || p.supplier.razaoSocial,
-    valorTotal: Number(p.valorTotal),
-    valorRecebido: p.entradas.reduce(
-      (a, e) => a + e.items.reduce((b, i) => b + Number(i.custoTotal), 0),
-      0,
-    ),
-  }));
+  const linhas = await pedidosDaCotacao(quotationId);
 
   const valorPedido = linhas.reduce((a, p) => a + p.valorTotal, 0);
   const valorRecebido = linhas.reduce((a, p) => a + p.valorRecebido, 0);

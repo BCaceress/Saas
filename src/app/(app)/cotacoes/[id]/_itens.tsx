@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { Plus, Trash2, Pencil, PackageSearch, Check, Lock, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { EstadoVazio, fmtQtd } from "../_catalogo/ui";
+import { EstadoVazio, fmtQtd, unidadeDaQtd } from "../_catalogo/ui";
 import { Thumb } from "../_ui";
 import type { CotacaoDetalhe } from "../_compra-types";
 import {
@@ -203,8 +203,7 @@ export function ItensCotacao({
                       {fmtQtd(item.quantidade)}
                     </span>
                     <span className="block text-[11px] text-faint">
-                      {item.embalagemNome ??
-                        (item.quantidade === 1 ? "unidade" : "unidades")}
+                      {unidadeDaQtd(item.quantidade, item.embalagemNome)}
                     </span>
                   </span>
 
@@ -631,7 +630,7 @@ function LinhaEdicao({
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-ink">{item.descricao}</p>
         <p className="text-[11px] text-faint">
-          {item.embalagemNome ?? (qtd === 1 ? "unidade" : "unidades")}
+          {unidadeDaQtd(qtd, item.embalagemNome)}
         </p>
       </div>
       <input

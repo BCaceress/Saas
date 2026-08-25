@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Ban, Check, CheckCheck, Lock, Unlock } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Ban, Check, CheckCheck, Lock, Unlock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
 import {
@@ -15,12 +15,11 @@ import {
 import type { ResumoCotacao } from "@/lib/compras/cotacao-resumo";
 import { regrasDaCotacao } from "@/lib/compras/cotacao-regras";
 import { ItensCotacao } from "./_itens";
-import { ConvitesCotacao } from "./_convites";
+import { ConvitesCotacao, EnviosSheet } from "./_convites";
 import { ComparativoCotacao } from "./_comparativo";
-import { ResumoCotacaoPainel } from "./_resumo";
 import { RevisarCotacao } from "./_revisar";
-import { EconomiaCotacaoPainel } from "./_economia";
-import type { EconomiaCotacao } from "@/lib/compras/cotacao-economia";
+import type { PedidoDaCotacao } from "@/lib/compras/cotacao-economia";
+import type { Envio } from "../_compra-actions";
 import { andamento, statusVisivel } from "../_status";
 
 // ── Cotação, tela inteira ───────────────────────────────────
@@ -46,7 +45,7 @@ export function CotacaoDetalheClient({
   fornecedores,
   sites,
   resumo,
-  economia,
+  pedidos,
   podePedir,
   usaMinimo,
 }: {
@@ -55,13 +54,16 @@ export function CotacaoDetalheClient({
   /** Lojas ativas: com uma só, o nome dela não informa nada e some da tela. */
   sites: { id: string; nome: string }[];
   resumo: ResumoCotacao;
-  /** Só existe depois de decidida — economia de uma escolha que já foi feita. */
-  economia: EconomiaCotacao | null;
+  /** Pedidos que a cotação virou. Vazio até ela ser decidida. */
+  pedidos: PedidoDaCotacao[];
   podePedir: boolean;
   usaMinimo: boolean;
 }) {
   const rascunho = cotacao.status === "RASCUNHO";
   const temResposta = cotacao.convites.some((c) => c.status === "RESPONDIDA");
+  // Cobrar quem não respondeu sai do comparativo, mas a folha com as mensagens
+  // prontas é a mesma da aba de fornecedores — ela mora aqui, acima das abas.
+  const [envios, setEnvios] = useState<Envio[] | null>(null);
   const [painel, setPainel] = useState<Painel>(
     temResposta ? "comparativo" : rascunho ? "itens" : "fornecedores",
   );
@@ -128,6 +130,8 @@ export function CotacaoDetalheClient({
         </div>
       )}
 
+      {pedidos.length > 0 && <VirouPedido pedidos={pedidos} />}
+
       {painel === "itens" && (
         <ItensCotacao
           cotacao={cotacao}
@@ -155,18 +159,58 @@ export function CotacaoDetalheClient({
         />
       )}
       {painel === "comparativo" && (
-        <>
-          {/* Depois de decidida, a pergunta muda: não é mais "de quem comprar",
-              é "o que isso rendeu" — e se quem ganhou cobrou o que prometeu. */}
-          {economia && <EconomiaCotacaoPainel economia={economia} />}
-          {/* Antes da tabela: a leitura vem primeiro, os números confirmam. */}
-          <ResumoCotacaoPainel resumo={resumo} />
-          <ComparativoCotacao cotacao={cotacao} podePedir={podePedir} />
-        </>
+        <ComparativoCotacao
+          cotacao={cotacao}
+          resumo={resumo}
+          pedidos={pedidos}
+          podePedir={podePedir}
+          onEnviado={setEnvios}
+        />
       )}
 
       {rascunho && <Navegacao atual={painel} feito={feito} onIr={setPainel} />}
+
+      {envios && <EnviosSheet envios={envios} onFechar={() => setEnvios(null)} />}
     </div>
+  );
+}
+
+// ── A cotação virou pedido ──────────────────────────────────
+// Primeira coisa da tela depois das abas, e em todas elas: quem abre uma
+// cotação decidida está atrás de uma pergunta só — "em que pedido isso foi
+// parar?". O número do pedido é a resposta, então ele é o que está em
+// destaque, não o aviso em volta.
+
+function VirouPedido({ pedidos }: { pedidos: PedidoDaCotacao[] }) {
+  return (
+    <section
+      aria-label="Pedidos gerados por esta cotação"
+      className="flex flex-col gap-2.5 rounded-[var(--radius-lg)] border border-ok/40 bg-ok-soft px-4 py-3"
+    >
+      <p className="flex items-start gap-2 text-[13px] leading-relaxed text-ok">
+        <CheckCheck size={15} className="mt-0.5 shrink-0" />
+        <span>
+          Esta cotação já virou {pedidos.length === 1 ? "pedido de compra" : "pedidos de compra"}.
+          Acompanhe o resto em Pedidos.
+        </span>
+      </p>
+      <ul className="flex flex-wrap gap-2">
+        {pedidos.map((p) => (
+          <li key={p.id}>
+            <Link
+              href={`/pedidos?pedido=${p.id}`}
+              className="flex items-center gap-2 rounded-full border border-ok/30 bg-surface px-3 py-1.5 transition-colors hover:bg-surface-2"
+            >
+              <span className="font-mono text-[14px] font-semibold text-ink">{p.numero}</span>
+              <span className="max-w-[12rem] truncate text-[12px] text-muted">
+                {p.supplierNome}
+              </span>
+              <ArrowUpRight size={13} className="shrink-0 text-muted" />
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
