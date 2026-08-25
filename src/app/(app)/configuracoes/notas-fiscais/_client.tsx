@@ -1247,7 +1247,7 @@ function AbaHistorico({ inicial }: { inicial: LinhaHistorico[] }) {
                       <span className="line-clamp-2">{l.mensagem ?? "—"}</span>
                       {l.inboundId && (
                         <Link
-                          href={`/pedidos/recebimento/${l.inboundId}`}
+                          href={`/recebimento/${l.inboundId}`}
                           className="mt-0.5 block text-[12px] text-brand underline"
                         >
                           Abrir recebimento

@@ -9,8 +9,6 @@ import { getActiveSiteId, getOrCreateDefaultSite } from "@/lib/sites";
 import { assertSite } from "@/lib/guard";
 import {
   importarNotasXml,
-  relacionarItemInbound,
-  vincularPedidoInbound,
   gerarEntradaDaNota,
   descartarNota,
   type ResultadoImportacao,
@@ -20,7 +18,6 @@ import {
   entradasAguardandoDocumento,
   vincularNotaAEntradaManual,
 } from "@/lib/compras/documento";
-import { buscarProdutosParaRelacionar } from "@/lib/compras/busca-produto";
 import {
   sincronizarDistribuicao,
   listarAguardandoManifestacao,
@@ -138,34 +135,6 @@ export async function manifestarNotaAction(input: z.input<typeof manifestarSchem
   });
 }
 
-const relacionarSchema = z.object({
-  itemId: z.string().min(1),
-  productId: z.string().min(1, "Escolha o produto."),
-  packagingId: z.string().optional().nullable(),
-  fatorConversao: z.coerce.number().positive().default(1),
-});
-
-export async function relacionarItemAction(input: z.input<typeof relacionarSchema>) {
-  return tx("fiscal.importar", async (ctx) => {
-    const d = relacionarSchema.parse(input);
-    const r = await relacionarItemInbound({ tenantId: ctx.tenant.id, ...d });
-    ok();
-    // O cadastro do produto pode ter ganhado embalagem, EAN ou custo.
-    revalidatePath("/produtos");
-    return r;
-  });
-}
-
-export async function vincularPedidoAction(input: {
-  inboundId: string;
-  purchaseOrderId: string | null;
-}) {
-  return tx("fiscal.importar", async () => {
-    await vincularPedidoInbound(input);
-    ok();
-  });
-}
-
 export async function receberNotaAction(inboundId: string, ignorarDuplicidade = false) {
   return tx("fiscal.importar", async (ctx) => {
     const purchaseId = await gerarEntradaDaNota({
@@ -248,51 +217,5 @@ export async function descartarNotaAction(input: z.input<typeof descartarSchema>
     const d = descartarSchema.parse(input);
     await descartarNota(d);
     ok();
-  });
-}
-
-/**
- * Produtos para o seletor de de-para, por nome, SKU ou código de barras.
- * A ordem é a relevância ao que foi digitado (ver `busca-produto.ts`) —
- * alfabético com LIMIT chegava a esconder o produto certo.
- */
-export async function buscarProdutosAction(termo: string, gtin?: string | null) {
-  return tx("fiscal.ver", async () => {
-    const produtos = await buscarProdutosParaRelacionar(termo, { gtin, limite: 20 });
-    return produtos.map((p) => ({
-      id: p.id,
-      nome: p.nome,
-      sku: p.sku,
-      ean: p.ean,
-      imagemUrl: p.imagemUrl,
-      custoMedio: p.custoMedio,
-      packagings: p.embalagens.map((e) => ({
-        id: e.id,
-        nome: e.nome,
-        ean: e.ean,
-        fatorConversao: e.fator,
-      })),
-    }));
-  });
-}
-
-/** Pedidos em aberto do fornecedor, para conferir a nota contra o pedido. */
-export async function pedidosDoFornecedorAction(supplierId: string) {
-  return tx("fiscal.ver", async () => {
-    const pedidos = await db.purchaseOrder.findMany({
-      where: {
-        supplierId,
-        status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] },
-      },
-      select: { id: true, numero: true, status: true, valorTotal: true },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-    });
-    return pedidos.map((p) => ({
-      id: p.id,
-      numero: p.numero,
-      status: p.status,
-      valorTotal: Number(p.valorTotal),
-    }));
   });
 }

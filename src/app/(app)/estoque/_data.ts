@@ -78,6 +78,11 @@ export type MovimentacaoRow = {
   custoUnitario: number | null;
   valorTotal: number | null;
   origem: string; // rótulo curto: Compra, PDV, Produção, Ajuste…
+  /**
+   * Sabor/cor comprado nesta entrada. O saldo é do produto principal; isto é o
+   * que responde "quantos morangos entraram no mês passado?" meses depois.
+   */
+  variacaoNome: string | null;
   documento: string | null; // PC-00002, nº nota, id transferência…
   fornecedor: string | null;
   responsavel: string | null;
@@ -681,6 +686,18 @@ export async function loadMovimentacoes(
   const prodOutputMap = new Map(prodOutputNames.map((p) => [p.id, p.nome]));
   const productionMap = new Map(productions.map((p) => [p.id, prodOutputMap.get(p.productId) ?? null]));
 
+  // Sabor de cada linha de entrada. Uma consulta só, e só quando há compra na
+  // página — o razão não guarda variação (nem deve: ele soma produto).
+  const itensComVariacao = purchaseIds.length
+    ? await db.purchaseItem.findMany({
+        where: { purchaseId: { in: purchaseIds }, variacaoNome: { not: null } },
+        select: { purchaseId: true, productId: true, variacaoNome: true },
+      })
+    : [];
+  const variacaoMap = new Map(
+    itensComVariacao.map((i) => [`${i.purchaseId}:${i.productId}`, i.variacaoNome]),
+  );
+
   const prodMap = new Map(products.map((p) => [p.id, p]));
   const balMap = new Map(stocks.map((s) => [`${s.productId}:${s.siteId}`, n(s.estoqueFechado)]));
   const purchaseMap = new Map(purchases.map((p) => [p.id, p]));
@@ -747,6 +764,9 @@ export async function loadMovimentacoes(
       custoUnitario,
       valorTotal: custoUnitario != null ? custoUnitario * Math.abs(deltaFechado) : null,
       origem,
+      variacaoNome: m.purchaseId
+        ? (variacaoMap.get(`${m.purchaseId}:${m.productId}`) ?? null)
+        : null,
       documento,
       fornecedor: purchase?.supplier ? (purchase.supplier.nomeFantasia ?? purchase.supplier.razaoSocial) : null,
       responsavel: m.createdBy ? (userMap.get(m.createdBy) ?? null) : null,
@@ -845,6 +865,9 @@ export type PedidoCompraItemView = {
   nome: string;
   sku: string;
   imagemUrl: string | null;
+  /** Variação comercial pedida (sabor/cor). Não tem saldo próprio. */
+  variantId: string | null;
+  variacaoNome: string | null;
   packagingId: string | null;
   packagingNome: string | null;
   fatorConversao: number; // un base por unidade de compra (1 = unidade)
@@ -1102,6 +1125,8 @@ export async function loadPedidosCompraPagina(
         nome: products.get(i.productId)?.nome ?? i.productId,
         sku: products.get(i.productId)?.sku ?? "",
         imagemUrl: products.get(i.productId)?.imagemUrl ?? null,
+        variantId: i.variantId ?? null,
+        variacaoNome: i.variacaoNome ?? null,
         packagingId: i.packagingId ?? null,
         packagingNome: pkg?.nome ?? null,
         fatorConversao: pkg?.fator ?? 1,
@@ -1250,6 +1275,14 @@ export async function loadComprasFormOptions() {
         packagings: { select: { id: true, nome: true, fatorConversao: true, isCompraDefault: true } },
         suppliers: { select: { supplierId: true } },
         stocks: { select: { siteId: true, estoqueFechado: true, estoqueAberto: true } },
+        // Sabores compráveis. O pedido separa por sabor porque o fornecedor
+        // separa; o estoque continua com um saldo só.
+        variacaoLabel: true,
+        purchaseVariants: {
+          where: { ativo: true },
+          orderBy: [{ ordem: "asc" }, { nome: "asc" }],
+          select: { id: true, nome: true },
+        },
       },
     }),
     db.site.findMany({ where: { ativo: true }, orderBy: { nome: "asc" }, select: { id: true, nome: true, tipo: true } }),
@@ -1359,6 +1392,8 @@ export async function loadComprasFormOptions() {
       ) as Record<string, number>,
       ultimosPrecos: ultimosPrecos.get(p.id) ?? [],
       pendentes: pendentesMap.get(p.id) ?? [],
+      variacaoLabel: p.variacaoLabel,
+      purchaseVariants: p.purchaseVariants,
       packagings: p.packagings.map((pk) => ({
         id: pk.id,
         nome: pk.nome,
@@ -1384,6 +1419,14 @@ export async function loadEntradaFormOptions() {
         imagemUrl: true,
         packagings: { select: { id: true, nome: true, fatorConversao: true, isCompraDefault: true } },
         brand: { select: { nome: true } },
+        // Variação comercial: o sabor comprado entra na linha da entrada e some
+        // daí em diante — o saldo continua sendo um só, o do produto.
+        variacaoLabel: true,
+        purchaseVariants: {
+          where: { ativo: true },
+          orderBy: [{ ordem: "asc" }, { nome: "asc" }],
+          select: { id: true, nome: true },
+        },
       },
       orderBy: { nome: "asc" },
     }),

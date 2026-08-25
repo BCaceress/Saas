@@ -24,7 +24,7 @@ import type { AcaoInicial } from "@/components/mobile/acoes-produto";
 import { classificarCodigo } from "@/lib/codigo-lido";
 import { interpretarComandoAction, type ComandoVoz } from "../acoes/actions";
 import { importarNotaPorChaveAction, type ResultadoNota } from "../nota/actions";
-import { importarXmlRecebimentoAction } from "@/app/(app)/pedidos/recebimento/actions";
+import { importarXmlRecebimentoAction } from "@/app/(app)/recebimento/conferencia-actions";
 import {
   buscarPorCodigoAction,
   buscarPorNomeAction,
@@ -193,7 +193,7 @@ export function ScanClient({
 
       const importadas = resultados.filter((r) => r.status === "IMPORTADA" && r.inboundId);
       if (importadas.length === 1) {
-        router.push(`/pedidos/recebimento/${importadas[0]!.inboundId}`);
+        router.push(`/recebimento/${importadas[0]!.inboundId}`);
         return;
       }
       if (importadas.length > 1) {
@@ -420,7 +420,7 @@ function ResultadoDaNota({
           <Link
             href={
               (resultado.tipo === "importada" || resultado.tipo === "ja-importada") && resultado.inboundId
-                ? `/pedidos/recebimento/${resultado.inboundId}`
+                ? `/recebimento/${resultado.inboundId}`
                 : "/fiscal/notas-recebidas"
             }
             className="flex min-h-12 items-center justify-center gap-2 rounded-full bg-brand text-sm font-semibold text-on-brand"

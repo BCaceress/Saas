@@ -1,11 +1,9 @@
 import { Sk, SkKpis, SkTable } from "@/components/app/skeletons";
 
 /**
- * Skeleton da conferência de recebimento. Existe porque a rota mora dentro de
- * /pedidos e herdaria o `loading.tsx` da LISTA — piscar um esqueleto de tabela
- * de pedidos antes de abrir a conferência de uma nota é a tela prometendo a
- * coisa errada. Espelha RecebimentoClient: voltar + identificação da nota,
- * resumo (pedido × NF × recebido) e as linhas da conferência.
+ * Skeleton da conferência de recebimento. Espelha RecebimentoClient: voltar +
+ * identificação da nota, resumo (pedido × NF × recebido) e as linhas da
+ * conferência — o esqueleto promete a tela que vai abrir, não uma genérica.
  */
 export default function RecebimentoLoading() {
   return (

@@ -27,24 +27,29 @@ import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { toast } from "@/components/ui/toast";
 import { Scanner } from "@/components/mobile/scanner";
+import { ProdutoThumb } from "@/components/recebimento/produto-thumb";
+import {
+  RelacionarProduto,
+  type ItemDeNota,
+} from "@/components/recebimento/relacionar-produto";
+import { TabelaDePara } from "@/components/recebimento/tabela-de-para";
+import { PainelNota } from "./_painel-nota";
 import { useLeitorTeclado } from "@/lib/hooks/use-leitor-teclado";
-import { termoDeBuscaDoItem, variacaoCusto } from "@/lib/compras/conciliacao-regras";
-import { Metrica, MetricaGrid, fmtMoney, fmtQtd, fmtQuando } from "../../../cotacoes/_catalogo/ui";
+import { variacaoCusto } from "@/lib/compras/conciliacao-regras";
+import { Metrica, MetricaGrid, fmtMoney, fmtQtd, fmtQuando } from "../../cotacoes/_catalogo/ui";
 import {
   aceitarCustoAction,
-  buscarProdutoAction,
   devolverDivergenciaAction,
   resumoDivergenciasAction,
   confirmarEntradaAction,
   conferirItemAction,
   conferirTudoAction,
   criarPedidoDaNotaAction,
-  criarProdutoRapidoAction,
   desvincularPedidoAction,
-  relacionarItemRecebimentoAction,
+  receberSemPedidoAction,
   resolverDivergenciaAction,
   vincularPedidoAction,
-} from "../actions";
+} from "../conferencia-actions";
 import type { LinhaRecebimento, RecebimentoView, SubcategoriaCadastro } from "../_data";
 import type { ReconciliationStatus } from "@/generated/prisma";
 
@@ -81,35 +86,55 @@ function variacaoDaLinha(l: LinhaRecebimento): number | null {
 
 const pct = (v: number) => `${v > 0 ? "▲" : "▼"}${Math.abs(v).toFixed(1).replace(".", ",")}%`;
 
-/** "a, b e c" — lista curta em português, sem vírgula antes do "e". */
-const listar = (itens: string[]) =>
-  itens.length <= 1 ? (itens[0] ?? "") : `${itens.slice(0, -1).join(", ")} e ${itens.at(-1)}`;
-
 /** Linha conciliada → o que o painel de relacionar precisa saber dela. */
-const paraRelacionar = (l: LinhaRecebimento): ItemParaRelacionar => ({
+const paraRelacionar = (l: LinhaRecebimento): ItemDeNota => ({
   inboundItemId: l.inboundItemId,
   descricao: l.descricao,
   gtin: l.ean,
+  codigoFornecedor: l.codigoFornecedor,
+  productId: l.productId,
 });
 
 export function RecebimentoClient({
   dados,
+  podeReceber,
+  podeTratarNota,
   podeCriarProduto,
   cega,
   subcategorias,
 }: {
   dados: RecebimentoView;
+  /**
+   * Falso = a pessoa trata a NOTA (contador com `fiscal.importar`), não a
+   * mercadoria. Relaciona itens ao catálogo, mas não escolhe porta nem conta
+   * caixa — a conferência inteira vira leitura.
+   */
+  podeReceber: boolean;
+  /** Decide sobre o DOCUMENTO: descartar, estornar, documentar entrada manual. */
+  podeTratarNota: boolean;
   podeCriarProduto: boolean;
   /** Conferência cega: esconde pedido e NF até a pessoa contar. */
   cega: boolean;
   subcategorias: SubcategoriaCadastro[];
 }) {
-  if (!dados.pedido) {
-    return <EscolherPedido dados={dados} podeCriarProduto={podeCriarProduto} subcategorias={subcategorias} />;
+  // Três portas, uma tela: com pedido é conciliação, sem pedido é a nota
+  // contra a contagem. O que ainda não escolheu porta fica na escolha.
+  if (!dados.pedido && !dados.semPedido) {
+    return (
+      <EscolherPedido
+        dados={dados}
+        podeReceber={podeReceber}
+        podeTratarNota={podeTratarNota}
+        podeCriarProduto={podeCriarProduto}
+        subcategorias={subcategorias}
+      />
+    );
   }
   return (
     <Conferencia
       dados={dados}
+      podeReceber={podeReceber}
+      podeTratarNota={podeTratarNota}
       podeCriarProduto={podeCriarProduto}
       cega={cega}
       subcategorias={subcategorias}
@@ -121,17 +146,20 @@ export function RecebimentoClient({
 
 function EscolherPedido({
   dados,
+  podeReceber,
+  podeTratarNota,
   podeCriarProduto,
   subcategorias,
 }: {
   dados: RecebimentoView;
+  podeReceber: boolean;
+  podeTratarNota: boolean;
   podeCriarProduto: boolean;
   subcategorias: SubcategoriaCadastro[];
 }) {
   const router = useRouter();
   const { nota, sugestoes, itensNota } = dados;
   const [salvando, setSalvando] = React.useState<string | null>(null);
-  const [relacionar, setRelacionar] = React.useState<ItemParaRelacionar | null>(null);
 
   const semProduto = itensNota.filter((i) => !i.productId);
   const totalItens = itensNota.reduce((s, i) => s + i.valorTotal, 0);
@@ -160,160 +188,324 @@ function EscolherPedido({
     }
   }
 
+  async function receberSemPedido() {
+    setSalvando("sem-pedido");
+    try {
+      await receberSemPedidoAction(nota.id);
+      toast.success("Conferência aberta sem pedido.", "A nota é a referência do que deveria vir.");
+      router.refresh();
+    } catch (e) {
+      toast.error("Não deu para abrir a conferência", e instanceof Error ? e.message : "Tente de novo.");
+      setSalvando(null);
+    }
+  }
+
+  const podeAvancar = semProduto.length === 0;
+  // Nota que chegou inteira relacionada (o comum depois que o mapa do
+  // fornecedor aprendeu) abriria com 40 linhas de tabela cobrindo o trabalho
+  // real, que é escolher a porta. Fica dobrada até alguém querer ver.
+  const [verTabela, setVerTabela] = React.useState(!podeAvancar);
+
   return (
     <div className="flex flex-col gap-5">
       <Cabecalho nota={nota} pedidoNumero={null} />
 
-      {/* Duas saídas, lado a lado: a nota fatura um pedido que já existe, ou o
-          representante deixou a mercadoria sem pedido nenhum. Esconder a
-          segunda obrigaria a digitar à mão um pedido que o XML já descreve. */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="flex flex-col rounded-[var(--radius-lg)] border border-line bg-surface p-5">
-          <h2 className="font-display text-[15px] font-semibold text-ink">
-            Vincular a um pedido existente
-          </h2>
-          <p className="mt-1 text-[13px] text-muted">
-            {sugestoes.length === 0
-              ? "Nenhum pedido em aberto deste fornecedor nesta loja."
-              : "Nenhum candidato se destacou o bastante para o vínculo automático — escolha o certo."}
-          </p>
+      <Trilho etapa={podeAvancar ? 2 : 1} />
 
-          <ul className="mt-4 space-y-2">
-            {sugestoes.map((s) => (
-              <li
-                key={s.purchaseOrderId}
-                className="flex items-center gap-3 rounded-[var(--radius)] border border-line px-4 py-3"
+      {podeTratarNota && (
+        <PainelNota nota={nota} faltamRelacionar={semProduto.length} emConferencia={false} />
+      )}
+
+      {/* Etapa 1. Nada acontece antes disto: sem produto relacionado não há
+          custo, não há saldo e não há conferência. É a etapa que trava — e por
+          isso vem primeiro, com o que falta no topo da tabela. */}
+      <section className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="font-display text-[15px] font-semibold text-ink">
+            1 · Relacionar os itens ao catálogo
+          </h2>
+          <p className="flex items-center gap-2 text-[12px]">
+            <span className={podeAvancar ? "text-ok" : "text-warn"}>
+              {podeAvancar
+                ? `Os ${itensNota.length} itens da nota já têm produto.`
+                : `${semProduto.length} de ${itensNota.length} ${
+                    semProduto.length === 1 ? "item ainda sem produto" : "itens ainda sem produto"
+                  }.`}
+            </span>
+            {podeAvancar && (
+              <button
+                type="button"
+                onClick={() => setVerTabela((v) => !v)}
+                aria-expanded={verTabela}
+                className="font-medium text-brand underline"
               >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-mono text-sm font-medium text-ink">{s.numero}</p>
-                  <p className="truncate text-[12px] text-muted">
-                    {s.itens} {s.itens === 1 ? "item" : "itens"} · {fmtMoney(s.valorTotal)} ·{" "}
-                    {fmtQuando(String(s.criadoEm))}
-                  </p>
-                  {s.motivos.length > 0 && (
-                    <p className="mt-1 truncate text-[12px] text-brand">{s.motivos.join(" · ")}</p>
-                  )}
-                </div>
-                <Button
-                  size="sm"
-                  onClick={() => void vincular(s.purchaseOrderId)}
-                  disabled={salvando !== null}
-                >
-                  {salvando === s.purchaseOrderId ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                  ) : (
-                    <Link2 className="h-4 w-4" aria-hidden />
-                  )}
-                  Vincular
-                </Button>
-              </li>
-            ))}
-          </ul>
+                {verTabela ? "ocultar" : "ver tabela"}
+              </button>
+            )}
+          </p>
         </div>
 
-        <div className="flex flex-col rounded-[var(--radius-lg)] border border-brand/30 bg-brand-soft/40 p-5">
+        {verTabela && (
+          <TabelaDePara
+            inboundId={nota.id}
+            itens={itensNota}
+            sugestoesIniciais={dados.sugestoesDePara}
+            editavel
+            podeCriarProduto={podeCriarProduto}
+            supplierId={nota.supplierId}
+            siteId={nota.siteId}
+            subcategorias={subcategorias}
+          />
+        )}
+
+        {/* A nota fecha? Soma dos itens contra o total do XML. Se o parse
+            perdeu uma linha ou o frete entrou fora, é aqui que aparece —
+            depois da entrada vira custo médio e ninguém mais discute. */}
+        <Fechamento itens={totalItens} nota={nota.valorTotal} />
+      </section>
+
+      {/* Etapa 2. Três saídas, lado a lado. A nota fatura um pedido que já
+          existe; o representante deixou mercadoria sem pedido e vale abrir um
+          para o histórico; ou não há compra a documentar como pedido nenhum —
+          só mercadoria na porta para conferir. Esconder qualquer uma joga o
+          operador para outra tela no meio do recebimento.
+
+          Quem não recebe mercadoria não escolhe porta: escolher decide o que
+          vai movimentar estoque, e essa é a decisão de quem está na doca. */}
+      {!podeReceber ? (
+        <p className="rounded-[var(--radius-lg)] border border-line bg-surface-2 px-4 py-3 text-[13px] text-muted">
+          Você trata a nota: relacionar os itens ao catálogo é a sua etapa. Quem recebe a
+          mercadoria escolhe de onde ela veio e confere o que chegou.
+        </p>
+      ) : (
+      <section className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="font-display text-[15px] font-semibold text-ink">
-            Criar o pedido a partir desta nota
+            2 · De onde veio esta mercadoria
           </h2>
-          <p className="mt-1 text-[13px] text-ink-2">
-            Compra que chegou sem pedido — representante na porta, entrega de rota. O pedido
-            nasce com os {itensNota.length} itens da nota, {fmtMoney(totalItens)} em mercadoria,
-            já conciliado e pronto para conferir.
+          <p className="text-[12px] text-muted">
+            {fmtMoney(totalItens)} em {itensNota.length}{" "}
+            {itensNota.length === 1 ? "item" : "itens"}
           </p>
+        </div>
 
-          {semProduto.length > 0 && (
-            <p className="mt-3 rounded-[var(--radius)] bg-surface px-3 py-2 text-[12px] text-accent">
-              Faltam {semProduto.length}{" "}
-              {semProduto.length === 1 ? "item sem produto" : "itens sem produto"} no catálogo.
-              Relacione abaixo — sem isso o pedido nasceria incompleto.
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="flex flex-col rounded-[var(--radius-lg)] border border-line bg-surface p-5">
+            <h3 className="font-display text-[14px] font-semibold text-ink">
+              Vincular a um pedido existente
+            </h3>
+            <p className="mt-1 text-[13px] text-muted">
+              {sugestoes.length === 0
+                ? "Nenhum pedido em aberto deste fornecedor nesta loja."
+                : "Nenhum candidato se destacou o bastante para o vínculo automático — escolha o certo."}
             </p>
-          )}
 
-          <div className="mt-4">
-            <Button
-              onClick={() => void gerarPedido()}
-              disabled={salvando !== null || semProduto.length > 0}
-            >
-              {salvando === "novo" ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-              ) : (
-                <FilePlus2 className="h-4 w-4" aria-hidden />
-              )}
-              Criar pedido com os itens da nota
-            </Button>
+            <ul className="mt-4 space-y-2">
+              {sugestoes.map((s) => (
+                <li
+                  key={s.purchaseOrderId}
+                  className="flex items-center gap-3 rounded-[var(--radius)] border border-line px-4 py-3"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-mono text-sm font-medium text-ink">{s.numero}</p>
+                    <p className="truncate text-[12px] text-muted">
+                      {s.itens} {s.itens === 1 ? "item" : "itens"} · {fmtMoney(s.valorTotal)} ·{" "}
+                      {fmtQuando(String(s.criadoEm))}
+                    </p>
+                    {s.motivos.length > 0 && (
+                      <p className="mt-1 truncate text-[12px] text-brand">
+                        {s.motivos.join(" · ")}
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    onClick={() => void vincular(s.purchaseOrderId)}
+                    disabled={salvando !== null}
+                  >
+                    {salvando === s.purchaseOrderId ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                    ) : (
+                      <Link2 className="h-4 w-4" aria-hidden />
+                    )}
+                    Vincular
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="flex flex-col rounded-[var(--radius-lg)] border border-brand/30 bg-brand-soft/40 p-5">
+            <h3 className="font-display text-[14px] font-semibold text-ink">
+              Criar o pedido a partir desta nota
+            </h3>
+            <p className="mt-1 text-[13px] text-ink-2">
+              Compra que chegou sem pedido — representante na porta, entrega de rota. O pedido
+              nasce com os {itensNota.length} itens da nota, {fmtMoney(totalItens)} em mercadoria,
+              já conciliado e pronto para conferir.
+            </p>
+
+            {!podeAvancar && (
+              // O pedido é feito DE produtos: nascer com linhas sem catálogo
+              // seria um pedido que não dá para comparar com nada depois.
+              <p className="mt-3 rounded-[var(--radius)] bg-surface px-3 py-2 text-[12px] text-accent">
+                Termine a etapa 1 — o pedido nasceria incompleto com{" "}
+                {semProduto.length === 1
+                  ? "1 item sem produto"
+                  : `${semProduto.length} itens sem produto`}
+                .
+              </p>
+            )}
+
+            <div className="mt-auto pt-4">
+              <Button
+                onClick={() => void gerarPedido()}
+                disabled={salvando !== null || !podeAvancar}
+              >
+                {salvando === "novo" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <FilePlus2 className="h-4 w-4" aria-hidden />
+                )}
+                Criar pedido com os itens da nota
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-col rounded-[var(--radius-lg)] border border-line bg-surface p-5">
+            <h3 className="font-display text-[14px] font-semibold text-ink">
+              Só conferir e receber
+            </h3>
+            <p className="mt-1 text-[13px] text-muted">
+              Sem pedido nenhum, nem agora nem depois. A nota vira a referência da conferência:
+              você confere os {itensNota.length} itens contra o que ela diz e dá entrada. O
+              documento da compra é a própria NF-e.
+            </p>
+
+            <p className="mt-3 text-[12px] text-faint">
+              A mercadoria entra no estoque igual — o que não existe é a camada de pedido para
+              comparar preço e quantidade negociados.
+            </p>
+
+            {!podeAvancar && (
+              // Não bloqueia: com o caminhão na porta, contar primeiro e
+              // relacionar depois é a ordem certa. Mas a entrada não fecha
+              // enquanto sobrar item sem produto, e isso se diz agora.
+              <p className="mt-3 rounded-[var(--radius)] bg-surface-2 px-3 py-2 text-[12px] text-muted">
+                Dá para conferir já. A entrada no estoque só fecha depois que a etapa 1 terminar.
+              </p>
+            )}
+
+            <div className="mt-auto pt-4">
+              <Button
+                variant="secondary"
+                onClick={() => void receberSemPedido()}
+                disabled={salvando !== null}
+              >
+                {salvando === "sem-pedido" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <ClipboardCheck className="h-4 w-4" aria-hidden />
+                )}
+                Conferir sem pedido
+              </Button>
+            </div>
           </div>
         </div>
-      </div>
-
-      <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
-        <div className="flex items-center justify-between px-4 py-3">
-          <h2 className="font-display text-[14px] font-semibold text-ink">Itens da nota</h2>
-          <span className="text-[12px] text-muted">
-            {itensNota.length - semProduto.length} de {itensNota.length} no catálogo
-          </span>
-        </div>
-
-        <ul className="divide-y divide-line border-t border-line">
-          {itensNota.map((i) => (
-            <li key={i.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[13px] font-medium text-ink">{i.descricao}</p>
-                <p className="truncate font-mono text-[11px] text-muted">
-                  {i.codigoFornecedor}
-                  {i.gtin ? ` · ${i.gtin}` : ""} · {fmtQtd(i.quantidade)} {i.unidade}
-                  {i.fatorConversao > 1 ? ` (×${fmtQtd(i.fatorConversao)} un)` : ""}
-                </p>
-              </div>
-
-              <span className="shrink-0 font-mono text-[12px] text-muted">
-                {fmtMoney(i.valorTotal)}
-              </span>
-
-              {i.productId ? (
-                <span className="max-w-[16rem] shrink-0 truncate rounded-full bg-ok-soft px-2.5 py-1 text-[11px] font-medium text-ok">
-                  {i.produtoNome ?? "No catálogo"}
-                </span>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() =>
-                    setRelacionar({ inboundItemId: i.id, descricao: i.descricao, gtin: i.gtin })
-                  }
-                >
-                  Relacionar produto
-                </Button>
-              )}
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      <Link
-        href="/fiscal/notas-recebidas"
-        className="text-[13px] font-medium text-brand hover:underline"
-      >
-        Prefere dar entrada sem pedido? Abrir em notas recebidas
-      </Link>
-
-      {relacionar && (
-        <RelacionarProduto
-          // Cada item pendente vira uma instância nova — reseta busca/estado
-          // sozinho ao avançar na fila, sem efeito espelhando prop em state.
-          key={relacionar.inboundItemId ?? relacionar.descricao}
-          inboundId={nota.id}
-          item={relacionar}
-          restantes={Math.max(0, itensNota.filter((i) => !i.productId).length - 1)}
-          onFechar={() => setRelacionar(null)}
-          onRelacionado={(inboundItemId) => {
-            const proximo = itensNota.find((i) => !i.productId && i.id !== inboundItemId);
-            setRelacionar(proximo ? { inboundItemId: proximo.id, descricao: proximo.descricao, gtin: proximo.gtin } : null);
-          }}
-          podeCriarProduto={podeCriarProduto}
-          subcategorias={subcategorias}
-        />
+      </section>
       )}
     </div>
+  );
+}
+
+/**
+ * A nota fecha com ela mesma?
+ *
+ * A soma dos itens raramente é igual ao total da NF-e — frete, ST e IPI entram
+ * fora da mercadoria. O que importa não é o zero: é a diferença ter TAMANHO de
+ * imposto, e não de item faltando. Acima de 15% o parse provavelmente perdeu
+ * linha, e receber assim põe no estoque uma mercadoria que ninguém conferiu.
+ */
+function Fechamento({ itens, nota }: { itens: number; nota: number }) {
+  const dif = nota - itens;
+  const pct = nota > 0 ? Math.abs(dif) / nota : 0;
+  const suspeito = pct >= 0.15;
+
+  return (
+    <p
+      className={cn(
+        "flex flex-wrap items-center gap-x-4 gap-y-1 rounded-[var(--radius)] border px-3.5 py-2.5 text-[12px]",
+        suspeito ? "border-warn/40 bg-warn-soft text-warn" : "border-line bg-surface-2 text-muted",
+      )}
+    >
+      <span>
+        Itens: <span className="font-mono text-ink-2">{fmtMoney(itens)}</span>
+      </span>
+      <span>
+        Total da nota: <span className="font-mono text-ink-2">{fmtMoney(nota)}</span>
+      </span>
+      <span>
+        Diferença: <span className="font-mono">{fmtMoney(dif)}</span>
+      </span>
+      <span className={suspeito ? "font-medium" : "text-faint"}>
+        {suspeito
+          ? "Diferença grande para ser só frete e imposto — confira se falta item."
+          : "Compatível com frete, ST e IPI."}
+      </span>
+    </p>
+  );
+}
+
+/**
+ * O trilho do recebimento. Três etapas, sempre as mesmas, sempre visíveis: o
+ * operador precisa saber em que pé está uma nota que abriu ontem e voltou a
+ * abrir hoje — e o que ainda falta antes de a mercadoria virar saldo.
+ */
+function Trilho({ etapa }: { etapa: 1 | 2 | 3 }) {
+  const etapas = [
+    { n: 1 as const, titulo: "Relacionar ao catálogo" },
+    { n: 2 as const, titulo: "Origem da mercadoria" },
+    { n: 3 as const, titulo: "Conferir e dar entrada" },
+  ];
+
+  return (
+    <ol className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+      {etapas.map((e, i) => {
+        const feita = e.n < etapa;
+        const atual = e.n === etapa;
+        return (
+          <React.Fragment key={e.n}>
+            {i > 0 && (
+              <span className="text-faint" aria-hidden>
+                ·
+              </span>
+            )}
+            <li className="flex items-center gap-1.5">
+              <span
+                className={cn(
+                  "grid h-5 w-5 place-items-center rounded-full text-[11px] font-semibold",
+                  atual && "bg-brand text-on-brand",
+                  feita && "bg-ok-soft text-ok",
+                  !atual && !feita && "bg-surface-2 text-faint",
+                )}
+                aria-hidden
+              >
+                {feita ? <Check className="h-3 w-3" /> : e.n}
+              </span>
+              <span
+                className={cn(
+                  "text-[12px]",
+                  atual ? "font-medium text-ink" : feita ? "text-muted" : "text-faint",
+                )}
+                aria-current={atual ? "step" : undefined}
+              >
+                {e.titulo}
+              </span>
+            </li>
+          </React.Fragment>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -321,18 +513,24 @@ function EscolherPedido({
 
 function Conferencia({
   dados,
+  podeReceber,
+  podeTratarNota,
   podeCriarProduto,
   cega,
   subcategorias,
 }: {
   dados: RecebimentoView;
+  podeReceber: boolean;
+  podeTratarNota: boolean;
   podeCriarProduto: boolean;
   cega: boolean;
   subcategorias: SubcategoriaCadastro[];
 }) {
   const router = useRouter();
-  const { nota, pedido, resumo, timeline } = dados;
-  const encerrada = nota.status === "RECEBIDO";
+  const { nota, pedido, semPedido, resumo, timeline } = dados;
+  // Nota já recebida e pessoa que não recebe mercadoria dão no mesmo lugar:
+  // a conferência é só leitura. Contar caixa é decisão de quem está na doca.
+  const encerrada = nota.status === "RECEBIDO" || !podeReceber;
 
   // Cópia local para o bipe e os campos responderem na hora; o servidor é a
   // verdade e o refresh reconcilia.
@@ -351,7 +549,7 @@ function Conferencia({
   const [confirmando, setConfirmando] = React.useState(false);
   const [enviando, setEnviando] = React.useState(false);
   const [verTimeline, setVerTimeline] = React.useState(false);
-  const [relacionar, setRelacionar] = React.useState<ItemParaRelacionar | null>(null);
+  const [relacionar, setRelacionar] = React.useState<ItemDeNota | null>(null);
 
   const conferidos = linhas.filter((l) => l.qtdRecebida != null).length;
   const divergentes = linhas.filter((l) => STATUS_INFO[l.status].grave && !l.resolucao);
@@ -432,7 +630,12 @@ function Conferencia({
     setEnviando(true);
     try {
       await confirmarEntradaAction(nota.id);
-      toast.success("Entrada registrada.", "Estoque, custo médio e pedido já foram atualizados.");
+      toast.success(
+        "Entrada registrada.",
+        semPedido
+          ? "Estoque e custo médio atualizados — a NF-e é o documento desta compra."
+          : "Estoque, custo médio e pedido já foram atualizados.",
+      );
       setConfirmando(false);
       router.refresh();
     } catch (e) {
@@ -444,7 +647,10 @@ function Conferencia({
   async function desvincular() {
     try {
       await desvincularPedidoAction(nota.id);
-      toast.info("Vínculo desfeito.", "Escolha outro pedido para esta nota.");
+      toast.info(
+        semPedido ? "Conferência cancelada." : "Vínculo desfeito.",
+        "Escolha de novo como receber esta nota.",
+      );
       router.refresh();
     } catch (e) {
       toast.error("Não deu para desvincular", e instanceof Error ? e.message : "Tente de novo.");
@@ -472,24 +678,57 @@ function Conferencia({
         />
       )}
 
-      <Cabecalho nota={nota} pedidoNumero={pedido!.numero} onDesvincular={encerrada ? undefined : desvincular} />
+      <Cabecalho
+        nota={nota}
+        pedidoNumero={pedido?.numero ?? null}
+        semPedido={semPedido}
+        onDesvincular={encerrada ? undefined : desvincular}
+      />
 
-      <MetricaGrid className="lg:grid-cols-5">
-        <Metrica label="Itens" valor={String(resumo.itens)} sub="linhas conciliadas" />
-        <Metrica label="Valor da nota" valor={fmtMoney(resumo.valorNota)} sub={`pedido ${fmtMoney(pedido!.valorTotal)}`} />
+      {!encerrada && <Trilho etapa={3} />}
+
+      {podeTratarNota && (
+        <PainelNota
+          nota={nota}
+          faltamRelacionar={resumo.produtosNovos}
+          emConferencia
+        />
+      )}
+
+      {/* Sem pedido não há preço negociado para comparar: a métrica de custo
+          alterado sairia sempre zero e ocuparia espaço mentindo por omissão. */}
+      <MetricaGrid className={semPedido ? "lg:grid-cols-4" : "lg:grid-cols-5"}>
+        <Metrica
+          label="Itens"
+          valor={String(resumo.itens)}
+          sub={semPedido ? "linhas da nota" : "linhas conciliadas"}
+        />
+        <Metrica
+          label="Valor da nota"
+          valor={fmtMoney(resumo.valorNota)}
+          sub={pedido ? `pedido ${fmtMoney(pedido.valorTotal)}` : "sem pedido para comparar"}
+        />
         <Metrica
           label="Divergências"
           valor={String(divergentes.length)}
-          sub={divergentes.length === 0 ? "nota igual ao pedido" : "precisam de decisão"}
+          sub={
+            divergentes.length > 0
+              ? "precisam de decisão"
+              : semPedido
+                ? "confira contra a nota"
+                : "nota igual ao pedido"
+          }
           tom={divergentes.length > 0 ? "accent" : "ok"}
           icon={<TriangleAlert size={13} />}
         />
-        <Metrica
-          label="Custos alterados"
-          valor={String(resumo.custosAlterados)}
-          sub={impacto === 0 ? "preço igual ao negociado" : `${impacto > 0 ? "+" : ""}${fmtMoney(impacto)} nesta nota`}
-          tom={resumo.custosAlterados > 0 ? "accent" : "ok"}
-        />
+        {!semPedido && (
+          <Metrica
+            label="Custos alterados"
+            valor={String(resumo.custosAlterados)}
+            sub={impacto === 0 ? "preço igual ao negociado" : `${impacto > 0 ? "+" : ""}${fmtMoney(impacto)} nesta nota`}
+            tom={resumo.custosAlterados > 0 ? "accent" : "ok"}
+          />
+        )}
         <Metrica
           label="Produtos novos"
           valor={String(resumo.produtosNovos)}
@@ -513,17 +752,24 @@ function Conferencia({
 
       {cega && conferidos < linhas.length && (
         <p className="rounded-[var(--radius)] bg-surface-2 px-4 py-3 text-[13px] text-muted">
-          Conferência cega ligada: as quantidades do pedido e da nota aparecem depois que você
-          contar. Conte {linhas.length - conferidos} de {linhas.length}{" "}
+          Conferência cega ligada: as quantidades {semPedido ? "da nota" : "do pedido e da nota"}{" "}
+          aparecem depois que você contar. Conte {linhas.length - conferidos} de {linhas.length}{" "}
           {linhas.length === 1 ? "item" : "itens"} para ver o comparativo.
         </p>
       )}
 
       {encerrada ? (
-        <p className="rounded-[var(--radius)] bg-ok-soft px-4 py-3 text-[13px] text-ok">
-          Esta nota já deu entrada no estoque. A conferência está encerrada — o histórico
-          abaixo mostra como ela foi feita.
-        </p>
+        nota.status === "RECEBIDO" ? (
+          <p className="rounded-[var(--radius)] bg-ok-soft px-4 py-3 text-[13px] text-ok">
+            Esta nota já deu entrada no estoque. A conferência está encerrada — o histórico
+            abaixo mostra como ela foi feita.
+          </p>
+        ) : (
+          <p className="rounded-[var(--radius)] bg-surface-2 px-4 py-3 text-[13px] text-muted">
+            Esta conferência está em andamento. Você acompanha o que já foi contado; quem
+            recebe a mercadoria é quem conta e dá a entrada.
+          </p>
+        )
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-0 flex-1">
@@ -559,6 +805,7 @@ function Conferencia({
             linha={l}
             bloqueado={encerrada}
             cega={cega}
+            semPedido={semPedido}
             onAlterar={(patch) => {
               aplicarLocal(l.id, patch);
               void salvar(l.id, patch);
@@ -581,7 +828,7 @@ function Conferencia({
           className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-medium text-ink hover:bg-surface-2"
         >
           <History className="h-4 w-4 text-faint" aria-hidden />
-          Histórico do pedido {pedido!.numero}
+          {pedido ? `Histórico do pedido ${pedido.numero}` : "Histórico desta nota"}
           <span className="ml-auto text-[12px] text-muted">
             {verTimeline ? "ocultar" : `${timeline.length} eventos`}
           </span>
@@ -634,7 +881,11 @@ function Conferencia({
         open={confirmando}
         onClose={() => setConfirmando(false)}
         title="Confirmar entrada no estoque"
-        description="Isto atualiza saldo, custo médio, histórico de compras e o status do pedido. Não dá para desfazer por aqui."
+        description={
+          semPedido
+            ? "Isto atualiza saldo, custo médio e histórico de compras. A NF-e fica como documento desta entrada. Não dá para desfazer por aqui."
+            : "Isto atualiza saldo, custo médio, histórico de compras e o status do pedido. Não dá para desfazer por aqui."
+        }
         width="sm"
         footer={
           <div className="flex gap-2">
@@ -664,7 +915,7 @@ function Conferencia({
             <p className="rounded-[var(--radius)] bg-danger-soft px-3 py-2 text-danger">
               {divergentes.length}{" "}
               {divergentes.length === 1 ? "divergência segue aberta" : "divergências seguem abertas"}.
-              Elas ficam registradas no histórico do pedido.
+              Elas ficam registradas no histórico {semPedido ? "desta nota" : "do pedido"}.
             </p>
           )}
         </div>
@@ -673,7 +924,6 @@ function Conferencia({
       {relacionar && (
         <RelacionarProduto
           key={relacionar.inboundItemId ?? relacionar.descricao}
-          inboundId={nota.id}
           item={relacionar}
           restantes={Math.max(0, linhas.filter((l) => !l.productId).length - 1)}
           onFechar={() => setRelacionar(null)}
@@ -694,10 +944,13 @@ function Conferencia({
 function Cabecalho({
   nota,
   pedidoNumero,
+  semPedido,
   onDesvincular,
 }: {
   nota: RecebimentoView["nota"];
   pedidoNumero: string | null;
+  /** Conferência aberta sem pedido — o rótulo do voltar muda com isso. */
+  semPedido?: boolean;
   onDesvincular?: () => void;
 }) {
   return (
@@ -727,6 +980,11 @@ function Cabecalho({
           </span>{" "}
           · {nota.siteNome}
         </p>
+        {semPedido && (
+          <p className="mt-1 text-[12px] text-muted">
+            Conferência sem pedido — a nota é a referência do que deveria vir.
+          </p>
+        )}
         {nota.vinculoAutomatico && pedidoNumero && (
           <p className="mt-1 text-[12px] text-brand">
             Pedido {pedidoNumero} encontrado automaticamente pela nota.
@@ -757,9 +1015,9 @@ function Cabecalho({
             Baixar XML
           </a>
         )}
-        {onDesvincular && pedidoNumero && (
+        {onDesvincular && (pedidoNumero || semPedido) && (
           <Button variant="ghost" size="sm" onClick={onDesvincular}>
-            Trocar pedido
+            {pedidoNumero ? "Trocar pedido" : "Trocar forma de receber"}
           </Button>
         )}
       </div>
@@ -1279,6 +1537,7 @@ function ItemCard({
   linha,
   bloqueado,
   cega,
+  semPedido,
   onAlterar,
   onRelacionar,
 }: {
@@ -1286,6 +1545,8 @@ function ItemCard({
   bloqueado: boolean;
   /** Esconde pedido/NF enquanto a linha não foi contada. */
   cega?: boolean;
+  /** Recebimento sem pedido: não existe coluna "Pedido" para mostrar. */
+  semPedido?: boolean;
   onAlterar: (patch: { qtdRecebida?: number | null; lote?: string | null; validade?: string | null }) => void;
   onRelacionar: () => void;
 }) {
@@ -1308,18 +1569,7 @@ function ItemCard({
         onClick={() => setAberto((a) => !a)}
         className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-2"
       >
-        {linha.imagemUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={linha.imagemUrl}
-            alt=""
-            className="h-11 w-11 shrink-0 rounded-[var(--radius-sm)] border border-line bg-surface object-contain"
-          />
-        ) : (
-          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line bg-surface-2 text-muted">
-            <PackageOpen className="h-4 w-4" aria-hidden />
-          </span>
-        )}
+        <ProdutoThumb url={linha.imagemUrl} nome={linha.descricao} size="lg" />
 
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
@@ -1348,10 +1598,10 @@ function ItemCard({
 
         <span className="hidden shrink-0 items-center gap-5 sm:flex">
           {oculto ? (
-            <Coluna titulo="Pedido / NF" valor="•••" />
+            <Coluna titulo={semPedido ? "NF" : "Pedido / NF"} valor="•••" />
           ) : (
             <>
-              <Coluna titulo="Pedido" valor={fmtQtd(linha.qtdPedida)} />
+              {!semPedido && <Coluna titulo="Pedido" valor={fmtQtd(linha.qtdPedida)} />}
               <Coluna titulo="NF" valor={fmtQtd(linha.qtdFaturada)} />
             </>
           )}
@@ -1466,394 +1716,5 @@ function Campo({ label, children }: { label: string; children: React.ReactNode }
       </span>
       {children}
     </label>
-  );
-}
-
-// ── Relacionar produto ──────────────────────────────────────
-
-export type ItemParaRelacionar = {
-  inboundItemId: string | null;
-  descricao: string;
-  gtin: string | null;
-};
-
-type ProdutoBusca = {
-  id: string;
-  nome: string;
-  sku: string;
-  ean: string | null;
-  imagemUrl: string | null;
-  custoMedio: number;
-  embalagens: { id: string; nome: string; ean: string | null; fator: number }[];
-};
-
-/** O GTIN da nota bate com algum código deste produto (unidade ou embalagem)? */
-function casaPorCodigo(p: ProdutoBusca, gtin: string | null): boolean {
-  if (!gtin) return false;
-  return p.ean === gtin || p.embalagens.some((e) => e.ean === gtin);
-}
-
-function RelacionarProduto({
-  inboundId,
-  item,
-  restantes = 0,
-  onFechar,
-  onRelacionado,
-  podeCriarProduto,
-  subcategorias,
-}: {
-  inboundId: string;
-  item: ItemParaRelacionar;
-  /** Quantos outros itens desta nota ainda esperam relacionar — vira fila. */
-  restantes?: number;
-  onFechar: () => void;
-  /** Chamado depois de relacionar com sucesso — quem decide se avança pro
-   *  próximo pendente ou fecha é o pai (só ele conhece a fila inteira). */
-  onRelacionado: (inboundItemId: string | null) => void;
-  podeCriarProduto: boolean;
-  subcategorias: SubcategoriaCadastro[];
-}) {
-  const router = useRouter();
-  const [termo, setTermo] = React.useState(termoDeBuscaDoItem(item.descricao));
-  const [resultados, setResultados] = React.useState<ProdutoBusca[]>([]);
-  const [buscando, setBuscando] = React.useState(false);
-  const [salvando, setSalvando] = React.useState(false);
-  const [camera, setCamera] = React.useState(false);
-  const [cadastrando, setCadastrando] = React.useState(false);
-
-  // Leitor USB/Bluetooth — bipar o código de barras físico do produto (que
-  // pode não ser o mesmo que a nota trouxe) já filtra a busca por ele.
-  const aoBipar = React.useCallback((codigo: string) => setTermo(codigo), []);
-  useLeitorTeclado(aoBipar, { ativo: !cadastrando });
-
-  React.useEffect(() => {
-    const alvo = termo.trim();
-    let vivo = true;
-    // Tudo dentro do timeout, inclusive limpar a lista: mexer no estado no
-    // corpo do efeito dispara render em cascata a cada tecla.
-    const t = setTimeout(async () => {
-      if (alvo.length < 2) {
-        setResultados([]);
-        return;
-      }
-      setBuscando(true);
-      try {
-        // A ordem vem pronta do servidor: relevância ao que foi digitado, com
-        // o código de barras do item como desempate.
-        const r = await buscarProdutoAction(alvo, item.gtin);
-        if (!vivo) return;
-        setResultados(r);
-      } catch {
-        if (vivo) toast.error("Falha ao buscar produtos.");
-      } finally {
-        if (vivo) setBuscando(false);
-      }
-    }, 300);
-    return () => {
-      vivo = false;
-      clearTimeout(t);
-    };
-  }, [termo, item.gtin]);
-
-  async function escolher(productId: string, packagingId: string | null, fator: number) {
-    if (!item.inboundItemId) {
-      toast.error("Este item não veio da nota", "Só itens da nota podem ser relacionados.");
-      return;
-    }
-    setSalvando(true);
-    try {
-      const r = await relacionarItemRecebimentoAction({
-        inboundId,
-        inboundItemId: item.inboundItemId,
-        productId,
-        packagingId,
-        fatorConversao: fator,
-      });
-      toast.success(
-        "Produto relacionado.",
-        // O que a nota completou no cadastro merece ser dito: é trabalho que o
-        // operador não vai precisar fazer depois, e ele não veria sozinho.
-        r?.preenchidos.length
-          ? `Do XML veio ${listar(r.preenchidos)}. Da próxima nota deste fornecedor ele entra sozinho.`
-          : "Da próxima nota deste fornecedor ele entra sozinho.",
-      );
-      // Fila: o pai decide se há próximo pendente (avança) ou fecha. Sempre
-      // reabilita o form — se avançar, o efeito acima troca termo/resultados.
-      onRelacionado(item.inboundItemId);
-      setSalvando(false);
-      router.refresh();
-    } catch (e) {
-      toast.error("Não deu para relacionar", e instanceof Error ? e.message : "Tente de novo.");
-      setSalvando(false);
-    }
-  }
-
-  /** Cadastra e já relaciona pelo mesmo caminho — nasce como "Unidade", sem
-   *  embalagem própria (a nota não distingue fardo do fornecedor nesta etapa). */
-  async function criarERelacionar(nome: string, subcategoryId: string) {
-    setSalvando(true);
-    try {
-      const produto = await criarProdutoRapidoAction({
-        nome,
-        subcategoryId,
-        ean: item.gtin ?? undefined,
-      });
-      await escolher(produto.id, null, 1);
-    } catch (e) {
-      toast.error("Não deu para cadastrar", e instanceof Error ? e.message : "Tente de novo.");
-      setSalvando(false);
-    }
-  }
-
-  return (
-    <Sheet
-      open
-      onClose={onFechar}
-      title="Relacionar ao catálogo"
-      description={
-        <>
-          <span className="text-ink-2">{item.descricao}</span>
-          {item.gtin && (
-            <>
-              {" · "}
-              <span className="font-mono">{item.gtin}</span>
-            </>
-          )}
-          {restantes > 0 && (
-            <>
-              {" · "}
-              <span className="font-medium text-accent">
-                {restantes === 1 ? "mais 1 item por relacionar" : `mais ${restantes} itens por relacionar`}
-              </span>
-            </>
-          )}
-        </>
-      }
-      width="2xl"
-    >
-      <div className="space-y-3">
-        {camera && (
-          <Scanner
-            onCodigo={(codigo) => {
-              setCamera(false);
-              setTermo(codigo);
-            }}
-            onFechar={() => setCamera(false)}
-            dica="Bipe o código de barras do produto"
-          />
-        )}
-
-        {cadastrando ? (
-          <CadastroRapido
-            nomeInicial={item.descricao}
-            subcategorias={subcategorias}
-            salvando={salvando}
-            onCancelar={() => setCadastrando(false)}
-            onSalvar={criarERelacionar}
-          />
-        ) : (
-          <>
-            <div className="flex items-center gap-2">
-              <div className="relative min-w-0 flex-1">
-                <Search
-                  className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-faint"
-                  aria-hidden
-                />
-                <input
-                  value={termo}
-                  onChange={(e) => setTermo(e.target.value)}
-                  placeholder="Buscar por nome, SKU ou código de barras"
-                  aria-label="Buscar produto no catálogo"
-                  autoFocus
-                  className="h-10 w-full rounded-full border border-line-button bg-surface pr-4 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-                />
-              </div>
-              <Button type="button" variant="secondary" size="sm" onClick={() => setCamera(true)}>
-                <ScanLine className="h-4 w-4" aria-hidden />
-                Bipar
-              </Button>
-            </div>
-
-            <p className="text-[12px] text-muted">
-              {buscando
-                ? "Procurando…"
-                : "Escolha a unidade em que o fornecedor vende — é ela que define quantas unidades entram no estoque. Ou bipe o produto: o leitor USB/Bluetooth já está ativo."}
-            </p>
-
-        <ul className="space-y-2">
-          {resultados.map((p) => {
-            const casa = casaPorCodigo(p, item.gtin);
-            const sugerida = item.gtin
-              ? p.embalagens.find((e) => e.ean === item.gtin)
-              : undefined;
-            return (
-              <li
-                key={p.id}
-                className={cn(
-                  "rounded-[var(--radius)] border px-3 py-2.5",
-                  casa ? "border-ok/40 bg-ok-soft/25" : "border-line",
-                )}
-              >
-                <div className="flex items-center gap-3">
-                  {p.imagemUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={p.imagemUrl}
-                      alt=""
-                      className="h-10 w-10 shrink-0 rounded-[var(--radius-sm)] border border-line bg-surface object-contain"
-                    />
-                  ) : (
-                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line bg-surface-2 text-faint">
-                      <PackageOpen className="h-4 w-4" aria-hidden />
-                    </span>
-                  )}
-
-                  <div className="min-w-0 flex-1">
-                    <p className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium text-ink">{p.nome}</span>
-                      {casa && (
-                        <span className="shrink-0 rounded-full bg-ok-soft px-2 py-0.5 text-[10px] font-medium text-ok">
-                          mesmo código
-                        </span>
-                      )}
-                    </p>
-                    <p className="truncate font-mono text-[11px] text-muted">
-                      {p.sku}
-                      {p.ean ? ` · ${p.ean}` : ""}
-                    </p>
-                  </div>
-
-                  <span className="shrink-0 text-right">
-                    <span className="block font-mono text-[11px] text-muted">
-                      {p.custoMedio > 0 ? fmtMoney(p.custoMedio) : "sem custo"}
-                    </span>
-                    <span className="block text-[10px] text-faint">custo médio</span>
-                  </span>
-                </div>
-
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  <Button
-                    size="sm"
-                    variant={sugerida ? "secondary" : "primary"}
-                    disabled={salvando}
-                    onClick={() => void escolher(p.id, null, 1)}
-                  >
-                    Unidade
-                  </Button>
-                  {p.embalagens.map((e) => (
-                    <Button
-                      key={e.id}
-                      size="sm"
-                      variant={sugerida?.id === e.id ? "primary" : "secondary"}
-                      disabled={salvando}
-                      onClick={() => void escolher(p.id, e.id, e.fator)}
-                    >
-                      {e.nome} ({fmtQtd(e.fator)} un)
-                      {sugerida?.id === e.id && " · código da nota"}
-                    </Button>
-                  ))}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-
-        {!buscando && termo.trim().length >= 2 && resultados.length === 0 && (
-          <p className="rounded-[var(--radius)] border border-dashed border-line px-4 py-6 text-center text-[13px] text-muted">
-            {podeCriarProduto
-              ? `Nenhum produto com "${termo.trim()}". Tente outro termo — ou cadastre um novo abaixo.`
-              : `Nenhum produto com "${termo.trim()}". Tente outro termo — ou cadastre o produto e volte aqui, a nota continua esperando.`}
-          </p>
-        )}
-
-        {podeCriarProduto && (
-          <button
-            type="button"
-            onClick={() => setCadastrando(true)}
-            className="flex w-full items-center justify-center gap-1.5 rounded-[var(--radius)] border border-dashed border-line-button px-4 py-2.5 text-[13px] font-medium text-brand transition-colors hover:bg-brand-soft/40"
-          >
-            <FilePlus2 className="h-4 w-4" aria-hidden />
-            Não achou? Cadastrar produto novo
-          </button>
-        )}
-          </>
-        )}
-      </div>
-    </Sheet>
-  );
-}
-
-/** Mini-cadastro — só nome + categoria, o resto o produto ganha depois em `/produtos`. */
-function CadastroRapido({
-  nomeInicial,
-  subcategorias,
-  salvando,
-  onCancelar,
-  onSalvar,
-}: {
-  nomeInicial: string;
-  subcategorias: SubcategoriaCadastro[];
-  salvando: boolean;
-  onCancelar: () => void;
-  onSalvar: (nome: string, subcategoryId: string) => void;
-}) {
-  const [nome, setNome] = React.useState(nomeInicial);
-  const [subcategoryId, setSubcategoryId] = React.useState("");
-
-  const valido = nome.trim().length >= 2 && subcategoryId !== "";
-
-  return (
-    <div className="space-y-3 rounded-[var(--radius-lg)] border border-line bg-surface-2/40 p-4">
-      <p className="flex items-center gap-2 text-[13px] font-medium text-ink">
-        <FilePlus2 className="h-4 w-4 text-brand" aria-hidden />
-        Cadastrar produto novo
-      </p>
-
-      <label className="flex flex-col gap-1 text-[12px] font-medium text-muted">
-        Nome
-        <input
-          value={nome}
-          onChange={(e) => setNome(e.target.value)}
-          autoFocus
-          className="h-10 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-        />
-      </label>
-
-      <label className="flex flex-col gap-1 text-[12px] font-medium text-muted">
-        Categoria
-        <select
-          value={subcategoryId}
-          onChange={(e) => setSubcategoryId(e.target.value)}
-          className="h-10 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-        >
-          <option value="">Selecione…</option>
-          {subcategorias.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.categoriaNome} · {s.nome}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <p className="text-[12px] text-muted">
-        Nasce com a unidade que a nota usa. Preço de venda, embalagens e o resto do cadastro
-        completam depois em Produtos.
-      </p>
-
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="ghost" size="sm" onClick={onCancelar} disabled={salvando}>
-          Cancelar
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          disabled={!valido || salvando}
-          onClick={() => onSalvar(nome.trim(), subcategoryId)}
-        >
-          {salvando && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
-          Cadastrar e relacionar
-        </Button>
-      </div>
-    </div>
   );
 }

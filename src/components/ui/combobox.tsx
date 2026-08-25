@@ -1,10 +1,67 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, Check, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type ComboOption = { value: string; label: string; group?: string };
+
+/**
+ * Onde a lista deve aparecer, em coordenadas de viewport.
+ *
+ * A lista sai do fluxo e vai para um portal no `body` porque `absolute` dentro
+ * do formulário é refém dos ancestrais: um `overflow-hidden` num card corta a
+ * lista, e qualquer ancestral com `transform`/`z-index` próprio a enterra por
+ * baixo do painel vizinho. Medindo o campo e desenhando por cima de tudo, o
+ * dropdown deixa de depender do layout de quem o usa.
+ */
+function useAncora(aberto: boolean, ref: React.RefObject<HTMLElement | null>) {
+  const [caixa, setCaixa] = React.useState<{
+    left: number;
+    top: number;
+    width: number;
+    /** Espaço até o fim da janela — a lista encolhe em vez de vazar. */
+    maxHeight: number;
+    acima: boolean;
+  } | null>(null);
+
+  React.useLayoutEffect(() => {
+    // Fechado não zera a medida: quem lê só desenha com `aberto`, e remedir
+    // antes do paint na reabertura já corrige a posição.
+    if (!aberto) return;
+
+    function medir() {
+      const el = ref.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const abaixo = window.innerHeight - r.bottom - 8;
+      const acima = r.top - 8;
+      // Campo no rodapé de um formulário longo: abrir para baixo daria uma
+      // lista de duas linhas. Aí ela sobe.
+      const paraCima = abaixo < 180 && acima > abaixo;
+      setCaixa({
+        left: r.left,
+        top: paraCima ? r.top - 4 : r.bottom + 4,
+        width: r.width,
+        maxHeight: Math.min(288, Math.max(120, paraCima ? acima : abaixo)),
+        acima: paraCima,
+      });
+    }
+
+    medir();
+    // `true` = fase de captura: pega o scroll de qualquer contêiner interno,
+    // não só o da janela.
+    window.addEventListener("scroll", medir, true);
+    window.addEventListener("resize", medir);
+    return () => {
+      window.removeEventListener("scroll", medir, true);
+      window.removeEventListener("resize", medir);
+    };
+  }, [aberto, ref]);
+
+  return caixa;
+}
 
 function norm(s: string) {
   return s
@@ -58,6 +115,8 @@ export function Combobox({
   const [active, setActive] = React.useState(0);
   const wrapRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const listaRef = React.useRef<HTMLDivElement>(null);
+  const caixa = useAncora(open, wrapRef);
 
   const display =
     options.find((o) => o.value === value)?.label ?? (freeText ? value : "");
@@ -95,7 +154,11 @@ export function Combobox({
   React.useEffect(() => {
     if (!open) return;
     function onDown(e: MouseEvent) {
-      if (!wrapRef.current?.contains(e.target as Node)) close();
+      const alvo = e.target as Node;
+      // A lista mora num portal, fora do wrapper: sem checá-la também, clicar
+      // numa opção fecharia antes do clique chegar nela.
+      if (wrapRef.current?.contains(alvo) || listaRef.current?.contains(alvo)) return;
+      close();
     }
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -189,11 +252,23 @@ export function Combobox({
         className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-muted"
       />
 
-      {open && (
+      {open && caixa && createPortal(
         <div
+          ref={listaRef}
           id={listId}
           role="listbox"
-          className="absolute left-0 right-0 top-[calc(100%+4px)] z-30 max-h-72 overflow-auto rounded-[var(--radius)] border border-line-strong bg-surface p-1 shadow-[var(--shadow-2)]"
+          style={{
+            left: caixa.left,
+            width: caixa.width,
+            maxHeight: caixa.maxHeight,
+            ...(caixa.acima
+              ? { bottom: window.innerHeight - caixa.top }
+              : { top: caixa.top }),
+          }}
+          // z-[100]: acima de sheets e painéis. Uma lista de categorias por
+          // baixo do formulário não é um detalhe estético — é o campo
+          // obrigatório que o operador não consegue preencher.
+          className="fixed z-[100] overflow-auto rounded-[var(--radius)] border border-line-strong bg-surface p-1 shadow-[var(--shadow-2)]"
         >
           {rows.map(({ option: o, head }, i) => (
             <React.Fragment key={o.value}>
@@ -249,7 +324,8 @@ export function Combobox({
                 {createLabel?.(query.trim()) ?? `Criar “${query.trim()}”`}
               </button>
             ))}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

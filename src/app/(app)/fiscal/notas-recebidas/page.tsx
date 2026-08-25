@@ -12,6 +12,9 @@ export default async function NotasRecebidasPage() {
   const ctx = await requireActiveTenant();
 
   return runWithTenant(ctx.tenant.id, async () => {
+    // Fila é fila: cinco colunas por linha. Os itens da nota (e o produto de
+    // cada um) são assunto de `/recebimento/[id]` — carregá-los aqui era ler o
+    // mês fiscal inteiro para desenhar uma tabela que não os mostra.
     const notas = await db.fiscalInbound.findMany({
       orderBy: [{ dataEmissao: "desc" }],
       take: 200,
@@ -26,54 +29,8 @@ export default async function NotasRecebidasPage() {
         emitCnpj: true,
         emitRazaoSocial: true,
         emitUf: true,
-        supplierId: true,
-        purchaseOrderId: true,
-        purchaseId: true,
-        observacao: true,
-        semEstoqueMotivo: true,
-        purchaseOrder: { select: { numero: true } },
-        items: {
-          orderBy: { ordem: "asc" },
-          select: {
-            id: true,
-            ordem: true,
-            codigoFornecedor: true,
-            gtin: true,
-            descricao: true,
-            ncm: true,
-            cfop: true,
-            unidade: true,
-            quantidade: true,
-            unidadeTributavel: true,
-            quantidadeTributavel: true,
-            valorUnitario: true,
-            valorTotal: true,
-            valorDesconto: true,
-            valorIcmsSt: true,
-            valorFcpSt: true,
-            valorIpi: true,
-            valorFrete: true,
-            bonificacao: true,
-            productId: true,
-            packagingId: true,
-            fatorConversao: true,
-          },
-        },
       },
     });
-
-    // productId é escalar (alto volume, igual a StockMovement) — o nome do
-    // produto vem numa consulta só, em vez de um include por item.
-    const idsProdutos = [
-      ...new Set(notas.flatMap((n) => n.items.map((i) => i.productId).filter(Boolean))),
-    ] as string[];
-    const produtos = idsProdutos.length
-      ? await db.product.findMany({
-          where: { id: { in: idsProdutos } },
-          select: { id: true, nome: true, sku: true },
-        })
-      : [];
-    const porProduto = new Map(produtos.map((p) => [p.id, p]));
 
     // Distribuição DF-e depende do provedor e do CNPJ da loja — sem isso o
     // painel de busca na SEFAZ nem aparece.
@@ -98,39 +55,6 @@ export default async function NotasRecebidasPage() {
           emitCnpj: n.emitCnpj,
           emitRazaoSocial: n.emitRazaoSocial,
           emitUf: n.emitUf,
-          supplierId: n.supplierId,
-          pedidoNumero: n.purchaseOrder?.numero ?? null,
-          purchaseOrderId: n.purchaseOrderId,
-          temEntrada: Boolean(n.purchaseId),
-          observacao: n.observacao,
-          semEstoqueMotivo: n.semEstoqueMotivo,
-          itens: n.items.map((i) => ({
-            id: i.id,
-            ordem: i.ordem,
-            codigoFornecedor: i.codigoFornecedor,
-            gtin: i.gtin,
-            descricao: i.descricao,
-            ncm: i.ncm,
-            cfop: i.cfop,
-            unidade: i.unidade,
-            quantidade: Number(i.quantidade),
-            unidadeTributavel: i.unidadeTributavel,
-            quantidadeTributavel:
-              i.quantidadeTributavel == null ? null : Number(i.quantidadeTributavel),
-            valorUnitario: Number(i.valorUnitario),
-            valorTotal: Number(i.valorTotal),
-            valorDesconto: Number(i.valorDesconto),
-            valorIcmsSt: Number(i.valorIcmsSt),
-            valorFcpSt: Number(i.valorFcpSt),
-            valorIpi: Number(i.valorIpi),
-            valorFrete: Number(i.valorFrete),
-            bonificacao: i.bonificacao,
-            productId: i.productId,
-            productNome: i.productId ? (porProduto.get(i.productId)?.nome ?? null) : null,
-            productSku: i.productId ? (porProduto.get(i.productId)?.sku ?? null) : null,
-            packagingId: i.packagingId,
-            fatorConversao: Number(i.fatorConversao),
-          })),
         }))}
       />
     );

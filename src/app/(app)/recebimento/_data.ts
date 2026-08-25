@@ -1,7 +1,9 @@
 import "server-only";
 import { db } from "@/lib/prisma";
 import { sugerirPedidos, type SugestaoPedido } from "@/lib/compras/conciliacao";
-import { listarEventos, type EventoPedido } from "@/lib/compras/eventos";
+import { listarEventos, listarEventosDaNota, type EventoPedido } from "@/lib/compras/eventos";
+import { sugestoesDaNota, type SugestaoDePara } from "@/lib/compras/sugestao-de-para";
+import type { ItemDePara } from "@/components/recebimento/tabela-de-para";
 import type {
   FiscalInboundStatus,
   PurchaseOrderStatus,
@@ -57,7 +59,16 @@ export type NotaRecebimento = {
   valorTotal: number;
   fornecedor: string;
   cnpj: string;
+  uf: string | null;
+  supplierId: string | null;
+  siteId: string;
   siteNome: string;
+  /** Motivo do descarte, quando houve. */
+  observacao: string | null;
+  /** Por que este documento não virou estoque — serviço, frete ou já lançado. */
+  semEstoqueMotivo: string | null;
+  /** A entrada que esta nota gerou (ou que ela documenta). */
+  purchaseId: string | null;
   vinculoAutomatico: boolean;
   conciliadoEm: string | null;
   temXml: boolean;
@@ -85,27 +96,29 @@ export type ResumoRecebimento = {
   impactoCusto: number;
 };
 
-/** Item cru da nota — o que a tela mostra antes de haver pedido vinculado. */
-export type ItemNotaView = {
-  id: string;
-  ordem: number;
-  descricao: string;
-  codigoFornecedor: string;
-  gtin: string | null;
-  unidade: string;
-  quantidade: number;
-  fatorConversao: number;
-  valorTotal: number;
-  bonificacao: boolean;
-  productId: string | null;
-  produtoNome: string | null;
-};
+/**
+ * Item cru da nota — o que a etapa de de-para mostra antes de haver pedido.
+ * É o mesmo formato que a fila fiscal usa: a tabela é a mesma nas duas telas.
+ */
+export type ItemNotaView = ItemDePara;
 
 export type RecebimentoView = {
   nota: NotaRecebimento;
   pedido: PedidoRecebimento | null;
+  /**
+   * Conferência sem pedido: há linhas para conferir e não há (nem haverá) um
+   * pedido por trás. A tela esconde a coluna "Pedido" — comparar a nota com
+   * ela mesma não é conciliação, é ruído.
+   */
+  semPedido: boolean;
   sugestoes: SugestaoPedido[];
-  /** Só preenchido enquanto não há pedido: é a lista para relacionar/gerar pedido. */
+  /**
+   * Palpites de de-para já prontos. Vêm do servidor porque buscá-los no
+   * cliente fazia a tabela pintar três estados até chegar onde já dava para
+   * nascer: "sem produto" → "procurando…" → o palpite.
+   */
+  sugestoesDePara: SugestaoDePara[];
+  /** Só preenchido enquanto a nota não entrou em conferência (com ou sem pedido). */
   itensNota: ItemNotaView[];
   linhas: LinhaRecebimento[];
   resumo: ResumoRecebimento;
@@ -130,9 +143,15 @@ export async function carregarRecebimento(
       valorTotal: true,
       emitRazaoSocial: true,
       emitCnpj: true,
+      emitUf: true,
+      supplierId: true,
+      observacao: true,
+      semEstoqueMotivo: true,
+      purchaseId: true,
       purchaseOrderId: true,
       vinculoAutomatico: true,
       conciliadoEm: true,
+      siteId: true,
       site: { select: { nome: true } },
       xmlArquivo: { select: { id: true } },
       duplicatas: {
@@ -156,7 +175,11 @@ export async function carregarRecebimento(
       })
     : null;
 
-  const linhasCru = pedido
+  // A conferência existe com pedido (conciliação) ou sem ele (a nota é a
+  // referência). O que decide é haver linha montada, não haver pedido.
+  const emConferencia = Boolean(pedido) || Boolean(inbound.conciliadoEm);
+
+  const linhasCru = emConferencia
     ? await db.purchaseReconciliationItem.findMany({
         where: { inboundId },
         // Ordem alfabética e estável: a lista é para conferir na sequência da
@@ -165,9 +188,11 @@ export async function carregarRecebimento(
       })
     : [];
 
-  // Sem pedido, o assunto da tela são os itens crus da nota: é neles que o
-  // operador relaciona o catálogo antes de escolher (ou gerar) o pedido.
-  const itensCru = pedido
+  const semPedido = !pedido && linhasCru.length > 0;
+
+  // Antes de escolher a porta, o assunto da tela são os itens crus da nota: é
+  // neles que o operador relaciona o catálogo para poder escolher.
+  const itensCru = pedido || semPedido
     ? []
     : await db.fiscalInboundItem.findMany({
         where: { inboundId },
@@ -177,12 +202,24 @@ export async function carregarRecebimento(
           descricao: true,
           codigoFornecedor: true,
           gtin: true,
+          cfop: true,
           unidade: true,
           quantidade: true,
+          unidadeTributavel: true,
+          quantidadeTributavel: true,
           fatorConversao: true,
           valorTotal: true,
+          // O custo real da linha (e o alerta de custo fora da curva) precisa
+          // de tudo que soma ou desconta, não só do valor da mercadoria.
+          valorDesconto: true,
+          valorIcmsSt: true,
+          valorFcpSt: true,
+          valorIpi: true,
+          valorFrete: true,
           bonificacao: true,
           productId: true,
+          variantId: true,
+          packagingId: true,
         },
         // Alfabética, igual à lista pós-vínculo — a ordem da nota (`ordem`)
         // não ajuda a achar o item na hora de relacionar ao catálogo.
@@ -194,20 +231,44 @@ export async function carregarRecebimento(
     ...itensCru.map((i) => i.productId),
   ]);
 
-  const itensNota: ItemNotaView[] = itensCru.map((i) => ({
-    id: i.id,
-    ordem: i.ordem,
-    descricao: i.descricao,
-    codigoFornecedor: i.codigoFornecedor,
-    gtin: i.gtin,
-    unidade: i.unidade,
-    quantidade: Number(i.quantidade),
-    fatorConversao: Number(i.fatorConversao),
-    valorTotal: Number(i.valorTotal),
-    bonificacao: i.bonificacao,
-    productId: i.productId,
-    produtoNome: i.productId ? (produtos.get(i.productId)?.nome ?? null) : null,
-  }));
+  const itensNota: ItemNotaView[] = itensCru.map((i) => {
+    const p = i.productId ? produtos.get(i.productId) : null;
+    return {
+      id: i.id,
+      ordem: i.ordem,
+      descricao: i.descricao,
+      codigoFornecedor: i.codigoFornecedor,
+      gtin: i.gtin,
+      cfop: i.cfop,
+      unidade: i.unidade,
+      quantidade: Number(i.quantidade),
+      unidadeTributavel: i.unidadeTributavel,
+      quantidadeTributavel:
+        i.quantidadeTributavel == null ? null : Number(i.quantidadeTributavel),
+      fatorConversao: Number(i.fatorConversao),
+      valorTotal: Number(i.valorTotal),
+      valorDesconto: Number(i.valorDesconto),
+      valorIcmsSt: Number(i.valorIcmsSt),
+      valorFcpSt: Number(i.valorFcpSt),
+      valorIpi: Number(i.valorIpi),
+      valorFrete: Number(i.valorFrete),
+      bonificacao: i.bonificacao,
+      productId: i.productId,
+      productNome: p?.nome ?? null,
+      productSku: p?.sku ?? null,
+      productUnidade: p?.unidadeBase ?? null,
+      productConteudo: p?.conteudoPorUnidade ?? null,
+      productImagemUrl: p?.imagemUrl ?? null,
+      productCustoMedio: p?.custoMedio ?? null,
+      productEmbalagens: (p?.embalagens ?? []).map((e) => ({
+        id: e.id,
+        nome: e.nome,
+        fator: e.fator,
+      })),
+      variantId: i.variantId,
+      packagingId: i.packagingId,
+    };
+  });
 
   const linhas: LinhaRecebimento[] = linhasCru.map((l) => {
     const p = l.productId ? produtos.get(l.productId) : null;
@@ -262,7 +323,13 @@ export async function carregarRecebimento(
       valorTotal: Number(inbound.valorTotal),
       fornecedor: inbound.emitRazaoSocial,
       cnpj: inbound.emitCnpj,
+      uf: inbound.emitUf,
+      supplierId: inbound.supplierId,
+      siteId: inbound.siteId,
       siteNome: inbound.site.nome,
+      observacao: inbound.observacao,
+      semEstoqueMotivo: inbound.semEstoqueMotivo,
+      purchaseId: inbound.purchaseId,
       vinculoAutomatico: inbound.vinculoAutomatico,
       conciliadoEm: iso(inbound.conciliadoEm),
       temXml: Boolean(inbound.xmlArquivo),
@@ -281,13 +348,25 @@ export async function carregarRecebimento(
           previsaoEntrega: iso(pedido.previsaoEntrega),
         }
       : null,
-    // Sem pedido vinculado a tela vira "qual pedido é este?" — as sugestões
-    // são o conteúdo principal, então valem a consulta.
-    sugestoes: pedido ? [] : await sugerirPedidos(inboundId),
+    semPedido,
+    // Enquanto a porta não foi escolhida a tela vira "de qual pedido é isto?" —
+    // as sugestões são o conteúdo principal, então valem a consulta.
+    sugestoes: pedido || semPedido ? [] : await sugerirPedidos(inboundId),
+    // Só antes da porta: depois dela o de-para pendente aparece na conferência,
+    // e são N buscas ranqueadas que ninguém pediu.
+    sugestoesDePara:
+      pedido || semPedido || itensNota.every((i) => i.productId)
+        ? []
+        : await sugestoesDaNota(inboundId),
     itensNota,
     linhas,
     resumo,
-    timeline: pedido ? await listarEventos(tenantId, pedido.id) : [],
+    // Sem pedido a história mora na nota — é a única chave que sobra.
+    timeline: pedido
+      ? await listarEventos(tenantId, pedido.id)
+      : semPedido
+        ? await listarEventosDaNota(tenantId, inboundId)
+        : [],
   };
 }
 
@@ -296,6 +375,12 @@ type ProdutoView = {
   sku: string;
   ean: string | null;
   imagemUrl: string | null;
+  /** Unidade de MEDIDA (UN, ML, G) — não é o que entra numa compra. */
+  unidadeBase: string;
+  /** Conteúdo de uma unidade fechada, na unidadeBase. */
+  conteudoPorUnidade: number | null;
+  /** Base do alerta de custo fora da curva na tabela de de-para. */
+  custoMedio: number;
   embalagens: EmbalagemView[];
 };
 
@@ -310,6 +395,9 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
       sku: true,
       ean: true,
       imagemUrl: true,
+      unidadeBase: true,
+      conteudoPorUnidade: true,
+      custoMedio: true,
       packagings: { select: { id: true, nome: true, ean: true, fatorConversao: true } },
     },
   });
@@ -321,6 +409,10 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
         sku: p.sku,
         ean: p.ean,
         imagemUrl: p.imagemUrl,
+        unidadeBase: p.unidadeBase,
+        conteudoPorUnidade:
+          p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
+        custoMedio: Number(p.custoMedio),
         embalagens: p.packagings.map((e) => ({
           id: e.id,
           nome: e.nome,

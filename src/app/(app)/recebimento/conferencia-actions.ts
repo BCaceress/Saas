@@ -6,16 +6,16 @@ import { guardAction, assertSite } from "@/lib/guard";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { getActiveSiteId, getOrCreateDefaultSite } from "@/lib/sites";
-import { importarNotasXml, relacionarItemInbound, type ResultadoImportacao } from "@/lib/fiscal/entrada";
+import { importarNotasXml, type ResultadoImportacao } from "@/lib/fiscal/entrada";
 import { registrarImportacoes } from "@/lib/fiscal/import-log";
-import { buscarProdutosParaRelacionar } from "@/lib/compras/busca-produto";
-import { createProduct } from "@/app/(app)/produtos/actions";
 import {
   conciliar,
+  conferirSemPedido,
   criarPedidoDaNota,
   desvincularPedido,
   conferirItem,
   conferirTudoConformeNota,
+  remontarConferencia,
   resolverDivergencia,
   aceitarCustoDaNota,
   confirmarEntradaConciliada,
@@ -24,7 +24,7 @@ import {
 } from "@/lib/compras/conciliacao";
 import type { ActiveTenant } from "@/lib/current-tenant";
 
-const ROTA = "/pedidos/recebimento";
+const ROTA = "/recebimento";
 
 async function tx<T>(fn: (ctx: ActiveTenant) => Promise<T>): Promise<T> {
   const ctx = await guardAction("compras.receber");
@@ -118,6 +118,21 @@ export async function criarPedidoDaNotaAction(inboundId: string) {
   });
 }
 
+/**
+ * A terceira porta: nem achar um pedido, nem criar um. A mercadoria chegou, a
+ * nota descreve o que era para vir, e o operador confere contra ela.
+ *
+ * Fica em `compras.receber` (e não em `compras.pedir`) de propósito: quem está
+ * na porta pode receber sem que isso vire uma decisão de compra no sistema.
+ */
+export async function receberSemPedidoAction(inboundId: string) {
+  return tx(async (ctx) => {
+    await conferirSemPedido({ tenantId: ctx.tenant.id, inboundId, userId: ctx.user.id });
+    revalidar(inboundId);
+    revalidatePath("/fiscal/notas-recebidas");
+  });
+}
+
 export async function desvincularPedidoAction(inboundId: string) {
   return tx(async (ctx) => {
     await desvincularPedido({ tenantId: ctx.tenant.id, inboundId, userId: ctx.user.id });
@@ -128,19 +143,7 @@ export async function desvincularPedidoAction(inboundId: string) {
 /** Refaz a conciliação — usado depois de relacionar um item ao catálogo. */
 export async function reconciliarAction(inboundId: string) {
   return tx(async (ctx) => {
-    const nota = await db.fiscalInbound.findFirst({
-      where: { id: inboundId },
-      select: { purchaseOrderId: true, vinculoAutomatico: true, scoreVinculo: true },
-    });
-    if (!nota?.purchaseOrderId) throw new Error("Esta nota não está vinculada a um pedido.");
-    await conciliar({
-      tenantId: ctx.tenant.id,
-      inboundId,
-      purchaseOrderId: nota.purchaseOrderId,
-      userId: ctx.user.id,
-      automatico: nota.vinculoAutomatico,
-      score: nota.scoreVinculo,
-    });
+    await remontarConferencia(ctx.tenant.id, inboundId, ctx.user.id);
     revalidar(inboundId);
   });
 }
@@ -247,50 +250,6 @@ export async function aceitarCustoAction(input: { inboundId: string; itemId: str
   });
 }
 
-const relacionarSchema = z.object({
-  inboundId: z.string().min(1),
-  inboundItemId: z.string().min(1),
-  productId: z.string().min(1, "Escolha o produto."),
-  packagingId: z.string().nullable().optional(),
-  fatorConversao: z.coerce.number().positive().default(1),
-});
-
-/**
- * Relaciona um item da nota ao catálogo e refaz a conciliação. Grava o de-para
- * (é `relacionarItemInbound` quem faz), então a próxima nota deste fornecedor
- * já chega resolvida.
- */
-export async function relacionarItemRecebimentoAction(
-  input: z.input<typeof relacionarSchema>,
-) {
-  return tx(async (ctx) => {
-    const d = relacionarSchema.parse(input);
-    const { preenchidos } = await relacionarItemInbound({
-      tenantId: ctx.tenant.id,
-      itemId: d.inboundItemId,
-      productId: d.productId,
-      packagingId: d.packagingId ?? null,
-      fatorConversao: d.fatorConversao,
-    });
-
-    const nota = await db.fiscalInbound.findFirst({
-      where: { id: d.inboundId },
-      select: { purchaseOrderId: true },
-    });
-    if (nota?.purchaseOrderId) {
-      await conciliar({
-        tenantId: ctx.tenant.id,
-        inboundId: d.inboundId,
-        purchaseOrderId: nota.purchaseOrderId,
-        userId: ctx.user.id,
-      });
-    }
-    revalidar(d.inboundId);
-    revalidatePath("/produtos");
-    return { preenchidos };
-  });
-}
-
 export async function confirmarEntradaAction(inboundId: string) {
   return tx(async (ctx) => {
     const purchaseId = await confirmarEntradaConciliada({
@@ -305,26 +264,3 @@ export async function confirmarEntradaAction(inboundId: string) {
   });
 }
 
-/**
- * Busca de produto para relacionar um item da nota. Ordena por relevância ao
- * que foi digitado — `gtin` é o código do item da nota, usado como desempate.
- */
-export async function buscarProdutoAction(termo: string, gtin?: string | null) {
-  return tx(() => buscarProdutosParaRelacionar(termo, { gtin }));
-}
-
-const criarProdutoRapidoSchema = z.object({
-  nome: z.string().trim().min(2, "Informe o nome do produto."),
-  subcategoryId: z.string().min(1, "Escolha a categoria."),
-  ean: z.string().trim().optional(),
-});
-
-/**
- * Cadastro mínimo direto do recebimento — item sem catálogo não devia
- * significar abandonar a nota. `createProduct` faz o resto (SKU, estoque
- * inicial no site padrão, permissão própria de `produto.editar`).
- */
-export async function criarProdutoRapidoAction(input: z.input<typeof criarProdutoRapidoSchema>) {
-  const d = criarProdutoRapidoSchema.parse(input);
-  return createProduct({ nome: d.nome, subcategoryId: d.subcategoryId, ean: d.ean || undefined });
-}

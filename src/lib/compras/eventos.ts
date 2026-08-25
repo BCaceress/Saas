@@ -17,13 +17,20 @@ import type { Prisma, PurchaseEventType } from "@/generated/prisma";
 
 export async function registrarEvento(input: {
   tenantId: string;
-  purchaseOrderId: string;
+  /** Nulo no recebimento sem pedido — aí a história pendura na nota. */
+  purchaseOrderId: string | null;
   inboundId?: string | null;
   tipo: PurchaseEventType;
   descricao: string;
   meta?: Prisma.InputJsonValue;
   createdBy?: string | null;
 }): Promise<void> {
+  // Evento sem pedido E sem nota não tem por onde ser lido de volta — é lixo
+  // silencioso na tabela. Melhor estourar aqui do que sumir com a história.
+  if (!input.purchaseOrderId && !input.inboundId) {
+    throw new Error("Evento de compra precisa de um pedido ou de uma nota.");
+  }
+
   await comTenant(
     input.tenantId,
     basePrisma.purchaseEvent.create({
@@ -54,10 +61,28 @@ export async function listarEventos(
   tenantId: string,
   purchaseOrderId: string,
 ): Promise<EventoPedido[]> {
+  return listarEventosPor(tenantId, { purchaseOrderId });
+}
+
+/**
+ * Timeline de uma nota. É a única leitura possível do recebimento sem pedido,
+ * onde não existe `purchaseOrderId` para pendurar a história.
+ */
+export async function listarEventosDaNota(
+  tenantId: string,
+  inboundId: string,
+): Promise<EventoPedido[]> {
+  return listarEventosPor(tenantId, { inboundId });
+}
+
+async function listarEventosPor(
+  tenantId: string,
+  filtro: { purchaseOrderId: string } | { inboundId: string },
+): Promise<EventoPedido[]> {
   const eventos = await comTenant(
     tenantId,
     basePrisma.purchaseEvent.findMany({
-      where: { tenantId, purchaseOrderId },
+      where: { tenantId, ...filtro },
       select: { id: true, tipo: true, descricao: true, createdAt: true, createdBy: true },
       orderBy: { createdAt: "asc" },
       take: 200,

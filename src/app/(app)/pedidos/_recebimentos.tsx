@@ -45,6 +45,8 @@ type PedidoItem = {
   nome: string;
   sku: string;
   imagemUrl: string | null;
+  /** Sabor/cor pedido nesta linha — conferido na porta, somado no produto. */
+  variacaoNome?: string | null;
   packagingId?: string | null;
   packagingNome: string | null;
   tipo: TipoItemPedido;
@@ -1030,6 +1032,11 @@ function LinhaConferencia({
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-1.5 truncate text-sm font-medium text-ink">
             {it.nome}
+            {it.variacaoNome && (
+              <span className="shrink-0 rounded-full border border-line bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted">
+                {it.variacaoNome}
+              </span>
+            )}
             {it.tipo !== "COMPRA" && <BonusBadge tipo={it.tipo} />}
           </p>
           <p className="truncate font-mono text-[11px] text-faint">

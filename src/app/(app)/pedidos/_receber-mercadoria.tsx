@@ -18,7 +18,10 @@ import { cn } from "@/lib/utils";
 import { Sheet, Modal, type SheetWidth } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
-import { importarXmlRecebimentoAction, vincularPedidoAction } from "./recebimento/actions";
+import {
+  importarXmlRecebimentoAction,
+  vincularPedidoAction,
+} from "../recebimento/conferencia-actions";
 import { listarPedidosAReceberAction } from "./actions";
 import { PedidoReceber } from "./_recebimentos";
 import { previsaoLabel, fmtMoney } from "../cotacoes/_ui";
@@ -122,7 +125,7 @@ export function ReceberMercadoriaPanel({
       }
 
       limpar();
-      router.push(`/pedidos/recebimento/${importada.inboundId}`);
+      router.push(`/recebimento/${importada.inboundId}`);
     } catch (e) {
       toast.error("Não foi possível ler o arquivo", e instanceof Error ? e.message : "Tente de novo.");
     } finally {
@@ -141,7 +144,7 @@ export function ReceberMercadoriaPanel({
         ? "De qual pedido é esta mercadoria?"
         : alvo
           ? `${alvo.supplierNome} · ${alvo.numero}`
-          : "Importe o XML para localizar ou criar o pedido.";
+          : "Importe o XML — depois você escolhe se ele vira pedido, entra num existente ou é só conferência.";
 
   return (
     <>
@@ -152,7 +155,7 @@ export function ReceberMercadoriaPanel({
               icon={FileCode}
               destaque
               titulo="Importar XML"
-              descricao="Conciliar automaticamente a NF-e com o pedido."
+              descricao="Conciliar com o pedido, gerar o pedido pela nota ou só conferir."
               onClick={() => setEtapa("xml")}
             />
             <OpcaoCard
@@ -431,7 +434,8 @@ function XmlDropzone({
         <div>
           <p className="font-display text-[15px] font-semibold text-ink">Arraste o XML da nota aqui</p>
           <p className="mx-auto mt-1 max-w-md text-[13px] text-muted">
-            O NoHub lê a nota e concilia com o pedido automaticamente. Aceita .xml e .zip.
+            O NoHub lê a nota e, quando reconhece o pedido, concilia sozinho. Sem pedido, você
+            escolhe: gerar um pela nota ou só conferir a mercadoria. Aceita .xml e .zip.
           </p>
         </div>
         <input

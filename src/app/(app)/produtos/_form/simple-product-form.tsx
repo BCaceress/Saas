@@ -493,6 +493,9 @@ function margemVerdict(pct: number | null): {
 
 // ── Formulário ─────────────────────────────────────────────
 
+/** Linha do editor de variações comerciais (o `id` só existe ao editar). */
+type VariacaoLinha = { id?: string; nome: string; ean: string };
+
 export function SimpleProductForm({
   mode,
   product,
@@ -605,6 +608,23 @@ export function SimpleProductForm({
   const [showFornecedor, setShowFornecedor] = useState(
     !!product?.fornecedorPrincipalId,
   );
+
+  // Variação comercial de compra — sabor/cor que existe na nota do fornecedor e
+  // NÃO na prateleira. Bubbaloo Morango, Uva e Tutti-Frutti entram todos no
+  // saldo de "Bubbaloo Sortido": a variação não vira SKU, preço nem estoque.
+  const [variacaoLabel, setVariacaoLabel] = useState(product?.variacaoLabel ?? "");
+  const [variacoes, setVariacoes] = useState<VariacaoLinha[]>(
+    (product?.variacoes ?? []).map((v) => ({ id: v.id, nome: v.nome, ean: v.ean ?? "" })),
+  );
+  const [showVariacao, setShowVariacao] = useState(
+    !!product?.variacaoLabel || (product?.variacoes?.length ?? 0) > 0,
+  );
+  const addVariacao = () =>
+    setVariacoes((prev) => [...prev, { nome: "", ean: "" }]);
+  const updVariacao = (i: number, patch: Partial<VariacaoLinha>) =>
+    setVariacoes((prev) => prev.map((v, idx) => (idx === i ? { ...v, ...patch } : v)));
+  const delVariacao = (i: number) =>
+    setVariacoes((prev) => prev.filter((_, idx) => idx !== i));
   const addFornecedor = (id: string) =>
     setFornecedoresList((prev) => (prev.includes(id) ? prev : [...prev, id]));
   const removeFornecedor = (id: string) =>
@@ -746,7 +766,8 @@ export function SimpleProductForm({
       done: vendaUnidade || usaEmDrinks,
       focus: "uso",
     },
-    { label: "preço", done: (mode === "edit" || custoNum > 0) && precoNum > 0, focus: "custo" },
+    // Custo não entra na régua: quem o informa é a compra, não este formulário.
+    { label: "preço", done: precoNum > 0, focus: "preco" },
   ];
   const doneCnt = etapas.filter((e) => e.done).length;
   const isReady = doneCnt === etapas.length;
@@ -757,7 +778,6 @@ export function SimpleProductForm({
   const faltando = {
     nome: touched.nome && nome.trim().length < 2,
     sub: touched.sub && !subcategoryId,
-    custo: mode === "new" && touched.custo && custoNum <= 0,
     preco: touched.preco && precoNum <= 0,
   };
 
@@ -1194,6 +1214,9 @@ export function SimpleProductForm({
     setPkEan("");
     setPkFator("");
     setExtraPk([]);
+    setVariacaoLabel("");
+    setVariacoes([]);
+    setShowVariacao(false);
     setVendaUnidade(true);
     setUsaEmDrinks(false);
     setUnidadeBase("UN");
@@ -1227,12 +1250,6 @@ export function SimpleProductForm({
       );
       setError("Escolha ao menos uma utilização do produto.");
       focusField("uso");
-      return;
-    }
-    if (mode === "new" && !parseMoney(custo)) {
-      toast.error("Custo obrigatório", "Informe o preço de custo antes de salvar.");
-      setError("Informe o preço de custo.");
-      focusField("custo");
       return;
     }
     if (!parseMoney(precoVenda)) {
@@ -1273,6 +1290,15 @@ export function SimpleProductForm({
         })),
     ];
 
+    const variacoesValidas = variacoes
+      .filter((v) => v.nome.trim())
+      .map((v) => ({ id: v.id, nome: v.nome.trim(), ean: v.ean.trim() || undefined }));
+    if (showVariacao && variacoesValidas.length > 0 && !variacaoLabel.trim()) {
+      setError("Diga o que varia neste produto (ex.: Sabor).");
+      focusField("variacao-label");
+      return;
+    }
+
     const input = {
       tipo: "SIMPLES" as const,
       sku: sku.trim() || undefined,
@@ -1305,6 +1331,10 @@ export function SimpleProductForm({
       fornecedorPrincipalId: fornecedoresList[0] || undefined,
       fornecedoresIds: fornecedoresList,
       packagings,
+      // Variação comercial: linha em branco não vira nada, e sem variação o
+      // eixo ("Sabor") também não é gravado.
+      variacaoLabel: variacaoLabel.trim() || undefined,
+      variacoes: variacoesValidas,
       vendeOnline,
       pesoGramas: n(pesoGramas) ?? undefined,
       alturaCm: vendeOnline ? (n(alturaCm) ?? undefined) : undefined,
@@ -1745,7 +1775,7 @@ export function SimpleProductForm({
                         options={subOptions}
                         placeholder="Busque ou crie…"
                         emptyText="Nenhuma categoria com esse nome."
-                        onCommit={() => focusById("custo")}
+                        onCommit={() => focusById("preco")}
                         renderCreate={(q, close) => (
                           <CriarSubcategoria
                             nome={q}
@@ -2009,6 +2039,110 @@ export function SimpleProductForm({
                       ) : null}
                     </div>
                   )}
+                  {!showVariacao && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowVariacao(true);
+                        if (variacoes.length === 0) addVariacao();
+                      }}
+                      className="flex items-center gap-1 self-start text-xs font-medium text-muted hover:text-ink"
+                    >
+                      <Plus size={13} /> Compro em sabores/variações
+                    </button>
+                  )}
+
+                  {showVariacao && (
+                    <div className="flex flex-col gap-3 rounded-[var(--radius)] border border-line bg-surface-2 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <Label>Variação comercial</Label>
+                          <p className="mt-0.5 text-xs text-muted">
+                            O sabor existe na nota do fornecedor, não na prateleira: a
+                            compra registra a variação e o estoque soma tudo em{" "}
+                            <strong className="font-medium text-ink-2">
+                              {nome.trim() || "um produto só"}
+                            </strong>
+                            .
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowVariacao(false);
+                            setVariacoes([]);
+                            setVariacaoLabel("");
+                          }}
+                          className="shrink-0 text-xs font-medium text-faint hover:text-danger"
+                        >
+                          Remover
+                        </button>
+                      </div>
+
+                      <div className="grid gap-3 sm:grid-cols-[minmax(0,14rem)_auto]">
+                        <Field label="O que varia?" htmlFor="variacao-label">
+                          <Input
+                            id="variacao-label"
+                            value={variacaoLabel}
+                            onChange={(e) => setVariacaoLabel(e.target.value)}
+                            placeholder="Sabor"
+                            maxLength={40}
+                          />
+                        </Field>
+                        <div className="flex items-end pb-1">
+                          <Badge tone="neutral">Não controla estoque nem venda</Badge>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-2">
+                        {variacoes.map((v, i) => (
+                          <div key={v.id ?? i} className="flex items-end gap-2">
+                            <Field
+                              label={i === 0 ? variacaoLabel.trim() || "Variação" : undefined}
+                              className="min-w-0 flex-1"
+                            >
+                              <Input
+                                value={v.nome}
+                                onChange={(e) => updVariacao(i, { nome: e.target.value })}
+                                placeholder="Morango"
+                              />
+                            </Field>
+                            <Field
+                              label={i === 0 ? "Código de barras" : undefined}
+                              className="w-[11rem] shrink-0"
+                            >
+                              <Input
+                                value={v.ean}
+                                onChange={(e) => updVariacao(i, { ean: onlyDigits(e.target.value) })}
+                                placeholder="opcional"
+                                inputMode="numeric"
+                                className="font-mono"
+                              />
+                            </Field>
+                            <button
+                              type="button"
+                              onClick={() => delVariacao(i)}
+                              aria-label="Remover variação"
+                              className="mb-1 grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] text-faint transition-colors hover:bg-danger-soft hover:text-danger"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={addVariacao}
+                          className="flex items-center gap-1 self-start text-xs font-medium text-brand-strong hover:text-brand"
+                        >
+                          <Plus size={13} /> Outra variação
+                        </button>
+                        <p className="text-xs text-faint">
+                          O código de barras do sabor faz a NF-e cair neste produto já com a
+                          variação preenchida.
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </Step>
 
                 {/* 4 · Utilização */}
@@ -2050,6 +2184,38 @@ export function SimpleProductForm({
                       desc="O produto poderá ser consumido parcialmente em receitas e drinks."
                     />
                   </div>
+
+                  {/* O que o estoque conta.
+                      A COMPRA sempre soma unidade fechada — 12 garrafas entram
+                      como 12, nunca como 12 000 ml. O ml/g mede só o que sobra
+                      dentro da garrafa aberta. Sem dizer isso aqui, quem via
+                      "ml" no cadastro achava que a entrada da nota estava
+                      errada e ia procurar onde trocar. */}
+                  <p className="text-[12px] text-muted">
+                    {usaEmDrinks && unidadeBase !== "UN" ? (
+                      <>
+                        O estoque conta <span className="font-medium text-ink-2">unidades
+                        fechadas</span>
+                        {(conteudoNum ?? 0) > 0
+                          ? ` de ${conteudoNum} ${medida} cada`
+                          : ""}
+                        . O {medida} só aparece no saldo aberto, quando alguém abre uma para usar
+                        numa receita.{" "}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUsaEmDrinks(false);
+                            setUnidadeBase("UN");
+                          }}
+                          className="font-medium text-brand underline"
+                        >
+                          contar só unidade inteira
+                        </button>
+                      </>
+                    ) : (
+                      "O estoque conta unidades fechadas."
+                    )}
+                  </p>
 
                   <Collapse open={usaEmDrinks}>
                     <div className="flex flex-col gap-4">
@@ -2658,23 +2824,13 @@ export function SimpleProductForm({
                   )}
                 </div>
 
-                <Field label="Preço de custo" htmlFor="custo" required={mode === "new"}>
-                  <div className="relative">
-                    <span className="pointer-events-none absolute inset-y-0 left-3 flex select-none items-center text-sm text-muted">
-                      R$
-                    </span>
-                    <Input
-                      id="custo"
-                      value={custo}
-                      onChange={(e) => setCusto(maskMoney(e.target.value))}
-                      onBlur={() => touch("custo")}
-                      onKeyDown={enterTo("preco")}
-                      placeholder="0,00"
-                      inputMode="numeric"
-                      className={cn("pl-9 font-mono", faltando.custo && "border-warn")}
-                    />
-                  </div>
-                </Field>
+                {/* Custo não se digita aqui. Ele é CONSEQUÊNCIA da compra: sai
+                    da entrada da nota (custo médio) ou do estoque inicial, logo
+                    acima. Um campo à mão neste formulário só produzia um número
+                    que ninguém atualizava e que a margem passava a mentir. */}
+                {custoNum > 0 && (
+                  <PanelRow label="Custo" value={brl(custoNum)} mono tone="muted" />
+                )}
 
                 <Field label="Preço de venda" htmlFor="preco" required>
                   <div className="relative">

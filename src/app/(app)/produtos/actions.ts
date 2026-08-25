@@ -488,6 +488,71 @@ async function syncSuppliers(
   }
 }
 
+/**
+ * Nenhum código de barras pode responder por duas coisas.
+ *
+ * Não é preciosismo de cadastro: o EAN é a CHAVE de entrada do sistema inteiro
+ * — o PDV bipa e vende, o XML da NF-e casa a linha com o produto, a etiqueta
+ * imprime. Dois produtos com o mesmo código fazem o caixa vender o errado e o
+ * recebimento somar saldo no produto errado, e ninguém descobre pela tela: só
+ * pelo inventário que não fecha.
+ *
+ * Varre os três lugares onde um código vive (produto, embalagem de compra e
+ * variação comercial), porque o leitor não sabe a diferença entre eles.
+ */
+async function assertCodigosLivres(
+  codigos: (string | null | undefined)[],
+  exceptProductId?: string,
+) {
+  const limpos = codigos
+    .map((c) => (c ? onlyDigits(c) : ""))
+    .filter((c) => c.length > 0);
+  if (limpos.length === 0) return;
+
+  // Colisão dentro do próprio formulário — o banco nem chega a ser consultado.
+  const vistos = new Set<string>();
+  for (const c of limpos) {
+    if (vistos.has(c)) {
+      throw new Error(
+        `O código de barras ${c} está repetido neste cadastro. Cada código responde por uma coisa só.`,
+      );
+    }
+    vistos.add(c);
+  }
+
+  const fora = exceptProductId ? { not: exceptProductId } : undefined;
+  const [produto, embalagem, variacao] = await Promise.all([
+    db.product.findFirst({
+      where: { ean: { in: limpos }, ...(fora ? { id: fora } : {}) },
+      select: { nome: true, sku: true, ean: true },
+    }),
+    db.productPackaging.findFirst({
+      where: { ean: { in: limpos }, ...(fora ? { productId: fora } : {}) },
+      select: { nome: true, ean: true, product: { select: { nome: true, sku: true } } },
+    }),
+    db.productPurchaseVariant.findFirst({
+      where: { ean: { in: limpos }, ativo: true, ...(fora ? { productId: fora } : {}) },
+      select: { nome: true, ean: true, product: { select: { nome: true, sku: true } } },
+    }),
+  ]);
+
+  if (produto) {
+    throw new Error(
+      `O código de barras ${produto.ean} já é de "${produto.nome}" (${produto.sku}).`,
+    );
+  }
+  if (embalagem) {
+    throw new Error(
+      `O código de barras ${embalagem.ean} já é da embalagem "${embalagem.nome}" de "${embalagem.product.nome}" (${embalagem.product.sku}).`,
+    );
+  }
+  if (variacao) {
+    throw new Error(
+      `O código de barras ${variacao.ean} já é da variação "${variacao.nome}" de "${variacao.product.nome}" (${variacao.product.sku}).`,
+    );
+  }
+}
+
 /** Substitui o conjunto de embalagens de compra do produto (delete + recreate). */
 async function syncPackagings(
   tid: string,
@@ -505,6 +570,58 @@ async function syncPackagings(
         fatorConversao: pk.fatorConversao,
         isCompraDefault: i === 0,
       })),
+    });
+  }
+}
+
+/**
+ * Sincroniza as variações comerciais de compra (sabor, cor, aroma).
+ *
+ * Ao contrário das embalagens, aqui NÃO dá para apagar e recriar: cada variação
+ * é referenciada por itens de pedido e de entrada já gravados. Renomear mantém
+ * o vínculo; tirar da lista apenas DESATIVA — a compra de março continua
+ * sabendo que era morango.
+ */
+async function syncPurchaseVariants(
+  tid: string,
+  productId: string,
+  variacoes: { id?: string | null; nome: string; ean?: string | null }[],
+) {
+  const atuais = await db.productPurchaseVariant.findMany({
+    where: { productId },
+    select: { id: true, nome: true },
+  });
+  const mantidos = new Set<string>();
+
+  for (const [i, v] of variacoes.entries()) {
+    const nome = v.nome.trim();
+    if (!nome) continue;
+    const ean = v.ean ? onlyDigits(v.ean) : null;
+    // Casa por id (renomeou) ou por nome (já existia com outro id).
+    const atual =
+      (v.id ? atuais.find((a) => a.id === v.id) : null) ??
+      atuais.find((a) => a.nome.toLowerCase() === nome.toLowerCase());
+
+    if (atual) {
+      mantidos.add(atual.id);
+      await db.productPurchaseVariant.update({
+        where: { id: atual.id },
+        data: { nome, ean, ordem: i, ativo: true },
+      });
+    } else {
+      const criada = await db.productPurchaseVariant.create({
+        data: { tenantId: tid, productId, nome, ean, ordem: i },
+        select: { id: true },
+      });
+      mantidos.add(criada.id);
+    }
+  }
+
+  const removidos = atuais.filter((a) => !mantidos.has(a.id)).map((a) => a.id);
+  if (removidos.length) {
+    await db.productPurchaseVariant.updateMany({
+      where: { id: { in: removidos } },
+      data: { ativo: false },
     });
   }
 }
@@ -566,6 +683,20 @@ const productSchema = z.object({
     .optional()
     .default([]),
 
+  // Variação COMERCIAL de compra: o produto é comprado por sabor/cor e vendido
+  // como um só. `variacaoLabel` é o eixo ("Sabor"); a lista são os valores.
+  // Nada disso cria SKU, preço ou saldo — o estoque é do produto principal.
+  variacaoLabel: z.string().trim().max(40).optional().nullable(),
+  variacoes: z
+    .array(
+      z.object({
+        id: z.string().optional().nullable(),
+        nome: z.string().trim().min(1, "Informe o nome da variação."),
+        ean: z.string().optional().nullable(),
+      }),
+    )
+    .optional(),
+
   vendeOnline: z.boolean().default(false),
   pesoGramas: z.number().int().positive().optional().nullable(),
   alturaCm: z.number().positive().optional().nullable(),
@@ -614,6 +745,11 @@ export async function createProduct(input: ProductInput) {
     ]);
     if (!sub) throw new Error("Subcategoria inválida.");
     if (skuVal && skuConflict) throw new Error(`SKU "${skuVal}" já está em uso.`);
+    await assertCodigosLivres([
+      d.ean,
+      ...(d.packagings ?? []).map((pk) => pk.ean),
+      ...(d.variacoes ?? []).map((v) => v.ean),
+    ]);
     const sku = skuVal ?? (await generateSku(sub.category.skuPrefix, sub.skuPrefix));
 
     const product = await db.product.create({
@@ -646,6 +782,9 @@ export async function createProduct(input: ProductInput) {
         larguraCm: d.larguraCm ?? null,
         comprimentoCm: d.comprimentoCm ?? null,
         descricaoOnline: d.descricaoOnline || null,
+        ...(d.variacoes
+          ? { variacaoLabel: d.variacoes.length ? d.variacaoLabel?.trim() || null : null }
+          : {}),
         stocks: {
           create: [{
             tenantId: tid,
@@ -664,6 +803,7 @@ export async function createProduct(input: ProductInput) {
       d.tags?.length ? attachTags(tid, product.id, d.tags) : Promise.resolve(),
       syncSalesChannels(tid, product.id, d.salesChannels),
       syncPackagings(tid, product.id, d.packagings),
+      d.variacoes ? syncPurchaseVariants(tid, product.id, d.variacoes) : Promise.resolve(),
       syncSuppliers(tid, product.id, resolveFornecedores(d), d.custoFornecedor),
     ]);
 
@@ -684,6 +824,10 @@ export async function updateProduct(id: string, input: ProductInput) {
         : Promise.resolve(null),
     ]);
     if (skuVal && skuConflict) throw new Error(`SKU "${skuVal}" já está em uso.`);
+    await assertCodigosLivres(
+      [d.ean, ...(d.packagings ?? []).map((pk) => pk.ean), ...(d.variacoes ?? []).map((v) => v.ean)],
+      id,
+    );
     const skuData = skuVal ? { sku: skuVal } : {};
 
     await db.product.update({
@@ -715,6 +859,9 @@ export async function updateProduct(id: string, input: ProductInput) {
         larguraCm: d.larguraCm ?? null,
         comprimentoCm: d.comprimentoCm ?? null,
         descricaoOnline: d.descricaoOnline || null,
+        ...(d.variacoes
+          ? { variacaoLabel: d.variacoes.length ? d.variacaoLabel?.trim() || null : null }
+          : {}),
       },
     });
     // 4 tabelas diferentes, sem dependência entre si — concorrente em vez de
@@ -731,6 +878,7 @@ export async function updateProduct(id: string, input: ProductInput) {
       }),
       syncSalesChannels(tid, id, d.salesChannels),
       syncPackagings(tid, id, d.packagings),
+      d.variacoes ? syncPurchaseVariants(tid, id, d.variacoes) : Promise.resolve(),
       syncSuppliers(tid, id, resolveFornecedores(d), d.custoFornecedor),
     ]);
     ok();

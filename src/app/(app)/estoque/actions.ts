@@ -167,6 +167,8 @@ const entradaItemSchema = z.object({
   quantidade: z.number().positive(),
   custoTotal: z.number().nonnegative(),
   packagingId: z.string().optional().nullable(),
+  /** Variação comercial comprada (sabor/cor) — não cria saldo separado. */
+  variantId: z.string().optional().nullable(),
   validade: z.string().optional().nullable(),
   lote: z.string().trim().max(60).optional().nullable(),
 });
@@ -223,6 +225,7 @@ export async function registrarEntradaAction(input: z.input<typeof entradaSchema
         origem: "ENTRADA_MANUAL",
         itens: d.items.map((i) => ({
           productId: i.productId,
+          variantId: i.variantId ?? null,
           packagingId: i.packagingId ?? null,
           quantidade: i.quantidade,
           custoUnitario: i.quantidade > 0 ? (i.custoTotal ?? 0) / i.quantidade : 0,
@@ -259,6 +262,8 @@ export async function registrarEntradaAction(input: z.input<typeof entradaSchema
 const pedidoItemSchema = z.object({
   productId: z.string().min(1),
   packagingId: z.string().optional().nullable(),
+  /** Variação comercial pedida (sabor/cor). Não cria saldo nem SKU. */
+  variantId: z.string().optional().nullable(),
   tipo: z.enum(["COMPRA", "BONIFICACAO", "BRINDE", "TROCA", "AMOSTRA", "SERVICO"]).default("COMPRA"),
   motivoBonificacao: z.enum(["COMERCIAL", "CAMPANHA", "REPOSICAO", "TROCA", "CORTESIA", "OUTRO"]).optional().nullable(),
   qtdPedida: z.number().positive(),
