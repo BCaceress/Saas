@@ -1353,25 +1353,16 @@ function PassoEnviar({
     cotacao.prazoResposta ? new Date(cotacao.prazoResposta).toISOString().slice(0, 10) : "",
   );
   const [observacao, setObservacao] = React.useState(cotacao.observacao ?? "");
-  const [canais, setCanais] = React.useState<("whatsapp" | "email")[]>(["whatsapp"]);
   const [enviando, setEnviando] = React.useState(false);
 
   const pendentes = cotacao.convites.filter((c) => c.status === "PENDENTE");
   const destinos = pendentes.map((c) => ({ c, d: destinatarioDoConvite(c, undefined) }));
-  const semEmail = destinos.length > 0 && destinos.every((x) => !x.d.email);
   // Fornecedor sem ninguém cadastrado não tem para onde receber, e a Server
   // Action recusa o lote inteiro. Melhor dizer aqui, com o nome de quem falta,
   // do que deixar o operador tocar em "Enviar" e levar um erro seco.
   const semContato = destinos
     .filter((x) => !x.d.telefone && !x.d.email)
     .map((x) => x.c.supplierNome);
-
-  function alternarCanal(c: "whatsapp" | "email") {
-    setCanais((atual) => {
-      if (atual.includes(c)) return atual.length === 1 ? atual : atual.filter((x) => x !== c);
-      return [...atual, c];
-    });
-  }
 
   async function enviar() {
     if (enviando) return;
@@ -1385,7 +1376,9 @@ function PassoEnviar({
         prazoResposta: prazo || null,
         observacao: observacao.trim() || null,
       });
-      const r = await enviarCotacaoAction({ quotationId: cotacao.id, canais });
+      // No celular quem dispara é a pessoa, pelo WhatsApp — não há escolha de
+      // canal para fazer aqui.
+      const r = await enviarCotacaoAction({ quotationId: cotacao.id, canais: ["whatsapp"] });
       onEnviado(r);
       router.refresh();
     } catch (e) {
@@ -1459,8 +1452,10 @@ function PassoEnviar({
               <span className="min-w-0 flex-1 truncate text-[13px] text-ink-2">
                 {i.descricao}
               </span>
+              {/* Número sozinho não diz "2 garrafas" ou "2 caixas" — e o
+                  fornecedor cota o que ele achar que foi pedido. */}
               <span className="shrink-0 font-mono text-[12px] text-muted">
-                {fmtQtd(i.quantidade)}
+                {fmtQtdEmbalagem(i.quantidade, i.embalagemNome)}
               </span>
             </li>
           ))}
@@ -1472,32 +1467,6 @@ function PassoEnviar({
           </p>
         )}
       </Card>
-
-      <div>
-        <p className="mb-1.5 text-[13px] font-medium text-ink">Enviar por</p>
-        <div className="flex gap-2">
-          <Chip ativo={canais.includes("whatsapp")} onClick={() => alternarCanal("whatsapp")}>
-            <span className="flex items-center gap-1.5">
-              <MessageCircle className="size-3.5" aria-hidden />
-              WhatsApp
-            </span>
-          </Chip>
-          <Chip
-            ativo={canais.includes("email")}
-            onClick={() => !semEmail && alternarCanal("email")}
-          >
-            <span className="flex items-center gap-1.5">
-              <Mail className="size-3.5" aria-hidden />
-              E-mail
-            </span>
-          </Chip>
-        </div>
-        {semEmail && canais.includes("email") && (
-          <p className="mt-1.5 text-[12px] text-accent">
-            Nenhum dos fornecedores tem e-mail cadastrado — vai só pelo WhatsApp.
-          </p>
-        )}
-      </div>
 
       {semContato.length > 0 && (
         <p className="text-[12px] text-accent">
