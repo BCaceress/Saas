@@ -1240,3 +1240,13 @@ body:has([data-app-shell]) {
     animation: none !important;
   }
 }
+
+/* Superfície mobile: piso de 16px em campo de texto.
+   O iOS dá zoom ao focar qualquer input com fonte menor que 16px — a página
+   fica torta e só o pinch traz de volta, no meio da digitação. Fora de layer
+   de propósito: precisa vencer o `text-sm`/`text-[13px]` que os campos usam
+   (utilitários vivem em @layer utilities, e regra solta ganha de camada).
+   Só a casca `/m` é afetada; o desktop mantém a densidade dele. */
+[data-mobile-shell] :is(input, select, textarea) {
+  font-size: max(16px, 1em);
+}

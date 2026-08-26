@@ -47,7 +47,7 @@ export function MobileShell({
         Pular para o conteúdo
       </a>
 
-      <div className="flex min-h-dvh flex-col bg-canvas">
+      <div data-mobile-shell className="flex min-h-dvh flex-col bg-canvas">
         {/* pb-32 reserva a barra flutuante (64px + respiro + área segura): sem
             isso o último card fica embaixo dela. O px-4 é a margem de conteúdo
             da superfície inteira — quem sangra até a borda cancela com

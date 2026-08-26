@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Check,
+  ChevronDown,
   Copy,
   Mail,
   Package,
@@ -40,6 +41,11 @@ import type {
   FornecedorOpcao,
 } from "@/app/(app)/cotacoes/_compra-types";
 import { andamento, statusVisivel } from "@/app/(app)/cotacoes/_status";
+import {
+  fmtQtdEmbalagem,
+  rotuloEmbalagemPedida,
+  unidadeDaQtd,
+} from "@/app/(app)/cotacoes/_catalogo/format";
 import { regrasDaCotacao } from "@/lib/compras/cotacao-regras";
 import {
   adicionarItemAction,
@@ -49,6 +55,7 @@ import {
   descartarSeVaziaAction,
   editarCotacaoAction,
   editarItemAction,
+  embalagensDoProdutoAction,
   enviarCotacaoAction,
   linkDoConviteAction,
   mensagemDoConviteAction,
@@ -468,6 +475,12 @@ type ItemLocal = {
   imagemUrl: string | null;
   sku: string | null;
   estoqueAtual: number | null;
+  /** Embalagem em que o item é pedido. null = na unidade. */
+  packagingId: string | null;
+  /** Rótulo já pronto: "Caixa (12 un.)", "Unidade", ou null (item de texto). */
+  embalagemNome: string | null;
+  /** Unidades base dentro da embalagem — vira o total em unidades na tela. */
+  fatorEmbalagem: number;
 };
 
 const paraLocal = (i: CotacaoDetalhe["itens"][number]): ItemLocal => ({
@@ -478,7 +491,19 @@ const paraLocal = (i: CotacaoDetalhe["itens"][number]): ItemLocal => ({
   imagemUrl: i.imagemUrl,
   sku: i.sku,
   estoqueAtual: i.estoqueAtual,
+  packagingId: i.packagingId,
+  embalagemNome: i.embalagemNome,
+  fatorEmbalagem: i.fatorEmbalagem,
 });
+
+type EmbalagemOpcao = ProdutoCotacao["embalagens"][number];
+
+/**
+ * Embalagem em que o produto é COMPRADO (fardo, caixa). null = comprado na
+ * unidade — é o que o cadastro diz, não uma escolha da tela.
+ */
+const embalagemPadrao = (p: ProdutoCotacao) =>
+  p.embalagens.find((e) => e.isCompraDefault) ?? null;
 
 /** Espera entre o último toque e a gravação da quantidade. */
 const ESPERA_GRAVACAO = 600;
@@ -506,12 +531,18 @@ function PassoProdutos({
   const [termo, setTermo] = React.useState("");
   const [achados, setAchados] = React.useState<ProdutoCotacao[]>([]);
   const [buscando, setBuscando] = React.useState(false);
+  /** Item cuja embalagem está sendo trocada — null = folha fechada. */
+  const [trocando, setTrocando] = React.useState<ItemLocal | null>(null);
+  /** Embalagens do produto em troca. null = ainda buscando. */
+  const [opcoes, setOpcoes] = React.useState<EmbalagemOpcao[] | null>(null);
 
   // Lista da tela. Enquanto o servidor não muda, quem manda é o toque; quando a
   // lista do servidor muda (gravação confirmada, outra pessoa mexeu), ela
   // reassume. Ajuste durante o render é o padrão do React para estado derivado
   // de props — e evita o efeito que rodaria um passo atrasado.
-  const chaveServidor = cotacao.itens.map((i) => `${i.id}:${i.quantidade}`).join("|");
+  const chaveServidor = cotacao.itens
+    .map((i) => `${i.id}:${i.quantidade}:${i.packagingId ?? ""}`)
+    .join("|");
   const [vistoDoServidor, setVistoDoServidor] = React.useState(chaveServidor);
   const [itens, setItens] = React.useState<ItemLocal[]>(() => cotacao.itens.map(paraLocal));
   if (vistoDoServidor !== chaveServidor) {
@@ -591,6 +622,23 @@ function PassoProdutos({
     };
   }, []);
 
+  // As embalagens do produto só descem quando alguém abre a folha: carregá-las
+  // com a lista encareceria toda abertura de cotação por uma troca que quase
+  // nunca acontece.
+  const produtoEmTroca = trocando?.productId ?? null;
+  React.useEffect(() => {
+    if (!produtoEmTroca) return;
+    let vivo = true;
+    void embalagensDoProdutoAction(produtoEmTroca)
+      .then((e) => vivo && setOpcoes(e))
+      // Sem embalagem para mostrar a folha ainda serve: dá para voltar o item
+      // para a unidade, que é a opção que não depende de cadastro.
+      .catch(() => vivo && setOpcoes([]));
+    return () => {
+      vivo = false;
+    };
+  }, [produtoEmTroca]);
+
   // Busca com respiro: cada tecla disparando uma consulta transforma o campo
   // numa metralhadora de round-trips na rede do mercado.
   React.useEffect(() => {
@@ -618,6 +666,30 @@ function PassoProdutos({
   // evita um render extra só para apagar lista.
   const sugestoes = termo.trim().length < MIN_BUSCA ? [] : achados;
 
+  /**
+   * Coloca o produto na lista na embalagem em que ele é COMPRADO.
+   *
+   * Sem isso o celular pedia tudo na unidade — "1" para um fardo de 12 é outro
+   * preço e outra prateleira. A quantidade sugerida vem em unidades (é o que
+   * falta para o mínimo), então vira caixas aqui, arredondando para cima:
+   * meia caixa ninguém pede.
+   */
+  function adicionarProduto(p: ProdutoCotacao) {
+    const padrao = embalagemPadrao(p);
+    const fator = padrao?.fator ?? 1;
+    adicionar({
+      productId: p.id,
+      descricao: p.nome,
+      quantidade: p.sugerido > 0 ? Math.max(1, Math.ceil(p.sugerido / fator)) : 1,
+      imagemUrl: p.imagemUrl,
+      sku: p.sku,
+      estoque: p.estoque,
+      packagingId: padrao?.id ?? null,
+      embalagemNome: padrao ? rotuloEmbalagemPedida(padrao.nome, padrao.fator) : "Unidade",
+      fatorEmbalagem: fator,
+    });
+  }
+
   /** Entra na lista na hora; o id de verdade chega da gravação. */
   function adicionar(produto: {
     productId: string | null;
@@ -626,6 +698,9 @@ function PassoProdutos({
     imagemUrl?: string | null;
     sku?: string | null;
     estoque?: number | null;
+    packagingId?: string | null;
+    embalagemNome?: string | null;
+    fatorEmbalagem?: number;
   }) {
     const provisorio = `novo:${++sequencia.current}`;
     setItens((atual) => [
@@ -638,6 +713,9 @@ function PassoProdutos({
         imagemUrl: produto.imagemUrl ?? null,
         sku: produto.sku ?? null,
         estoqueAtual: produto.estoque ?? null,
+        packagingId: produto.packagingId ?? null,
+        embalagemNome: produto.embalagemNome ?? null,
+        fatorEmbalagem: produto.fatorEmbalagem ?? 1,
       },
     ]);
     setTermo("");
@@ -647,6 +725,7 @@ function PassoProdutos({
       const criado = await adicionarItemAction({
         quotationId: cotacao.id,
         productId: produto.productId,
+        packagingId: produto.packagingId ?? null,
         descricao: produto.descricao,
         quantidade: produto.quantidade,
       });
@@ -661,11 +740,15 @@ function PassoProdutos({
       // lista) enquanto o item nascia, o banco recebe agora o que está na tela.
       const naTela = itensRef.current.find((i) => i.id === provisorio);
       if (!naTela) await removerItemAction(criado.id);
-      else if (naTela.quantidade !== produto.quantidade) {
+      else if (
+        naTela.quantidade !== produto.quantidade ||
+        (naTela.packagingId ?? null) !== (produto.packagingId ?? null)
+      ) {
         await editarItemAction({
           id: criado.id,
           descricao: naTela.descricao,
           quantidade: naTela.quantidade,
+          packagingId: naTela.packagingId ?? null,
         });
       }
       router.refresh();
@@ -684,21 +767,63 @@ function PassoProdutos({
       const existente = itens.find((i) => i.productId === achado.id);
       if (existente) {
         mudarQtd(existente, existente.quantidade + 1);
-        toast.success(existente.descricao, `Agora são ${fmtQtd(existente.quantidade + 1)}.`);
+        toast.success(
+          existente.descricao,
+          // "Agora são 3" não diz 3 do quê: o fornecedor cota caixa ou garrafa
+          // por esse número.
+          `Agora são ${fmtQtdEmbalagem(existente.quantidade + 1, existente.embalagemNome)}.`,
+        );
         return;
       }
-      adicionar({
-        productId: achado.id,
-        descricao: achado.nome,
-        quantidade: achado.sugerido > 0 ? achado.sugerido : 1,
-        imagemUrl: achado.imagemUrl,
-        sku: achado.sku,
-        estoque: achado.estoque,
-      });
+      adicionarProduto(achado);
       toast.success("Item adicionado", achado.nome);
     } finally {
       setOcupado(false);
     }
+  }
+
+  /** Abre a folha de unidade zerando o que sobrou da última abertura. */
+  function abrirTroca(item: ItemLocal) {
+    setOpcoes(null);
+    setTrocando(item);
+  }
+
+  /**
+   * Troca a embalagem em que o item é pedido.
+   *
+   * A quantidade NÃO é convertida: quem trocou "2 caixas" por "unidade" quis
+   * dizer o que vai digitar em seguida, e converter para 24 por conta própria
+   * seria a tela decidindo o pedido. O total em unidades fica visível ao lado
+   * para a conferência ser imediata.
+   */
+  function trocarEmbalagem(item: ItemLocal, emb: EmbalagemOpcao | null) {
+    setTrocando(null);
+    if ((item.packagingId ?? null) === (emb?.id ?? null)) return;
+    setItens((atual) =>
+      atual.map((i) =>
+        i.id === item.id
+          ? {
+              ...i,
+              packagingId: emb?.id ?? null,
+              embalagemNome: emb ? rotuloEmbalagemPedida(emb.nome, emb.fator) : "Unidade",
+              fatorEmbalagem: emb?.fator ?? 1,
+            }
+          : i,
+      ),
+    );
+    void enfileirar(item.id, async () => {
+      // Item que ainda nem nasceu no banco não tem o que atualizar: a fila do
+      // id provisório grava a embalagem que ficou na tela ao fim da criação.
+      if (item.id.startsWith("novo:")) return;
+      const naTela = itensRef.current.find((i) => i.id === item.id);
+      await editarItemAction({
+        id: item.id,
+        descricao: item.descricao,
+        quantidade: naTela?.quantidade ?? item.quantidade,
+        packagingId: emb?.id ?? null,
+      });
+      router.refresh();
+    });
   }
 
   /** Zero tira o item da lista — é o "menos" indo até o fim. */
@@ -774,49 +899,49 @@ function PassoProdutos({
 
           {sugestoes.length > 0 && (
             <Card className="divide-y divide-line">
-              {sugestoes.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() =>
-                    adicionar({
-                      productId: p.id,
-                      descricao: p.nome,
-                      quantidade: p.sugerido > 0 ? p.sugerido : 1,
-                      imagemUrl: p.imagemUrl,
-                      sku: p.sku,
-                      estoque: p.estoque,
-                    })
-                  }
-                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left active:bg-surface-2"
-                >
-                  {/* A miniatura ajuda a escolher, mas no celular ela rouba a
-                      largura do nome — que é o que de fato identifica o item.
-                      Volta a partir do tablet, onde sobra linha. */}
-                  <span className="hidden md:block">
-                    <Thumb url={p.imagemUrl} nome={p.nome} size={36} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm text-ink">{p.nome}</span>
-                    <span className="flex flex-wrap items-center gap-x-1.5 text-[11px] text-faint">
-                      <span className="font-mono">{p.sku}</span>
-                      {p.estoque !== null && (
-                        <>
-                          <span aria-hidden>·</span>
-                          <Saldo quantidade={p.estoque} />
-                        </>
-                      )}
-                      {p.sugerido > 0 && (
-                        <>
-                          <span aria-hidden>·</span>
-                          <span>faltam {fmtQtd(p.sugerido)}</span>
-                        </>
-                      )}
+              {sugestoes.map((p) => {
+                const emb = embalagemPadrao(p);
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => adicionarProduto(p)}
+                    className="flex w-full items-center gap-3 px-3 py-2.5 text-left active:bg-surface-2"
+                  >
+                    {/* A miniatura ajuda a escolher, mas no celular ela rouba a
+                        largura do nome — que é o que de fato identifica o item.
+                        Volta a partir do tablet, onde sobra linha. */}
+                    <span className="hidden md:block">
+                      <Thumb url={p.imagemUrl} nome={p.nome} size={36} />
                     </span>
-                  </span>
-                  <Plus className="size-4 shrink-0 text-brand" aria-hidden />
-                </button>
-              ))}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm text-ink">{p.nome}</span>
+                      <span className="flex flex-wrap items-center gap-x-1.5 text-[11px] text-faint">
+                        <span className="font-mono">{p.sku}</span>
+                        {p.estoque !== null && (
+                          <>
+                            <span aria-hidden>·</span>
+                            <Saldo quantidade={p.estoque} />
+                          </>
+                        )}
+                        {p.sugerido > 0 && (
+                          <>
+                            <span aria-hidden>·</span>
+                            <span>faltam {fmtQtd(p.sugerido)} un.</span>
+                          </>
+                        )}
+                        {/* Em que unidade este produto entra na cotação. Sem
+                            isso, tocar aqui adiciona "1" de coisa nenhuma. */}
+                        <span aria-hidden>·</span>
+                        <span>
+                          {emb ? rotuloEmbalagemPedida(emb.nome, emb.fator) : "Unidade"}
+                        </span>
+                      </span>
+                    </span>
+                    <Plus className="size-4 shrink-0 text-brand" aria-hidden />
+                  </button>
+                );
+              })}
             </Card>
           )}
 
@@ -862,6 +987,18 @@ function PassoProdutos({
                       </>
                     )}
                   </p>
+
+                  {/* A UNIDADE DO PEDIDO, escrita por extenso.
+                      O número ao lado sozinho ("1") não diz se é uma garrafa
+                      ou um fardo de doze — e é o preço disso que o fornecedor
+                      vai responder. Quando o produto tem embalagem de compra,
+                      o rótulo é um botão: trocar caixa por unidade é decisão
+                      de quem compra, não do cadastro. */}
+                  <UnidadeDoItem
+                    item={item}
+                    editavel={editavel}
+                    onTrocar={() => abrirTroca(item)}
+                  />
                 </div>
 
                 {!editavel && (
@@ -905,6 +1042,72 @@ function PassoProdutos({
           ))}
         </ul>
       )}
+
+      {/* Trocar a unidade do pedido. Folha, e não menu no meio da linha: a
+          escolha é curta mas decide o preço que o fornecedor vai responder,
+          então merece o dedo inteiro e não um alvo de 11px. */}
+      <BottomSheet
+        open={trocando !== null}
+        onClose={() => setTrocando(null)}
+        titulo="Como pedir este item"
+        descricao="Garrafa e caixa não têm o mesmo preço — o fornecedor cota o que estiver marcado aqui."
+      >
+        {trocando && (
+          <div className="space-y-3">
+            <p className="truncate text-sm font-medium text-ink">{trocando.descricao}</p>
+
+            {opcoes === null ? (
+              <p className="flex items-center gap-2 py-4 text-[13px] text-muted">
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+                Buscando as embalagens deste produto…
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {[null, ...opcoes].map((emb) => {
+                  const marcada = (trocando.packagingId ?? null) === (emb?.id ?? null);
+                  const fator = emb?.fator ?? 1;
+                  return (
+                    <li key={emb?.id ?? "unidade"}>
+                      <button
+                        type="button"
+                        onClick={() => trocarEmbalagem(trocando, emb)}
+                        aria-pressed={marcada}
+                        className={cn(
+                          "flex w-full items-center gap-3 rounded-[var(--radius)] border px-3 py-3 text-left",
+                          marcada
+                            ? "border-brand bg-brand-soft"
+                            : "border-line bg-surface active:bg-surface-2",
+                        )}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm text-ink">
+                            {emb ? rotuloEmbalagemPedida(emb.nome, emb.fator) : "Unidade"}
+                          </span>
+                          <span className="block text-[11px] text-muted">
+                            {/* O que a quantidade de hoje vira nesta unidade —
+                                é a conta que o operador faria de cabeça. */}
+                            {fmtQtd(trocando.quantidade)}{" "}
+                            {unidadeDaQtd(trocando.quantidade, emb ? emb.nome : null)} ={" "}
+                            {fmtQtd(trocando.quantidade * fator)} un.
+                          </span>
+                        </span>
+                        {marcada && <Check className="size-4 shrink-0 text-brand" aria-hidden />}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            {opcoes !== null && opcoes.length === 0 && (
+              <p className="text-[13px] leading-relaxed text-muted">
+                Este produto não tem embalagem de compra cadastrada, então só dá para pedir na
+                unidade. Cadastre caixa ou fardo na ficha do produto para cotar por embalagem.
+              </p>
+            )}
+          </div>
+        )}
+      </BottomSheet>
     </div>
   );
 }
@@ -926,6 +1129,53 @@ function BotaoQtd({
       className="grid size-9 place-items-center rounded-full border border-line-button bg-surface text-ink-2 active:bg-surface-2"
     >
       {children}
+    </button>
+  );
+}
+
+/**
+ * A unidade em que o item foi pedido, escrita por extenso.
+ *
+ * Existe porque "1" no contador não é informação: o fornecedor precifica
+ * garrafa, caixa e fardo com números diferentes, e quem monta a cotação no
+ * celular só via o número. Com embalagem de compra, o rótulo vira botão —
+ * trocar é decisão de quem compra.
+ */
+function UnidadeDoItem({
+  item,
+  editavel,
+  onTrocar,
+}: {
+  item: ItemLocal;
+  editavel: boolean;
+  onTrocar: () => void;
+}) {
+  const texto = fmtQtdEmbalagem(item.quantidade, item.embalagemNome);
+  const miolo = (
+    <>
+      <span className="truncate">{texto}</span>
+      {item.fatorEmbalagem > 1 && (
+        <span className="shrink-0 text-faint">
+          = {fmtQtd(item.quantidade * item.fatorEmbalagem)} un.
+        </span>
+      )}
+    </>
+  );
+
+  // Item de texto livre não tem catálogo atrás: não há embalagem para escolher.
+  if (!editavel || !item.productId) {
+    return <p className="mt-1 flex items-center gap-1 text-[11px] text-ink-2">{miolo}</p>;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onTrocar}
+      aria-label={`Trocar a unidade de ${item.descricao} — hoje ${texto}`}
+      className="mt-1 inline-flex max-w-full items-center gap-1 rounded-full border border-line-button bg-surface-2 px-2 py-0.5 text-[11px] text-ink-2 active:bg-surface"
+    >
+      {miolo}
+      <ChevronDown className="size-3 shrink-0 text-faint" aria-hidden />
     </button>
   );
 }

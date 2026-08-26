@@ -508,6 +508,39 @@ export async function buscarProdutoPorCodigoCotacaoAction(
   });
 }
 
+/**
+ * Embalagens de compra de um produto, sob demanda.
+ *
+ * A lista da cotação já vem com a embalagem PEDIDA de cada item; o que falta,
+ * na hora de trocar, são as OUTRAS opções. Buscar aqui (e não no loader da
+ * página) evita carregar as embalagens de todo item em toda abertura só
+ * porque uma delas talvez seja trocada.
+ */
+export async function embalagensDoProdutoAction(
+  productId: string,
+): Promise<ProdutoCotacao["embalagens"]> {
+  const id = productId.trim();
+  if (!id) return [];
+  const ctx = await guardAction("compras.ver", null, { mesmoSuspenso: true });
+  return runWithTenant(ctx.tenant.id, async () => {
+    const p = await db.product.findFirst({
+      where: { id },
+      select: {
+        packagings: {
+          orderBy: { fatorConversao: "asc" },
+          select: { id: true, nome: true, isCompraDefault: true, fatorConversao: true },
+        },
+      },
+    });
+    return (p?.packagings ?? []).map((e) => ({
+      id: e.id,
+      nome: e.nome,
+      isCompraDefault: e.isCompraDefault,
+      fator: Number(e.fatorConversao ?? 1) || 1,
+    }));
+  });
+}
+
 // ── Itens ───────────────────────────────────────────────────
 
 const itemSchema = z.object({
@@ -518,6 +551,23 @@ const itemSchema = z.object({
   quantidade: z.number().positive("A quantidade precisa ser maior que zero."),
   observacao: z.string().trim().max(500).optional().nullable(),
 });
+
+/**
+ * Embalagem que existe NESTE tenant, ou nada.
+ *
+ * `packagingId` é chave estrangeira crua vinda do cliente: sem conferir, um id
+ * de outro tenant entraria no item e o rótulo ("Caixa (12 un.)") sairia do
+ * catálogo alheio. O `db` estendido injeta o tenantId na busca — id de fora
+ * simplesmente não aparece.
+ */
+async function embalagemValida(packagingId: string | null | undefined) {
+  if (!packagingId) return null;
+  const emb = await db.productPackaging.findFirst({
+    where: { id: packagingId },
+    select: { id: true },
+  });
+  return emb?.id ?? null;
+}
 
 export async function adicionarItemAction(input: z.input<typeof itemSchema>) {
   const d = itemSchema.parse(input);
@@ -536,7 +586,7 @@ export async function adicionarItemAction(input: z.input<typeof itemSchema>) {
         tenantId: tid,
         quotationId: d.quotationId,
         productId: d.productId || null,
-        packagingId: d.packagingId || null,
+        packagingId: await embalagemValida(d.packagingId),
         descricao: d.descricao,
         quantidade: d.quantidade,
         observacao: d.observacao ?? null,
@@ -554,6 +604,11 @@ const editarItemSchema = z.object({
   descricao: z.string().trim().min(2),
   quantidade: z.number().positive(),
   observacao: z.string().trim().max(500).optional().nullable(),
+  /**
+   * Embalagem em que o item é pedido. AUSENTE = não mexe (é o caso de quem só
+   * mudou a quantidade); `null` = volta a ser pedido na unidade.
+   */
+  packagingId: z.string().nullable().optional(),
 });
 
 export async function editarItemAction(input: z.input<typeof editarItemSchema>) {
@@ -571,6 +626,12 @@ export async function editarItemAction(input: z.input<typeof editarItemSchema>) 
         descricao: d.descricao,
         quantidade: d.quantidade,
         observacao: d.observacao ?? null,
+        // Só entra no update quando o chamador falou dela: espalhar
+        // `packagingId: null` por omissão apagaria a embalagem de todo item
+        // editado só pela quantidade.
+        ...(d.packagingId !== undefined
+          ? { packagingId: await embalagemValida(d.packagingId) }
+          : {}),
       },
     });
     ok();
