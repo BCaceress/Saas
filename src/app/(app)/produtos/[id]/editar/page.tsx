@@ -231,7 +231,6 @@ export default async function EditarProdutoPage({
         fatorConversaoTrib: true,
         codigoAnp: true,
         controlaEstoque: true,
-        variacaoLabel: true,
         subcategory: {
           select: { nome: true, categoryId: true, category: { select: { nome: true } } },
         },
@@ -255,11 +254,6 @@ export default async function EditarProdutoPage({
         packagings: {
           orderBy: { isCompraDefault: "desc" },
           select: { id: true, nome: true, ean: true, fatorConversao: true },
-        },
-        purchaseVariants: {
-          where: { ativo: true },
-          orderBy: [{ ordem: "asc" }, { nome: "asc" }],
-          select: { id: true, nome: true, ean: true },
         },
       },
     });
@@ -317,8 +311,6 @@ export default async function EditarProdutoPage({
         ean: pk.ean,
         fatorConversao: dec(pk.fatorConversao) ?? 1,
       })),
-      variacaoLabel: p.variacaoLabel,
-      variacoes: p.purchaseVariants.map((v) => ({ id: v.id, nome: v.nome, ean: v.ean })),
       fornecedores: p.suppliers.map((ps) => ({
         id: ps.supplierId,
         nome: ps.supplier.nomeFantasia ?? ps.supplier.razaoSocial,

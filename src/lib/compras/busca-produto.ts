@@ -35,10 +35,6 @@ export type ProdutoBuscado = {
   /** Quanto cabe numa unidade fechada, na `unidadeBase` (1000 ml na garrafa). */
   conteudoPorUnidade: number | null;
   embalagens: { id: string; nome: string; ean: string | null; fator: number }[];
-  /** Eixo da variação comercial ("Sabor"). Null = produto sem variação. */
-  variacaoLabel: string | null;
-  /** Sabores compráveis — a linha da nota escolhe um; o saldo é um só. */
-  variacoes: { id: string; nome: string; ean: string | null }[];
   /**
    * Saldo FECHADO — garrafas, latas, caixas inteiras. É o que responde "é este
    * mesmo?" quando dois produtos do catálogo têm nomes quase iguais, e é a
@@ -95,7 +91,6 @@ export async function buscarProdutosParaRelacionar(
   if (digitos.length >= 8) {
     alternativas.push({ ean: digitos });
     alternativas.push({ packagings: { some: { ean: digitos } } });
-    alternativas.push({ purchaseVariants: { some: { ean: digitos, ativo: true } } });
   }
 
   // O GTIN do item da nota entra como candidato mesmo quando o operador está
@@ -104,7 +99,6 @@ export async function buscarProdutosParaRelacionar(
   if (gtin) {
     alternativas.push({ ean: gtin });
     alternativas.push({ packagings: { some: { ean: gtin } } });
-    alternativas.push({ purchaseVariants: { some: { ean: gtin, ativo: true } } });
   }
 
   const produtos = await db.product.findMany({
@@ -119,12 +113,6 @@ export async function buscarProdutosParaRelacionar(
       unidadeBase: true,
       conteudoPorUnidade: true,
       packagings: { select: { id: true, nome: true, ean: true, fatorConversao: true } },
-      variacaoLabel: true,
-      purchaseVariants: {
-        where: { ativo: true },
-        orderBy: [{ ordem: "asc" }, { nome: "asc" }],
-        select: { id: true, nome: true, ean: true },
-      },
     },
     take: CANDIDATOS,
   });
@@ -144,8 +132,6 @@ export async function buscarProdutosParaRelacionar(
       ean: e.ean,
       fator: Number(e.fatorConversao),
     })),
-    variacaoLabel: p.variacaoLabel,
-    variacoes: p.purchaseVariants,
     saldo: 0,
     ultimaCompra: null,
   }));
@@ -184,17 +170,13 @@ export async function donoDoCodigo(
   const codigo = onlyDigits(gtin);
   if (codigo.length < 8) return null;
 
-  const [produto, embalagem, variacao] = await Promise.all([
+  const [produto, embalagem] = await Promise.all([
     db.product.findFirst({
       where: { ean: codigo, ativo: true },
       select: { id: true, nome: true, sku: true },
     }),
     db.productPackaging.findFirst({
       where: { ean: codigo },
-      select: { nome: true, product: { select: { id: true, nome: true, sku: true, ativo: true } } },
-    }),
-    db.productPurchaseVariant.findFirst({
-      where: { ean: codigo, ativo: true },
       select: { nome: true, product: { select: { id: true, nome: true, sku: true, ativo: true } } },
     }),
   ]);
@@ -208,14 +190,6 @@ export async function donoDoCodigo(
       nome: embalagem.product.nome,
       sku: embalagem.product.sku,
       onde: `a embalagem "${embalagem.nome}"`,
-    };
-  }
-  if (variacao?.product.ativo) {
-    return {
-      productId: variacao.product.id,
-      nome: variacao.product.nome,
-      sku: variacao.product.sku,
-      onde: `a variação "${variacao.nome}"`,
     };
   }
   return null;
@@ -238,12 +212,6 @@ async function produtosPorId(
       unidadeBase: true,
       conteudoPorUnidade: true,
       packagings: { select: { id: true, nome: true, ean: true, fatorConversao: true } },
-      variacaoLabel: true,
-      purchaseVariants: {
-        where: { ativo: true },
-        orderBy: [{ ordem: "asc" }, { nome: "asc" }],
-        select: { id: true, nome: true, ean: true },
-      },
     },
   });
 
@@ -268,8 +236,6 @@ async function produtosPorId(
         ean: e.ean,
         fator: Number(e.fatorConversao),
       })),
-      variacaoLabel: p.variacaoLabel,
-      variacoes: p.purchaseVariants,
       saldo: 0,
       ultimaCompra: null,
     })),

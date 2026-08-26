@@ -14,10 +14,6 @@ type Product = {
   imagemUrl: string | null;
   packagings: { id: string; nome: string; fatorConversao: unknown; isCompraDefault: boolean }[];
   brand: { nome: string } | null;
-  /** Eixo da variação comercial ("Sabor"). Null = produto sem variação. */
-  variacaoLabel?: string | null;
-  /** Sabores compráveis. Não têm saldo próprio: tudo soma no produto. */
-  purchaseVariants?: { id: string; nome: string }[];
 };
 
 type Site = { id: string; nome: string; tipo: string };
@@ -290,13 +286,7 @@ export function NovaEntradaForm({
           const usados = new Set(
             items.filter((i) => i.productId).map((i) => `${i.productId}::${i.variantId ?? ""}`),
           );
-          // Produto com variação some da busca só quando TODOS os sabores já
-          // entraram — o operador lança um sabor por linha.
-          const selectableProducts = products.filter((p) => {
-            const sabores = p.purchaseVariants ?? [];
-            if (sabores.length === 0) return !usados.has(`${p.id}::`);
-            return sabores.some((v) => !usados.has(`${p.id}::${v.id}`));
-          });
+          const selectableProducts = products.filter((p) => !usados.has(`${p.id}::`));
           const termo = busca.trim().toLowerCase();
           const resultados = termo
             ? selectableProducts.filter((p) =>
@@ -385,29 +375,6 @@ export function NovaEntradaForm({
                   </div>
                 )}
               </div>
-
-              {draftProd && (draftProd.purchaseVariants?.length ?? 0) > 0 && (
-                <div className="flex flex-col gap-1">
-                  <label className="text-[11px] font-semibold text-faint">
-                    {draftProd.variacaoLabel?.trim() || "Variação"}
-                  </label>
-                  <select
-                    value={draft.variantId ?? ""}
-                    onChange={(e) => setDraft({ ...draft, variantId: e.target.value || null })}
-                    className="w-full rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                  >
-                    <option value="">Não informar</option>
-                    {draftProd.purchaseVariants?.map((v) => (
-                      <option key={v.id} value={v.id}>{v.nome}</option>
-                    ))}
-                  </select>
-                  <p className="flex items-start gap-1.5 text-[11px] text-faint">
-                    <Info size={12} className="mt-0.5 shrink-0" />
-                    O saldo entra em <strong className="font-semibold text-muted">{draftProd.nome}</strong>:
-                    a variação fica registrada na compra, não vira estoque separado.
-                  </p>
-                </div>
-              )}
 
               {draftProd && (
               <div className={cn("grid grid-cols-1 gap-3", semCusto ? "sm:grid-cols-[1fr_1fr_auto]" : "sm:grid-cols-[1fr_1fr_1fr_auto]")}>
@@ -522,8 +489,7 @@ export function NovaEntradaForm({
           items.map((item, idx) => {
             const prod = products.find((p) => p.id === item.productId);
             const pk = prod?.packagings.find((p) => p.id === item.packagingId);
-            const variacao = prod?.purchaseVariants?.find((v) => v.id === item.variantId);
-            const desc = `${prod?.nome ?? "Produto"}${variacao ? ` · ${variacao.nome}` : ""} · ${prod?.sku ?? ""}${pk ? ` · ${pk.nome} (×${Number(pk.fatorConversao)})` : " · Unidade"}`;
+            const desc = `${prod?.nome ?? "Produto"} · ${prod?.sku ?? ""}${pk ? ` · ${pk.nome} (×${Number(pk.fatorConversao)})` : " · Unidade"}`;
             const semCusto = SEM_CUSTO.includes(motivo);
             return (
               <div
@@ -544,11 +510,6 @@ export function NovaEntradaForm({
                 <div className="min-w-0 flex-1" title={desc}>
                   <p className="truncate text-sm font-medium text-ink">
                     {prod?.nome ?? "Produto"}
-                    {variacao && (
-                      <span className="ml-1.5 rounded-full border border-line bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted">
-                        {variacao.nome}
-                      </span>
-                    )}
                   </p>
                   <p className="truncate font-mono text-[11px] text-faint">
                     {prod?.sku}

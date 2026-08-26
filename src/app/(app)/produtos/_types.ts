@@ -66,12 +66,6 @@ export type ProductRow = {
   disponibilidadeDerivada: number | null;
   salesChannels: SalesChannelItem[];
   packagings: ProductPackagingItem[];
-  /**
-   * Eixo da variação comercial de compra ("Sabor", "Cor"). Nulo = produto sem
-   * variação. Só a tela de edição carrega — a listagem não precisa.
-   */
-  variacaoLabel?: string | null;
-  variacoes?: ProductPurchaseVariantItem[];
   fornecedores: { id: string; nome: string; isPrincipal: boolean }[];
   /** Saldo por loja/local de armazenagem (§3: cada Stock é um site × produto). */
   locais: ProductLocationStock[];
@@ -87,17 +81,6 @@ export type ProductLocationStock = {
   locationAtivo: boolean | null;
   fechado: number;
   aberto: number;
-};
-
-/**
- * Variação COMERCIAL de compra (Morango, Uva, Tutti-Frutti). Existe no pedido e
- * na nota; não tem SKU, não tem preço e não tem saldo — o estoque é do produto
- * principal ("Bubbaloo Sortido").
- */
-export type ProductPurchaseVariantItem = {
-  id?: string;
-  nome: string;
-  ean: string | null;
 };
 
 /** Embalagem de compra de um produto (ex.: fardo de 6 unidades com EAN próprio). */

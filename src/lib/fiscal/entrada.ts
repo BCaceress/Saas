@@ -1,7 +1,6 @@
 import "server-only";
 import { db } from "@/lib/prisma";
 import { registrarEntrada, type EntradaItem } from "@/lib/estoque";
-import { resolverVariacaoPorEan, resolverVariacoesDosItens } from "@/lib/variacoes";
 import {
   parseNotaXml,
   extrairXmls,
@@ -81,8 +80,6 @@ const fmtMoeda = (v: number) =>
 
 type ItemResolvido = {
   productId: string | null;
-  /** Variação comercial (sabor/cor) reconhecida na linha. Não cria saldo. */
-  variantId: string | null;
   packagingId: string | null;
   fatorConversao: number;
 };
@@ -91,11 +88,8 @@ type ItemResolvido = {
  * Tenta resolver um item do XML no catálogo, em ordem de confiança:
  *   1. de-para salvo para este fornecedor (o operador já decidiu antes);
  *   2. GTIN = EAN de uma embalagem (fardo/caixa) — traz o fator do cadastro;
- *   3. GTIN = EAN de uma variação comercial (o sabor tem código próprio);
- *   4. GTIN do item = EAN de um produto.
+ *   3. GTIN do item = EAN de um produto.
  *
- * O passo 3 é o que faz "BUBBALOO MORANGO" cair no Bubbaloo Sortido já com o
- * sabor preenchido: o fornecedor factura por sabor, a loja estoca sortido.
  * Sem match, fica null e a nota nasce PENDENTE.
  *
  * O fator, quando não vem de um cadastro nosso, vem da própria nota
@@ -112,12 +106,11 @@ async function resolverItem(
 
   const mapeado = await db.supplierItemMap.findFirst({
     where: { supplierId, codigoFornecedor: item.codigoFornecedor },
-    select: { productId: true, variantId: true, packagingId: true, fatorConversao: true },
+    select: { productId: true, packagingId: true, fatorConversao: true },
   });
   if (mapeado) {
     return {
       productId: mapeado.productId,
-      variantId: mapeado.variantId,
       packagingId: mapeado.packagingId,
       fatorConversao: Number(mapeado.fatorConversao),
     };
@@ -133,21 +126,8 @@ async function resolverItem(
     if (embalagem) {
       return {
         productId: embalagem.productId,
-        variantId: null,
         packagingId: embalagem.id,
         fatorConversao: Number(embalagem.fatorConversao),
-      };
-    }
-
-    // O sabor tem código de barras próprio, o estoque não tem saldo por sabor:
-    // a linha cai no produto principal levando a variação como detalhe.
-    const variacao = await resolverVariacaoPorEan(tenantId, item.gtin);
-    if (variacao) {
-      return {
-        productId: variacao.productId,
-        variantId: variacao.variantId,
-        packagingId: null,
-        fatorConversao: daNota,
       };
     }
 
@@ -157,11 +137,11 @@ async function resolverItem(
     });
     // EAN de unidade numa linha vendida em caixa: quem desempata é o qTrib.
     if (produto) {
-      return { productId: produto.id, variantId: null, packagingId: null, fatorConversao: daNota };
+      return { productId: produto.id, packagingId: null, fatorConversao: daNota };
     }
   }
 
-  return { productId: null, variantId: null, packagingId: null, fatorConversao: daNota };
+  return { productId: null, packagingId: null, fatorConversao: daNota };
 }
 
 /** PENDENTE enquanto houver item sem produto; CONCILIADO quando todos têm. */
@@ -300,7 +280,7 @@ async function importarUmXml(input: {
       encargos: rateio[i],
       resolucao: classificacao.movimentaEstoque
         ? await resolverItem(tenantId, supplierId, item)
-        : { productId: null, variantId: null, packagingId: null, fatorConversao: 1 },
+        : { productId: null, packagingId: null, fatorConversao: 1 },
     })),
   );
 
@@ -363,7 +343,6 @@ async function importarUmXml(input: {
           pedidoFornecedor: item.pedidoFornecedor,
           itemPedidoNumero: item.itemPedidoNumero,
           productId: resolucao.productId,
-          variantId: resolucao.variantId,
           packagingId: resolucao.packagingId,
           fatorConversao: resolucao.fatorConversao,
         })),
@@ -438,17 +417,12 @@ export async function relacionarItemInbound(input: {
   itemId: string;
   productId: string;
   /** Sabor/cor que esta linha do XML representa. Não cria saldo próprio. */
-  variantId?: string | null;
   packagingId?: string | null;
   fatorConversao?: number;
 }): Promise<{ preenchidos: string[] }> {
   const { tenantId, itemId, productId } = input;
   // A variação só vale se for do produto escolhido — a tela manda os dois, e
   // trocar o produto sem trocar o sabor é o erro mais fácil de cometer ali.
-  const variacoes = await resolverVariacoesDosItens(tenantId, [
-    { productId, variantId: input.variantId },
-  ]);
-  const variantId = variacoes.get(input.variantId ?? "")?.variantId ?? null;
   const fatorConversao = input.fatorConversao && input.fatorConversao > 0 ? input.fatorConversao : 1;
 
   const item = await db.fiscalInboundItem.findFirst({
@@ -457,6 +431,9 @@ export async function relacionarItemInbound(input: {
       id: true,
       codigoFornecedor: true,
       gtin: true,
+      ncm: true,
+      cest: true,
+      cfop: true,
       unidade: true,
       quantidade: true,
       unidadeTributavel: true,
@@ -494,6 +471,9 @@ export async function relacionarItemInbound(input: {
     item: {
       codigoFornecedor: item.codigoFornecedor,
       gtin: item.gtin,
+      ncm: item.ncm,
+      cest: item.cest,
+      cfop: item.cfop,
       unidade: item.unidade,
       quantidade: Number(item.quantidade),
       unidadeTributavel: item.unidadeTributavel,
@@ -512,7 +492,7 @@ export async function relacionarItemInbound(input: {
 
   await db.fiscalInboundItem.update({
     where: { id: itemId },
-    data: { productId, variantId, packagingId, fatorConversao },
+    data: { productId, packagingId, fatorConversao },
   });
 
   // O histórico do fornecedor guarda o item como o XML mandou; relacionar aqui
@@ -530,7 +510,7 @@ export async function relacionarItemInbound(input: {
       where: { supplierId: item.inbound.supplierId, codigoFornecedor: item.codigoFornecedor },
       select: { id: true },
     });
-    const dados = { productId, variantId, packagingId, fatorConversao, gtin: item.gtin };
+    const dados = { productId, packagingId, fatorConversao, gtin: item.gtin };
     if (mapa) {
       await db.supplierItemMap.update({ where: { id: mapa.id }, data: dados });
     } else {
@@ -580,7 +560,7 @@ export async function desrelacionarItemInbound(input: {
 
   await db.fiscalInboundItem.update({
     where: { id: item.id },
-    data: { productId: null, variantId: null, packagingId: null, fatorConversao: 1 },
+    data: { productId: null, packagingId: null, fatorConversao: 1 },
   });
 
   if (item.inbound.supplierId) {
@@ -676,7 +656,6 @@ export async function gerarEntradaDaNota(input: {
       items: {
         select: {
           productId: true,
-          variantId: true,
           quantidade: true,
           fatorConversao: true,
           valorTotal: true,
@@ -741,7 +720,6 @@ export async function gerarEntradaDaNota(input: {
       productId: i.productId as string,
       // O sabor comprado sobrevive na linha da entrada; o saldo continua sendo
       // um só, o do produto principal.
-      variantId: i.variantId,
       // Convertemos aqui e mandamos packagingId null de propósito: o fator do
       // de-para pode divergir do cadastro da embalagem (fornecedor muda o fardo),
       // e deixar `registrarEntrada` converter de novo dobraria a quantidade.

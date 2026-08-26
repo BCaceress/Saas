@@ -32,7 +32,8 @@ export function Field({
   className,
 }: {
   label?: string;
-  hint?: string;
+  /** Aceita nó: alguns campos explicam o estado com ícone, não só texto. */
+  hint?: React.ReactNode;
   error?: string;
   htmlFor?: string;
   required?: boolean;
@@ -102,11 +103,19 @@ export function Badge({
 
 /** Eyebrow/label tipográfico — mono, tracking, caixa alta. */
 export function Eyebrow({
+  as: Tag = "span",
   className,
   ...props
-}: React.HTMLAttributes<HTMLSpanElement>) {
+}: React.HTMLAttributes<HTMLElement> & {
+  /**
+   * Em formulário longo o eyebrow É o título da seção — sem heading de
+   * verdade, o leitor de tela entrega um bloco de campos sem estrutura
+   * nenhuma. Continua um `span` onde é só enfeite tipográfico.
+   */
+  as?: "span" | "h2" | "h3";
+}) {
   return (
-    <span
+    <Tag
       className={cn(
         "font-mono text-[11px] uppercase tracking-[0.18em] text-muted",
         className

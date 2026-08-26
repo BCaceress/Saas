@@ -764,7 +764,6 @@ export async function criarPedidoDaNota(input: {
         select: {
           descricao: true,
           productId: true,
-          variantId: true,
           packagingId: true,
           fatorConversao: true,
           quantidade: true,
@@ -822,7 +821,6 @@ export async function criarPedidoDaNota(input: {
 
     return {
       productId: i.productId as string,
-      variantId: i.variantId,
       packagingId: manterEmbalagem ? i.packagingId : null,
       tipo: i.bonificacao ? ("BONIFICACAO" as const) : ("COMPRA" as const),
       motivoBonificacao: i.bonificacao ? ("COMERCIAL" as const) : null,
@@ -860,6 +858,13 @@ export async function criarPedidoDaNota(input: {
 /**
  * O que o operador contou na porta. Quantidade em unidade base — a tela
  * converte quando o item é bipado por embalagem.
+ *
+ * Campo ausente (`undefined`) é campo NÃO MEXIDO; `null` é campo apagado de
+ * propósito. A distinção não é preciosismo: a tela salva um campo por vez —
+ * bipar manda só a quantidade, sair do campo de lote manda só o lote. Tratar
+ * ausente como null fazia o bipe apagar o lote e a validade que o operador
+ * acabara de digitar, e o lote zerar a contagem inteira. Silenciosamente, nos
+ * dois casos.
  */
 export async function conferirItem(input: {
   tenantId: string;
@@ -877,18 +882,21 @@ export async function conferirItem(input: {
     throw new Error("Esta nota já deu entrada — a conferência está encerrada.");
   }
 
+  const mexeuNaQtd = input.qtdRecebida !== undefined;
   const qtd = input.qtdRecebida == null ? null : Math.max(0, input.qtdRecebida);
   const ajustou = qtd != null && Math.abs(qtd - Number(linha.qtdFaturada)) > TOL_QTD;
 
   await db.purchaseReconciliationItem.update({
     where: { id: linha.id },
     data: {
-      qtdRecebida: qtd,
-      lote: input.lote?.trim() || null,
-      validade: input.validade ? new Date(`${input.validade}T00:00:00`) : null,
+      ...(mexeuNaQtd ? { qtdRecebida: qtd } : {}),
+      ...(input.lote !== undefined ? { lote: input.lote?.trim() || null } : {}),
+      ...(input.validade !== undefined
+        ? { validade: input.validade ? new Date(`${input.validade}T00:00:00`) : null }
+        : {}),
       // Divergir da nota na contagem é uma decisão do operador, e ela precisa
       // sobreviver ao recarregamento da tela.
-      resolucao: ajustou ? "AJUSTADO" : undefined,
+      resolucao: mexeuNaQtd && ajustou ? "AJUSTADO" : undefined,
     },
   });
 }
@@ -1253,8 +1261,6 @@ export async function confirmarEntradaConciliada(input: {
       validade: true,
       purchaseOrderItemId: true,
       inboundItemId: true,
-      inboundItem: { select: { variantId: true } },
-      orderItem: { select: { variantId: true } },
     },
   });
   if (linhas.length === 0) {
@@ -1289,8 +1295,6 @@ export async function confirmarEntradaConciliada(input: {
     quantidade: l.qtd,
     custoTotal: l.bonificacao ? 0 : l.qtd * Number(l.custoFaturado),
     packagingId: null,
-    // O sabor da linha da nota manda; sem nota, vale o que foi pedido.
-    variantId: l.inboundItem?.variantId ?? l.orderItem?.variantId ?? null,
     lote: l.lote,
     validade: l.validade ? l.validade.toISOString().slice(0, 10) : null,
   });

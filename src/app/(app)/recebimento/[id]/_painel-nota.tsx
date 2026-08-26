@@ -39,6 +39,48 @@ import type { NotaRecebimento } from "../_data";
 
 type Candidata = Awaited<ReturnType<typeof candidatasEntradaManualAction>>[number];
 
+/**
+ * As decisões do documento que exigem motivo.
+ *
+ * Todas as três mexem em coisa feita — a nota some da fila, o saldo volta, o
+ * vínculo se desfaz — e todas gravam o porquê no histórico. O texto de cada
+ * uma diz a CONSEQUÊNCIA, não o mecanismo: quem clica em "Estornar" precisa
+ * saber que os títulos em aberto são cancelados junto, antes de confirmar.
+ */
+type Confirmacao = "DESCARTAR" | "ESTORNAR" | "DESVINCULAR";
+
+const CONFIRMACOES: Record<
+  Confirmacao,
+  { titulo: string; descricao: string; hint: string; placeholder: string; cta: string; fazendo: string }
+> = {
+  DESCARTAR: {
+    titulo: "Descartar nota",
+    descricao: "A nota some da fila de entrada e não movimenta estoque.",
+    hint: "Fica registrado na nota.",
+    placeholder: "Ex.: já lancei essa nota à mão",
+    cta: "Descartar",
+    fazendo: "Descartando…",
+  },
+  ESTORNAR: {
+    titulo: "Estornar entrada",
+    descricao:
+      "A mercadoria sai do estoque, o custo médio volta ao que era e os títulos em aberto desta nota são cancelados.",
+    hint: "Fica no histórico da entrada, com seu nome e a hora.",
+    placeholder: "Ex.: nota lançada em duplicidade",
+    cta: "Estornar entrada",
+    fazendo: "Estornando…",
+  },
+  DESVINCULAR: {
+    titulo: "Desfazer vínculo",
+    descricao:
+      "A nota deixa de documentar aquela entrada e volta para a fila. O estoque não se mexe.",
+    hint: "Fica no histórico das duas pontas.",
+    placeholder: "Ex.: é a nota de outra entrega",
+    cta: "Desfazer vínculo",
+    fazendo: "Desfazendo…",
+  },
+};
+
 export function PainelNota({
   nota,
   faltamRelacionar,
@@ -52,8 +94,12 @@ export function PainelNota({
 }) {
   const router = useRouter();
   const [pending, start] = React.useTransition();
-  const [descartando, setDescartando] = React.useState(false);
-  const [motivoDescarte, setMotivoDescarte] = React.useState("");
+  // As três decisões do documento pedem a mesma coisa — um motivo que fica no
+  // histórico — e por isso passam pelo mesmo diálogo. Antes duas delas usavam
+  // `window.prompt`: caixinha do browser, sem estilo, sem dizer a consequência
+  // e sem validar as três letras que o servidor exige.
+  const [confirmando, setConfirmando] = React.useState<Confirmacao | null>(null);
+  const [motivo, setMotivo] = React.useState("");
   // Entradas lançadas à mão que esta nota pode estar documentando. Sem esta
   // pergunta, receber a nota somaria a mesma mercadoria pela segunda vez.
   const [candidatas, setCandidatas] = React.useState<Candidata[] | null>(null);
@@ -85,11 +131,12 @@ export function PainelNota({
     });
   }
 
-  function estornar() {
-    const motivo = window.prompt(
-      "Por que esta entrada está sendo estornada? O saldo volta e os títulos em aberto são cancelados.",
-    );
-    if (!motivo?.trim()) return;
+  function pedirMotivo(tipo: Confirmacao) {
+    setMotivo("");
+    setConfirmando(tipo);
+  }
+
+  function estornar(motivo: string) {
     start(async () => {
       try {
         const entrada = await entradaDaNotaAction(nota.id);
@@ -104,6 +151,7 @@ export function PainelNota({
             ? `${r.itens} item(ns) saíram do estoque e ${r.titulosCancelados} título(s) foram cancelados.`
             : `${r.itens} item(ns) saíram do estoque.`,
         );
+        setConfirmando(null);
         router.refresh();
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Falha ao estornar.");
@@ -111,13 +159,12 @@ export function PainelNota({
     });
   }
 
-  function desvincular() {
-    const motivo = window.prompt("Por que este vínculo está errado?");
-    if (!motivo?.trim()) return;
+  function desvincular(motivo: string) {
     start(async () => {
       try {
         await desvincularNotaAction({ inboundId: nota.id, motivo });
         toast.success("Vínculo desfeito.", "A entrada voltou a aguardar documento.");
+        setConfirmando(null);
         router.refresh();
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Falha ao desfazer o vínculo.");
@@ -125,17 +172,25 @@ export function PainelNota({
     });
   }
 
-  function descartar() {
+  function descartar(motivo: string) {
     start(async () => {
       try {
-        await descartarNotaAction({ inboundId: nota.id, motivo: motivoDescarte });
+        await descartarNotaAction({ inboundId: nota.id, motivo });
         toast.success("Nota descartada.");
-        setDescartando(false);
+        setConfirmando(null);
         router.refresh();
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Falha ao descartar.");
       }
     });
+  }
+
+  function confirmar() {
+    const texto = motivo.trim();
+    if (texto.length < 3 || !confirmando) return;
+    if (confirmando === "DESCARTAR") descartar(texto);
+    else if (confirmando === "ESTORNAR") estornar(texto);
+    else desvincular(texto);
   }
 
   return (
@@ -168,7 +223,12 @@ export function PainelNota({
 
           <div className="flex flex-wrap items-center gap-2">
             {editavel && (
-              <Button variant="ghost" size="sm" onClick={() => setDescartando(true)} disabled={pending}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => pedirMotivo("DESCARTAR")}
+                disabled={pending}
+              >
                 <Trash2 size={15} /> Descartar
               </Button>
             )}
@@ -194,12 +254,22 @@ export function PainelNota({
             {/* Desfazer é operação de verdade, não “registre um ajuste”:
                 volta o saldo, cancela os títulos e libera a nota. */}
             {nota.status === "RECEBIDO" && (
-              <Button variant="ghost" size="sm" onClick={estornar} disabled={pending}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => pedirMotivo("ESTORNAR")}
+                disabled={pending}
+              >
                 <Undo2 size={15} /> Estornar entrada
               </Button>
             )}
             {nota.status === "VINCULADO" && (
-              <Button variant="ghost" size="sm" onClick={desvincular} disabled={pending}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => pedirMotivo("DESVINCULAR")}
+                disabled={pending}
+              >
                 <Unlink size={15} /> Desfazer vínculo
               </Button>
             )}
@@ -279,30 +349,47 @@ export function PainelNota({
         )}
       </section>
 
-      <Modal
-        open={descartando}
-        onClose={() => setDescartando(false)}
-        title="Descartar nota"
-        description="A nota some da fila de entrada e não movimenta estoque."
-        width="md"
-      >
-        <Field label="Motivo" htmlFor="motivo" hint="Fica registrado na nota.">
-          <Input
-            id="motivo"
-            value={motivoDescarte}
-            onChange={(e) => setMotivoDescarte(e.target.value)}
-            placeholder="Ex.: já lancei essa nota à mão"
-          />
-        </Field>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setDescartando(false)} disabled={pending}>
-            Cancelar
-          </Button>
-          <Button onClick={descartar} disabled={pending}>
-            {pending ? "Descartando…" : "Descartar"}
-          </Button>
-        </div>
-      </Modal>
+      {confirmando && (
+        <Modal
+          open
+          onClose={() => setConfirmando(null)}
+          title={CONFIRMACOES[confirmando].titulo}
+          description={CONFIRMACOES[confirmando].descricao}
+          width="md"
+        >
+          <Field
+            label="Motivo"
+            htmlFor="motivo"
+            hint={CONFIRMACOES[confirmando].hint}
+          >
+            <Input
+              id="motivo"
+              value={motivo}
+              onChange={(e) => setMotivo(e.target.value)}
+              placeholder={CONFIRMACOES[confirmando].placeholder}
+              autoFocus
+              // Enter fecha o assunto: são três palavras num campo só, e
+              // obrigar a mirar o botão é pedágio em cima de quem já digitou.
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  confirmar();
+                }
+              }}
+            />
+          </Field>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setConfirmando(null)} disabled={pending}>
+              Cancelar
+            </Button>
+            {/* O servidor exige três letras. Barrar aqui evita o vaivém de
+                clicar, tomar erro de validação e voltar ao mesmo campo. */}
+            <Button onClick={confirmar} disabled={pending || motivo.trim().length < 3}>
+              {pending ? CONFIRMACOES[confirmando].fazendo : CONFIRMACOES[confirmando].cta}
+            </Button>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }

@@ -2,29 +2,33 @@ import { describe, it, expect } from "vitest";
 import { nomeDaEmbalagem } from "@/lib/fiscal/embalagem-nome";
 
 /**
- * A embalagem criada a partir do XML fica no cadastro para sempre. "CX" não
- * diz nada na tela de compra; "Caixa com 24" diz o que o operador vai pedir.
+ * O nome da embalagem é só o nome. Quantas unidades cabem mora em
+ * `fatorConversao` — juntar os dois num campo de texto fazia o cadastro
+ * mentir assim que o fornecedor mudava o fardo.
  */
 describe("nomeDaEmbalagem", () => {
-  it("traduz a sigla e junta o fator", () => {
-    expect(nomeDaEmbalagem("CX", 24)).toBe("Caixa com 24");
-    expect(nomeDaEmbalagem("FD", 12)).toBe("Fardo com 12");
-    expect(nomeDaEmbalagem("DP", 6)).toBe("Display com 6");
+  it("traduz a sigla do fornecedor para palavra", () => {
+    expect(nomeDaEmbalagem("CX")).toBe("Caixa");
+    expect(nomeDaEmbalagem("FD")).toBe("Fardo");
+    expect(nomeDaEmbalagem("DP")).toBe("Display");
   });
 
-  it("entende sigla colada no fator, como o distribuidor escreve", () => {
-    expect(nomeDaEmbalagem("CX24", 24)).toBe("Caixa com 24");
+  it("entende a sigla colada no fator e descarta o número", () => {
+    expect(nomeDaEmbalagem("CX24")).toBe("Caixa");
+    expect(nomeDaEmbalagem("FD12")).toBe("Fardo");
   });
 
-  it("sem fator, é só o nome", () => {
-    expect(nomeDaEmbalagem("CX", 1)).toBe("Caixa");
+  it("nunca carrega a quantidade no nome", () => {
+    expect(nomeDaEmbalagem("CX")).not.toMatch(/\d/);
+    expect(nomeDaEmbalagem("CAIXA")).toBe("Caixa");
   });
 
-  it("unidade desconhecida vira o texto do fornecedor, não um chute", () => {
-    expect(nomeDaEmbalagem("BLT", 8)).toBe("Blt com 8");
+  it("mantém o texto do fornecedor quando a sigla é desconhecida", () => {
+    expect(nomeDaEmbalagem("BLT")).toBe("Blt");
   });
 
-  it("unidade ausente não gera nome vazio", () => {
-    expect(nomeDaEmbalagem(null, 6)).toBe("Embalagem com 6");
+  it("sem unidade, nome genérico", () => {
+    expect(nomeDaEmbalagem(null)).toBe("Embalagem");
+    expect(nomeDaEmbalagem("  ")).toBe("Embalagem");
   });
 });

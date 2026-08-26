@@ -202,12 +202,15 @@ export async function carregarRecebimento(
           descricao: true,
           codigoFornecedor: true,
           gtin: true,
+          ncm: true,
+          cest: true,
           cfop: true,
           unidade: true,
           quantidade: true,
           unidadeTributavel: true,
           quantidadeTributavel: true,
           fatorConversao: true,
+          valorUnitario: true,
           valorTotal: true,
           // O custo real da linha (e o alerta de custo fora da curva) precisa
           // de tudo que soma ou desconta, não só do valor da mercadoria.
@@ -218,7 +221,6 @@ export async function carregarRecebimento(
           valorFrete: true,
           bonificacao: true,
           productId: true,
-          variantId: true,
           packagingId: true,
         },
         // Alfabética, igual à lista pós-vínculo — a ordem da nota (`ordem`)
@@ -230,6 +232,7 @@ export async function carregarRecebimento(
     ...linhasCru.map((l) => l.productId),
     ...itensCru.map((i) => i.productId),
   ]);
+  const donos = await donosDosCodigos(itensCru.map((i) => i.gtin));
 
   const itensNota: ItemNotaView[] = itensCru.map((i) => {
     const p = i.productId ? produtos.get(i.productId) : null;
@@ -239,6 +242,8 @@ export async function carregarRecebimento(
       descricao: i.descricao,
       codigoFornecedor: i.codigoFornecedor,
       gtin: i.gtin,
+      ncm: i.ncm,
+      cest: i.cest,
       cfop: i.cfop,
       unidade: i.unidade,
       quantidade: Number(i.quantidade),
@@ -246,6 +251,7 @@ export async function carregarRecebimento(
       quantidadeTributavel:
         i.quantidadeTributavel == null ? null : Number(i.quantidadeTributavel),
       fatorConversao: Number(i.fatorConversao),
+      valorUnitario: Number(i.valorUnitario),
       valorTotal: Number(i.valorTotal),
       valorDesconto: Number(i.valorDesconto),
       valorIcmsSt: Number(i.valorIcmsSt),
@@ -260,12 +266,17 @@ export async function carregarRecebimento(
       productConteudo: p?.conteudoPorUnidade ?? null,
       productImagemUrl: p?.imagemUrl ?? null,
       productCustoMedio: p?.custoMedio ?? null,
+      productEan: p?.ean ?? null,
+      productNcm: p?.ncm ?? null,
       productEmbalagens: (p?.embalagens ?? []).map((e) => ({
         id: e.id,
         nome: e.nome,
+        ean: e.ean,
         fator: e.fator,
       })),
-      variantId: i.variantId,
+      // Quem já usa este código de barras no catálogo — a prova de que a linha
+      // está prestes a apontar o mesmo GTIN para dois produtos.
+      donoDoGtin: i.gtin ? (donos.get(i.gtin) ?? null) : null,
       packagingId: i.packagingId,
     };
   });
@@ -381,6 +392,8 @@ type ProdutoView = {
   conteudoPorUnidade: number | null;
   /** Base do alerta de custo fora da curva na tabela de de-para. */
   custoMedio: number;
+  /** NCM que vale hoje: o do perfil do produto ou o herdado da subcategoria. */
+  ncm: string | null;
   embalagens: EmbalagemView[];
 };
 
@@ -398,6 +411,8 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
       unidadeBase: true,
       conteudoPorUnidade: true,
       custoMedio: true,
+      fiscalProfile: { select: { ncm: true } },
+      subcategory: { select: { defaultFiscalProfile: { select: { ncm: true } } } },
       packagings: { select: { id: true, nome: true, ean: true, fatorConversao: true } },
     },
   });
@@ -413,6 +428,10 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
         conteudoPorUnidade:
           p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
         custoMedio: Number(p.custoMedio),
+        // O perfil do produto manda; sem ele vale o padrão da subcategoria, que
+        // é o que a emissão usa. Comparar com a nota só faz sentido contra o
+        // NCM que valeria hoje.
+        ncm: p.fiscalProfile?.ncm ?? p.subcategory?.defaultFiscalProfile?.ncm ?? null,
         embalagens: p.packagings.map((e) => ({
           id: e.id,
           nome: e.nome,
@@ -422,6 +441,58 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
       },
     ]),
   );
+}
+
+export type DonoDeCodigo = {
+  productId: string;
+  nome: string;
+  sku: string;
+  /** "o produto", 'a embalagem "Caixa"'… — a frase entra no aviso. */
+  onde: string;
+};
+
+/**
+ * Quem já usa cada código de barras da nota.
+ *
+ * Uma consulta por tabela para a nota inteira, não uma por linha: nota de 40
+ * itens abriria 80 idas ao banco só para descobrir o que dois `IN` resolvem.
+ * O primeiro dono encontrado vence, na mesma ordem de `donoDoCodigo` — produto
+ * e depois embalagem — para que a tela e a busca digam a mesma coisa.
+ */
+async function donosDosCodigos(gtins: (string | null)[]): Promise<Map<string, DonoDeCodigo>> {
+  const codigos = [...new Set(gtins.filter((g): g is string => Boolean(g)))];
+  const mapa = new Map<string, DonoDeCodigo>();
+  if (codigos.length === 0) return mapa;
+
+  const [produtos, embalagens] = await Promise.all([
+    db.product.findMany({
+      where: { ean: { in: codigos }, ativo: true },
+      select: { id: true, nome: true, sku: true, ean: true },
+    }),
+    db.productPackaging.findMany({
+      where: { ean: { in: codigos } },
+      select: {
+        nome: true,
+        ean: true,
+        product: { select: { id: true, nome: true, sku: true, ativo: true } },
+      },
+    }),
+  ]);
+
+  for (const e of embalagens) {
+    if (!e.ean || !e.product.ativo) continue;
+    mapa.set(e.ean, {
+      productId: e.product.id,
+      nome: e.product.nome,
+      sku: e.product.sku,
+      onde: `a embalagem “${e.nome}”`,
+    });
+  }
+  for (const p of produtos) {
+    if (!p.ean) continue;
+    mapa.set(p.ean, { productId: p.id, nome: p.nome, sku: p.sku, onde: "o produto" });
+  }
+  return mapa;
 }
 
 export type SubcategoriaCadastro = { id: string; nome: string; categoriaNome: string };

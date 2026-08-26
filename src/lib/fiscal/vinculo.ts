@@ -17,17 +17,15 @@ export type ItemParaVinculo = ItemComTributavel & {
 export type ProdutoParaVinculo = {
   ean: string | null;
   packagings: { id: string; ean: string | null; fatorConversao: number }[];
-  variacoes: { id: string; ean: string | null }[];
 };
 
 export type Vinculo = {
   packagingId: string | null;
-  variantId: string | null;
   fatorConversao: number;
 };
 
 /**
- * Embalagem, sabor e fator que o par (item, produto) sugere.
+ * Embalagem e fator que o par (item, produto) sugere.
  *
  * A ordem importa. Embalagem cujo código de barras é o da nota ganha de tudo:
  * o fornecedor bipou o fardo, então o fator do fardo é o certo. Só depois vem
@@ -38,13 +36,9 @@ export function inferirVinculo(produto: ProdutoParaVinculo, item: ItemParaVincul
   const pelaEmbalagem = item.gtin
     ? (produto.packagings.find((pk) => pk.ean && pk.ean === item.gtin) ?? null)
     : null;
-  const variante = item.gtin
-    ? (produto.variacoes.find((v) => v.ean && v.ean === item.gtin) ?? null)
-    : null;
 
   return {
     packagingId: pelaEmbalagem?.id ?? null,
-    variantId: variante?.id ?? null,
     fatorConversao: pelaEmbalagem?.fatorConversao ?? fatorDaNota(item) ?? 1,
   };
 }
@@ -52,11 +46,7 @@ export function inferirVinculo(produto: ProdutoParaVinculo, item: ItemParaVincul
 /** O código de barras da nota é de alguma coisa deste produto? */
 export function casaPorCodigo(produto: ProdutoParaVinculo, gtin: string | null): boolean {
   if (!gtin) return false;
-  return (
-    produto.ean === gtin ||
-    produto.packagings.some((pk) => pk.ean === gtin) ||
-    produto.variacoes.some((v) => v.ean === gtin)
-  );
+  return produto.ean === gtin || produto.packagings.some((pk) => pk.ean === gtin);
 }
 
 /**

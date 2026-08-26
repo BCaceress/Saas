@@ -97,3 +97,29 @@ export function resumoDaChave(chave: string): {
     numero: Number(chave.slice(25, 34)) || 0,
   };
 }
+
+/**
+ * O dígito verificador fecha?
+ *
+ * Todo GTIN (EAN-8, UPC-12, EAN-13, DUN-14) termina num dígito calculado por
+ * módulo 10 com pesos alternados 3 e 1, da direita para a esquerda. Scanner
+ * nunca erra isso — quem erra é o dedo digitando. E um código com dígito
+ * errado é um produto que NUNCA vai bipar no caixa: o erro só aparece semanas
+ * depois, com fila na frente.
+ *
+ * `null` = não é um GTIN de comprimento conhecido, então não há o que conferir
+ * (código interno de balança de 7 dígitos, SKU do fornecedor, etc.).
+ */
+export function gtinValido(bruto: string): boolean | null {
+  const d = onlyDigits(bruto);
+  if (![8, 12, 13, 14].includes(d.length)) return null;
+
+  let soma = 0;
+  // Da direita para a esquerda, ignorando o próprio dígito verificador: peso 3
+  // nas posições ímpares, 1 nas pares.
+  for (let i = d.length - 2, peso = 3; i >= 0; i--, peso = peso === 3 ? 1 : 3) {
+    soma += Number(d[i]) * peso;
+  }
+  const esperado = (10 - (soma % 10)) % 10;
+  return esperado === Number(d[d.length - 1]);
+}

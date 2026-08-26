@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   Building2, Barcode, Pencil,
-  Package, AlertTriangle, Store, Box, Refrigerator, Snowflake, ShoppingCart,
+  Package, AlertTriangle, Store, Box, Boxes, Refrigerator, Snowflake, ShoppingCart,
   ChevronUp, ChevronDown,
 } from "lucide-react";
 import { cn, brl, margem } from "@/lib/utils";
@@ -68,11 +68,16 @@ function buildAlerts(product: ProductRow, insights: ProductInsights | null): Ale
 
 /** Painel lateral de detalhes do produto — usado em /produtos e na busca global do navbar. */
 export function ProductSidePanel({
-  product, onClose, onEdit, navegacao,
+  product, onClose, onEdit, onComplementar, navegacao,
 }: {
   product: ProductRow;
   onClose: () => void;
   onEdit: () => void;
+  /**
+   * Abre "Compra e fiscal" — o que o cadastro não pergunta e a nota preenche
+   * sozinha. Opcional porque a busca global do navbar não tem esse painel.
+   */
+  onComplementar?: () => void;
   /**
    * Pular para o produto anterior/próximo da lista sem fechar o painel.
    * Conferir dez itens seguidos não pode custar dez fecha-acha-abre.
@@ -120,7 +125,7 @@ export function ProductSidePanel({
       onClose={onClose}
       title={product.nome}
       description={`${TIPO_LABEL[product.tipo]} · ${product.subcategoriaNome}`}
-      width="md"
+      width="lg"
       footer={
         <div className="flex items-center gap-2">
           {navegacao && (
@@ -147,6 +152,16 @@ export function ProductSidePanel({
                 {navegacao.posicao}/{navegacao.total}
               </span>
             </div>
+          )}
+          {onComplementar && (
+            <Button
+              variant="outline"
+              onClick={onComplementar}
+              className="flex-1 gap-1.5"
+              title="Embalagem de compra, fornecedor e fiscal"
+            >
+              <Boxes size={14} /> Compra e fiscal
+            </Button>
           )}
           <Button variant="outline" onClick={onClose} className="flex-1">Fechar</Button>
           <Button onClick={onEdit} className="flex-1 gap-1.5"><Pencil size={14} /> Editar</Button>

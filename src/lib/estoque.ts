@@ -3,7 +3,6 @@ import { basePrisma, comTenant } from "./prisma";
 import { registrarEvento } from "./compras/eventos";
 import type { MovementType, PurchaseOrderOrigem } from "@/generated/prisma";
 import { proximoNumeroDocumento } from "@/lib/numeracao";
-import { resolverVariacoesDosItens, rotuloComVariacao } from "@/lib/variacoes";
 
 // ============================================================
 // Serviço de estoque — toda operação é transacional e grava
@@ -196,13 +195,6 @@ export type EntradaItem = {
   packagingId?: string | null;
   validade?: string | null; // ISO date (yyyy-mm-dd) do lote
   lote?: string | null; // código do lote / nº da nota
-  /**
-   * Variação comercial comprada (sabor, cor). Fica gravada no item da entrada e
-   * some daí em diante: o saldo é do produto principal — 50 morango + 50 uva +
-   * 50 tutti-frutti viram "Bubbaloo Sortido +150 UN", não três estoques.
-   */
-  variantId?: string | null;
-  variacaoNome?: string | null;
 };
 
 export async function registrarEntrada(
@@ -223,12 +215,6 @@ export async function registrarEntrada(
     chaveNfe?: string | null;
   }
 ): Promise<string> {
-  // 0. Variação comercial: confere que o sabor informado é mesmo do produto e
-  //    congela o nome. Sem a checagem, um payload trocado gravaria "Morango" na
-  //    compra de outro produto — e ninguém veria, porque o estoque não olha
-  //    para o sabor.
-  const variacoes = await resolverVariacoesDosItens(tenantId, items);
-
   // 1. Resolve quantidades base (converte embalagem se necessário)
   const resolvedItems = await Promise.all(
     items.map(async (item) => {
@@ -241,14 +227,7 @@ export async function registrarEntrada(
         if (pkg) qtdBase = item.quantidade * Number(pkg.fatorConversao);
       }
       const custoUnitario = qtdBase > 0 ? item.custoTotal / qtdBase : 0;
-      const v = item.variantId ? variacoes.get(item.variantId) : null;
-      return {
-        ...item,
-        qtdBase,
-        custoUnitario,
-        variantId: v?.variantId ?? null,
-        variacaoNome: v?.variacaoNome ?? null,
-      };
+      return { ...item, qtdBase, custoUnitario };
     })
   );
 
@@ -276,8 +255,6 @@ export async function registrarEntrada(
             packagingId: ri.packagingId ?? null,
             quantidade: ri.quantidade,
             custoTotal: ri.custoTotal,
-            variantId: ri.variantId,
-            variacaoNome: ri.variacaoNome,
           })),
         },
       },
@@ -322,7 +299,6 @@ export type PedidoItemInput = {
   custoUnitario: number; // por unidade de compra (embalagem) — sempre 0 quando tipo != COMPRA
   observacao?: string | null;
   /** Variação comercial pedida (sabor/cor) — o fornecedor separa por sabor. */
-  variantId?: string | null;
 };
 
 /** Mapa tipo do item → motivo da entrada de estoque (Purchase.motivo) quando != COMPRA. */
@@ -374,7 +350,6 @@ export async function criarPedidoCompra(
 
   const numero = await proximoNumeroPedido(tenantId);
   const enviar = opts.enviar ?? false;
-  const variacoes = await resolverVariacoesDosItens(tenantId, validos);
 
   const po = await basePrisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`;
@@ -403,8 +378,6 @@ export async function criarPedidoCompra(
             qtdPedida: i.qtdPedida,
             custoUnitario: (i.tipo ?? "COMPRA") === "COMPRA" ? i.custoUnitario : 0,
             observacao: i.observacao ?? null,
-            variantId: variacoes.get(i.variantId ?? "")?.variantId ?? null,
-            variacaoNome: variacoes.get(i.variantId ?? "")?.variacaoNome ?? null,
           })),
         },
       },
@@ -452,7 +425,6 @@ export async function atualizarPedidoCompra(
 
   const validos = data.items.filter((i) => i.productId && i.qtdPedida > 0);
   if (validos.length === 0) throw new Error("Adicione ao menos um item ao pedido.");
-  const variacoes = await resolverVariacoesDosItens(tenantId, validos);
 
   await basePrisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`;
@@ -475,8 +447,6 @@ export async function atualizarPedidoCompra(
             qtdPedida: i.qtdPedida,
             custoUnitario: (i.tipo ?? "COMPRA") === "COMPRA" ? i.custoUnitario : 0,
             observacao: i.observacao ?? null,
-            variantId: variacoes.get(i.variantId ?? "")?.variantId ?? null,
-            variacaoNome: variacoes.get(i.variantId ?? "")?.variacaoNome ?? null,
           })),
         },
       },
@@ -506,7 +476,6 @@ export async function adicionarBonificacaoPedido(
 
   const validos = items.filter((i) => i.productId && i.qtdPedida > 0);
   if (validos.length === 0) throw new Error("Adicione ao menos um item.");
-  const variacoes = await resolverVariacoesDosItens(tenantId, validos);
 
   await basePrisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`;
@@ -521,8 +490,6 @@ export async function adicionarBonificacaoPedido(
         qtdPedida: i.qtdPedida,
         custoUnitario: 0,
         observacao: i.observacao ?? null,
-        variantId: variacoes.get(i.variantId ?? "")?.variantId ?? null,
-        variacaoNome: variacoes.get(i.variantId ?? "")?.variacaoNome ?? null,
       })),
     });
   });
@@ -670,7 +637,6 @@ export type RecebimentoExtraInput = {
   productId: string;
   packagingId?: string | null;
   /** Variação comercial conferida na porta (sabor/cor), quando o produto tem. */
-  variantId?: string | null;
   quantidade: number;
   custoUnitario: number;
   validade?: string | null;
@@ -714,7 +680,6 @@ export async function receberPedidoCompra(
   //    em diante eles são item normal, e todo o resto (entrada, custo médio,
   //    status, timeline) funciona sem saber que chegaram depois.
   const extras = (opts.extras ?? []).filter((e) => e.quantidade > 0);
-  const variacoesExtras = await resolverVariacoesDosItens(tenantId, extras);
   const linhasExtras: { id: string; input: RecebimentoExtraInput }[] = [];
   if (extras.length > 0) {
     await basePrisma.$transaction(async (tx) => {
@@ -726,8 +691,6 @@ export async function receberPedidoCompra(
             purchaseOrderId: po.id,
             productId: e.productId,
             packagingId: e.packagingId ?? null,
-            variantId: variacoesExtras.get(e.variantId ?? "")?.variantId ?? null,
-            variacaoNome: variacoesExtras.get(e.variantId ?? "")?.variacaoNome ?? null,
             tipo: "COMPRA",
             qtdPedida: 0,
             custoUnitario: e.custoUnitario,
@@ -747,8 +710,6 @@ export async function receberPedidoCompra(
       id: l.id,
       productId: l.input.productId,
       packagingId: l.input.packagingId ?? null,
-      variantId: variacoesExtras.get(l.input.variantId ?? "")?.variantId ?? null,
-      variacaoNome: variacoesExtras.get(l.input.variantId ?? "")?.variacaoNome ?? null,
       tipo: "COMPRA" as TipoItemPedido,
       qtdPedida: 0,
       qtdRecebida: 0,
@@ -814,7 +775,6 @@ export async function receberPedidoCompra(
         packagingId: r.it.packagingId,
         validade: r.validade,
         lote: r.lote,
-        variantId: r.it.variantId ?? null,
       })),
       {
         tipo: "FORNECEDOR",
@@ -850,7 +810,6 @@ export async function receberPedidoCompra(
         packagingId: r.it.packagingId,
         validade: r.validade,
         lote: r.lote,
-        variantId: r.it.variantId ?? null,
       })),
       {
         tipo: "FORNECEDOR",
@@ -892,7 +851,7 @@ export async function receberPedidoCompra(
   //    saiu do combinado deixa a sua própria linha na história do pedido.
   const nomes = await nomesDosProdutos(tenantId, recebidos.map((r) => r.it.productId));
   for (const r of recebidos) {
-    const nome = rotuloComVariacao(nomes.get(r.it.productId) ?? "Item", r.it.variacaoNome);
+    const nome = nomes.get(r.it.productId) ?? "Item";
     const restante = Math.max(0, Number(r.it.qtdPedida) - Number(r.it.qtdRecebida));
     const difQtd = r.qtd - restante;
     const difCusto = r.it.tipo === "COMPRA" && Math.abs(r.custo - r.negociado) > 0.004;

@@ -163,12 +163,15 @@ const conferirSchema = z.object({
 export async function conferirItemAction(input: z.input<typeof conferirSchema>) {
   return tx(async (ctx) => {
     const d = conferirSchema.parse(input);
+    // Sem `?? null`: a tela salva um campo por vez, e ausente tem de chegar
+    // ausente. Convertê-lo em null aqui fazia o bipe (que manda só a
+    // quantidade) apagar lote e validade — ver `conferirItem`.
     await conferirItem({
       tenantId: ctx.tenant.id,
       reconciliationItemId: d.itemId,
-      qtdRecebida: d.qtdRecebida ?? null,
-      lote: d.lote ?? null,
-      validade: d.validade ?? null,
+      qtdRecebida: d.qtdRecebida,
+      lote: d.lote,
+      validade: d.validade,
     });
     revalidar(d.inboundId);
   });
@@ -179,6 +182,40 @@ export async function conferirTudoAction(inboundId: string) {
     const n = await conferirTudoConformeNota({ tenantId: ctx.tenant.id, inboundId });
     revalidar(inboundId);
     return n;
+  });
+}
+
+const restaurarSchema = z.object({
+  inboundId: z.string().min(1),
+  itens: z
+    .array(
+      z.object({
+        itemId: z.string().min(1),
+        qtdRecebida: z.coerce.number().min(0).nullable(),
+      }),
+    )
+    .max(500),
+});
+
+/**
+ * Desfazer o "conferi tudo conforme a nota".
+ *
+ * A tela manda de volta o retrato que tinha antes do clique — inclusive as
+ * linhas que já estavam contadas e foram sobrescritas. Sem isto, um clique
+ * errado num botão sem confirmação apagava a contagem da nota inteira, e o
+ * único caminho de volta era recontar.
+ */
+export async function restaurarContagemAction(input: z.input<typeof restaurarSchema>) {
+  return tx(async (ctx) => {
+    const d = restaurarSchema.parse(input);
+    for (const i of d.itens) {
+      await conferirItem({
+        tenantId: ctx.tenant.id,
+        reconciliationItemId: i.itemId,
+        qtdRecebida: i.qtdRecebida,
+      });
+    }
+    revalidar(d.inboundId);
   });
 }
 

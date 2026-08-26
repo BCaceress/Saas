@@ -20,6 +20,11 @@ import { ProdutoThumb } from "@/components/recebimento/produto-thumb";
 import { useLeitorTeclado } from "@/lib/hooks/use-leitor-teclado";
 import { termoDeBuscaDoItem } from "@/lib/compras/conciliacao-regras";
 import { fatorDaNota } from "@/lib/fiscal/fator";
+import {
+  TabelaComparacao,
+  type LinhaComparacao,
+} from "@/components/recebimento/comparacao-xml";
+import { cfopDeEntrada } from "@/lib/fiscal/cfop";
 import { casaPorCodigo, inferirVinculo } from "@/lib/fiscal/vinculo";
 import { fmtMoney, fmtQtd } from "@/app/(app)/cotacoes/_ui";
 import {
@@ -58,10 +63,16 @@ export type ItemDeNota = {
   descricao: string;
   gtin: string | null;
   codigoFornecedor?: string | null;
+  /** Classificação fiscal declarada no XML — alimenta a tela de revisão. */
+  ncm?: string | null;
+  cest?: string | null;
+  cfop?: string | null;
   unidade?: string | null;
   quantidade?: number | null;
   unidadeTributavel?: string | null;
   quantidadeTributavel?: number | null;
+  /** vUnCom — preço na unidade do fornecedor. */
+  valorUnitario?: number | null;
   /** Fator já gravado no de-para, quando existe. */
   fatorConversao?: number | null;
   /** Custo total da linha (mercadoria + ST + IPI + frete − desconto). */
@@ -79,7 +90,7 @@ const num = (v: string) => Number(v.replace(",", ".")) || 0;
 
 type DonoDoCodigo = Awaited<ReturnType<typeof donoDoCodigoAction>>;
 
-/** Embalagem/sabor/fator que o par (produto, item da nota) sugere. */
+/** Embalagem e fator que o par (produto, item da nota) sugere. */
 function vinculoDoProduto(p: ProdutoBuscado, item: ItemDeNota) {
   return inferirVinculo(
     {
@@ -89,7 +100,6 @@ function vinculoDoProduto(p: ProdutoBuscado, item: ItemDeNota) {
         ean: e.ean,
         fatorConversao: e.fator,
       })),
-      variacoes: p.variacoes,
     },
     {
       gtin: item.gtin,
@@ -164,9 +174,6 @@ export function RelacionarProduto({
   const [dono, setDono] = React.useState<DonoDoCodigo | null | undefined>(
     undefined,
   );
-  // Sabor escolhido por produto da lista. Sem saldo próprio: a escolha só diz
-  // QUAL variação esta linha da nota trouxe — o estoque é do produto principal.
-  const [sabor, setSabor] = React.useState<Record<string, string>>({});
   /** Linha destacada pelo teclado. */
   const [ativo, setAtivo] = React.useState(0);
   const listaRef = React.useRef<Record<string, HTMLLIElement | null>>({});
@@ -249,7 +256,6 @@ export function RelacionarProduto({
     productId: string,
     packagingId: string | null,
     fator: number,
-    variantId: string | null = null,
   ) {
     if (!item.inboundItemId) {
       toast.error(
@@ -263,7 +269,6 @@ export function RelacionarProduto({
       const r = await relacionarItemAction({
         itemId: item.inboundItemId,
         productId,
-        variantId,
         packagingId,
         fatorConversao: fator,
       });
@@ -356,12 +361,7 @@ export function RelacionarProduto({
       if (!p || salvando) return;
       e.preventDefault();
       const v = vinculoDoProduto(p, item);
-      void escolher(
-        p.id,
-        v.packagingId,
-        v.fatorConversao,
-        sabor[p.id] || v.variantId,
-      );
+      void escolher(p.id, v.packagingId, v.fatorConversao);
     }
   }
 
@@ -527,8 +527,6 @@ export function RelacionarProduto({
                   sugeridoPelaNota={sugeridoPelaNota}
                   salvando={salvando}
                   focado={i === ativo}
-                  sabor={sabor[p.id] ?? ""}
-                  onSabor={(v) => setSabor((s) => ({ ...s, [p.id]: v }))}
                   onEscolher={escolher}
                 />
               ))}
@@ -586,13 +584,10 @@ const Resultado = React.forwardRef<
     salvando: boolean;
     /** Linha destacada pelo teclado. */
     focado: boolean;
-    sabor: string;
-    onSabor: (v: string) => void;
     onEscolher: (
       productId: string,
       packagingId: string | null,
       fator: number,
-      variantId: string | null,
     ) => void;
   }
 >(function Resultado(
@@ -602,8 +597,6 @@ const Resultado = React.forwardRef<
     sugeridoPelaNota,
     salvando,
     focado,
-    sabor,
-    onSabor,
     onEscolher,
   },
   ref,
@@ -623,14 +616,12 @@ const Resultado = React.forwardRef<
         ean: e.ean,
         fatorConversao: e.fator,
       })),
-      variacoes: p.variacoes,
     },
     item.gtin,
   );
   const sugerida = item.gtin
     ? p.embalagens.find((e) => e.ean === item.gtin)
     : undefined;
-  const variantId = sabor || vinculo.variantId || null;
   const fatorNum = num(fator);
   const unidades = (item.quantidade ?? 0) * fatorNum;
   const medida = medidaDoProduto(p);
@@ -707,39 +698,12 @@ const Resultado = React.forwardRef<
         </span>
       </div>
 
-      {p.variacoes.length > 0 && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <label
-            className="text-[11px] font-medium text-muted"
-            htmlFor={`sabor-${p.id}`}
-          >
-            {p.variacaoLabel?.trim() || "Variação"}
-          </label>
-          <select
-            id={`sabor-${p.id}`}
-            value={variantId ?? ""}
-            onChange={(ev) => onSabor(ev.target.value)}
-            className="h-8 rounded-[var(--radius)] border border-line-button bg-surface px-2 text-[12px] text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-          >
-            <option value="">Não informar</option>
-            {p.variacoes.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.nome}
-              </option>
-            ))}
-          </select>
-          <span className="text-[11px] text-faint">
-            entra no estoque de {p.nome}
-          </span>
-        </div>
-      )}
-
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <Button
           size="sm"
           variant={sugerida ? "secondary" : "primary"}
           disabled={salvando}
-          onClick={() => onEscolher(p.id, null, 1, variantId)}
+          onClick={() => onEscolher(p.id, null, 1)}
         >
           Unidade
         </Button>
@@ -749,7 +713,7 @@ const Resultado = React.forwardRef<
             size="sm"
             variant={sugerida?.id === e.id ? "primary" : "secondary"}
             disabled={salvando}
-            onClick={() => onEscolher(p.id, e.id, e.fator, variantId)}
+            onClick={() => onEscolher(p.id, e.id, e.fator)}
           >
             {e.nome} ({fmtQtd(e.fator)} un)
             {sugerida?.id === e.id && " · código da nota"}
@@ -830,7 +794,7 @@ const Resultado = React.forwardRef<
         <Button
           size="sm"
           disabled={salvando || fatorNum <= 0}
-          onClick={() => onEscolher(p.id, null, fatorNum, variantId)}
+          onClick={() => onEscolher(p.id, null, fatorNum)}
         >
           Relacionar com {fmtQtd(fatorNum)} un
         </Button>
@@ -841,8 +805,16 @@ const Resultado = React.forwardRef<
 
 // ── Cadastro-relâmpago ──────────────────────────────────────
 
-/** Mini-cadastro — nome, categoria e a conversão. O resto do cadastro (preço,
- *  estoque mínimo, fiscal) o produto ganha depois em `/produtos`. */
+/**
+ * O que a nota diz × o que o NoHub vai guardar.
+ *
+ * O XML declara o que o FORNECEDOR está faturando — não o que o mercado
+ * precisa para operar o produto. "1 CX" com "uTrib UN" só vira "1 caixa = 60
+ * garrafas" quando qTrib/qCom fecha em inteiro (ver `fatorDaNota`); em KG, em
+ * L, ou em razão quebrada, aquilo é peso por caixa e não peça por caixa. Por
+ * isso a conversão aparece aqui como afirmação a CONFIRMAR, nunca como número
+ * já gravado: fator errado é estoque errado em silêncio.
+ */
 function CadastroRapido({
   item,
   sugeridoPelaNota,
@@ -863,9 +835,23 @@ function CadastroRapido({
     embalagemNome?: string;
   }) => void;
 }) {
+  const uCom = item.unidade?.trim() || "item";
+  const uTrib = item.unidadeTributavel?.trim() || null;
+
+  // A nota vende na própria unidade de prateleira quando não há uTrib ou ele é
+  // igual ao uCom. Aí não há o que perguntar: 1 = 1, e obrigar a confirmar
+  // seria pedágio em cima do caso mais comum do mercadinho.
+  const semConversao = !uTrib || uTrib.toUpperCase() === uCom.toUpperCase();
+
   const [nome, setNome] = React.useState(item.descricao.trim());
   const [subcategoryId, setSubcategoryId] = React.useState("");
-  const [fator, setFator] = React.useState(String(sugeridoPelaNota ?? 1));
+  const [fator, setFator] = React.useState(
+    sugeridoPelaNota ? String(sugeridoPelaNota) : semConversao ? "1" : "",
+  );
+  // Só o palpite da nota precisa de aval. Sem conversão nenhuma o operador não
+  // é interrompido; sem palpite ele TEM de digitar, e aí não há o que confirmar.
+  const [confirmado, setConfirmado] = React.useState(!sugeridoPelaNota);
+  const [editandoFator, setEditandoFator] = React.useState(!sugeridoPelaNota && !semConversao);
   const [embalagem, setEmbalagem] = React.useState(item.unidade || "Caixa");
   const [subs, setSubs] = React.useState<SubcategoriaCadastro[] | null>(
     subcategoriasProp ?? null,
@@ -886,21 +872,90 @@ function CadastroRapido({
   const unidades = (item.quantidade ?? 0) * fatorNum;
   const custoUnitario =
     unidades > 0 && item.custoLinha ? item.custoLinha / unidades : 0;
+  const cfopEntrada = cfopDeEntrada(item.cfop);
   const valido =
-    nome.trim().length >= 2 && subcategoryId !== "" && fatorNum > 0;
+    nome.trim().length >= 2 && subcategoryId !== "" && fatorNum > 0 && confirmado;
+
+  /** Linha da tabela de revisão. Sem valor no XML, a linha não existe. */
+  const linhas: LinhaComparacao[] = [
+    {
+      rotulo: "Descrição",
+      xml: item.descricao,
+      nohub: nome.trim() || "—",
+    },
+    {
+      rotulo: "Código do fornecedor",
+      xml: item.codigoFornecedor ?? null,
+      nohub: "de-para deste fornecedor",
+    },
+    {
+      rotulo: "GTIN",
+      xml: item.gtin,
+      nohub:
+        fatorNum > 1
+          ? `código de barras da ${embalagem.trim() || "embalagem"}`
+          : "código de barras do produto",
+    },
+    {
+      rotulo: "Unidade",
+      xml: uCom,
+      nohub: fatorNum > 1 ? `${embalagem.trim() || "embalagem"} → UN` : "UN",
+    },
+    {
+      rotulo: "Quantidade",
+      xml: item.quantidade != null ? `${fmtQtd(item.quantidade)} ${uCom}` : null,
+      nohub:
+        unidades > 0 ? (
+          <span className="font-medium text-ink">{fmtQtd(unidades)} UN</span>
+        ) : (
+          "—"
+        ),
+    },
+    {
+      rotulo: "Valor unitário",
+      xml: item.valorUnitario ? `${fmtMoney(item.valorUnitario)} / ${uCom}` : null,
+      nohub: custoUnitario > 0 ? `${fmtMoney(custoUnitario)} / UN` : "—",
+    },
+    {
+      rotulo: "NCM",
+      xml: item.ncm ?? null,
+      nohub: "perfil fiscal — a revisar",
+    },
+    { rotulo: "CEST", xml: item.cest ?? null, nohub: "perfil fiscal — a revisar" },
+    {
+      rotulo: "CFOP",
+      xml: item.cfop ?? null,
+      // O CFOP da nota é a saída do fornecedor; a mesma operação, do nosso
+      // lado, é entrada. Mostrar os dois evita a pergunta "por que mudou?".
+      nohub: cfopEntrada ? `${cfopEntrada} (entrada)` : "—",
+    },
+    { rotulo: "Unidade tributável", xml: uTrib, nohub: uTrib ?? "—" },
+    {
+      rotulo: "Quantidade tributável",
+      xml:
+        item.quantidadeTributavel != null
+          ? `${fmtQtd(item.quantidadeTributavel)} ${uTrib ?? ""}`.trim()
+          : null,
+      nohub:
+        item.quantidadeTributavel != null
+          ? fmtQtd(item.quantidadeTributavel)
+          : "—",
+    },
+  ];
 
   return (
     <div className="space-y-3 rounded-[var(--radius-lg)] border border-line bg-surface-2/40 p-4">
-      <p className="flex items-center gap-2 text-[13px] font-medium text-ink">
-        <FilePlus2 className="h-4 w-4 text-brand" aria-hidden />
-        Cadastrar produto novo
-      </p>
-
-      <p className="text-[12px] text-muted">
-        O que o XML já sabe entra sozinho: código de barras, custo, fornecedor e
-        embalagem de compra. O resto do cadastro você completa depois em
-        Produtos.
-      </p>
+      <div>
+        <p className="flex items-center gap-2 text-[13px] font-medium text-ink">
+          <FilePlus2 className="h-4 w-4 text-brand" aria-hidden />
+          Novo produto identificado
+        </p>
+        <p className="mt-1 text-[12px] text-muted">
+          O que o XML já sabe entra sozinho: código de barras, custo, fornecedor,
+          embalagem de compra e classificação fiscal. Confira e complete o que
+          só você sabe.
+        </p>
+      </div>
 
       <label className="flex flex-col gap-1 text-[12px] font-medium text-muted">
         Nome
@@ -930,59 +985,106 @@ function CadastroRapido({
         </select>
       </label>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="flex flex-col gap-1 text-[12px] font-medium text-muted">
-          Unidades por {item.unidade ?? "item da nota"}
-          <input
-            value={fator}
-            onChange={(e) => setFator(e.target.value)}
-            inputMode="decimal"
-            className="h-10 rounded-[var(--radius)] border border-line-button bg-surface px-3 font-mono text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-          />
-          <span className="text-[11px] font-normal text-faint">
-            {sugeridoPelaNota
-              ? `A nota declara ${fmtQtd(sugeridoPelaNota)} — use 1 se comprar avulso.`
-              : "Use 1 se a nota já vem na unidade de venda."}
-          </span>
-        </label>
-
-        {fatorNum > 1 && (
-          <label className="flex flex-col gap-1 text-[12px] font-medium text-muted">
-            Nome da embalagem
-            <input
-              value={embalagem}
-              onChange={(e) => setEmbalagem(e.target.value)}
-              placeholder="Caixa, fardo, engradado…"
-              className="h-10 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-            />
-            <span className="text-[11px] font-normal text-faint">
-              Fica no cadastro com o código de barras da nota.
-            </span>
-          </label>
-        )}
-      </div>
-
-      {item.quantidade != null && (
-        <div className="flex flex-wrap gap-x-8 gap-y-2 rounded-[var(--radius)] border border-line bg-surface px-4 py-3 text-[12px]">
-          <Dado
-            rotulo="Quantidade recebida"
-            valor={`${fmtQtd(item.quantidade)} ${item.unidade ?? ""}`}
-          />
-          <Dado
-            rotulo="Entra no estoque"
-            valor={`${fmtQtd(unidades)} UN`}
-            destaque
-          />
-          {custoUnitario > 0 && (
-            <Dado rotulo="Custo por unidade" valor={fmtMoney(custoUnitario)} />
+      {/* ── Conversão: afirmação a confirmar, não campo a preencher ── */}
+      {(!semConversao || sugeridoPelaNota != null) && (
+        <div
+          className={cn(
+            "rounded-[var(--radius)] border px-4 py-3",
+            confirmado && !editandoFator
+              ? "border-ok/30 bg-ok-soft"
+              : "border-warn/40 bg-warn-soft",
           )}
-          {item.gtin && (
-            <Dado
-              rotulo={fatorNum > 1 ? "Código da embalagem" : "Código de barras"}
-              valor={item.gtin}
-            />
+        >
+          {editandoFator ? (
+            <label className="flex flex-col gap-1 text-[12px] font-medium text-ink-2">
+              Quantas unidades vêm em 1 {uCom}?
+              <span className="flex items-center gap-2">
+                <input
+                  value={fator}
+                  onChange={(e) => {
+                    setFator(e.target.value);
+                    setConfirmado(num(e.target.value) > 0);
+                  }}
+                  inputMode="decimal"
+                  autoFocus
+                  placeholder="60"
+                  className="h-10 w-28 rounded-[var(--radius)] border border-line-button bg-surface px-3 font-mono text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                />
+                <span className="text-[12px] font-normal text-muted">
+                  {sugeridoPelaNota
+                    ? `A nota declara ${fmtQtd(sugeridoPelaNota)}.`
+                    : `A nota não declara — ela fatura em ${uCom} e tributa em ${uTrib}. Use 1 se comprar avulso.`}
+                </span>
+              </span>
+            </label>
+          ) : (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <p className="min-w-0 flex-1">
+                <span className="block font-mono text-[15px] font-semibold text-ink">
+                  1 {uCom} = {fmtQtd(fatorNum)} UN
+                </span>
+                <span className="block text-[11px] text-muted">
+                  {confirmado
+                    ? "Confirmado — vale para as próximas notas deste fornecedor."
+                    : `Declarado pela nota (${fmtQtd(item.quantidadeTributavel ?? 0)} ${uTrib ?? uCom} ÷ ${fmtQtd(item.quantidade ?? 0)} ${uCom}). Confirme antes de cadastrar.`}
+                </span>
+              </p>
+              {confirmado ? (
+                <button
+                  type="button"
+                  onClick={() => setEditandoFator(true)}
+                  className="text-[12px] font-medium text-brand hover:underline"
+                >
+                  Alterar
+                </button>
+              ) : (
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => setConfirmado(true)}
+                  >
+                    Confirmar
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setEditandoFator(true)}
+                    className="text-[12px] font-medium text-muted hover:text-ink"
+                  >
+                    Não é isso
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
+      )}
+
+      {fatorNum > 1 && (
+        <label className="flex flex-col gap-1 text-[12px] font-medium text-muted">
+          Nome da embalagem
+          <input
+            value={embalagem}
+            onChange={(e) => setEmbalagem(e.target.value)}
+            placeholder="Caixa, fardo, engradado…"
+            className="h-10 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          />
+          <span className="text-[11px] font-normal text-faint">
+            Fica no cadastro com o código de barras da nota.
+          </span>
+        </label>
+      )}
+
+      {/* ── XML × NoHub ── */}
+      <TabelaComparacao linhas={linhas} />
+
+      {item.ncm && (
+        <p className="flex items-start gap-2 text-[11px] text-muted">
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" aria-hidden />
+          O perfil fiscal nasce marcado como <em>a revisar</em>: NCM certo não
+          significa alíquota certa — a tributação depende do seu regime, não do
+          regime de quem vendeu.
+        </p>
       )}
 
       <div className="flex justify-end gap-2">
@@ -1016,28 +1118,3 @@ function CadastroRapido({
   );
 }
 
-function Dado({
-  rotulo,
-  valor,
-  destaque,
-}: {
-  rotulo: string;
-  valor: string;
-  destaque?: boolean;
-}) {
-  return (
-    <span className="block">
-      <span className="block text-[10px] font-medium tracking-wide text-faint uppercase">
-        {rotulo}
-      </span>
-      <span
-        className={cn(
-          "block font-mono text-[13px]",
-          destaque ? "text-ink" : "text-ink-2",
-        )}
-      >
-        {valor}
-      </span>
-    </span>
-  );
-}

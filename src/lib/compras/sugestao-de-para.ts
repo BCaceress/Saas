@@ -24,7 +24,6 @@ export type SugestaoDePara = {
   /** EAN é prova; NOME é palpite — e o operador confia diferente em cada um. */
   motivo: "EAN" | "NOME";
   packagingId: string | null;
-  variantId: string | null;
   fatorConversao: number;
 };
 
@@ -71,7 +70,6 @@ export async function sugestoesDaNota(inboundId: string): Promise<SugestaoDePara
           ean: e.ean,
           fatorConversao: e.fator,
         })),
-        variacoes: p.variacoes,
       };
       // Código de barras batendo é prova; nome parecido é palpite. A tela
       // trata os dois de forma diferente, então a diferença viaja junto.

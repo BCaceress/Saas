@@ -68,9 +68,6 @@ type ItemView = {
   nome: string;
   sku: string;
   imagemUrl: string | null;
-  /** Variação comercial pedida (sabor/cor) — registro da compra, não do saldo. */
-  variantId: string | null;
-  variacaoNome: string | null;
   packagingId: string | null;
   packagingNome: string | null;
   fatorConversao: number; // un base por unidade de compra (1 = unidade)
@@ -129,10 +126,6 @@ type Product = {
   categoria: string | null;
   supplierIds: string[];
   packagings: Packaging[];
-  /** Eixo da variação comercial ("Sabor"). Null = produto sem variação. */
-  variacaoLabel?: string | null;
-  /** Sabores compráveis — pedido separa por sabor, estoque não. */
-  purchaseVariants?: { id: string; nome: string }[];
   /** UN base disponíveis por site (fechado + aberto). */
   estoquePorSite: Record<string, number>;
   /** Último preço pago por UN base — 1 por fornecedor, mais recente primeiro. */
@@ -669,8 +662,6 @@ export function PedidoDrawer({
 type CartItem = {
   id: string; // chave client-side — permite o mesmo produto aparecer como COMPRA e como bonificação
   productId: string;
-  /** Sabor/cor comprado nesta linha. Um sabor por linha; o saldo é um só. */
-  variantId: string | null;
   packagingId: string | null; // unidade de compra (null = unidade)
   tipo: TipoItemPedido;
   motivoBonificacao: MotivoBonificacao | null;
@@ -715,7 +706,6 @@ export function PedidoFormSheet({
       ? pedido.items.map((it) => ({
           id: it.id,
           productId: it.productId,
-          variantId: it.variantId,
           packagingId: it.packagingId,
           tipo: it.tipo,
           motivoBonificacao: it.motivoBonificacao,
@@ -756,10 +746,7 @@ export function PedidoFormSheet({
 
   function addProduto(prod: Product | undefined) {
     if (!prod) return;
-    // Produto com variação entra em linha nova a cada toque — o operador pede
-    // 50 de cada sabor, e somar tudo numa linha perderia essa informação.
-    const temVariacao = (prod.purchaseVariants?.length ?? 0) > 0;
-    if (!temVariacao && noCart.has(prod.id)) {
+    if (noCart.has(prod.id)) {
       // Já comprado no pedido → soma 1 na embalagem atual (em vez de ignorar).
       setCart((c) => c.map((it) => (it.productId === prod.id && it.tipo === "COMPRA" ? { ...it, qtd: it.qtd + 1 } : it)));
       setBusca("");
@@ -770,7 +757,7 @@ export function PedidoFormSheet({
     const pkg = defaultPackaging(prod);
     setCart((c) => [
       ...c,
-      { id: novoCartId(), productId: prod.id, variantId: null, packagingId: pkg?.id ?? null, tipo: "COMPRA", motivoBonificacao: null, qtd: 1, preco: precoSugerido(prod, pkg), observacao: "" },
+      { id: novoCartId(), productId: prod.id, packagingId: pkg?.id ?? null, tipo: "COMPRA", motivoBonificacao: null, qtd: 1, preco: precoSugerido(prod, pkg), observacao: "" },
     ]);
     setBusca("");
     setHighlighted(0);
@@ -789,7 +776,6 @@ export function PedidoFormSheet({
       ...itens.map((it) => ({
         id: novoCartId(),
         productId: it.productId,
-        variantId: null,
         packagingId: it.packagingId,
         tipo: "BONIFICACAO" as TipoItemPedido,
         motivoBonificacao: it.motivo,
@@ -851,7 +837,6 @@ export function PedidoFormSheet({
       .filter((it) => it.qtd > 0)
       .map((it) => ({
         productId: it.productId,
-        variantId: it.variantId,
         packagingId: it.packagingId,
         tipo: it.tipo,
         motivoBonificacao: it.tipo !== "COMPRA" ? it.motivoBonificacao : null,
@@ -1614,11 +1599,6 @@ function TabelaItens({ itens, bonus = false }: { itens: ItemView[]; bonus?: bool
                     <div className="min-w-0">
                       <p className="truncate font-medium text-ink">
                         {it.nome}
-                        {it.variacaoNome && (
-                          <span className="ml-1.5 rounded-full border border-line bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted">
-                            {it.variacaoNome}
-                          </span>
-                        )}
                       </p>
                       <p className="truncate font-mono text-[11px] text-faint">{it.sku}</p>
                     </div>

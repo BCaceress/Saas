@@ -2,7 +2,6 @@ import "server-only";
 import { db, basePrisma, comTenant } from "@/lib/prisma";
 import { proximoNumeroPedido } from "@/lib/estoque";
 import { registrarEvento } from "@/lib/compras/eventos";
-import { resolverVariacoesDosItens } from "@/lib/variacoes";
 import type { PurchaseOrderOrigem } from "@/generated/prisma";
 
 // ============================================================
@@ -25,7 +24,6 @@ import type { PurchaseOrderOrigem } from "@/generated/prisma";
 export type ItemRetroativo = {
   productId: string;
   /** Variação comercial (sabor/cor) que entrou nesta linha, quando houver. */
-  variantId?: string | null;
   packagingId?: string | null;
   /** Quantidade na unidade de COMPRA (o fator do pacote é do cadastro). */
   quantidade: number;
@@ -54,7 +52,6 @@ export async function criarPedidoRetroativo(input: {
   }
 
   const numero = await proximoNumeroPedido(tenantId);
-  const variacoes = await resolverVariacoesDosItens(tenantId, validos);
   const recebidoEm = input.dataDocumento ?? new Date();
   const valorTotal = validos.reduce(
     (a, i) => a + (i.bonificacao ? 0 : i.quantidade * i.custoUnitario),
@@ -88,8 +85,6 @@ export async function criarPedidoRetroativo(input: {
             tenantId,
             productId: i.productId,
             packagingId: i.packagingId ?? null,
-            variantId: variacoes.get(i.variantId ?? "")?.variantId ?? null,
-            variacaoNome: variacoes.get(i.variantId ?? "")?.variacaoNome ?? null,
             tipo: i.bonificacao ? "BONIFICACAO" : "COMPRA",
             motivoBonificacao: i.bonificacao ? "COMERCIAL" : null,
             qtdPedida: i.quantidade,
@@ -150,7 +145,6 @@ export async function garantirPedidoDaNota(input: {
       items: {
         select: {
           productId: true,
-          variantId: true,
           packagingId: true,
           quantidade: true,
           fatorConversao: true,
@@ -173,7 +167,6 @@ export async function garantirPedidoDaNota(input: {
       const qtd = Number(i.quantidade);
       return {
         productId: i.productId as string,
-        variantId: i.variantId,
         packagingId: i.packagingId,
         quantidade: qtd,
         custoUnitario: qtd > 0 ? Number(i.valorTotal) / qtd : 0,

@@ -13,7 +13,7 @@ import {
   Barcode, Hash, ChevronLeft, ChevronRight,
   ArrowUp, ArrowDown, ChevronsUpDown, Globe, SlidersHorizontal, Columns3,
   Download, Rows2, Rows3, LayoutGrid, FilterX, Percent, BottleWine, Printer, ImagePlus,
-  Box, Refrigerator, Snowflake, Check as CheckIcon,
+  Check as CheckIcon,
   TrendingUp, Clock, FileSpreadsheet, ChevronUp,
 } from "lucide-react";
 import { cn, brl, margem, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
@@ -31,10 +31,12 @@ import {
   ProductSidePanel, stockLevel, TIPO_LABEL, TIPO_ICON, STOCK_COLOR, STOCK_TITLE, STOCK_TEXT,
 } from "@/components/app/product-side-panel";
 import { TipoIcone } from "@/components/app/produto-tipo";
+import { STORAGE_COLOR, STORAGE_COMPONENTE } from "@/components/app/armazenagem";
 import {
   painelCsv, painelEtiquetas, painelGerenciar, painelImagens, painelLote,
   prepararGerenciar, prepararLote,
 } from "./_sheets/_despachante";
+import { ComplementoSheet } from "./_sheets/complemento-sheet";
 import type { ProdutoImagem } from "./_sheets/imagens-sheet";
 import type { ProdutoLote } from "./_sheets/lote-sheet";
 import { archiveProduct, getGerenciarExtras } from "./actions";
@@ -118,21 +120,7 @@ function principalFornecedor(p: ProductRow) {
   return p.fornecedores.find((f) => f.isPrincipal) ?? p.fornecedores[0];
 }
 
-/**
- * Ícone/cor do local seguem o tipo de armazenagem escolhido no Estoque —
- * mesma tabela usada em /estoque/saldos e em Configurações → Lojas.
- */
 type StorageTipo = "AMBIENTE" | "REFRIGERADO" | "CONGELADO";
-const STORAGE_TIPO_ICON: Record<StorageTipo, React.ElementType> = {
-  AMBIENTE: Box,
-  REFRIGERADO: Refrigerator,
-  CONGELADO: Snowflake,
-};
-const STORAGE_TIPO_COLOR: Record<StorageTipo, string> = {
-  AMBIENTE: "text-brand",
-  REFRIGERADO: "text-ok",
-  CONGELADO: "text-blue-500",
-};
 
 type LocalEmUso = { nome: string; tipo: StorageTipo | null };
 
@@ -227,6 +215,8 @@ export function ProdutosClient(props: {
   /** Fila da busca de imagens — congelada na abertura do painel. */
   const [imagensAlvo, setImagensAlvo] = useState<ProdutoImagem[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
+  /** Produto com o painel de compra e fiscal aberto. */
+  const [complemento, setComplemento] = useState<ProductRow | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
 
   // Dados dos sheets de "Gerenciar" (categorias/armazenagem/fornecedores) só
@@ -1460,6 +1450,15 @@ export function ProdutosClient(props: {
           : <LoadingSheet title="Etiquetas" onClose={() => setEtiquetasOpen(false)} />
       )}
 
+      {complemento && (
+        <ComplementoSheet
+          key={complemento.id}
+          product={complemento}
+          onClose={() => setComplemento(null)}
+          onSalvo={() => router.refresh()}
+        />
+      )}
+
       {selectedProduct && (() => {
         // Posição na página que está na tela — navegar não muda de página.
         const idx = rows.findIndex((r) => r.id === selectedProduct.id);
@@ -1469,6 +1468,7 @@ export function ProdutosClient(props: {
             product={selectedProduct}
             onClose={() => setSelectedProduct(null)}
             onEdit={() => sairPara(`/produtos/${selectedProduct.id}/editar`)}
+            onComplementar={() => setComplemento(selectedProduct)}
             navegacao={
               idx >= 0
                 ? {
@@ -1813,8 +1813,8 @@ function ProductCard({
     const locais = locaisEmUso(p);
     if (locais.length) {
       const [primeiro] = locais;
-      const Icon = primeiro.tipo ? STORAGE_TIPO_ICON[primeiro.tipo] : Warehouse;
-      const cor = primeiro.tipo ? STORAGE_TIPO_COLOR[primeiro.tipo] : undefined;
+      const Icon = primeiro.tipo ? STORAGE_COMPONENTE[primeiro.tipo] : Warehouse;
+      const cor = primeiro.tipo ? STORAGE_COLOR[primeiro.tipo] : undefined;
       metaParts.push({
         key: "local",
         node: (
@@ -2606,8 +2606,8 @@ function PriceCell({
 function LocalCell({ locais }: { locais: LocalEmUso[] }) {
   if (locais.length === 0) return <span className="text-[11px] text-faint">—</span>;
   const [primeiro] = locais;
-  const Icon = primeiro.tipo ? STORAGE_TIPO_ICON[primeiro.tipo] : Warehouse;
-  const cor = primeiro.tipo ? STORAGE_TIPO_COLOR[primeiro.tipo] : "text-faint";
+  const Icon = primeiro.tipo ? STORAGE_COMPONENTE[primeiro.tipo] : Warehouse;
+  const cor = primeiro.tipo ? STORAGE_COLOR[primeiro.tipo] : "text-faint";
   return (
     <span
       className="inline-flex items-center gap-1 text-[12px] text-ink-2"

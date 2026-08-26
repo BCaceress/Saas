@@ -30,18 +30,9 @@ export type PurchaseItemProduct = {
   categoria?: string | null;
   custoMedio: number | null; // por UN base — referência p/ sugestão e variação
   packagings: PurchasePackaging[];
-  /** Eixo da variação comercial ("Sabor"). Ausente = produto sem variação. */
-  variacaoLabel?: string | null;
-  /**
-   * Sabores compráveis. O fornecedor separa por sabor, o estoque não: a linha
-   * pede "50 de morango" e o saldo entra todo no produto principal.
-   */
-  purchaseVariants?: { id: string; nome: string }[];
 };
 
 export type PurchaseItemValue = {
-  /** Variação comercial pedida (sabor/cor). Não cria saldo separado. */
-  variantId?: string | null;
   packagingId: string | null; // null = unidade
   qtd: number; // sempre na embalagem selecionada
   preco: string; // máscara pt-BR — preço DA EMBALAGEM selecionada
@@ -296,22 +287,6 @@ export function PurchaseItemCard({
                 </span>
               )}
             </p>
-            {(product.purchaseVariants?.length ?? 0) > 0 && (
-              <select
-                value={value.variantId ?? ""}
-                onChange={(e) => onChange({ variantId: e.target.value || null })}
-                aria-label={product.variacaoLabel?.trim() || "Variação"}
-                title="A variação fica no pedido; o estoque soma tudo no produto."
-                className={cn(inputCls, "mt-1 h-6 max-w-[10rem] py-0 text-[11px]")}
-              >
-                <option value="">
-                  {product.variacaoLabel?.trim() || "Variação"}…
-                </option>
-                {product.purchaseVariants?.map((v) => (
-                  <option key={v.id} value={v.id}>{v.nome}</option>
-                ))}
-              </select>
-            )}
           </div>
         </div>
 

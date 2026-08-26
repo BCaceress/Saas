@@ -5,9 +5,6 @@ import { useRouter } from "next/navigation";
 import {
   Plus,
   Search,
-  Snowflake,
-  Refrigerator,
-  Box,
   ChevronRight,
   MoreVertical,
   Pencil,
@@ -41,6 +38,10 @@ import type {
   SupplierRow,
 } from "../_types";
 import type { StorageType } from "@/generated/prisma";
+import {
+  StorageIcon,
+  STORAGE_LABEL,
+} from "@/components/app/armazenagem";
 import { SkBarra } from "../_skeleton";
 
 function useRefresh() {
@@ -572,22 +573,6 @@ export function CategorySheet({
 }
 
 // ── Armazenagem ────────────────────────────────────────────
-const STORAGE_ICON: Record<StorageType, React.ReactNode> = {
-  AMBIENTE: <Box size={14} />,
-  REFRIGERADO: <Refrigerator size={14} />,
-  CONGELADO: <Snowflake size={14} />,
-};
-const STORAGE_LABEL: Record<StorageType, string> = {
-  AMBIENTE: "Ambiente",
-  REFRIGERADO: "Refrigerado",
-  CONGELADO: "Congelado",
-};
-const STORAGE_ICON_COLOR: Record<StorageType, string> = {
-  AMBIENTE: "text-brand",
-  REFRIGERADO: "text-ok",
-  CONGELADO: "text-blue-500",
-};
-
 export function StorageSheet({
   open,
   onClose,
@@ -690,7 +675,7 @@ export function StorageSheet({
               )}
             </span>
             <Badge tone="neutral">
-              <span className={STORAGE_ICON_COLOR[l.tipo]}>{STORAGE_ICON[l.tipo]}</span>
+              <StorageIcon tipo={l.tipo} size={12} />
               {STORAGE_LABEL[l.tipo]}
             </Badge>
           </li>

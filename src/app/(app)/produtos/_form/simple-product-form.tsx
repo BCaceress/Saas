@@ -8,24 +8,11 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
-  ImageOff,
   ImagePlus,
+  ChevronRight,
   Trash2,
   Plus,
-  X,
-  Check,
   CornerDownLeft,
-  ChevronRight,
-  ArrowDown,
-  Box,
-  Boxes,
-  Package,
-  PackageOpen,
-  ShoppingCart,
-  Warehouse,
-  Wine,
-  FileText,
-  Globe,
   TrendingUp,
   TrendingDown,
   Truck,
@@ -43,21 +30,21 @@ import {
   parseMoney,
 } from "@/lib/utils";
 import { onlyDigits } from "@/lib/normalize";
+import { gtinValido } from "@/lib/codigo-lido";
 import { arquivoParaThumb } from "@/lib/imagem";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import { Button } from "@/components/ui/button";
-import { Input, Select, Textarea } from "@/components/ui/input";
+import { Input, Select } from "@/components/ui/input";
 import { Combobox, type ComboOption } from "@/components/ui/combobox";
-import { Field, Label, Badge, Eyebrow } from "@/components/ui/misc";
+import { Field, Label, Eyebrow } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app/page-header";
 import { SkuTag } from "@/components/sku-tag";
 import {
-  OnlineChannels,
-  initChannels,
-  channelsToInput,
-  type ChannelRow,
-} from "./online-channels";
+  StorageIcon,
+  STORAGE_LABEL,
+  STORAGE_COLOR,
+} from "@/components/app/armazenagem";
 import { useVoltaProdutos } from "./_volta";
 import {
   createProduct,
@@ -66,12 +53,11 @@ import {
   createCategory,
   createSubcategory,
   checkEanTaken,
-  checkNomeSimilar,
   sugerirMargemSubcategoria,
-  sugerirDescricaoOnline,
+  createStorageLocation,
+  sitesParaLocal,
 } from "../actions";
 import { vincularItemAction } from "../../cotacoes/_catalogo/actions";
-import type { SalesChannel } from "@/generated/prisma";
 import type {
   BrandOpt,
   CategoryOpt,
@@ -83,105 +69,24 @@ import type {
 } from "../_types";
 import type { ProductPrefill } from "./product-form";
 
-type PackagingRow = { nome: string; ean: string; fatorConversao: string };
-
-/** "UN" = compro solto; qualquer outro valor é o nome da embalagem de compra. */
-type CompraMode = "UN" | string;
-
 /** Tempo que o card "produto encontrado" fica na tela (o fio de baixo conta). */
 const FOUND_CARD_MS = 7000;
 const DRAFT_KEY = "nohub:rascunho:produto-simples";
-/** Âncoras das etapas, na ordem — usadas pelo auto-scroll e pelos atalhos. */
-const STEP_IDS = ["etapa-produto", "etapa-compra", "etapa-uso", "etapa-estoque"];
+/**
+ * Teto do nome. É limite de TELA, não do banco: a etiqueta imprime a 11pt e a
+ * linha do caixa é estreita, e nome que estoura ali vira produto que ninguém
+ * identifica na prateleira. O schema do servidor segue sem máximo de propósito
+ * — importação de planilha e catálogo antigo trazem nomes maiores, e barrar
+ * isso quebraria migração.
+ */
+const NOME_MAX = 50;
 
-const COMPRA_OPCOES: { key: string; label: string; icon: React.ReactNode }[] = [
-  { key: "UN", label: "Unidade", icon: <Package size={18} /> },
-  { key: "Caixa", label: "Caixa", icon: <Box size={18} /> },
-  { key: "Fardo", label: "Fardo", icon: <Boxes size={18} /> },
-  { key: "Engradado", label: "Engradado", icon: <PackageOpen size={18} /> },
-  { key: "Pacote", label: "Pacote", icon: <Package size={18} /> },
-];
+/** Linha da embalagem de compra: caixa com 12, fardo com 6, engradado com 24. */
+type PkLinha = { nome: string; ean: string; fator: string };
+/** Âncora da gaveta — o formulário precisa abri-la para apontar erro lá dentro. */
+const MAIS_ID = "mais-configuracoes";
 
 // ── Peças de UI ────────────────────────────────────────────
-
-/**
- * Área que cresce em vez de aparecer seca. Os filhos continuam montados
- * enquanto fechados (o CSS zera a altura), então o estado não se perde.
- */
-function Collapse({
-  open,
-  gap = 4,
-  children,
-  className,
-}: {
-  open: boolean;
-  /** Gap (em unidades Tailwind) do contêiner pai — cancelado enquanto fechado. */
-  gap?: 0 | 3 | 4;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div
-      className="grow-reveal"
-      data-open={open}
-      style={open || !gap ? undefined : { marginTop: `-${gap * 0.25}rem` }}
-    >
-      <div>
-        <div className={cn("flex flex-col gap-4", className)} inert={!open}>
-          {children}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Etapa do assistente — uma pergunta, um bloco de campos. */
-function Step({
-  n,
-  id,
-  question,
-  hint,
-  done,
-  delay = 0,
-  children,
-}: {
-  n: number;
-  id?: string;
-  question: string;
-  hint?: string;
-  done?: boolean;
-  /** Atraso da entrada em stagger (ms). */
-  delay?: number;
-  children: React.ReactNode;
-}) {
-  return (
-    <section
-      id={id}
-      className="fade-up scroll-mt-4 rounded-[var(--radius-lg)] border border-line bg-surface p-5 shadow-[var(--shadow-1)]"
-      style={{ animationDelay: `${delay}ms` }}
-    >
-      <header className="flex items-start gap-3">
-        <span
-          key={done ? "done" : "todo"}
-          className={cn(
-            "mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full font-mono text-[11px] font-semibold",
-            done ? "pop-in bg-ok-soft text-ok" : "bg-brand-soft text-brand-strong",
-          )}
-          aria-hidden
-        >
-          {done ? <Check size={12} /> : n}
-        </span>
-        <div className="min-w-0">
-          <h2 className="font-display text-[15px] font-semibold leading-tight text-ink">
-            {question}
-          </h2>
-          {hint && <p className="mt-1 text-xs text-muted">{hint}</p>}
-        </div>
-      </header>
-      <div className="mt-4 flex flex-col gap-4 sm:pl-9">{children}</div>
-    </section>
-  );
-}
 
 /** Número que corre até o valor novo — a margem deixa de pular na tela. */
 function useCountUp(target: number | null, ms = 320) {
@@ -210,82 +115,6 @@ function useCountUp(target: number | null, ms = 320) {
   return shown;
 }
 
-/** Bloco recolhido — nada aparece até o operador pedir. */
-function Collapsible({
-  icon,
-  title,
-  summary,
-  defaultOpen,
-  children,
-}: {
-  icon?: React.ReactNode;
-  title: string;
-  summary?: string;
-  defaultOpen?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <details
-      open={defaultOpen}
-      className="group rounded-[var(--radius-lg)] border border-line bg-surface shadow-[var(--shadow-1)]"
-    >
-      <summary className="flex cursor-pointer select-none list-none items-center gap-3 rounded-[var(--radius-lg)] px-5 py-4 transition-colors hover:bg-surface-2 [&::-webkit-details-marker]:hidden">
-        {icon && <span className="shrink-0 text-muted">{icon}</span>}
-        <span className="font-display text-[14px] font-semibold text-ink">
-          {title}
-        </span>
-        {summary && (
-          <span className="ml-auto truncate text-xs text-muted">{summary}</span>
-        )}
-        <ChevronRight
-          size={14}
-          className={cn(
-            "shrink-0 text-faint transition-transform duration-200 group-open:rotate-90",
-            summary ? "ml-2" : "ml-auto",
-          )}
-        />
-      </summary>
-      <div className="flex flex-col gap-4 border-t border-line p-5">
-        {children}
-      </div>
-    </details>
-  );
-}
-
-/** Cartão de escolha — a resposta da pergunta da etapa. */
-function Choice({
-  selected,
-  onClick,
-  icon,
-  label,
-  sub,
-}: {
-  selected: boolean;
-  onClick: () => void;
-  icon?: React.ReactNode;
-  label: string;
-  sub?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={selected}
-      className={cn(
-        "flex min-w-[96px] flex-1 flex-col items-center gap-1.5 rounded-[var(--radius)] border px-3 py-3 transition-[colors,transform] duration-150 hover:-translate-y-px",
-        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]",
-        selected
-          ? "border-brand bg-brand-soft text-brand-strong"
-          : "border-line-strong bg-surface text-ink-2 hover:border-brand/40 hover:bg-surface-2",
-      )}
-    >
-      {icon && <span className={selected ? "" : "text-faint"}>{icon}</span>}
-      <span className="text-[13px] font-medium leading-none">{label}</span>
-      {sub && <span className="text-[11px] leading-none text-muted">{sub}</span>}
-    </button>
-  );
-}
-
 function ImageThumb({
   imagemUrl,
   onPick,
@@ -300,185 +129,35 @@ function ImageThumb({
       <button
         type="button"
         onClick={onPick}
-        className="group relative flex h-[44px] w-[44px] items-center justify-center overflow-hidden rounded-[var(--radius)] border border-line-strong bg-surface-2 transition-colors hover:border-brand/40"
+        className="group relative flex h-[92px] w-[92px] items-center justify-center overflow-hidden rounded-[var(--radius-lg)] border border-line-strong bg-surface-2 transition-colors hover:border-brand/40"
         title={imagemUrl ? "Trocar imagem" : "Adicionar imagem"}
       >
         {imagemUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={imagemUrl} alt="" className="h-full w-full object-contain" />
         ) : (
-          <ImagePlus size={16} className="text-faint" />
+          <ImagePlus size={22} className="text-faint" />
         )}
         <span className="absolute inset-0 grid place-items-center bg-ink/40 opacity-0 transition-opacity group-hover:opacity-100">
-          <ImagePlus size={14} className="text-white" />
+          <ImagePlus size={20} className="text-white" />
         </span>
       </button>
       {imagemUrl && (
         <button
           type="button"
           onClick={onClear}
-          className="absolute -right-1.5 -top-1.5 grid h-5 w-5 place-items-center rounded-full border border-line bg-surface text-danger shadow-[var(--shadow-1)] hover:bg-danger-soft"
+          className="absolute -top-2 -right-2 grid h-6 w-6 place-items-center rounded-full border border-line bg-surface text-danger shadow-[var(--shadow-1)] hover:bg-danger-soft"
           title="Remover imagem"
         >
-          <Trash2 size={10} />
+          <Trash2 size={12} />
         </button>
       )}
     </div>
   );
 }
 
-/** Linha do painel lateral. */
-function PanelRow({
-  label,
-  value,
-  mono,
-  tone,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  tone?: "ok" | "warn" | "danger" | "muted";
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="text-xs text-muted">{label}</span>
-      <span
-        className={cn(
-          "truncate text-[13px] font-medium tabular-nums",
-          mono && "font-mono",
-          tone === "ok" && "text-ok",
-          tone === "warn" && "text-warn",
-          tone === "danger" && "text-danger",
-          tone === "muted" && "text-faint",
-          !tone && "text-ink",
-        )}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
 
-/** Nó do fluxo do produto no painel lateral. */
-function FlowNode({
-  icon,
-  label,
-  title,
-  detail,
-  hint,
-  active,
-  tone = "brand",
-}: {
-  icon: React.ReactNode;
-  label: string;
-  title: string;
-  detail?: string;
-  hint?: string;
-  active: boolean;
-  tone?: "brand" | "accent";
-}) {
-  return (
-    <div
-      className={cn(
-        "flow-in flex items-start gap-2.5 rounded-[var(--radius-sm)] p-2 transition-opacity",
-        active ? "bg-surface-2" : "opacity-50",
-      )}
-    >
-      <span
-        className={cn(
-          "mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full",
-          !active && "bg-surface text-faint",
-          active && tone === "brand" && "bg-brand-soft text-brand-strong",
-          active && tone === "accent" && "bg-accent-soft text-accent",
-        )}
-      >
-        {icon}
-      </span>
-      <div className="min-w-0 flex-1">
-        <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.15em] text-muted">
-          {label}
-        </span>
-        <p
-          className={cn(
-            "truncate text-[12.5px] font-medium",
-            active ? "text-ink" : "text-faint",
-          )}
-        >
-          {title}
-        </p>
-        {detail && (
-          <p
-            className={cn(
-              "truncate font-mono text-[11px] tabular-nums",
-              tone === "accent" ? "text-accent" : "text-ink-2",
-            )}
-          >
-            {detail}
-          </p>
-        )}
-        {hint && (
-          <p className="truncate font-mono text-[11px] font-medium text-ok">
-            {hint}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
 
-function FlowArrow() {
-  return (
-    <div className="ml-[15px] flex h-3 w-6 items-center text-faint">
-      <ArrowDown size={12} />
-    </div>
-  );
-}
-
-/** Linha de utilização — checkbox grande com título e explicação. */
-function UsoToggle({
-  checked,
-  onChange,
-  icon,
-  label,
-  desc,
-  className,
-}: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  icon: React.ReactNode;
-  label: string;
-  desc: string;
-  className?: string;
-}) {
-  return (
-    <label
-      className={cn(
-        "flex flex-1 cursor-pointer items-start gap-3 p-3.5 transition-colors",
-        checked ? "bg-brand-soft/50" : "hover:bg-surface-2",
-        className,
-      )}
-    >
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--brand)]"
-      />
-      <span
-        className={cn(
-          "mt-px shrink-0",
-          checked ? "text-brand-strong" : "text-faint",
-        )}
-      >
-        {icon}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-[13.5px] font-medium text-ink">{label}</span>
-        <span className="block text-xs text-muted">{desc}</span>
-      </span>
-    </label>
-  );
-}
 
 function margemVerdict(pct: number | null): {
   label: string;
@@ -494,7 +173,6 @@ function margemVerdict(pct: number | null): {
 // ── Formulário ─────────────────────────────────────────────
 
 /** Linha do editor de variações comerciais (o `id` só existe ao editar). */
-type VariacaoLinha = { id?: string; nome: string; ean: string };
 
 export function SimpleProductForm({
   mode,
@@ -503,8 +181,6 @@ export function SimpleProductForm({
   categories,
   subcategories,
   storage,
-  suppliers,
-  fiscalProfiles,
   defaultEstoqueMinimo,
   policy = POLICY_PADRAO,
   prefill,
@@ -554,19 +230,12 @@ export function SimpleProductForm({
     sku: string;
   } | null>(null);
   const [eanShake, setEanShake] = useState(false);
-  const [nomeSimilar, setNomeSimilar] = useState<{
-    id: string;
-    nome: string;
-    sku: string;
-  } | null>(null);
-  const [nomeSimilarDismiss, setNomeSimilarDismiss] = useState(false);
   /** Campos que o operador já visitou — habilita o aviso inline no blur. */
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const touch = (k: string) => setTouched((t) => ({ ...t, [k]: true }));
 
   // Só depois de identificar o produto o resto da tela aparece — prefill do
   // encarte já identifica, então pula direto pro resto.
-  const [revealed, setRevealed] = useState(mode === "edit" || !!prefill);
   const [naoEncontrado, setNaoEncontrado] = useState(false);
   const [foundCard, setFoundCard] = useState<{
     nome: string;
@@ -580,68 +249,6 @@ export function SimpleProductForm({
   // Preço
   const [precoVenda, setPrecoVenda] = useState(moneyToMask(product?.precoVenda));
   const [custo, setCusto] = useState(moneyToMask(product?.custo ?? prefill?.custo));
-
-  // Compra
-  const [compraMode, setCompraMode] = useState<CompraMode | null>(
-    product?.packagings?.[0]?.nome ?? (mode === "edit" ? "UN" : null),
-  );
-  const [pkEan, setPkEan] = useState(product?.packagings?.[0]?.ean ?? "");
-  const [pkFator, setPkFator] = useState(
-    product?.packagings?.[0]?.fatorConversao?.toString() ?? "",
-  );
-  const [extraPk, setExtraPk] = useState<PackagingRow[]>(
-    (product?.packagings ?? []).slice(1).map((p) => ({
-      nome: p.nome ?? "",
-      ean: p.ean ?? "",
-      fatorConversao: p.fatorConversao?.toString() ?? "",
-    })),
-  );
-  const [fornecedoresList, setFornecedoresList] = useState<string[]>(
-    product?.fornecedores?.length
-      ? [...product.fornecedores]
-          .sort((a, b) => Number(b.isPrincipal) - Number(a.isPrincipal))
-          .map((f) => f.id)
-      : product?.fornecedorPrincipalId
-        ? [product.fornecedorPrincipalId]
-        : [],
-  );
-  const [showFornecedor, setShowFornecedor] = useState(
-    !!product?.fornecedorPrincipalId,
-  );
-
-  // Variação comercial de compra — sabor/cor que existe na nota do fornecedor e
-  // NÃO na prateleira. Bubbaloo Morango, Uva e Tutti-Frutti entram todos no
-  // saldo de "Bubbaloo Sortido": a variação não vira SKU, preço nem estoque.
-  const [variacaoLabel, setVariacaoLabel] = useState(product?.variacaoLabel ?? "");
-  const [variacoes, setVariacoes] = useState<VariacaoLinha[]>(
-    (product?.variacoes ?? []).map((v) => ({ id: v.id, nome: v.nome, ean: v.ean ?? "" })),
-  );
-  const [showVariacao, setShowVariacao] = useState(
-    !!product?.variacaoLabel || (product?.variacoes?.length ?? 0) > 0,
-  );
-  const addVariacao = () =>
-    setVariacoes((prev) => [...prev, { nome: "", ean: "" }]);
-  const updVariacao = (i: number, patch: Partial<VariacaoLinha>) =>
-    setVariacoes((prev) => prev.map((v, idx) => (idx === i ? { ...v, ...patch } : v)));
-  const delVariacao = (i: number) =>
-    setVariacoes((prev) => prev.filter((_, idx) => idx !== i));
-  const addFornecedor = (id: string) =>
-    setFornecedoresList((prev) => (prev.includes(id) ? prev : [...prev, id]));
-  const removeFornecedor = (id: string) =>
-    setFornecedoresList((prev) => prev.filter((fid) => fid !== id));
-
-  // Utilização — as duas convivem: vende a unidade no caixa E rende dose.
-  const [vendaUnidade, setVendaUnidade] = useState(product?.vendaUnidade ?? true);
-  const [usaEmDrinks, setUsaEmDrinks] = useState(product?.fracionavel ?? false);
-  const [unidadeBase, setUnidadeBase] = useState<"UN" | "ML" | "G">(
-    product?.unidadeBase ?? "UN",
-  );
-  const [conteudo, setConteudo] = useState(
-    product?.conteudoPorUnidade?.toString() ?? "",
-  );
-  const [dosePadrao, setDosePadrao] = useState(
-    product?.dosePadrao?.toString() ?? "",
-  );
 
   // Estoque
   const [estoqueMinimo, setMin] = useState(
@@ -658,36 +265,29 @@ export function SimpleProductForm({
   const [querInicial, setQuerInicial] = useState<boolean | null>(null);
   const [estoqueInicial, setInicial] = useState("");
 
-  // Fiscal
-  const [fiscalProfileId, setFiscal] = useState(product?.fiscalProfileId ?? "");
+  // Venda +18 — não é fiscal: governa o PDV e o totem. O enriquecimento por
+  // EAN marca sozinho quando reconhece bebida alcoólica.
   const [restricaoIdade, setIdade] = useState(product?.restricaoIdade ?? false);
-  const [gtinTrib, setGtinTrib] = useState(product?.gtinTributavel ?? "");
-  const [uTrib, setUTrib] = useState(product?.unidadeTributavel ?? "");
-  const [fatorTrib, setFatorTrib] = useState(
-    product?.fatorConversaoTrib != null ? String(product.fatorConversaoTrib) : "",
+  // Embalagem de compra. Não é pergunta do cadastro — o XML da primeira nota
+  // preenche sozinho —, mas quem tem o fardo na mão e quer bipar hoje precisa
+  // de um lugar para digitar. Fica recolhido.
+  const [packagings, setPackagings] = useState<PkLinha[]>(
+    (product?.packagings ?? []).map((pk) => ({
+      nome: pk.nome ?? "",
+      ean: pk.ean ?? "",
+      fator: pk.fatorConversao != null ? String(pk.fatorConversao) : "",
+    })),
   );
-  const [codigoAnp, setCodigoAnp] = useState(product?.codigoAnp ?? "");
 
-  // Online
-  const [vendeOnline, setVendeOnline] = useState(product?.vendeOnline ?? false);
-  const [pesoGramas, setPeso] = useState(product?.pesoGramas?.toString() ?? "");
-  const [alturaCm, setAltura] = useState(product?.alturaCm?.toString() ?? "");
-  const [larguraCm, setLargura] = useState(product?.larguraCm?.toString() ?? "");
-  const [comprimentoCm, setComprimento] = useState(
-    product?.comprimentoCm?.toString() ?? "",
-  );
-  const [descricaoOnline, setDescOnline] = useState(
-    product?.descricaoOnline ?? "",
-  );
-  const [gerandoDesc, setGerandoDesc] = useState(false);
-  const [descErro, setDescErro] = useState<string>();
-  const [channels, setChannels] = useState<ChannelRow[]>(
-    initChannels(product?.salesChannels),
-  );
-  const setChannel = (canal: SalesChannel, patch: Partial<ChannelRow>) =>
-    setChannels((prev) =>
-      prev.map((r) => (r.canal === canal ? { ...r, ...patch } : r)),
-    );
+  // Locais criados aqui — mesma ideia das categorias: entram na lista antes
+  // do refresh, senão o operador cria o local e não consegue selecioná-lo.
+  const [extraLocais, setExtraLocais] = useState<StorageOpt[]>([]);
+  const [criandoLocal, setCriandoLocal] = useState(false);
+  const [novoLocal, setNovoLocal] = useState("");
+  const [novoLocalTipo, setNovoLocalTipo] = useState<StorageOpt["tipo"]>("AMBIENTE");
+  const [sites, setSites] = useState<{ id: string; nome: string }[] | null>(null);
+  const [novoLocalSite, setNovoLocalSite] = useState("");
+  const [salvandoLocal, setSalvandoLocal] = useState(false);
 
   // Categorias/subcategorias criadas aqui — entram na lista antes do refresh.
   const [extraCats, setExtraCats] = useState<CategoryOpt[]>([]);
@@ -720,58 +320,111 @@ export function SimpleProductForm({
         .map((s) => ({ value: s.id, label: s.nome, group: s.categoriaNome })),
     [allSubs],
   );
+  const allLocais = useMemo(
+    () =>
+      [...storage, ...extraLocais].filter(
+        (l, i, arr) => arr.findIndex((x) => x.id === l.id) === i,
+      ),
+    [storage, extraLocais],
+  );
+
+  /** Abre o criador e busca os estabelecimentos — só na primeira vez. */
+  function abrirCriarLocal() {
+    setCriandoLocal(true);
+    if (sites !== null) return;
+    sitesParaLocal()
+      .then((r) => {
+        setSites(r);
+        if (r.length === 1) setNovoLocalSite(r[0].id);
+      })
+      .catch(() => setSites([]));
+  }
+
+  async function criarLocal() {
+    const nome = novoLocal.trim();
+    if (nome.length < 2) return;
+    const siteId = novoLocalSite || sites?.[0]?.id || "";
+    if (!siteId) {
+      toast.error(
+        "Sem estabelecimento",
+        "Cadastre um estabelecimento em Configurações antes de criar locais.",
+      );
+      return;
+    }
+    setSalvandoLocal(true);
+    try {
+      const id = await createStorageLocation({ nome, tipo: novoLocalTipo, siteId });
+      const site = sites?.find((x) => x.id === siteId) ?? null;
+      setExtraLocais((prev) => [
+        ...prev,
+        {
+          id,
+          nome,
+          tipo: novoLocalTipo,
+          ativo: true,
+          siteId,
+          siteNome: site?.nome ?? null,
+        },
+      ]);
+      // Criar e não selecionar seria trabalho pela metade.
+      setLocation(id);
+      setNovoLocal("");
+      setCriandoLocal(false);
+      toast.success("Local criado", `${nome} já está selecionado.`);
+    } catch (e) {
+      toast.error("Não deu para criar", e instanceof Error ? e.message : "Tente de novo.");
+    } finally {
+      setSalvandoLocal(false);
+    }
+  }
+
   const brandOptions: ComboOption[] = useMemo(
     () => brands.map((b) => ({ value: b.nome, label: b.nome })),
     [brands],
   );
-  const compraOpcoes = useMemo(() => {
-    const custom =
-      compraMode &&
-      compraMode !== "UN" &&
-      !COMPRA_OPCOES.some((o) => o.key === compraMode)
-        ? [{ key: compraMode, label: compraMode, icon: <Box size={18} /> }]
-        : [];
-    return [...COMPRA_OPCOES, ...custom];
-  }, [compraMode]);
-
   // ── Derivados ───────────────────────────────────────────
+  // `custo` não tem campo neste formulário de propósito: quem o define é a
+  // entrada da nota (custo médio). Ele chega pelo produto em edição ou pelo
+  // prefill do encarte, e serve só para calcular a margem na tela.
   const margemPct = margem(parseMoney(precoVenda), parseMoney(custo));
   const verdict = margemVerdict(margemPct);
   const precoNum = parseMoney(precoVenda) ?? 0;
   const custoNum = parseMoney(custo) ?? 0;
-  const medida = unidadeBase === "G" ? "g" : "ml";
-  const conteudoNum = n(conteudo);
-  const doseNum = n(dosePadrao);
-  const fatorNum = n(pkFator);
-  const porcaoLabel = unidadeBase === "G" ? "porções" : "doses";
-  // Rendimento em tempo real: quantas doses saem de uma unidade fechada.
-  const doses =
-    usaEmDrinks && (conteudoNum ?? 0) > 0 && (doseNum ?? 0) > 0
-      ? Math.floor(conteudoNum! / doseNum!)
-      : null;
   const subAtual = allSubs.find((s) => s.id === subcategoryId);
-  const selectedFiscal = fiscalProfiles.find((f) => f.id === fiscalProfileId);
-  const compraLabel =
-    compraMode && compraMode !== "UN" ? compraMode : "Unidade";
+  // Dígito verificador do GTIN. `false` só quando o comprimento é de GTIN e a
+  // conta não fecha — código interno de balança devolve null e não vira aviso.
+  const eanComDigitoErrado = gtinValido(ean) === false;
+  const localAtual = allLocais.find((l) => l.id === locationId) ?? null;
+  const minNum = n(estoqueMinimo) ?? 0;
+  const idealNum = n(estoqueIdeal) ?? 0;
+  const inicialNum = n(estoqueInicial) ?? 0;
+  // Ideal abaixo do mínimo faz a sugestão de compra sair negativa — o erro
+  // nasce aqui, silencioso, e só aparece na tela de reposição semanas depois.
+  const idealAbaixoDoMinimo = policy.usaIdeal && minNum > 0 && idealNum > 0 && idealNum < minNum;
+  // Saldo inicial sem local, num tenant que TEM locais, é quase sempre
+  // esquecimento: o saldo entra órfão e some da contagem por local.
+  const inicialSemLocal =
+    mode === "new" && inicialNum > 0 && !locationId && allLocais.length > 0;
+  // Nome tem teto de 50 no campo (NOME_MAX). O contador só aparece na reta
+  // final: mostrar "3/50" desde a primeira letra é ruído.
+  const nomeLen = nome.trim().length;
 
+  // Régua curta de propósito. O cadastro em branco só precisa saber O QUE é e
+  // POR QUANTO sai. Embalagem de compra, fator de conversão, custo, fornecedor
+  // e fiscal chegam assinados no XML da primeira nota (ver
+  // `enriquecerProdutoComNota`) — cobrar isso aqui é pedir ao operador um dado
+  // que ele ainda não tem e que o sistema vai receber de graça.
   const etapas = [
     {
       label: "produto",
       done: nome.trim().length >= 2 && !!subcategoryId,
       focus: "nome",
     },
-    { label: "compra", done: compraMode !== null, focus: "compra" },
-    {
-      label: "utilização",
-      done: vendaUnidade || usaEmDrinks,
-      focus: "uso",
-    },
-    // Custo não entra na régua: quem o informa é a compra, não este formulário.
     { label: "preço", done: precoNum > 0, focus: "preco" },
   ];
-  const doneCnt = etapas.filter((e) => e.done).length;
-  const isReady = doneCnt === etapas.length;
-  const firstMissing = etapas.find((e) => !e.done);
+  // Só para o brilho do botão Salvar: a régua de progresso saiu junto com o
+  // painel lateral — dois campos obrigatórios não pedem barra de etapas.
+  const isReady = etapas.every((e) => e.done);
   const margemAnimada = useCountUp(margemPct);
 
   // Campo obrigatório visitado e ainda vazio — aviso na hora, sem esperar o Salvar.
@@ -810,9 +463,20 @@ export function SimpleProductForm({
     return () => clearTimeout(t);
   }, [eanShake]);
 
+  /**
+   * "Mais configurações" nasce fechado — mas o Salvar pode reclamar de um campo
+   * lá dentro. Sem abrir a gaveta antes, o foco iria para um elemento oculto e
+   * a tela ficaria parada acusando um erro invisível.
+   */
+  function revelarSeOculto(el: Element | null) {
+    const d = document.getElementById(MAIS_ID) as HTMLDetailsElement | null;
+    if (d && el && d.contains(el) && !d.open) d.open = true;
+  }
+
   // ── Teclado: Enter caminha pelo formulário ──────────────
   function focusById(id: string) {
     const el = document.getElementById(id) as HTMLElement | null;
+    revelarSeOculto(el);
     el?.focus();
   }
   /** Enter em campo simples pula pro próximo — cadastro sem tirar a mão do teclado. */
@@ -830,13 +494,14 @@ export function SimpleProductForm({
     const atual = etapas.map((e) => e.done);
     const virou = atual.findIndex((d, i) => d && !prevDone.current[i]);
     prevDone.current = atual;
-    if (virou < 0 || virou >= STEP_IDS.length - 1) return;
+    const proxima = etapas[virou + 1];
+    if (virou < 0 || !proxima) return;
     // Nunca rolar enquanto o operador digita — só depois de clique/escolha.
     const ativo = document.activeElement?.tagName;
     if (ativo === "INPUT" || ativo === "TEXTAREA" || ativo === "SELECT") return;
     document
-      .getElementById(STEP_IDS[virou + 1])
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      .getElementById(proxima.focus)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [etapas.map((e) => e.done).join()]);
 
@@ -870,14 +535,6 @@ export function SimpleProductForm({
     imagemUrl,
     precoVenda,
     custo,
-    compraMode,
-    pkEan,
-    pkFator,
-    vendaUnidade,
-    usaEmDrinks,
-    unidadeBase,
-    conteudo,
-    dosePadrao,
     estoqueMinimo,
     estoqueIdeal,
     locationId,
@@ -922,50 +579,15 @@ export function SimpleProductForm({
     setImagemUrl(d.imagemUrl ?? "");
     setPrecoVenda(d.precoVenda ?? "");
     setCusto(d.custo ?? "");
-    setCompraMode(d.compraMode ?? null);
-    setPkEan(d.pkEan ?? "");
-    setPkFator(d.pkFator ?? "");
-    setVendaUnidade(d.vendaUnidade ?? true);
-    setUsaEmDrinks(d.usaEmDrinks ?? false);
-    setUnidadeBase(d.unidadeBase ?? "UN");
-    setConteudo(d.conteudo ?? "");
-    setDosePadrao(d.dosePadrao ?? "");
     setMin(soInteiro(d.estoqueMinimo ?? ""));
     setIdeal(soInteiro(d.estoqueIdeal ?? ""));
     setLocation(d.locationId ?? "");
     setQuerInicial(d.querInicial ?? null);
     setInicial(soInteiro(d.estoqueInicial ?? ""));
     setIdade(d.restricaoIdade ?? false);
-    setRevealed(true);
     setDraft(null);
     toast.success("Cadastro retomado", "Continue de onde parou.");
   }
-
-  // ── Duplicata semântica: nome+marca parecido, não só EAN idêntico ──
-  useEffect(() => {
-    let vivo = true;
-    const nomeOk = nome.trim().length >= 3;
-    const t = setTimeout(
-      () => {
-        if (!vivo) return;
-        if (!nomeOk) return setNomeSimilar(null);
-        setNomeSimilarDismiss(false);
-        checkNomeSimilar({
-          nome,
-          marcaNome: marca || undefined,
-          subcategoryId: subcategoryId || undefined,
-          excludeId: product?.id,
-        })
-          .then((r) => vivo && setNomeSimilar(r))
-          .catch(() => vivo && setNomeSimilar(null));
-      },
-      nomeOk ? 500 : 0,
-    );
-    return () => {
-      vivo = false;
-      clearTimeout(t);
-    };
-  }, [nome, marca, subcategoryId, product?.id]);
 
   // ── Preço sugerido: margem mediana praticada na subcategoria ──
   const [sugestao, setSugestao] = useState<{
@@ -1034,14 +656,12 @@ export function SimpleProductForm({
             break;
         }
         setNaoEncontrado(s.motivo === "nao_encontrado" || !s.motivo);
-        setRevealed(true);
         requestAnimationFrame(() => nomeRef.current?.focus());
       } else {
         if (s.nome) setNome(s.nome);
         if (s.marcaNome) setMarca(s.marcaNome);
         if (s.subcategoryId) setSubcategoryId(s.subcategoryId);
         if (s.imagemUrl) setImagemUrl(s.imagemUrl);
-        if (s.pesoGramas) setPeso(String(s.pesoGramas));
         if (s.restricaoIdade) setIdade(true);
         const cat = s.subcategoryId
           ? allSubs.find((x) => x.id === s.subcategoryId)
@@ -1054,7 +674,6 @@ export function SimpleProductForm({
           ean: codigo,
           viaIa: s.fonte === "cosmos+llm",
         });
-        setRevealed(true);
         toast.success("Produto encontrado", "Confira e siga o cadastro.");
       }
     } catch {
@@ -1099,25 +718,6 @@ export function SimpleProductForm({
       );
     } catch {
       /* silencioso — não bloqueia o cadastro */
-    }
-  }
-
-  async function gerarDescricaoOnline() {
-    setDescErro(undefined);
-    setGerandoDesc(true);
-    try {
-      const texto = await sugerirDescricaoOnline({
-        nome,
-        marcaNome: marca || undefined,
-        categoriaNome: subAtual?.nome,
-      });
-      setDescOnline(texto);
-    } catch (e) {
-      setDescErro(
-        e instanceof Error ? e.message : "Não foi possível gerar agora.",
-      );
-    } finally {
-      setGerandoDesc(false);
     }
   }
 
@@ -1176,24 +776,10 @@ export function SimpleProductForm({
     }
   }
 
-  /** Lê "330ml", "1L", "500g", "1kg" do nome — poupa uma digitação. */
-  function inferConteudo(
-    nomeProduto: string,
-  ): { valor: string; unidade: "ML" | "G" } | null {
-    const m = nomeProduto.match(/(\d+(?:[.,]\d+)?)\s*(ml|l|g|kg)\b/i);
-    if (!m) return null;
-    const raw = parseFloat(m[1].replace(",", "."));
-    const unit = m[2].toLowerCase();
-    if (unit === "ml") return { valor: String(raw), unidade: "ML" };
-    if (unit === "l") return { valor: String(raw * 1000), unidade: "ML" };
-    if (unit === "g") return { valor: String(raw), unidade: "G" };
-    if (unit === "kg") return { valor: String(raw * 1000), unidade: "G" };
-    return null;
-  }
-
-  function focusField(id: string) {
+    function focusField(id: string) {
     const el = document.getElementById(id);
     if (!el) return;
+    revelarSeOculto(el);
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     (el as HTMLElement).focus?.({ preventScroll: true });
   }
@@ -1208,30 +794,18 @@ export function SimpleProductForm({
     setImagemUrl("");
     setShowImgUrl(false);
     setShowSku(false);
-    setNomeSimilar(null);
-    setNomeSimilarDismiss(false);
-    setCompraMode(null);
-    setPkEan("");
-    setPkFator("");
-    setExtraPk([]);
-    setVariacaoLabel("");
-    setVariacoes([]);
-    setShowVariacao(false);
-    setVendaUnidade(true);
-    setUsaEmDrinks(false);
-    setUnidadeBase("UN");
-    setConteudo("");
-    setDosePadrao("");
     setQuerInicial(null);
     setInicial("");
     setEanTaken(null);
     setFoundCard(null);
     setNaoEncontrado(false);
-    setRevealed(false);
     setError(undefined);
   }
 
   function salvar(andNew = false) {
+    // Ctrl+Enter não passa por botão desabilitado: sem esta guarda, dois
+    // atalhos seguidos criavam DOIS produtos iguais.
+    if (pending) return;
     setError(undefined);
     if (nome.trim().length < 2) {
       setError("Informe o nome do produto.");
@@ -1243,13 +817,9 @@ export function SimpleProductForm({
       focusField("sub");
       return;
     }
-    if (!vendaUnidade && !usaEmDrinks) {
-      toast.error(
-        "Utilização não definida",
-        "Marque venda por unidade, uso em drinks e receitas, ou os dois.",
-      );
-      setError("Escolha ao menos uma utilização do produto.");
-      focusField("uso");
+    if (idealAbaixoDoMinimo) {
+      setError("O estoque ideal precisa ser maior que o mínimo.");
+      focusField("ideal");
       return;
     }
     if (!parseMoney(precoVenda)) {
@@ -1262,44 +832,48 @@ export function SimpleProductForm({
       return;
     }
 
-    let salesChannels;
-    try {
-      salesChannels = vendeOnline ? channelsToInput(channels) : [];
-    } catch (e) {
-      return setError(
-        e instanceof Error ? e.message : "Canal online sem preço.",
-      );
-    }
+    const embalagens = packagings
+      .filter((p) => p.nome.trim() && (n(p.fator) ?? 0) > 0)
+      .map((p) => ({
+        nome: p.nome.trim(),
+        ean: p.ean.trim() || undefined,
+        fatorConversao: n(p.fator)!,
+      }));
 
-    const packagings = [
-      ...(compraMode && compraMode !== "UN" && (fatorNum ?? 0) > 0
-        ? [
-            {
-              nome: compraMode,
-              ean: pkEan.trim() || undefined,
-              fatorConversao: fatorNum!,
-            },
-          ]
-        : []),
-      ...extraPk
-        .filter((p) => p.nome.trim() && (n(p.fatorConversao) ?? 0) > 0)
-        .map((p) => ({
-          nome: p.nome.trim(),
-          ean: p.ean.trim() || undefined,
-          fatorConversao: n(p.fatorConversao)!,
-        })),
-    ];
-
-    const variacoesValidas = variacoes
-      .filter((v) => v.nome.trim())
-      .map((v) => ({ id: v.id, nome: v.nome.trim(), ean: v.ean.trim() || undefined }));
-    if (showVariacao && variacoesValidas.length > 0 && !variacaoLabel.trim()) {
-      setError("Diga o que varia neste produto (ex.: Sabor).");
-      focusField("variacao-label");
-      return;
-    }
+    // Campos que este formulário NÃO gerencia mais (fornecedor, variação,
+    // fiscal, canais online) viajam de volta como vieram na EDIÇÃO. O schema
+    // do servidor aplica default `[]`/`false`/`null` no que chega ausente —
+    // sem isto, corrigir o nome de um produto apagaria os fornecedores dele,
+    // os canais de venda e o perfil fiscal, em silêncio.
+    const preservado = product
+      ? {
+          fiscalProfileId: product.fiscalProfileId ?? undefined,
+          gtinTributavel: product.gtinTributavel ?? undefined,
+          unidadeTributavel: product.unidadeTributavel ?? undefined,
+          fatorConversaoTrib: product.fatorConversaoTrib ?? undefined,
+          codigoAnp: product.codigoAnp ?? undefined,
+          fornecedoresIds: [...product.fornecedores]
+            .sort((a, b) => Number(b.isPrincipal) - Number(a.isPrincipal))
+            .map((f) => f.id),
+          custoFornecedor: product.custoFornecedor ?? undefined,
+          vendeOnline: product.vendeOnline,
+          pesoGramas: product.pesoGramas ?? undefined,
+          alturaCm: product.alturaCm ?? undefined,
+          larguraCm: product.larguraCm ?? undefined,
+          comprimentoCm: product.comprimentoCm ?? undefined,
+          descricaoOnline: product.descricaoOnline ?? undefined,
+          salesChannels: product.salesChannels
+            .filter((c) => c.ativo && c.precoCanal != null)
+            .map((c) => ({
+              canal: c.canal,
+              precoCanal: c.precoCanal!,
+              descricaoCanal: c.descricaoCanal ?? undefined,
+            })),
+        }
+      : {};
 
     const input = {
+      ...preservado,
       tipo: "SIMPLES" as const,
       sku: sku.trim() || undefined,
       ean: ean || undefined,
@@ -1309,39 +883,25 @@ export function SimpleProductForm({
       brandId:
         product?.brandId && product.marca === marca ? product.brandId : undefined,
       imagemUrl: imagemUrl || undefined,
-      unidadeBase: usaEmDrinks ? unidadeBase : ("UN" as const),
-      vendaUnidade,
-      fracionavel: usaEmDrinks,
-      conteudoPorUnidade: usaEmDrinks ? conteudoNum : null,
-      dosePadrao: usaEmDrinks ? doseNum : null,
+      // Produto SIMPLES vende a unidade fechada. Não é escolha: o fracionado
+      // por dose é assunto de INSUMO/receita, que tem formulário próprio.
+      unidadeBase: "UN" as const,
+      vendaUnidade: true,
+      fracionavel: false,
       precoVenda: parseMoney(precoVenda),
       custo: parseMoney(custo),
-      fiscalProfileId: fiscalProfileId || undefined,
       restricaoIdade,
-      gtinTributavel: gtinTrib.trim() || undefined,
-      unidadeTributavel: uTrib.trim().toUpperCase() || undefined,
-      fatorConversaoTrib: n(fatorTrib) ?? undefined,
-      codigoAnp: codigoAnp.trim() || undefined,
+      // Perfil fiscal, embalagem de compra, fornecedor e canais online não são
+      // perguntados aqui: chegam pelo XML da nota (ver enriquecerProdutoComNota)
+      // ou pelo sidepanel da lista de produtos. Na criação nascem vazios; na
+      // edicao, undefined deixa o que já está gravado intacto.
       controlaEstoque: true,
       // Trunca também aqui: prefill (CSV/EAN) pode trazer decimal.
       estoqueMinimo: Math.trunc(n(estoqueMinimo) ?? 0),
       estoqueIdeal: Math.trunc(n(estoqueIdeal) ?? 0),
       estoqueInicial: querInicial ? Math.trunc(n(estoqueInicial) ?? 0) : 0,
       locationId: locationId || undefined,
-      fornecedorPrincipalId: fornecedoresList[0] || undefined,
-      fornecedoresIds: fornecedoresList,
-      packagings,
-      // Variação comercial: linha em branco não vira nada, e sem variação o
-      // eixo ("Sabor") também não é gravado.
-      variacaoLabel: variacaoLabel.trim() || undefined,
-      variacoes: variacoesValidas,
-      vendeOnline,
-      pesoGramas: n(pesoGramas) ?? undefined,
-      alturaCm: vendeOnline ? (n(alturaCm) ?? undefined) : undefined,
-      larguraCm: vendeOnline ? (n(larguraCm) ?? undefined) : undefined,
-      comprimentoCm: vendeOnline ? (n(comprimentoCm) ?? undefined) : undefined,
-      descricaoOnline: descricaoOnline || undefined,
-      salesChannels,
+      packagings: embalagens,
     };
 
     start(async () => {
@@ -1390,14 +950,6 @@ export function SimpleProductForm({
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       salvar();
-      return;
-    }
-    // Alt+1..4 pula direto para a etapa.
-    if (e.altKey && /^[1-4]$/.test(e.key)) {
-      e.preventDefault();
-      const alvo = document.getElementById(STEP_IDS[Number(e.key) - 1]);
-      alvo?.scrollIntoView({ behavior: "smooth", block: "start" });
-      focusById(etapas[Number(e.key) - 1].focus);
       return;
     }
     // Esc em dois tempos: primeiro solta o campo, depois sai da tela. Evita
@@ -1453,10 +1005,13 @@ export function SimpleProductForm({
         className="hidden"
       />
 
-      <div className="px-4 pb-28 sm:px-8">
-        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_324px]">
-          {/* ── Coluna do assistente ── */}
-          <div className="flex flex-col gap-4">
+      {/* pb-6 e não pb-28: o rodapé é `sticky`, então ele mesmo ocupa o
+          espaço no fim do fluxo. O respiro grande sobrou de quando o
+          formulário tinha quatro etapas e rolava muito. */}
+      <div className="px-4 pb-6 sm:px-8">
+        {/* Um cartão só, largura cheia. Painel lateral ao lado de cinco campos
+            vira moldura; a largura rende mais como campo lado a lado. */}
+        <div className="flex w-full flex-col gap-4">
             {/* Cadastro veio da revisão do catálogo de um fornecedor — dados
                 abaixo já saíram do encarte/tabela importada, só confirme. */}
             {itemParaVincular && prefill && (
@@ -1502,187 +1057,119 @@ export function SimpleProductForm({
               </div>
             )}
 
-            {/* 1 · Identificação */}
-            {mode === "new" && (
-              <section className="fade-up rounded-[var(--radius-lg)] border border-brand/25 bg-brand-soft p-5 shadow-[var(--shadow-1)] sm:p-6">
-                <div className="flex items-center gap-2">
-                  <ScanBarcode size={15} className="text-brand-strong" />
-                  <Eyebrow className="text-brand-strong">Identificação</Eyebrow>
-                </div>
-                <h2 className="mt-2 font-display text-xl font-semibold leading-tight text-ink sm:text-2xl">
-                  Comece pelo código de barras
-                </h2>
-                <p className="mt-1 max-w-lg text-sm text-ink-2">
-                  Escaneie ou digite o EAN para buscar automaticamente as
-                  informações do produto.
-                </p>
+            {/* ── O cadastro inteiro ──
+                Duas faixas, não sete campos soltos: quem lê a tela pela primeira
+                vez precisa enxergar "o que é este produto" separado de "como ele
+                é classificado e vendido". A grade de 12 colunas só se abre em
+                telas largas; abaixo disso empilha em duas e depois em uma. */}
+            <section className="fade-up overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface shadow-[var(--shadow-1)]">
+              {/* ── Faixa 1 · Identificação ── */}
+              <div className="flex flex-col gap-4 p-5 sm:p-6">
+                <Eyebrow as="h2" className="text-brand-strong">
+                  Identificação
+                </Eyebrow>
 
-                <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-                  <div className="relative flex-1">
-                    <ScanBarcode
-                      size={20}
-                      aria-hidden
-                      className={cn(
-                        "pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 transition-colors",
-                        enriching ? "text-brand-strong" : "text-muted",
-                      )}
-                    />
-                    <Input
-                      id="ean"
-                      autoFocus
-                      value={ean}
-                      onChange={(e) => onEanChange(e.target.value)}
-                      onBlur={onEanBlur}
-                      onKeyDown={(e) => {
-                        if (e.key !== "Enter") return;
-                        e.preventDefault();
-                        if (onlyDigits(ean).length >= 8) buscarEan();
-                        else setEanShake(true);
-                      }}
-                      disabled={enriching}
-                      aria-busy={enriching}
-                      placeholder="Escaneie ou digite o EAN…"
-                      inputMode="numeric"
-                      className={cn(
-                        "h-14 pl-12 font-mono text-lg tracking-wide placeholder:font-sans placeholder:text-base placeholder:font-normal placeholder:tracking-normal",
-                        eanShake && "shake-x border-danger",
-                      )}
-                    />
-                    {enriching && (
-                      <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--radius)]">
-                        <div className="scan-line absolute inset-y-1 w-1/3 bg-gradient-to-r from-transparent via-brand/25 to-transparent" />
-                      </div>
-                    )}
-                  </div>
-                  <Button
-                    type="button"
-                    onClick={() => buscarEan()}
-                    disabled={enriching || ean.length < 8}
-                    className="h-14 shrink-0 gap-2 px-6 text-base"
-                  >
-                    {enriching ? (
-                      <Loader2 size={17} className="animate-spin" />
-                    ) : (
-                      <ScanBarcode size={17} />
-                    )}
-                    {enriching ? "Buscando…" : "Buscar dados"}
-                  </Button>
-                </div>
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-5">
+                  <ImageThumb
+                    imagemUrl={imagemUrl}
+                    onPick={() => imgFileRef.current?.click()}
+                    onClear={() => setImagemUrl("")}
+                  />
 
-                {eanTaken && (
-                  <div className="fade-up mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[var(--radius-sm)] border border-warn/30 bg-warn-soft px-3 py-2 text-xs text-warn">
-                    <AlertCircle size={13} className="shrink-0" />
-                    <span className="min-w-0 flex-1">
-                      Já existe um produto com esse código:{" "}
-                      <span className="font-medium">{eanTaken.nome}</span> (
-                      {eanTaken.sku}).
-                    </span>
-                    {eanTaken.id && (
-                      <Link
-                        href={`/produtos/${eanTaken.id}/editar`}
-                        className="flex shrink-0 items-center gap-1 rounded-[var(--radius-sm)] border border-warn/40 px-2 py-1 font-medium transition-colors hover:bg-warn/10"
-                      >
-                        <Pencil size={11} /> Editar o existente
-                      </Link>
-                    )}
-                  </div>
-                )}
-
-                {foundCard && (
-                  <div className="fade-up relative mt-3 flex items-start gap-3 overflow-hidden rounded-[var(--radius)] border border-ok/30 bg-surface p-3">
-                    {foundCard.imagem ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={foundCard.imagem}
-                        alt=""
-                        className="h-14 w-14 shrink-0 rounded-[var(--radius-sm)] border border-line bg-white object-contain"
-                      />
-                    ) : (
-                      <span className="grid h-14 w-14 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line text-faint">
-                        <ImageOff size={18} />
-                      </span>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <p className="flex items-center gap-1.5 text-[11px] font-semibold text-ok">
-                        <CheckCircle2 size={13} /> Produto encontrado
-                      </p>
-                      <p className="truncate text-sm font-medium text-ink">
-                        {foundCard.nome}
-                      </p>
-                      <p className="truncate text-xs text-muted">
-                        {[foundCard.marca, foundCard.categoria]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </p>
-                      <p className="truncate font-mono text-[11px] text-faint">
-                        {foundCard.ean}
-                      </p>
-                      <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted">
-                        {foundCard.viaIa && (
-                          <Sparkles size={11} className="text-brand-strong" />
-                        )}
-                        Essas informações foram preenchidas automaticamente.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setFoundCard(null)}
-                      className="shrink-0 text-faint hover:text-ink"
-                      aria-label="Fechar"
+                  <div className="grid min-w-0 flex-1 grid-cols-1 items-start gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-12">
+                    {/* Código de barras. Primeiro campo porque quase todo cadastro
+                        começa com um bipe — mas é CAMPO, não portão: quem não tem
+                        código segue direto para o nome. */}
+                    <Field
+                      label="Código de barras"
+                      htmlFor="ean"
+                      className="xl:col-span-3"
                     >
-                      <X size={14} />
-                    </button>
-                    {/* Fio de tempo — mostra que o card vai sumir sozinho */}
-                    <span
-                      aria-hidden
-                      className="countdown-bar absolute bottom-0 left-0 h-0.5 w-full bg-ok/40"
-                      style={{ animationDuration: `${FOUND_CARD_MS}ms` }}
-                    />
-                  </div>
-                )}
+                      <div className="relative">
+                        <ScanBarcode
+                          size={17}
+                          aria-hidden
+                          className={cn(
+                            "pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 transition-colors",
+                            enriching ? "text-brand-strong" : "text-muted",
+                          )}
+                        />
+                        <Input
+                          id="ean"
+                          autoFocus={mode === "new"}
+                          value={ean}
+                          // Na edição o campo é só um campo: a rajada do leitor
+                          // não pode disparar enriquecimento e reescrever o nome
+                          // que o operador já ajustou.
+                          onChange={(e) =>
+                            mode === "new"
+                              ? onEanChange(e.target.value)
+                              : setEan(e.target.value)
+                          }
+                          onBlur={onEanBlur}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter") return;
+                            e.preventDefault();
+                            if (mode === "new" && onlyDigits(ean).length >= 8) buscarEan();
+                            else focusById("nome");
+                          }}
+                          disabled={enriching}
+                          aria-busy={enriching}
+                          placeholder="7891000315507"
+                          inputMode="numeric"
+                          className={cn(
+                            "pl-10 font-mono tracking-wide placeholder:font-sans placeholder:tracking-normal",
+                            mode === "new" && "pr-11",
+                            eanShake && "shake-x border-danger",
+                          )}
+                        />
+                        {mode === "new" && (
+                          <button
+                            type="button"
+                            onClick={() => buscarEan()}
+                            disabled={enriching || onlyDigits(ean).length < 8}
+                            title="Buscar dados do produto"
+                            aria-label="Buscar dados do produto"
+                            className="absolute top-1/2 right-1.5 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-[var(--radius-sm)] text-brand-strong transition-colors hover:bg-brand-soft disabled:cursor-not-allowed disabled:text-faint disabled:hover:bg-transparent"
+                          >
+                            {enriching ? (
+                              <Loader2 size={15} className="animate-spin" />
+                            ) : (
+                              <Sparkles size={15} />
+                            )}
+                          </button>
+                        )}
+                        {enriching && (
+                          <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--radius)]">
+                            <div className="scan-line absolute inset-y-1 w-1/3 bg-gradient-to-r from-transparent via-brand/25 to-transparent" />
+                          </div>
+                        )}
+                      </div>
+                    </Field>
 
-                {naoEncontrado && !foundCard && (
-                  <p className="mt-3 text-sm text-ink-2">
-                    Produto não encontrado. Continue preenchendo manualmente.
-                  </p>
-                )}
-
-                {!revealed && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRevealed(true);
-                      requestAnimationFrame(() => nomeRef.current?.focus());
-                    }}
-                    className="mt-3 text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
-                  >
-                    Não tem código de barras? Preencher manualmente
-                  </button>
-                )}
-              </section>
-            )}
-
-            {revealed && (
-              <>
-                {/* 2 · Informações principais */}
-                <Step
-                  n={1}
-                  id={STEP_IDS[0]}
-                  question="Informações principais"
-                  hint="O básico para o produto existir no sistema."
-                  done={etapas[0].done}
-                >
-                  <div className="flex items-end gap-3">
-                    <ImageThumb
-                      imagemUrl={imagemUrl}
-                      onPick={() => imgFileRef.current?.click()}
-                      onClear={() => setImagemUrl("")}
-                    />
                     <Field
                       label="Nome do produto"
                       htmlFor="nome"
                       required
-                      className="min-w-0 flex-1"
+                      hint={
+                        nomeLen >= 40 ? (
+                          <span
+                            className={cn(
+                              "flex items-center gap-1.5",
+                              nomeLen >= NOME_MAX ? "text-warn" : "text-muted",
+                            )}
+                          >
+                            {nomeLen >= NOME_MAX && (
+                              <AlertCircle size={12} className="shrink-0" />
+                            )}
+                            <span className="font-mono">
+                              {nomeLen}/{NOME_MAX}
+                            </span>
+                            — nomes longos cortam na etiqueta e na tela do caixa.
+                          </span>
+                        ) : undefined
+                      }
+                      className="min-w-0 xl:col-span-9"
                     >
                       <Input
                         id="nome"
@@ -1690,7 +1177,8 @@ export function SimpleProductForm({
                         value={nome}
                         onChange={(e) => setNome(e.target.value)}
                         onBlur={() => touch("nome")}
-                        onKeyDown={enterTo("marca")}
+                        onKeyDown={enterTo("sub")}
+                        maxLength={NOME_MAX}
                         placeholder="Ex.: Heineken Long Neck 330ml"
                         className={cn(
                           "text-[15px] font-medium placeholder:text-sm placeholder:font-normal",
@@ -1698,76 +1186,98 @@ export function SimpleProductForm({
                         )}
                       />
                     </Field>
+
+                    {/* Recados da faixa — atravessam a grade inteira para não
+                        empurrar campo nenhum de lugar quando aparecem. */}
+                    {(eanTaken || eanComDigitoErrado || foundCard || naoEncontrado) && (
+                      <div
+                        // Sem isto, quem usa leitor de tela digita o código e não
+                        // fica sabendo que já existe produto com ele.
+                        role="status"
+                        aria-live="polite"
+                        className="flex flex-col gap-1.5 sm:col-span-2 xl:col-span-12"
+                      >
+                        {/* Dígito verificador não fecha. Avisa, não bloqueia:
+                            existe catálogo antigo com GTIN errado e código
+                            interno que ninguém quer ser impedido de cadastrar —
+                            mas quem digitou torto precisa saber agora, e não no
+                            caixa com fila. */}
+                        {eanComDigitoErrado && (
+                          <p className="fade-up flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-warn">
+                            <AlertCircle size={13} className="shrink-0" />
+                            <span className="min-w-0 flex-1">
+                              O dígito verificador deste código não fecha. Confira antes de
+                              salvar — código errado não bipa no caixa.
+                            </span>
+                          </p>
+                        )}
+
+                        {eanTaken && (
+                          <div className="fade-up flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-warn">
+                            <AlertCircle size={13} className="shrink-0" />
+                            <span className="min-w-0 flex-1">
+                              Já existe um produto com esse código:{" "}
+                              <span className="font-medium">{eanTaken.nome}</span> ({eanTaken.sku}
+                              ).
+                            </span>
+                            {eanTaken.id && (
+                              <Link
+                                href={`/produtos/${eanTaken.id}/editar`}
+                                className="flex shrink-0 items-center gap-1 font-medium underline underline-offset-2"
+                              >
+                                <Pencil size={11} /> Editar o existente
+                              </Link>
+                            )}
+                          </div>
+                        )}
+
+                        {/* O que a busca trouxe cabe numa linha. O card grande com
+                            imagem e contagem regressiva chamava mais atenção que o
+                            próprio formulário. */}
+                        {foundCard && (
+                          <p className="fade-up flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-ok">
+                            <CheckCircle2 size={13} className="shrink-0" />
+                            <span className="font-medium text-ink">{foundCard.nome}</span>
+                            {[foundCard.marca, foundCard.categoria].filter(Boolean).length > 0 && (
+                              <span className="text-muted">
+                                ·{" "}
+                                {[foundCard.marca, foundCard.categoria].filter(Boolean).join(" · ")}
+                              </span>
+                            )}
+                            <span className="flex items-center gap-1 text-muted">
+                              ·{" "}
+                              {foundCard.viaIa && (
+                                <Sparkles size={11} className="text-brand-strong" />
+                              )}
+                              preenchido automaticamente
+                            </span>
+                          </p>
+                        )}
+
+                        {naoEncontrado && !foundCard && (
+                          <p className="text-xs text-muted">
+                            Produto não encontrado — preencha o nome e a categoria.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
+                </div>
+              </div>
 
-                  {nomeSimilar && !nomeSimilarDismiss && (
-                    <div className="fade-up flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[var(--radius-sm)] border border-warn/30 bg-warn-soft px-3 py-2 text-xs text-warn">
-                      <AlertCircle size={13} className="shrink-0" />
-                      <span className="min-w-0 flex-1">
-                        Já existe um produto parecido:{" "}
-                        <span className="font-medium">{nomeSimilar.nome}</span>{" "}
-                        ({nomeSimilar.sku}).
-                      </span>
-                      <Link
-                        href={`/produtos/${nomeSimilar.id}/editar`}
-                        className="flex shrink-0 items-center gap-1 rounded-[var(--radius-sm)] border border-warn/40 px-2 py-1 font-medium transition-colors hover:bg-warn/10"
-                      >
-                        <Pencil size={11} /> Ver produto
-                      </Link>
-                      <button
-                        type="button"
-                        onClick={() => setNomeSimilarDismiss(true)}
-                        className="shrink-0 text-faint hover:text-ink"
-                        aria-label="É um produto diferente, continuar"
-                      >
-                        <X size={13} />
-                      </button>
-                    </div>
-                  )}
+              {/* ── Faixa 2 · Classificação e preço ── */}
+              <div className="flex flex-col gap-4 border-t border-line bg-surface-2/30 p-5 sm:p-6">
+                <Eyebrow as="h2">Classificação e preço</Eyebrow>
 
-                  {showImgUrl ? (
-                    <Field label="URL da imagem" htmlFor="img-url">
-                      <Input
-                        id="img-url"
-                        value={imagemUrl.startsWith("data:") ? "" : imagemUrl}
-                        onChange={(e) => setImagemUrl(e.target.value)}
-                        placeholder="https://…"
-                        inputMode="url"
-                        className="font-mono text-xs placeholder:font-sans placeholder:text-sm"
-                      />
-                    </Field>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setShowImgUrl(true)}
-                      className="flex items-center gap-1 self-start text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
-                    >
-                      <ImagePlus size={12} /> Colar URL de imagem
-                    </button>
-                  )}
-
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                    <Field label="Marca" htmlFor="marca">
-                      <Combobox
-                        id="marca"
-                        value={marca}
-                        onChange={setMarca}
-                        options={brandOptions}
-                        placeholder="Ex.: Heineken"
-                        freeText
-                        onCommit={() => focusById("sub")}
-                        onCreate={(q) => setMarca(q)}
-                        createLabel={(q) => `Criar “${q}”`}
-                      />
-                    </Field>
-
-                    <Field
-                      label="Categoria"
-                      htmlFor="sub"
-                      required
-                      error={faltando.sub ? "Escolha a categoria." : undefined}
-                    >
-                      <div onBlur={() => touch("sub")}>
+                <div className="grid grid-cols-1 items-start gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-12">
+                  <Field
+                    label="Categoria"
+                    htmlFor="sub"
+                    required
+                    error={faltando.sub ? "Escolha a categoria." : undefined}
+                    className="xl:col-span-3"
+                  >
+                    <div onBlur={() => touch("sub")}>
                       <Combobox
                         id="sub"
                         value={subcategoryId}
@@ -1775,7 +1285,7 @@ export function SimpleProductForm({
                         options={subOptions}
                         placeholder="Busque ou crie…"
                         emptyText="Nenhuma categoria com esse nome."
-                        onCommit={() => focusById("preco")}
+                        onCommit={() => focusById("marca")}
                         renderCreate={(q, close) => (
                           <CriarSubcategoria
                             nome={q}
@@ -1788,153 +1298,465 @@ export function SimpleProductForm({
                           />
                         )}
                       />
-                      </div>
-                    </Field>
+                    </div>
+                  </Field>
 
+                  <Field label="Marca" htmlFor="marca" className="xl:col-span-3">
+                    <Combobox
+                      id="marca"
+                      value={marca}
+                      onChange={setMarca}
+                      options={brandOptions}
+                      placeholder="Ex.: Heineken"
+                      freeText
+                      onCommit={() => focusById("preco")}
+                      onCreate={(q) => setMarca(q)}
+                      createLabel={(q) => `Criar “${q}”`}
+                    />
+                  </Field>
+
+                  {/* Preço fica com os outros obrigatórios. Num painel lateral ele
+                      ficava longe do nome e da categoria, e no celular caía depois
+                      de tudo — inclusive depois do que é opcional.
+                      Produto simples vende sempre por UNIDADE: não há o que
+                      escolher, e por isso a unidade não é campo. */}
+                  <Field
+                    label="Preço de venda"
+                    htmlFor="preco"
+                    required
+                    hint="Por unidade."
+                    className="xl:col-span-2"
+                  >
+                    <div className="relative">
+                      <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-muted select-none">
+                        R$
+                      </span>
+                      <Input
+                        id="preco"
+                        value={precoVenda}
+                        onChange={(e) => setPrecoVenda(maskMoney(e.target.value))}
+                        onBlur={() => touch("preco")}
+                        onKeyDown={enterTo("salvar-produto")}
+                        placeholder="0,00"
+                        inputMode="numeric"
+                        className={cn(
+                          "pl-9 font-mono text-base font-semibold",
+                          faltando.preco && "border-warn",
+                        )}
+                      />
+                    </div>
+                  </Field>
+
+                  {/* SKU ao lado do preço: são as duas etiquetas que o operador
+                      confere junto — a de prateleira e a de preço. */}
+                  {showSku && (
                     <Field
                       label="SKU"
                       htmlFor="sku"
-                      hint={showSku ? "Vazio = gerado ao salvar." : undefined}
+                      hint="Vazio = gerado ao salvar."
+                      className="xl:col-span-2"
                     >
-                      {showSku ? (
-                        <Input
-                          id="sku"
-                          autoFocus
-                          value={sku}
-                          onChange={(e) => setSku(e.target.value.toUpperCase())}
-                          placeholder={skuPreview(subcategoryId)}
-                          className="font-mono placeholder:font-sans placeholder:font-normal placeholder:tracking-normal"
-                        />
-                      ) : (
-                        <button
-                          type="button"
-                          id="sku"
-                          onClick={() => setShowSku(true)}
-                          className="flex h-11 w-full items-center gap-1.5 rounded-[var(--radius)] border border-dashed border-line-strong px-4 text-sm text-muted transition-colors hover:border-brand/40 hover:text-ink"
-                        >
-                          <Pencil size={12} /> Personalizar SKU
-                        </button>
-                      )}
-                    </Field>
-                  </div>
-
-                  {mode === "edit" && (
-                    <Field label="Código de barras (EAN)" htmlFor="ean-edit">
                       <Input
-                        id="ean-edit"
-                        value={ean}
-                        onChange={(e) => setEan(e.target.value)}
-                        onBlur={onEanBlur}
-                        placeholder="7891000315507"
-                        inputMode="numeric"
-                        className="font-mono placeholder:font-sans"
+                        id="sku"
+                        autoFocus={mode !== "edit"}
+                        value={sku}
+                        onChange={(e) => setSku(e.target.value.toUpperCase())}
+                        placeholder={skuPreview(subcategoryId)}
+                        className="font-mono placeholder:font-sans placeholder:font-normal placeholder:tracking-normal"
                       />
                     </Field>
                   )}
-                </Step>
 
-                {/* 3 · Compra */}
-                <Step
-                  n={2}
-                  id={STEP_IDS[1]}
-                  delay={60}
-                  question="Como você compra este produto?"
-                  hint="Se comprar em embalagem fechada, o sistema converte para unidades na entrada."
-                  done={etapas[1].done}
-                >
-                  <div id="compra" className="flex flex-wrap gap-2">
-                    {compraOpcoes.map((o) => (
-                      <Choice
-                        key={o.key}
-                        selected={compraMode === o.key}
-                        onClick={() => {
-                          setCompraMode(o.key);
-                          if (o.key !== "UN")
-                            requestAnimationFrame(() => focusById("pk-fator"));
-                        }}
-                        icon={o.icon}
-                        label={o.label}
+                  {/* Margem só quando há custo para comparar — e custo não se
+                      digita aqui: ele é consequência da compra (nota ou estoque
+                      inicial). */}
+                  {(verdict || (precoSugerido && sugestao)) && (
+                    <div className="flex flex-col justify-end gap-1 text-xs sm:col-span-2 xl:col-span-4 xl:pb-2.5">
+                      {verdict && (
+                        <span className="flex flex-wrap items-center gap-1.5">
+                          <span
+                            className={cn(
+                              "flex items-center gap-1 font-mono font-semibold",
+                              verdict.tone === "ok" && "text-ok",
+                              verdict.tone === "warn" && "text-warn",
+                              verdict.tone === "danger" && "text-danger",
+                            )}
+                          >
+                            {verdict.tone === "danger" ? (
+                              <TrendingDown size={12} />
+                            ) : (
+                              <TrendingUp size={12} />
+                            )}
+                            {margemAnimada}%
+                          </span>
+                          <span className="text-muted">
+                            {verdict.label.toLowerCase()}
+                            {custoNum > 0 && ` · lucro ${brl(precoNum - custoNum)} por unidade`}
+                          </span>
+                        </span>
+                      )}
+                      {precoSugerido && sugestao && (
+                        <button
+                          type="button"
+                          onClick={() => setPrecoVenda(moneyToMask(precoSugerido))}
+                          className="flex flex-wrap items-center gap-1.5 text-left text-accent underline-offset-2 hover:underline"
+                        >
+                          <Lightbulb size={12} className="shrink-0" />
+                          Média em {subAtual?.nome}: {sugestao.margemPct}% → usar{" "}
+                          <span className="font-mono font-semibold">{brl(precoSugerido)}</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {showImgUrl && (
+                    <Field label="URL da imagem" htmlFor="img-url" className="sm:col-span-2 xl:col-span-6">
+                      <Input
+                        id="img-url"
+                        value={imagemUrl.startsWith("data:") ? "" : imagemUrl}
+                        onChange={(e) => setImagemUrl(e.target.value)}
+                        placeholder="https://…"
+                        inputMode="url"
+                        className="font-mono text-xs placeholder:font-sans placeholder:text-sm"
                       />
-                    ))}
-                  </div>
+                    </Field>
+                  )}
+                </div>
 
-                  <Collapse open={!!compraMode && compraMode !== "UN"}>
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {/* Venda +18. Não é fiscal: quem obedece isso é o PDV e o totem,
+                    que pedem confirmação de idade antes de fechar a venda. O
+                    enriquecimento por EAN já marca sozinho em bebida alcoólica —
+                    o campo existe para conferir e desmarcar. */}
+                <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-ink-2">
+                  <input
+                    type="checkbox"
+                    checked={restricaoIdade}
+                    onChange={(e) => setIdade(e.target.checked)}
+                    className="cursor-pointer accent-[var(--brand)]"
+                  />
+                  Venda restrita a maiores de 18 anos
+                </label>
+
+                {/* Saídas raras viram link, não campo: o SKU nasce da categoria e
+                    a imagem quase sempre vem do código de barras. */}
+                {(!showImgUrl || !showSku) && (
+                  <div className="flex flex-wrap items-center gap-4">
+                    {!showImgUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setShowImgUrl(true)}
+                        className="flex items-center gap-1 text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
+                      >
+                        <ImagePlus size={12} /> Colar URL de imagem
+                      </button>
+                    )}
+                    {!showSku && (
+                      <button
+                        type="button"
+                        id="sku"
+                        onClick={() => setShowSku(true)}
+                        className="flex items-center gap-1 text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
+                      >
+                        <Pencil size={12} /> Personalizar SKU
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+              {/* ── Faixa 3 · Estoque ──
+                  Fica no cadastro (e não numa gaveta) porque é a única coisa
+                  daqui que a nota NÃO traz: o local é escolha de layout da loja
+                  e a contagem inicial é o que faz o mercado que já tem
+                  mercadoria na prateleira sair do zero. */}
+              <div className="flex flex-col gap-4 border-t border-line p-5 sm:p-6">
+                <Eyebrow as="h2">Estoque</Eyebrow>
+
+                {policy.usaGiro && (
+                  <p className="flex items-start gap-2 text-xs text-muted">
+                    <Sparkles size={13} className="mt-0.5 shrink-0 text-brand" />
+                    Sua empresa repõe por rotatividade: a quantidade a comprar sai do giro de
+                    venda deste produto, sem meta fixa.
+                  </p>
+                )}
+
+                <div className="grid grid-cols-1 items-start gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-12">
+                  {/* O campo existe mesmo sem local nenhum cadastrado: escondê-lo
+                      fazia quem nunca criou um local nem descobrir que a
+                      funcionalidade existe. */}
+                  <Field
+                    label="Local do estoque"
+                    htmlFor="loc"
+                    // O ícone do tipo aparece no hint porque `select` nativo não
+                    // desenha nada dentro das opções — e a temperatura é o que o
+                    // operador confere de relance.
+                    hint={
+                      localAtual ? (
+                        <span className="flex items-center gap-1.5">
+                          <StorageIcon tipo={localAtual.tipo} size={12} />
+                          <span className={STORAGE_COLOR[localAtual.tipo]}>
+                            {STORAGE_LABEL[localAtual.tipo]}
+                          </span>
+                        </span>
+                      ) : (
+                        "Onde este produto fica guardado."
+                      )
+                    }
+                    className="xl:col-span-3"
+                  >
+                    <Select
+                      id="loc"
+                      value={locationId}
+                      onChange={(e) => setLocation(e.target.value)}
+                      disabled={allLocais.length === 0}
+                    >
+                      <option value="">
+                        {allLocais.length === 0 ? "Nenhum local cadastrado" : "Sem local"}
+                      </option>
+                      {allLocais.map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.nome}
+                          {l.siteNome ? ` — ${l.siteNome}` : ""}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+
+                  {policy.usaMinimo && (
+                    <Field label="Estoque mínimo" htmlFor="min" className="xl:col-span-2">
+                      <Input
+                        id="min"
+                        value={estoqueMinimo}
+                        onChange={(e) => setMin(soInteiro(e.target.value))}
+                        placeholder="0"
+                        inputMode="numeric"
+                        className="font-mono"
+                      />
+                    </Field>
+                  )}
+
+                  {policy.usaIdeal && (
+                    <Field
+                      label="Estoque ideal"
+                      htmlFor="ideal"
+                      error={
+                        idealAbaixoDoMinimo
+                          ? `Precisa ser maior que o mínimo (${minNum}).`
+                          : undefined
+                      }
+                      className="xl:col-span-2"
+                    >
+                      <Input
+                        id="ideal"
+                        value={estoqueIdeal}
+                        onChange={(e) => setIdeal(soInteiro(e.target.value))}
+                        placeholder="0"
+                        inputMode="numeric"
+                        className="font-mono"
+                      />
+                    </Field>
+                  )}
+
+                  {/* Contagem INICIAL, e só na criação: depois disso quem mexe em
+                      saldo é entrada, venda ou ajuste — nunca um formulário de
+                      cadastro. Na edição o campo não existe justamente para não
+                      parecer que dá para corrigir estoque digitando por cima. */}
+                  {mode === "new" && (
+                    <>
                       <Field
-                        label={`Quantidade de unidades por ${(compraMode ?? "").toLowerCase()}`}
-                        htmlFor="pk-fator"
-                        required
+                        label="Estoque inicial"
+                        htmlFor="ini"
+                        hint="O que já está na prateleira hoje. Em branco = começa zerado."
+                        className="xl:col-span-3"
                       >
                         <Input
-                          id="pk-fator"
-                          value={pkFator}
-                          onChange={(e) => setPkFator(e.target.value)}
-                          onKeyDown={enterTo("pk-ean")}
+                          id="ini"
+                          value={estoqueInicial}
+                          onChange={(e) => {
+                            const v = soInteiro(e.target.value);
+                            setInicial(v);
+                            setQuerInicial(v !== "" && Number(v) > 0);
+                          }}
+                          placeholder="0"
+                          inputMode="numeric"
+                          className="font-mono"
+                        />
+                      </Field>
+                    </>
+                  )}
+                </div>
+
+                {criandoLocal ? (
+                  <div className="fade-up flex flex-col gap-3 rounded-[var(--radius)] border border-line bg-surface-2/40 p-3 sm:flex-row sm:items-end">
+                    <Field label="Nome do local" htmlFor="novo-local" className="min-w-0 flex-1">
+                      <Input
+                        id="novo-local"
+                        autoFocus
+                        value={novoLocal}
+                        onChange={(e) => setNovoLocal(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void criarLocal();
+                          }
+                          if (e.key === "Escape") setCriandoLocal(false);
+                        }}
+                        placeholder="Ex.: Geladeira da frente"
+                      />
+                    </Field>
+                    {/* Três opções: viram botões, não um select. A temperatura é
+                        o que distingue um local do outro, e ela se lê pelo ícone
+                        muito antes de se ler pela palavra. */}
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Tipo</Label>
+                      <div className="flex gap-1.5" role="group" aria-label="Tipo do local">
+                        {(["AMBIENTE", "REFRIGERADO", "CONGELADO"] as const).map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => setNovoLocalTipo(t)}
+                            aria-pressed={novoLocalTipo === t}
+                            className={cn(
+                              "flex h-11 items-center gap-1.5 rounded-[var(--radius)] border px-3 text-sm font-medium transition-colors",
+                              novoLocalTipo === t
+                                ? "border-brand bg-brand-soft text-ink"
+                                : "border-line-strong bg-surface text-ink-2 hover:border-brand/40",
+                            )}
+                          >
+                            <StorageIcon tipo={t} size={15} />
+                            <span className="hidden sm:inline">{STORAGE_LABEL[t]}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {/* Só pergunta a loja quando há mais de uma — com uma só, a
+                        pergunta tem uma resposta possível. */}
+                    {(sites?.length ?? 0) > 1 && (
+                      <Field label="Estabelecimento" htmlFor="novo-local-site" className="sm:w-52">
+                        <Select
+                          id="novo-local-site"
+                          value={novoLocalSite}
+                          onChange={(e) => setNovoLocalSite(e.target.value)}
+                        >
+                          {(sites ?? []).map((x) => (
+                            <option key={x.id} value={x.id}>
+                              {x.nome}
+                            </option>
+                          ))}
+                        </Select>
+                      </Field>
+                    )}
+                    <div className="flex shrink-0 items-center gap-2 pb-0.5">
+                      <Button
+                        size="sm"
+                        onClick={() => void criarLocal()}
+                        disabled={salvandoLocal || novoLocal.trim().length < 2}
+                      >
+                        {salvandoLocal ? <Loader2 size={14} className="animate-spin" /> : "Criar"}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setCriandoLocal(false)}>
+                        Cancelar
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={abrirCriarLocal}
+                    className="flex w-fit items-center gap-1 text-xs font-medium text-brand-strong hover:text-brand"
+                  >
+                    <Plus size={13} />
+                    {allLocais.length === 0
+                      ? "Criar o primeiro local de estoque"
+                      : "Criar local"}
+                  </button>
+                )}
+
+                {inicialSemLocal && (
+                  <p className="flex items-start gap-2 text-xs text-warn">
+                    <AlertCircle size={13} className="mt-0.5 shrink-0" />
+                    Este saldo vai entrar sem local. Ele não aparece na contagem por
+                    prateleira nem na transferência entre locais até alguém movimentar.
+                  </p>
+                )}
+
+                {mode === "new" && inicialNum > 0 && custoNum <= 0 && (
+                  <p className="flex items-start gap-2 text-xs text-muted">
+                    <AlertCircle size={13} className="mt-0.5 shrink-0 text-muted" />
+                    Este saldo entra sem custo. A primeira nota de compra deste produto
+                    define o custo médio — e a margem só aparece a partir dali.
+                  </p>
+                )}
+              </div>
+
+              {/* ── Avançado · códigos de barras de compra ──
+                  Recolhido de propósito: na esmagadora maioria dos cadastros
+                  isto chega assinado no XML da primeira nota. Existe para quem
+                  tem o fardo na mão agora e quer que ele bipe hoje. */}
+              <details className="group border-t border-line">
+                <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-4 text-sm text-muted transition-colors hover:text-ink-2 sm:px-6 [&::-webkit-details-marker]:hidden">
+                  <ChevronRight
+                    size={14}
+                    aria-hidden
+                    className="shrink-0 transition-transform duration-200 group-open:rotate-90"
+                  />
+                  Códigos de barras de compra
+                  {packagings.length > 0 && (
+                    <span className="font-mono text-xs text-faint">
+                      · {packagings.length}
+                    </span>
+                  )}
+                </summary>
+
+                <div className="flex flex-col gap-3 px-5 pb-5 sm:px-6 sm:pb-6">
+                  <p className="text-xs text-muted">
+                    O código impresso na caixa ou no fardo, e quantas unidades ele contém.
+                    Em branco, a primeira nota deste produto preenche sozinha.
+                  </p>
+
+                  {packagings.map((p, i) => (
+                    <div
+                      key={i}
+                      className="grid grid-cols-1 items-end gap-x-5 gap-y-3 sm:grid-cols-[2fr_1fr_2fr_auto]"
+                    >
+                      <Field label={i === 0 ? "Embalagem" : ""} htmlFor={`pk-nome-${i}`}>
+                        <Input
+                          id={`pk-nome-${i}`}
+                          value={p.nome}
+                          onChange={(e) =>
+                            setPackagings((prev) =>
+                              prev.map((x, idx) =>
+                                idx === i ? { ...x, nome: e.target.value } : x,
+                              ),
+                            )
+                          }
+                          placeholder="Caixa"
+                        />
+                      </Field>
+                      <Field label={i === 0 ? "Unidades" : ""} htmlFor={`pk-fator-${i}`}>
+                        <Input
+                          id={`pk-fator-${i}`}
+                          value={p.fator}
+                          onChange={(e) =>
+                            setPackagings((prev) =>
+                              prev.map((x, idx) =>
+                                idx === i ? { ...x, fator: soInteiro(e.target.value) } : x,
+                              ),
+                            )
+                          }
                           placeholder="12"
                           inputMode="numeric"
                           className="font-mono"
                         />
                       </Field>
                       <Field
-                        label="Código de barras da embalagem"
-                        htmlFor="pk-ean"
-                        hint="Opcional — o EAN impresso na caixa/fardo."
+                        label={i === 0 ? "Código de barras" : ""}
+                        htmlFor={`pk-ean-${i}`}
                       >
                         <Input
-                          id="pk-ean"
-                          value={pkEan}
-                          onChange={(e) => setPkEan(e.target.value)}
-                          placeholder="789…"
-                          inputMode="numeric"
-                          className="font-mono placeholder:font-sans"
-                        />
-                      </Field>
-                    </div>
-                  </Collapse>
-
-                  {extraPk.map((p, i) => (
-                    <div
-                      key={i}
-                      className="grid grid-cols-[2fr_1fr_2fr_auto] items-end gap-3"
-                    >
-                      <Field label="Outra embalagem" htmlFor={`epk-nome-${i}`}>
-                        <Input
-                          id={`epk-nome-${i}`}
-                          value={p.nome}
-                          onChange={(e) =>
-                            setExtraPk((prev) =>
-                              prev.map((x, idx) =>
-                                idx === i ? { ...x, nome: e.target.value } : x,
-                              ),
-                            )
-                          }
-                          placeholder="Ex.: Fardo"
-                        />
-                      </Field>
-                      <Field label="Unidades" htmlFor={`epk-fator-${i}`}>
-                        <Input
-                          id={`epk-fator-${i}`}
-                          value={p.fatorConversao}
-                          onChange={(e) =>
-                            setExtraPk((prev) =>
-                              prev.map((x, idx) =>
-                                idx === i
-                                  ? { ...x, fatorConversao: e.target.value }
-                                  : x,
-                              ),
-                            )
-                          }
-                          placeholder="6"
-                          inputMode="numeric"
-                          className="font-mono"
-                        />
-                      </Field>
-                      <Field label="EAN" htmlFor={`epk-ean-${i}`}>
-                        <Input
-                          id={`epk-ean-${i}`}
+                          id={`pk-ean-${i}`}
                           value={p.ean}
                           onChange={(e) =>
-                            setExtraPk((prev) =>
+                            setPackagings((prev) =>
                               prev.map((x, idx) =>
                                 idx === i ? { ...x, ean: e.target.value } : x,
                               ),
@@ -1948,9 +1770,9 @@ export function SimpleProductForm({
                       <button
                         type="button"
                         onClick={() =>
-                          setExtraPk((prev) => prev.filter((_, idx) => idx !== i))
+                          setPackagings((prev) => prev.filter((_, idx) => idx !== i))
                         }
-                        className="mb-1.5 grid h-9 w-9 place-items-center rounded-[var(--radius-sm)] border border-line text-faint transition-colors hover:border-danger/40 hover:bg-danger-soft hover:text-danger"
+                        className="mb-1.5 grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line text-faint transition-colors hover:border-danger/40 hover:bg-danger-soft hover:text-danger"
                         aria-label="Remover embalagem"
                       >
                         <Trash2 size={14} />
@@ -1958,729 +1780,21 @@ export function SimpleProductForm({
                     </div>
                   ))}
 
-                  <div className="flex flex-wrap items-center gap-4">
-                    {compraMode && compraMode !== "UN" && (fatorNum ?? 0) > 0 && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setExtraPk((prev) => [
-                            ...prev,
-                            { nome: "", ean: "", fatorConversao: "" },
-                          ])
-                        }
-                        className="flex items-center gap-1 text-xs font-medium text-brand-strong hover:text-brand"
-                      >
-                        <Plus size={13} /> Outra embalagem
-                      </button>
-                    )}
-                    {!showFornecedor && suppliers.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setShowFornecedor(true)}
-                        className="flex items-center gap-1 text-xs font-medium text-muted hover:text-ink"
-                      >
-                        <Truck size={13} /> Definir fornecedor
-                      </button>
-                    )}
-                  </div>
-
-                  {showFornecedor && (
-                    <div className="flex flex-col gap-2">
-                      <Label>Fornecedores</Label>
-                      {fornecedoresList.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5">
-                          {fornecedoresList.map((id, i) => {
-                            const sup = suppliers.find((s) => s.id === id);
-                            return (
-                              <div
-                                key={id}
-                                className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-xs text-ink-2"
-                              >
-                                {i === 0 && (
-                                  <span className="rounded-full bg-brand-soft px-1.5 py-0.5 font-mono text-[9px] font-semibold text-brand-strong">
-                                    principal
-                                  </span>
-                                )}
-                                {sup?.nomeFantasia || sup?.razaoSocial}
-                                <button
-                                  type="button"
-                                  onClick={() => removeFornecedor(id)}
-                                  className="text-faint hover:text-danger"
-                                  aria-label="Remover fornecedor"
-                                >
-                                  <X size={11} />
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                      {suppliers.filter((s) => !fornecedoresList.includes(s.id))
-                        .length > 0 ? (
-                        <Select
-                          value=""
-                          onChange={(e) => {
-                            if (e.target.value) addFornecedor(e.target.value);
-                          }}
-                        >
-                          <option value="">Adicionar fornecedor…</option>
-                          {suppliers
-                            .filter((s) => !fornecedoresList.includes(s.id))
-                            .map((s) => (
-                              <option key={s.id} value={s.id}>
-                                {s.nomeFantasia || s.razaoSocial}
-                              </option>
-                            ))}
-                        </Select>
-                      ) : suppliers.length === 0 ? (
-                        <p className="text-xs text-muted">
-                          Nenhum fornecedor cadastrado ainda.
-                        </p>
-                      ) : null}
-                    </div>
-                  )}
-                  {!showVariacao && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowVariacao(true);
-                        if (variacoes.length === 0) addVariacao();
-                      }}
-                      className="flex items-center gap-1 self-start text-xs font-medium text-muted hover:text-ink"
-                    >
-                      <Plus size={13} /> Compro em sabores/variações
-                    </button>
-                  )}
-
-                  {showVariacao && (
-                    <div className="flex flex-col gap-3 rounded-[var(--radius)] border border-line bg-surface-2 p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <Label>Variação comercial</Label>
-                          <p className="mt-0.5 text-xs text-muted">
-                            O sabor existe na nota do fornecedor, não na prateleira: a
-                            compra registra a variação e o estoque soma tudo em{" "}
-                            <strong className="font-medium text-ink-2">
-                              {nome.trim() || "um produto só"}
-                            </strong>
-                            .
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowVariacao(false);
-                            setVariacoes([]);
-                            setVariacaoLabel("");
-                          }}
-                          className="shrink-0 text-xs font-medium text-faint hover:text-danger"
-                        >
-                          Remover
-                        </button>
-                      </div>
-
-                      <div className="grid gap-3 sm:grid-cols-[minmax(0,14rem)_auto]">
-                        <Field label="O que varia?" htmlFor="variacao-label">
-                          <Input
-                            id="variacao-label"
-                            value={variacaoLabel}
-                            onChange={(e) => setVariacaoLabel(e.target.value)}
-                            placeholder="Sabor"
-                            maxLength={40}
-                          />
-                        </Field>
-                        <div className="flex items-end pb-1">
-                          <Badge tone="neutral">Não controla estoque nem venda</Badge>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col gap-2">
-                        {variacoes.map((v, i) => (
-                          <div key={v.id ?? i} className="flex items-end gap-2">
-                            <Field
-                              label={i === 0 ? variacaoLabel.trim() || "Variação" : undefined}
-                              className="min-w-0 flex-1"
-                            >
-                              <Input
-                                value={v.nome}
-                                onChange={(e) => updVariacao(i, { nome: e.target.value })}
-                                placeholder="Morango"
-                              />
-                            </Field>
-                            <Field
-                              label={i === 0 ? "Código de barras" : undefined}
-                              className="w-[11rem] shrink-0"
-                            >
-                              <Input
-                                value={v.ean}
-                                onChange={(e) => updVariacao(i, { ean: onlyDigits(e.target.value) })}
-                                placeholder="opcional"
-                                inputMode="numeric"
-                                className="font-mono"
-                              />
-                            </Field>
-                            <button
-                              type="button"
-                              onClick={() => delVariacao(i)}
-                              aria-label="Remover variação"
-                              className="mb-1 grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] text-faint transition-colors hover:bg-danger-soft hover:text-danger"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        ))}
-                        <button
-                          type="button"
-                          onClick={addVariacao}
-                          className="flex items-center gap-1 self-start text-xs font-medium text-brand-strong hover:text-brand"
-                        >
-                          <Plus size={13} /> Outra variação
-                        </button>
-                        <p className="text-xs text-faint">
-                          O código de barras do sabor faz a NF-e cair neste produto já com a
-                          variação preenchida.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </Step>
-
-                {/* 4 · Utilização */}
-                <Step
-                  n={3}
-                  id={STEP_IDS[2]}
-                  delay={120}
-                  question="Utilização do produto"
-                  hint="Informe como este produto poderá ser utilizado dentro do sistema."
-                  done={etapas[2].done}
-                >
-                  <div
-                    id="uso"
-                    className="flex flex-col divide-y divide-line overflow-hidden rounded-[var(--radius)] border border-line-strong sm:flex-row sm:divide-x sm:divide-y-0"
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPackagings((prev) => [...prev, { nome: "", ean: "", fator: "" }])
+                    }
+                    className="flex w-fit items-center gap-1 text-xs font-medium text-brand-strong hover:text-brand"
                   >
-                    <UsoToggle
-                      checked={vendaUnidade}
-                      onChange={setVendaUnidade}
-                      icon={<Package size={16} />}
-                      label="Venda por unidade (PDV)"
-                      desc="O produto pode ser vendido normalmente no caixa."
-                    />
-                    <UsoToggle
-                      checked={usaEmDrinks}
-                      onChange={(v) => {
-                        setUsaEmDrinks(v);
-                        if (!v) return;
-                        const inferred = inferConteudo(nome);
-                        if (inferred && !conteudo) {
-                          setConteudo(inferred.valor);
-                          setUnidadeBase(inferred.unidade);
-                        } else if (unidadeBase === "UN") {
-                          setUnidadeBase("ML");
-                        }
-                        requestAnimationFrame(() => focusById("cont"));
-                      }}
-                      icon={<Wine size={16} />}
-                      label="Utilizado em Drinks e Receitas"
-                      desc="O produto poderá ser consumido parcialmente em receitas e drinks."
-                    />
-                  </div>
-
-                  {/* O que o estoque conta.
-                      A COMPRA sempre soma unidade fechada — 12 garrafas entram
-                      como 12, nunca como 12 000 ml. O ml/g mede só o que sobra
-                      dentro da garrafa aberta. Sem dizer isso aqui, quem via
-                      "ml" no cadastro achava que a entrada da nota estava
-                      errada e ia procurar onde trocar. */}
-                  <p className="text-[12px] text-muted">
-                    {usaEmDrinks && unidadeBase !== "UN" ? (
-                      <>
-                        O estoque conta <span className="font-medium text-ink-2">unidades
-                        fechadas</span>
-                        {(conteudoNum ?? 0) > 0
-                          ? ` de ${conteudoNum} ${medida} cada`
-                          : ""}
-                        . O {medida} só aparece no saldo aberto, quando alguém abre uma para usar
-                        numa receita.{" "}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setUsaEmDrinks(false);
-                            setUnidadeBase("UN");
-                          }}
-                          className="font-medium text-brand underline"
-                        >
-                          contar só unidade inteira
-                        </button>
-                      </>
-                    ) : (
-                      "O estoque conta unidades fechadas."
-                    )}
-                  </p>
-
-                  <Collapse open={usaEmDrinks}>
-                    <div className="flex flex-col gap-4">
-                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                        <Field label="Unidade utilizada">
-                          <div className="flex gap-1.5">
-                            {(["ML", "G"] as const).map((u) => (
-                              <button
-                                key={u}
-                                type="button"
-                                onClick={() => setUnidadeBase(u)}
-                                aria-pressed={unidadeBase === u}
-                                className={cn(
-                                  "flex-1 rounded-[var(--radius)] border px-2 py-2.5 text-sm font-medium transition-colors",
-                                  unidadeBase === u
-                                    ? "border-brand bg-brand text-on-brand"
-                                    : "border-line-strong bg-surface text-ink-2 hover:border-brand/40 hover:bg-surface-2",
-                                )}
-                              >
-                                {u === "ML" ? "Mililitros (ml)" : "Gramas (g)"}
-                              </button>
-                            ))}
-                          </div>
-                        </Field>
-                        <Field
-                          label="Conteúdo da embalagem"
-                          htmlFor="cont"
-                          hint={`Quantidade existente em uma unidade fechada, em ${medida}.`}
-                        >
-                          <Input
-                            id="cont"
-                            value={conteudo}
-                            onChange={(e) => setConteudo(e.target.value)}
-                            onKeyDown={enterTo("dose")}
-                            placeholder={unidadeBase === "G" ? "5000" : "1000"}
-                            inputMode="decimal"
-                            className="font-mono"
-                          />
-                        </Field>
-                        <Field
-                          label="Dose padrão (opcional)"
-                          htmlFor="dose"
-                          hint="Sugestão ao criar novos drinks. Pode mudar em cada receita."
-                        >
-                          <Input
-                            id="dose"
-                            value={dosePadrao}
-                            onChange={(e) => setDosePadrao(e.target.value)}
-                            placeholder={unidadeBase === "G" ? "180" : "50"}
-                            inputMode="decimal"
-                            className="font-mono"
-                          />
-                        </Field>
-                      </div>
-
-                      {(conteudoNum ?? 0) <= 0 ? (
-                        <p className="flex items-start gap-2 text-xs text-muted">
-                          <AlertCircle size={13} className="mt-0.5 shrink-0" />
-                          Informe o conteúdo da embalagem para permitir o
-                          controle automático do consumo nos drinks.
-                        </p>
-                      ) : (
-                        doses !== null && (
-                          <p
-                            key={doses}
-                            className="flow-in flex items-center gap-1.5 font-mono text-xs font-medium text-ok"
-                          >
-                            <Check size={13} /> ≈ {doses} {porcaoLabel} por
-                            unidade
-                          </p>
-                        )
-                      )}
-                    </div>
-                  </Collapse>
-                </Step>
-
-                {/* 5 · Estoque */}
-                <Step
-                  n={4}
-                  id={STEP_IDS[3]}
-                  delay={180}
-                  question="Estoque"
-                  done={mode === "edit" || querInicial !== null}
-                >
-                  <div className="flex flex-col gap-3">
-                    <Eyebrow>Reposição</Eyebrow>
-                    {policy.usaGiro && (
-                      <p className="flex items-start gap-2 text-xs text-muted">
-                        <Sparkles size={13} className="mt-0.5 shrink-0 text-brand" />
-                        Sua empresa repõe por rotatividade: a quantidade a comprar sai do
-                        giro de venda deste produto, sem meta fixa.
-                      </p>
-                    )}
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                      {policy.usaMinimo && (
-                        <Field label="Estoque mínimo" htmlFor="min">
-                          <Input
-                            id="min"
-                            value={estoqueMinimo}
-                            onChange={(e) => setMin(soInteiro(e.target.value))}
-                            placeholder="0"
-                            inputMode="numeric"
-                            className="font-mono"
-                          />
-                        </Field>
-                      )}
-                      {policy.usaIdeal && (
-                        <Field label="Estoque ideal" htmlFor="ideal">
-                          <Input
-                            id="ideal"
-                            value={estoqueIdeal}
-                            onChange={(e) => setIdeal(soInteiro(e.target.value))}
-                            placeholder="0"
-                            inputMode="numeric"
-                            className="font-mono"
-                          />
-                        </Field>
-                      )}
-                      {storage.length > 0 && (
-                        <Field label="Local" htmlFor="loc">
-                          <Select
-                            id="loc"
-                            value={locationId}
-                            onChange={(e) => setLocation(e.target.value)}
-                          >
-                            <option value="">Sem local</option>
-                            {storage.map((l) => (
-                              <option key={l.id} value={l.id}>
-                                {l.nome}
-                                {l.siteNome ? ` — ${l.siteNome}` : ""}
-                              </option>
-                            ))}
-                          </Select>
-                        </Field>
-                      )}
-                    </div>
-                  </div>
-
-                  {mode === "new" && (
-                    <div className="flex flex-col gap-3 border-t border-line pt-4">
-                      <Eyebrow>Primeiro estoque</Eyebrow>
-                      <div className="flex flex-wrap items-center gap-3">
-                        <p className="text-sm text-ink-2">
-                          Deseja informar o estoque inicial?
-                        </p>
-                        <div className="flex gap-1.5">
-                          {[
-                            { v: true, label: "Sim" },
-                            { v: false, label: "Depois" },
-                          ].map((o) => (
-                            <button
-                              key={o.label}
-                              type="button"
-                              onClick={() => {
-                                setQuerInicial(o.v);
-                                if (!o.v) setInicial("");
-                                else requestAnimationFrame(() => focusById("ini"));
-                              }}
-                              aria-pressed={querInicial === o.v}
-                              className={cn(
-                                "rounded-[var(--radius-pill)] border px-4 py-1.5 text-sm font-medium transition-colors",
-                                querInicial === o.v
-                                  ? "border-brand bg-brand-soft text-brand-strong"
-                                  : "border-line-strong bg-surface text-ink-2 hover:border-brand/40",
-                              )}
-                            >
-                              {o.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <Collapse open={querInicial === true} gap={3}>
-                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                          <Field label="Quantidade" htmlFor="ini">
-                            <Input
-                              id="ini"
-                              value={estoqueInicial}
-                              onChange={(e) => setInicial(soInteiro(e.target.value))}
-                              placeholder="0"
-                              inputMode="numeric"
-                              className="font-mono"
-                            />
-                          </Field>
-                          {storage.length > 0 && (
-                            <Field
-                              label="Local"
-                              hint="O mesmo definido acima em Reposição."
-                            >
-                              <button
-                                type="button"
-                                onClick={() => focusById("loc")}
-                                className="flex h-11 w-full items-center justify-between gap-2 rounded-[var(--radius)] border border-line-strong bg-surface-2 px-4 text-left text-sm text-ink-2 transition-colors hover:border-brand/40"
-                              >
-                                <span className="truncate">
-                                  {storage.find((l) => l.id === locationId)?.nome ??
-                                    "Sem local"}
-                                </span>
-                                <span className="shrink-0 text-xs text-brand-strong">
-                                  trocar
-                                </span>
-                              </button>
-                            </Field>
-                          )}
-                          <Field
-                            label="Valor de custo"
-                            htmlFor="custo-ini"
-                            hint="Mesmo custo unitário do produto."
-                          >
-                            <div className="relative">
-                              <span className="pointer-events-none absolute inset-y-0 left-3 flex select-none items-center text-sm text-muted">
-                                R$
-                              </span>
-                              <Input
-                                id="custo-ini"
-                                value={custo}
-                                onChange={(e) =>
-                                  setCusto(maskMoney(e.target.value))
-                                }
-                                placeholder="0,00"
-                                inputMode="numeric"
-                                className="pl-9 font-mono"
-                              />
-                            </div>
-                          </Field>
-                        </div>
-                      </Collapse>
-                    </div>
-                  )}
-                </Step>
-
-                {/* 6 · Fiscal */}
-                <Collapsible
-                  icon={<FileText size={15} />}
-                  title="Fiscal"
-                  summary={
-                    selectedFiscal
-                      ? selectedFiscal.nome
-                      : "Usar configuração da categoria"
-                  }
-                >
-                  <Field
-                    label="Perfil fiscal"
-                    htmlFor="fiscal"
-                    hint="Valide com seu contador antes de emitir nota."
-                  >
-                    <Select
-                      id="fiscal"
-                      value={fiscalProfileId}
-                      onChange={(e) => setFiscal(e.target.value)}
-                    >
-                      <option value="">Usar configuração da categoria</option>
-                      {fiscalProfiles.map((f) => (
-                        <option key={f.id} value={f.id}>
-                          {f.nome} (NCM {f.ncm})
-                        </option>
-                      ))}
-                    </Select>
-                  </Field>
-                  {selectedFiscal && (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge tone="neutral" className="font-mono">
-                        NCM {selectedFiscal.ncm}
-                      </Badge>
-                      {selectedFiscal.precisaRevisao && (
-                        <Badge tone="warn">
-                          <AlertCircle size={11} /> Precisa de revisão
-                        </Badge>
-                      )}
-                    </div>
-                  )}
-
-                  <label className="flex cursor-pointer items-center gap-2 border-t border-line pt-4 text-sm text-ink-2">
-                    <input
-                      type="checkbox"
-                      checked={restricaoIdade}
-                      onChange={(e) => setIdade(e.target.checked)}
-                      className="cursor-pointer accent-[var(--brand)]"
-                    />
-                    Venda restrita a maiores de 18 anos
-                  </label>
-
-                  <details className="group border-t border-line pt-4">
-                    <summary className="flex cursor-pointer select-none list-none items-center gap-2 text-sm text-muted transition-colors hover:text-ink-2 [&::-webkit-details-marker]:hidden">
-                      <ChevronRight
-                        size={13}
-                        className="shrink-0 transition-transform duration-200 group-open:rotate-90"
-                      />
-                      Unidade tributável e combustíveis
-                    </summary>
-                    <div className="mt-3 grid gap-4 sm:grid-cols-2">
-                      <Field
-                        label="Unidade tributável"
-                        htmlFor="utrib"
-                        hint="Só quando a nota sai em unidade diferente da venda."
-                      >
-                        <Input
-                          id="utrib"
-                          value={uTrib}
-                          onChange={(e) =>
-                            setUTrib(e.target.value.toUpperCase().slice(0, 6))
-                          }
-                          placeholder="KG"
-                          className="font-mono"
-                        />
-                      </Field>
-                      <Field
-                        label="Fator de conversão"
-                        htmlFor="ftrib"
-                        hint="Quantidade tributável por unidade vendida."
-                      >
-                        <Input
-                          id="ftrib"
-                          value={fatorTrib}
-                          onChange={(e) => setFatorTrib(e.target.value)}
-                          placeholder="1"
-                          inputMode="decimal"
-                          className="font-mono"
-                        />
-                      </Field>
-                      <Field
-                        label="GTIN tributável"
-                        htmlFor="gtrib"
-                        hint="Vazio = usa o código de barras do produto."
-                      >
-                        <Input
-                          id="gtrib"
-                          value={gtinTrib}
-                          onChange={(e) =>
-                            setGtinTrib(e.target.value.replace(/\D/g, ""))
-                          }
-                          placeholder="7891234567890"
-                          inputMode="numeric"
-                          className="font-mono"
-                        />
-                      </Field>
-                      <Field
-                        label="Código ANP"
-                        htmlFor="anp"
-                        hint="Só para combustíveis."
-                      >
-                        <Input
-                          id="anp"
-                          value={codigoAnp}
-                          onChange={(e) =>
-                            setCodigoAnp(
-                              e.target.value.replace(/\D/g, "").slice(0, 9),
-                            )
-                          }
-                          placeholder="320102001"
-                          inputMode="numeric"
-                          className="font-mono"
-                        />
-                      </Field>
-                    </div>
-                  </details>
-                </Collapsible>
-
-                {/* 7 · Venda online */}
-                <div className="rounded-[var(--radius-lg)] border border-line bg-surface p-5 shadow-[var(--shadow-1)]">
-                  <label className="flex cursor-pointer items-center gap-3 text-sm text-ink">
-                    <input
-                      type="checkbox"
-                      checked={vendeOnline}
-                      onChange={(e) => setVendeOnline(e.target.checked)}
-                      className="cursor-pointer accent-[var(--brand)]"
-                    />
-                    <Globe size={15} className="text-muted" />
-                    <span className="font-medium">Vender em canais online</span>
-                  </label>
-
-                  <Collapse
-                    open={vendeOnline}
-                    gap={0}
-                    className="mt-4 border-t border-line pt-4"
-                  >
-                    <div className="flex flex-col gap-4">
-                      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                        <Field label="Peso (g)" htmlFor="peso">
-                          <Input
-                            id="peso"
-                            value={pesoGramas}
-                            onChange={(e) => setPeso(e.target.value)}
-                            placeholder="0"
-                            inputMode="numeric"
-                            className="font-mono"
-                          />
-                        </Field>
-                        <Field label="Altura (cm)" htmlFor="altura">
-                          <Input
-                            id="altura"
-                            value={alturaCm}
-                            onChange={(e) => setAltura(e.target.value)}
-                            placeholder="0"
-                            inputMode="decimal"
-                            className="font-mono"
-                          />
-                        </Field>
-                        <Field label="Largura (cm)" htmlFor="largura">
-                          <Input
-                            id="largura"
-                            value={larguraCm}
-                            onChange={(e) => setLargura(e.target.value)}
-                            placeholder="0"
-                            inputMode="decimal"
-                            className="font-mono"
-                          />
-                        </Field>
-                        <Field label="Comprimento (cm)" htmlFor="comprimento">
-                          <Input
-                            id="comprimento"
-                            value={comprimentoCm}
-                            onChange={(e) => setComprimento(e.target.value)}
-                            placeholder="0"
-                            inputMode="decimal"
-                            className="font-mono"
-                          />
-                        </Field>
-                      </div>
-                      <Field
-                        label="Descrição para o anúncio"
-                        htmlFor="desc"
-                        hint={
-                          descErro
-                            ? undefined
-                            : "Texto que aparece no canal de venda."
-                        }
-                        error={descErro}
-                      >
-                        <div className="flex flex-col gap-2">
-                          <Textarea
-                            id="desc"
-                            value={descricaoOnline}
-                            onChange={(e) => setDescOnline(e.target.value)}
-                            placeholder="Texto que aparece no canal de venda"
-                            className="min-h-[80px]"
-                          />
-                          <button
-                            type="button"
-                            onClick={gerarDescricaoOnline}
-                            disabled={gerandoDesc || nome.trim().length < 2}
-                            className="flex items-center gap-1.5 self-start rounded-[var(--radius-sm)] border border-line bg-surface px-2.5 py-1 text-xs font-medium text-brand-strong transition-colors hover:border-brand/40 hover:bg-brand-soft disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {gerandoDesc ? (
-                              <Loader2 size={12} className="animate-spin" />
-                            ) : (
-                              <Sparkles size={12} />
-                            )}
-                            {gerandoDesc ? "Gerando…" : "Sugerir com IA"}
-                          </button>
-                        </div>
-                      </Field>
-                      <div className="flex flex-col gap-2">
-                        <Eyebrow>Canais de venda</Eyebrow>
-                        <OnlineChannels
-                          rows={channels}
-                          onChange={setChannel}
-                          descricaoPadrao={descricaoOnline}
-                        />
-                      </div>
-                    </div>
-                  </Collapse>
+                    <Plus size={13} /> Adicionar embalagem
+                  </button>
                 </div>
-              </>
-            )}
+              </details>
+            </section>
+
+            {/* Tudo o que a nota preenche sozinha — ou que só importa em caso
+                raro — mora aqui dentro, fechado. */}
 
             {error && (
               <p className="fade-up flex items-center gap-2 rounded-[var(--radius)] bg-danger-soft px-3 py-2.5 text-sm text-danger">
@@ -2688,267 +1802,6 @@ export function SimpleProductForm({
                 {error}
               </p>
             )}
-          </div>
-
-          {/* ── Painel inteligente ── */}
-          <aside className="lg:sticky lg:top-4">
-            <div className="divide-y divide-line overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface shadow-[var(--shadow-1)]">
-              {/* Produto */}
-              <div className="flex items-center gap-3 p-4">
-                {imagemUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={imagemUrl}
-                    alt=""
-                    className="h-11 w-11 shrink-0 rounded-[var(--radius-sm)] border border-line bg-white object-contain"
-                  />
-                ) : (
-                  <span className="grid h-11 w-11 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line bg-surface-2 text-faint">
-                    <Package size={17} />
-                  </span>
-                )}
-                <div className="min-w-0 flex-1">
-                  <Eyebrow className="text-[9.5px]">Produto</Eyebrow>
-                  <p
-                    className={cn(
-                      "truncate text-sm font-medium",
-                      nome.trim() ? "text-ink" : "text-faint",
-                    )}
-                  >
-                    {nome.trim() || "Sem nome ainda"}
-                  </p>
-                  <p className="truncate text-[11px] text-muted">
-                    {[marca, subAtual?.nome].filter(Boolean).join(" · ") || "—"}
-                  </p>
-                </div>
-                {restricaoIdade && (
-                  <Badge tone="warn" className="shrink-0 text-[10px]">
-                    +18
-                  </Badge>
-                )}
-              </div>
-
-              {/* Fluxo do produto — compra → estoque → destinos */}
-              <div className="p-4">
-                <Eyebrow className="text-[9.5px]">Fluxo do produto</Eyebrow>
-                <div className="mt-2">
-                  <FlowNode
-                    icon={<ShoppingCart size={13} />}
-                    label="Compra"
-                    title={
-                      compraMode === null ? "Não definida" : compraLabel
-                    }
-                    detail={
-                      compraMode && compraMode !== "UN" && (fatorNum ?? 0) > 0
-                        ? `${fatorNum} unidades`
-                        : undefined
-                    }
-                    active={compraMode !== null}
-                  />
-                  <FlowArrow />
-                  <FlowNode
-                    icon={<Warehouse size={13} />}
-                    label="Estoque"
-                    title="Unidades no estoque"
-                    detail={
-                      usaEmDrinks && (conteudoNum ?? 0) > 0
-                        ? `1 un = ${conteudoNum} ${medida}`
-                        : undefined
-                    }
-                    active
-                  />
-                  {vendaUnidade && (
-                    <>
-                      <FlowArrow />
-                      <FlowNode
-                        icon={<Package size={13} />}
-                        label="Destino"
-                        title="Venda por unidade"
-                        detail={precoNum > 0 ? brl(precoNum) : undefined}
-                        active
-                      />
-                    </>
-                  )}
-                  {usaEmDrinks && (
-                    <>
-                      <FlowArrow />
-                      <FlowNode
-                        icon={<Wine size={13} />}
-                        label="Destino"
-                        title="Drinks e receitas"
-                        detail={
-                          (doseNum ?? 0) > 0
-                            ? `Dose padrão ${doseNum} ${medida}`
-                            : undefined
-                        }
-                        hint={doses !== null ? `≈ ${doses} ${porcaoLabel}` : undefined}
-                        active
-                        tone="accent"
-                      />
-                    </>
-                  )}
-                  {!vendaUnidade && !usaEmDrinks && (
-                    <>
-                      <FlowArrow />
-                      <FlowNode
-                        icon={<Package size={13} />}
-                        label="Destino"
-                        title="Nenhuma utilização marcada"
-                        active={false}
-                      />
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {/* Preço */}
-              <div className="flex flex-col gap-3 bg-accent-soft/40 p-4">
-                <div className="flex items-center justify-between">
-                  <Eyebrow className="text-accent">Preço</Eyebrow>
-                  {verdict && (
-                    <span
-                      className={cn(
-                        "flex items-center gap-1 rounded-full px-2.5 py-0.5 font-mono text-xs font-bold transition-colors duration-300",
-                        verdict.tone === "ok" && "bg-ok-soft text-ok",
-                        verdict.tone === "warn" && "bg-warn-soft text-warn",
-                        verdict.tone === "danger" && "bg-danger-soft text-danger",
-                      )}
-                    >
-                      {verdict.tone === "danger" ? (
-                        <TrendingDown size={11} />
-                      ) : (
-                        <TrendingUp size={11} />
-                      )}
-                      {margemAnimada}%
-                    </span>
-                  )}
-                </div>
-
-                {/* Custo não se digita aqui. Ele é CONSEQUÊNCIA da compra: sai
-                    da entrada da nota (custo médio) ou do estoque inicial, logo
-                    acima. Um campo à mão neste formulário só produzia um número
-                    que ninguém atualizava e que a margem passava a mentir. */}
-                {custoNum > 0 && (
-                  <PanelRow label="Custo" value={brl(custoNum)} mono tone="muted" />
-                )}
-
-                <Field label="Preço de venda" htmlFor="preco" required>
-                  <div className="relative">
-                    <span className="pointer-events-none absolute inset-y-0 left-3 flex select-none items-center text-sm text-muted">
-                      R$
-                    </span>
-                    <Input
-                      id="preco"
-                      value={precoVenda}
-                      onChange={(e) => setPrecoVenda(maskMoney(e.target.value))}
-                      onBlur={() => touch("preco")}
-                      onKeyDown={enterTo("salvar-produto")}
-                      placeholder="0,00"
-                      inputMode="numeric"
-                      className={cn(
-                        "pl-9 font-mono text-base font-semibold",
-                        faltando.preco && "border-warn",
-                      )}
-                    />
-                  </div>
-                </Field>
-
-                {verdict ? (
-                  <PanelRow
-                    label={verdict.label}
-                    value={`${margemAnimada}%`}
-                    mono
-                    tone={verdict.tone}
-                  />
-                ) : (
-                  <PanelRow
-                    label="Margem"
-                    value="—"
-                    mono
-                    tone="muted"
-                  />
-                )}
-                {precoNum > 0 && custoNum > 0 && (
-                  <PanelRow
-                    label="Lucro por unidade"
-                    value={brl(precoNum - custoNum)}
-                    mono
-                  />
-                )}
-
-                {/* Referência real do tenant, não markup mágico */}
-                {precoSugerido && sugestao && (
-                  <button
-                    type="button"
-                    onClick={() => setPrecoVenda(moneyToMask(precoSugerido))}
-                    className="fade-up flex items-start gap-2 rounded-[var(--radius-sm)] border border-line bg-surface px-2.5 py-2 text-left transition-colors hover:border-accent/40 hover:bg-accent-soft"
-                  >
-                    <Lightbulb size={13} className="mt-0.5 shrink-0 text-accent" />
-                    <span className="min-w-0 text-[11.5px] leading-snug text-ink-2">
-                      Margem média em{" "}
-                      <span className="font-medium">{subAtual?.nome}</span>:{" "}
-                      <span className="font-mono font-semibold">
-                        {sugestao.margemPct}%
-                      </span>{" "}
-                      → usar{" "}
-                      <span className="font-mono font-semibold text-accent">
-                        {brl(precoSugerido)}
-                      </span>
-                      <span className="block text-[10.5px] text-faint">
-                        base: {sugestao.base} produtos da subcategoria
-                      </span>
-                    </span>
-                  </button>
-                )}
-              </div>
-
-              {/* Progresso */}
-              <div className="p-4">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <span className="text-xs text-muted">
-                    {isReady ? (
-                      <span className="font-medium text-ok">
-                        Pronto para salvar
-                      </span>
-                    ) : (
-                      <>
-                        {doneCnt} de {etapas.length} etapas concluídas
-                        {firstMissing && (
-                          <>
-                            {" · "}
-                            <button
-                              type="button"
-                              onClick={() => focusField(firstMissing.focus)}
-                              className="font-medium text-brand-strong underline-offset-2 hover:underline"
-                            >
-                              falta {firstMissing.label}
-                            </button>
-                          </>
-                        )}
-                      </>
-                    )}
-                  </span>
-                  <span className="shrink-0 font-mono text-xs text-faint">
-                    {doneCnt}/{etapas.length}
-                  </span>
-                </div>
-                <div
-                  className={cn(
-                    "h-1.5 w-full overflow-hidden rounded-full bg-line-strong",
-                    isReady && "ready-glow",
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-[width] duration-500",
-                      isReady ? "bg-ok" : "bg-brand",
-                    )}
-                    style={{ width: `${(doneCnt / etapas.length) * 100}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-          </aside>
         </div>
       </div>
 
@@ -2964,16 +1817,6 @@ export function SimpleProductForm({
               <CornerDownLeft size={11} />
             </kbd>
             salvar
-          </span>
-          <span className="hidden items-center gap-1.5 text-faint lg:flex">
-            <kbd className="rounded border border-line bg-surface-2 px-1.5 py-0.5 font-mono text-[10px]">
-              Alt
-            </kbd>
-            +
-            <kbd className="rounded border border-line bg-surface-2 px-1.5 py-0.5 font-mono text-[10px]">
-              1–4
-            </kbd>
-            etapas
           </span>
         </span>
         <Button

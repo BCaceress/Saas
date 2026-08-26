@@ -3,6 +3,7 @@ import { db } from "@/lib/prisma";
 import { custoDoItem } from "./custo";
 import { fatorDaNota } from "./fator";
 import { nomeDaEmbalagem } from "./embalagem-nome";
+import { resolverPerfilDaNota } from "./perfil-do-xml";
 
 // ============================================================
 // O que a nota ensina sobre o produto.
@@ -10,7 +11,7 @@ import { nomeDaEmbalagem } from "./embalagem-nome";
 // Relacionar um item do XML ao catálogo é a única hora em que o sistema sabe,
 // ao mesmo tempo, QUAL é o produto e TUDO o que o fornecedor declarou sobre
 // ele: em que embalagem vende, com que código de barras, por quanto, sob que
-// código no pedido. Jogar isso fora e deixar o operador digitar "Caixa com 24"
+// código no pedido. Jogar isso fora e deixar o operador digitar "Caixa"
 // à mão depois é desperdício puro.
 //
 // Regra de ouro: NUNCA sobrescrever o que o operador já decidiu. Campo vazio
@@ -21,6 +22,10 @@ import { nomeDaEmbalagem } from "./embalagem-nome";
 export type ItemDaNotaParaEnriquecer = {
   codigoFornecedor: string;
   gtin: string | null;
+  /** Classificação fiscal como o fornecedor declarou — vira perfil fiscal. */
+  ncm: string | null;
+  cest: string | null;
+  cfop: string | null;
   unidade: string;
   quantidade: number;
   unidadeTributavel: string | null;
@@ -71,6 +76,13 @@ export async function enriquecerProdutoComNota(input: {
       gtinTributavel: true,
       unidadeTributavel: true,
       fatorConversaoTrib: true,
+      fiscalProfileId: true,
+      // A herança da subcategoria é o perfil que vale hoje: se ela já classifica
+      // com o mesmo NCM da nota, criar um perfil por produto só encheria a lista
+      // do contador com duplicata.
+      subcategory: {
+        select: { nome: true, defaultFiscalProfile: { select: { id: true, ncm: true } } },
+      },
       packagings: { select: { id: true, ean: true, fatorConversao: true, isCompraDefault: true } },
     },
   });
@@ -88,7 +100,7 @@ export async function enriquecerProdutoComNota(input: {
     const escolhida =
       (packagingId && produto.packagings.find((p) => p.id === packagingId)) ||
       // Sem escolha explícita, reaproveita a embalagem de mesmo fator: criar uma
-      // segunda "Caixa com 24" seria sujeira que só o operador limparia.
+      // segunda "Caixa" de mesmo fator seria sujeira que só o operador limparia.
       produto.packagings.find((p) => Number(p.fatorConversao) === fator);
 
     if (escolhida) {
@@ -105,7 +117,7 @@ export async function enriquecerProdutoComNota(input: {
         data: {
           tenantId,
           productId,
-          nome: nomeDaEmbalagem(item.unidade, fator),
+          nome: nomeDaEmbalagem(item.unidade),
           ean: item.gtin,
           fatorConversao: fator,
           isCompraDefault: true,
@@ -144,6 +156,35 @@ export async function enriquecerProdutoComNota(input: {
     }
     preenchidos.push("unidade tributável");
   }
+  // Classificação fiscal — NCM/CEST assinados pelo fornecedor.
+  //
+  // Vale enquanto o produto só carrega o perfil PADRÃO da subcategoria: aquilo
+  // é template de seed ("Cerveja (ST) — revisar"), ninguém escolheu para este
+  // SKU, e o NCM da nota é mais específico. Perfil escolhido à mão para o
+  // produto é decisão do operador ou do contador — palpite de nota não derruba.
+  const herdado = produto.subcategory?.defaultFiscalProfile ?? null;
+  const soHerdado = !produto.fiscalProfileId || produto.fiscalProfileId === herdado?.id;
+  if (soHerdado) {
+    const ncmDaNota = (item.ncm ?? "").replace(/\D/g, "");
+    const ncmHerdado = (herdado?.ncm ?? "").replace(/\D/g, "");
+    if (ncmDaNota && ncmHerdado !== ncmDaNota) {
+      const perfil = await resolverPerfilDaNota({
+        tenantId,
+        classificacao: {
+          ncm: item.ncm,
+          cest: item.cest,
+          cfop: item.cfop,
+          temSt: item.valorIcmsSt > 0 || item.valorFcpSt > 0,
+        },
+        rotulo: produto.subcategory?.nome ?? null,
+      });
+      if (perfil) {
+        dadosProduto.fiscalProfileId = perfil.id;
+        preenchidos.push(`perfil fiscal (NCM ${perfil.ncm})`);
+      }
+    }
+  }
+
   if (!produto.gtinTributavel && item.gtin && fator > 1) {
     // Em venda por caixa, o cEAN da nota é o da caixa e o tributável é o da
     // unidade — guardamos o que veio, que é melhor que campo vazio.

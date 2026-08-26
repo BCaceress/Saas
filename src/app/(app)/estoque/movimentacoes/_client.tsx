@@ -532,11 +532,6 @@ function FragmentRow({
         <td className="px-4">
           <p className="max-w-90 truncate font-medium leading-tight text-ink">
             {r.productNome}
-            {r.variacaoNome && (
-              <span className="ml-1.5 rounded-full border border-line bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted">
-                {r.variacaoNome}
-              </span>
-            )}
           </p>
           {r.productSku && (
             <p className="font-mono text-[11px] leading-tight text-faint">SKU {r.productSku}</p>
@@ -624,11 +619,6 @@ function DetalhePanel({ row, onClose }: { row: MovimentacaoRow | null; onClose: 
             </span>
             <div className="min-w-0">
               <p className="font-medium leading-tight text-ink">{row.productNome}</p>
-              {row.variacaoNome && (
-                <p className="text-xs text-muted">
-                  {row.variacaoNome} · entrou no saldo de {row.productNome}
-                </p>
-              )}
               {row.productSku && <p className="font-mono text-xs text-faint">SKU {row.productSku}</p>}
             </div>
             <span

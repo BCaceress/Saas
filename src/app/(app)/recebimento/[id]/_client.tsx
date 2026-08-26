@@ -17,6 +17,7 @@ import {
   ScanLine,
   Search,
   Send,
+  MoreVertical,
   Undo2,
   TrendingDown,
   TrendingUp,
@@ -25,6 +26,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import { toast } from "@/components/ui/toast";
 import { Scanner } from "@/components/mobile/scanner";
 import { ProdutoThumb } from "@/components/recebimento/produto-thumb";
@@ -48,6 +50,7 @@ import {
   desvincularPedidoAction,
   receberSemPedidoAction,
   resolverDivergenciaAction,
+  restaurarContagemAction,
   vincularPedidoAction,
 } from "../conferencia-actions";
 import type { LinhaRecebimento, RecebimentoView, SubcategoriaCadastro } from "../_data";
@@ -77,6 +80,35 @@ const STATUS_INFO: Record<
   NAO_PEDIDO: { label: "Fora do pedido", classe: "bg-accent-soft text-accent", grave: true },
   PRECO_ALTERADO: { label: "Preço alterado", classe: "bg-accent-soft text-accent", grave: true },
 };
+
+/**
+ * As quatro perguntas que o operador faz olhando uma nota de quarenta linhas.
+ *
+ * Busca por texto responde "onde está o item X?"; isto responde "o que ainda
+ * falta?" — que é a pergunta que ele faz o tempo todo, e que antes só se
+ * respondia rolando a lista inteira contando de cabeça.
+ */
+type Filtro = "TODOS" | "FALTA" | "DIVERGENTE" | "SEM_PRODUTO";
+
+const FILTROS: { id: Filtro; label: string }[] = [
+  { id: "TODOS", label: "Todos" },
+  { id: "FALTA", label: "Falta contar" },
+  { id: "DIVERGENTE", label: "Divergentes" },
+  { id: "SEM_PRODUTO", label: "Sem produto" },
+];
+
+function casaComFiltro(l: LinhaRecebimento, filtro: Filtro): boolean {
+  switch (filtro) {
+    case "FALTA":
+      return l.qtdRecebida == null;
+    case "DIVERGENTE":
+      return STATUS_INFO[l.status].grave && !l.resolucao;
+    case "SEM_PRODUTO":
+      return !l.productId;
+    default:
+      return true;
+  }
+}
 
 /** Quanto o custo da nota subiu (ou caiu) sobre o negociado, em %. */
 function variacaoDaLinha(l: LinhaRecebimento): number | null {
@@ -461,51 +493,63 @@ function Fechamento({ itens, nota }: { itens: number; nota: number }) {
  * operador precisa saber em que pé está uma nota que abriu ontem e voltou a
  * abrir hoje — e o que ainda falta antes de a mercadoria virar saldo.
  */
+const ETAPAS = [
+  { n: 1 as const, titulo: "Produtos", ajuda: "Relacione os itens da NF aos produtos do NoHub" },
+  { n: 2 as const, titulo: "Compra", ajuda: "Informe de onde veio esta mercadoria" },
+  { n: 3 as const, titulo: "Conferência", ajuda: "Confira e dê entrada no estoque" },
+];
+
 function Trilho({ etapa }: { etapa: 1 | 2 | 3 }) {
-  const etapas = [
-    { n: 1 as const, titulo: "Relacionar ao catálogo" },
-    { n: 2 as const, titulo: "Origem da mercadoria" },
-    { n: 3 as const, titulo: "Conferir e dar entrada" },
-  ];
+  const atualInfo = ETAPAS.find((e) => e.n === etapa)!;
 
   return (
-    <ol className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-      {etapas.map((e, i) => {
-        const feita = e.n < etapa;
-        const atual = e.n === etapa;
-        return (
-          <React.Fragment key={e.n}>
-            {i > 0 && (
-              <span className="text-faint" aria-hidden>
-                ·
-              </span>
-            )}
-            <li className="flex items-center gap-1.5">
-              <span
+    <div className="flex flex-col gap-1">
+      <ol className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        {ETAPAS.map((e, i) => {
+          const feita = e.n < etapa;
+          const atual = e.n === etapa;
+          return (
+            <React.Fragment key={e.n}>
+              {i > 0 && (
+                <span className="text-faint" aria-hidden>
+                  →
+                </span>
+              )}
+              <li
                 className={cn(
-                  "grid h-5 w-5 place-items-center rounded-full text-[11px] font-semibold",
-                  atual && "bg-brand text-on-brand",
-                  feita && "bg-ok-soft text-ok",
-                  !atual && !feita && "bg-surface-2 text-faint",
+                  "flex items-center gap-1.5 rounded-full px-2 py-1",
+                  // Só a etapa atual ganha fundo: um trilho em que os três
+                  // passos pesam igual não diz onde a pessoa está.
+                  atual && "bg-brand-soft",
                 )}
-                aria-hidden
               >
-                {feita ? <Check className="h-3 w-3" /> : e.n}
-              </span>
-              <span
-                className={cn(
-                  "text-[12px]",
-                  atual ? "font-medium text-ink" : feita ? "text-muted" : "text-faint",
-                )}
-                aria-current={atual ? "step" : undefined}
-              >
-                {e.titulo}
-              </span>
-            </li>
-          </React.Fragment>
-        );
-      })}
-    </ol>
+                <span
+                  className={cn(
+                    "grid h-5 w-5 place-items-center rounded-full text-[11px] font-semibold",
+                    atual && "bg-brand text-on-brand",
+                    feita && "bg-ok-soft text-ok",
+                    !atual && !feita && "bg-surface-2 text-faint",
+                  )}
+                  aria-hidden
+                >
+                  {feita ? <Check className="h-3 w-3" /> : e.n}
+                </span>
+                <span
+                  className={cn(
+                    "text-[12px]",
+                    atual ? "font-semibold text-ink" : feita ? "text-muted" : "text-faint",
+                  )}
+                  aria-current={atual ? "step" : undefined}
+                >
+                  {e.titulo}
+                </span>
+              </li>
+            </React.Fragment>
+          );
+        })}
+      </ol>
+      <p className="text-[13px] text-muted">{atualInfo.ajuda}</p>
+    </div>
   );
 }
 
@@ -545,11 +589,15 @@ function Conferencia({
   }
 
   const [busca, setBusca] = React.useState("");
+  const [filtro, setFiltro] = React.useState<Filtro>("TODOS");
   const [camera, setCamera] = React.useState(false);
   const [confirmando, setConfirmando] = React.useState(false);
   const [enviando, setEnviando] = React.useState(false);
   const [verTimeline, setVerTimeline] = React.useState(false);
   const [relacionar, setRelacionar] = React.useState<ItemDeNota | null>(null);
+  /** Última linha bipada — pisca para dizer ONDE o número entrou. */
+  const [piscando, setPiscando] = React.useState<string | null>(null);
+  const itensRef = React.useRef<Record<string, HTMLLIElement | null>>({});
 
   const conferidos = linhas.filter((l) => l.qtdRecebida != null).length;
   const divergentes = linhas.filter((l) => STATUS_INFO[l.status].grave && !l.resolucao);
@@ -603,6 +651,14 @@ function Conferencia({
       const nova = atual + achado.incremento;
       aplicarLocal(achado.linha.id, { qtdRecebida: nova });
       void salvar(achado.linha.id, { qtdRecebida: nova });
+      // O toast diz o QUE entrou; a linha diz ONDE. Sem ancorar, quem bipa
+      // trinta caixas seguidas não tem como conferir se o número foi parar no
+      // item certo — e a linha pode estar fora da tela.
+      itensRef.current[achado.linha.id]?.scrollIntoView({
+        block: "nearest",
+        behavior: "smooth",
+      });
+      setPiscando(achado.linha.id);
       toast.success(
         achado.linha.descricao,
         cega ? `${fmtQtd(nova)} contado(s)` : `${fmtQtd(nova)} de ${fmtQtd(achado.linha.qtdFaturada)}`,
@@ -611,18 +667,50 @@ function Conferencia({
     [porCodigo, aplicarLocal, salvar, encerrada, cega],
   );
 
+  // O destaque do bipe se apaga sozinho: é confirmação momentânea, não estado.
+  React.useEffect(() => {
+    if (!piscando) return;
+    const t = setTimeout(() => setPiscando(null), 1200);
+    return () => clearTimeout(t);
+  }, [piscando]);
+
   // Leitor USB/Bluetooth funciona sem foco em campo nenhum — quem está na
   // porta tem o leitor numa mão e a caixa na outra.
   useLeitorTeclado(aoLerCodigo, { ativo: !encerrada });
 
   async function conferirTudo() {
+    // Retrato de antes do clique. É o que "Desfazer" devolve — inclusive as
+    // linhas já contadas, que o "conferi tudo" sobrescreve.
+    const antes = linhas.map((l) => ({ itemId: l.id, qtdRecebida: l.qtdRecebida }));
     try {
       await conferirTudoAction(nota.id);
       setLinhas((prev) => prev.map((l) => ({ ...l, qtdRecebida: l.qtdFaturada })));
-      toast.success("Tudo conferido conforme a nota.", "Revise antes de dar entrada.");
+      toast.success(
+        "Tudo conferido conforme a nota.",
+        "Revise antes de dar entrada.",
+        { rotulo: "Desfazer", onClick: () => desfazerConferirTudo(antes) },
+      );
       router.refresh();
     } catch (e) {
       toast.error("Não deu para confirmar", e instanceof Error ? e.message : "Tente de novo.");
+    }
+  }
+
+  async function desfazerConferirTudo(
+    antes: { itemId: string; qtdRecebida: number | null }[],
+  ) {
+    try {
+      await restaurarContagemAction({ inboundId: nota.id, itens: antes });
+      setLinhas((prev) =>
+        prev.map((l) => ({
+          ...l,
+          qtdRecebida: antes.find((a) => a.itemId === l.id)?.qtdRecebida ?? null,
+        })),
+      );
+      toast.info("Contagem restaurada.", "Voltou como estava antes do clique.");
+      router.refresh();
+    } catch (e) {
+      toast.error("Não deu para desfazer", e instanceof Error ? e.message : "Tente de novo.");
     }
   }
 
@@ -657,18 +745,35 @@ function Conferencia({
     }
   }
 
+  /** Quantas linhas cada filtro tem hoje — o número mora no próprio chip. */
+  const contagens = React.useMemo(
+    () => ({
+      TODOS: linhas.length,
+      FALTA: linhas.filter((l) => l.qtdRecebida == null).length,
+      DIVERGENTE: linhas.filter((l) => STATUS_INFO[l.status].grave && !l.resolucao).length,
+      SEM_PRODUTO: linhas.filter((l) => !l.productId).length,
+    }),
+    [linhas],
+  );
+
+  // Filtro que esvaziou — o operador contou o último item de "falta contar" —
+  // deixaria a tela em branco sem explicação. Derivado, não corrigido por
+  // efeito: o chip some e a lista volta a ser todos no mesmo render.
+  const filtroAtivo: Filtro = contagens[filtro] === 0 ? "TODOS" : filtro;
+
   const visiveis = React.useMemo(() => {
     const termo = busca.trim().toLowerCase();
-    if (!termo) return linhas;
-    return linhas.filter((l) =>
-      `${l.descricao} ${l.sku ?? ""} ${l.ean ?? ""} ${l.codigoFornecedor ?? ""}`
+    return linhas.filter((l) => {
+      if (!casaComFiltro(l, filtroAtivo)) return false;
+      if (!termo) return true;
+      return `${l.descricao} ${l.sku ?? ""} ${l.ean ?? ""} ${l.codigoFornecedor ?? ""}`
         .toLowerCase()
-        .includes(termo),
-    );
-  }, [linhas, busca]);
+        .includes(termo);
+    });
+  }, [linhas, busca, filtroAtivo]);
 
   return (
-    <div className="flex flex-col gap-5 pb-24">
+    <div className="flex min-h-full flex-col gap-5">
       {camera && (
         <Scanner
           onCodigo={aoLerCodigo}
@@ -771,30 +876,65 @@ function Conferencia({
           </p>
         )
       ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-0 flex-1">
-            <Search
-              className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-faint"
-              aria-hidden
-            />
-            <input
-              value={busca}
-              onChange={(e) => setBusca(e.target.value)}
-              placeholder="Achar item por nome, SKU ou código"
-              aria-label="Buscar item da nota"
-              className="h-10 w-full rounded-full border border-line-button bg-surface pr-4 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-            />
-          </div>
-          <Button variant="secondary" onClick={() => setCamera(true)}>
-            <ScanLine className="h-4 w-4" aria-hidden />
-            Bipar
-          </Button>
-          {!cega && (
-            <Button variant="secondary" onClick={() => void conferirTudo()}>
-              <CheckCheck className="h-4 w-4" aria-hidden />
-              Conferi tudo conforme a nota
+        // Sticky: em nota de quarenta linhas, procurar um item ou bipar exigia
+        // rolar até o topo e voltar. Quem rola aqui é o <main> do shell, então
+        // o topo desta barra é o topo da área de conteúdo.
+        <div className="sticky top-0 z-20 -mt-2 flex flex-col gap-2 bg-canvas/95 py-2 backdrop-blur">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-0 flex-1">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-faint"
+                aria-hidden
+              />
+              <input
+                value={busca}
+                onChange={(e) => setBusca(e.target.value)}
+                placeholder="Achar item por nome, SKU ou código"
+                aria-label="Buscar item da nota"
+                className="h-10 w-full rounded-full border border-line-button bg-surface pr-4 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+              />
+            </div>
+            <Button variant="secondary" onClick={() => setCamera(true)}>
+              <ScanLine className="h-4 w-4" aria-hidden />
+              Bipar
             </Button>
-          )}
+            {!cega && (
+              <Button variant="secondary" onClick={() => void conferirTudo()}>
+                <CheckCheck className="h-4 w-4" aria-hidden />
+                <span className="hidden sm:inline">Conferi tudo conforme a nota</span>
+                <span className="sm:hidden">Conferi tudo</span>
+              </Button>
+            )}
+          </div>
+
+          {/* Chips só de estado que existe. Filtro com zero é botão que não
+              leva a lugar nenhum. */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {FILTROS.filter((f) => f.id === "TODOS" || contagens[f.id] > 0).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setFiltro(f.id)}
+                aria-pressed={filtroAtivo === f.id}
+                className={cn(
+                  "rounded-full border px-3 py-1 text-[12px] font-medium transition-colors",
+                  filtroAtivo === f.id
+                    ? "border-brand bg-brand text-on-brand"
+                    : "border-line-button bg-surface text-muted hover:text-ink",
+                )}
+              >
+                {f.label}
+                <span
+                  className={cn(
+                    "ml-1.5 tabular-nums",
+                    filtroAtivo === f.id ? "opacity-80" : "text-faint",
+                  )}
+                >
+                  {contagens[f.id]}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -802,10 +942,14 @@ function Conferencia({
         {visiveis.map((l) => (
           <ItemCard
             key={l.id}
+            ref={(el) => {
+              itensRef.current[l.id] = el;
+            }}
             linha={l}
             bloqueado={encerrada}
             cega={cega}
             semPedido={semPedido}
+            piscando={piscando === l.id}
             onAlterar={(patch) => {
               aplicarLocal(l.id, patch);
               void salvar(l.id, patch);
@@ -817,7 +961,21 @@ function Conferencia({
 
       {visiveis.length === 0 && (
         <p className="rounded-[var(--radius)] border border-line bg-surface px-4 py-6 text-center text-[13px] text-muted">
-          Nenhum item com “{busca.trim()}”.
+          {busca.trim() ? (
+            <>Nenhum item com “{busca.trim()}”{filtroAtivo !== "TODOS" && " neste filtro"}.</>
+          ) : (
+            "Nenhum item neste filtro."
+          )}{" "}
+          <button
+            type="button"
+            onClick={() => {
+              setBusca("");
+              setFiltro("TODOS");
+            }}
+            className="font-medium text-brand underline"
+          >
+            Ver os {linhas.length} itens
+          </button>
         </p>
       )}
 
@@ -857,19 +1015,30 @@ function Conferencia({
       </div>
 
       {!encerrada && (
-        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/95 px-4 py-3 backdrop-blur">
-          <div className="mx-auto flex max-w-5xl items-center gap-3">
-            <div className="min-w-0 flex-1">
-              <p className="text-[13px] font-medium text-ink">
-                {conferidos} de {linhas.length} itens conferidos
-              </p>
-              <p className="truncate text-[12px] text-muted">
+        // `sticky`, não `fixed`: fixo se ancora na viewport inteira, passa por
+        // baixo da sidebar e obriga a chutar um `pb-24` que o texto de duas
+        // linhas do celular estoura — escondendo o último item da nota.
+        <div className="sticky bottom-0 z-30 -mx-1 mt-auto border-t border-line bg-surface/95 px-4 py-3 backdrop-blur sm:-mx-2">
+          <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-3 gap-y-2">
+            <div className="min-w-0 flex-1 basis-full sm:basis-0">
+              <MedidorConferencia
+                total={linhas.length}
+                conferidos={conferidos}
+                divergentes={divergentes.length}
+              />
+              <p className="mt-1 truncate text-[12px] text-muted">
                 {divergentes.length > 0
                   ? `${divergentes.length} ${divergentes.length === 1 ? "divergência aberta" : "divergências abertas"} — o que não for conferido entra como está na nota.`
-                  : "Tudo conferido. Falta apenas confirmar a entrada física."}
+                  : conferidos === linhas.length
+                    ? "Tudo conferido. Falta apenas confirmar a entrada física."
+                    : `${linhas.length - conferidos} ${linhas.length - conferidos === 1 ? "item entra" : "itens entram"} como está na nota se ninguém contar.`}
               </p>
             </div>
-            <Button onClick={() => setConfirmando(true)} disabled={enviando}>
+            <Button
+              onClick={() => setConfirmando(true)}
+              disabled={enviando}
+              className="w-full sm:w-auto"
+            >
               <ClipboardCheck className="h-4 w-4" aria-hidden />
               Confirmar entrada no estoque
             </Button>
@@ -939,6 +1108,58 @@ function Conferencia({
   );
 }
 
+// ── Medidor da conferência ──────────────────────────────────
+
+/**
+ * "12 de 40" é um número que se lê; a barra é um estado que se vê.
+ *
+ * Dois saldos na mesma régua, como o medidor de estoque do produto: o que já
+ * foi contado e, dentro dele, o que veio diferente do papel. Quem está na doca
+ * olha de longe, com a caixa na mão — texto de 13px não se lê nessa distância.
+ */
+function MedidorConferencia({
+  total,
+  conferidos,
+  divergentes,
+}: {
+  total: number;
+  conferidos: number;
+  divergentes: number;
+}) {
+  const pctConferido = total > 0 ? (conferidos / total) * 100 : 0;
+  const pctDivergente = total > 0 ? (Math.min(divergentes, conferidos) / total) * 100 : 0;
+
+  return (
+    <div>
+      <p className="flex items-baseline gap-2 text-[13px] font-medium text-ink">
+        <span className="tabular-nums">
+          {conferidos} de {total}
+        </span>
+        <span className="text-muted">{total === 1 ? "item conferido" : "itens conferidos"}</span>
+      </p>
+      <div
+        className="mt-1 flex h-1.5 w-full overflow-hidden rounded-full bg-surface-2"
+        role="progressbar"
+        aria-valuenow={conferidos}
+        aria-valuemin={0}
+        aria-valuemax={total}
+        aria-label="Itens conferidos"
+      >
+        {/* A fatia divergente é subconjunto da conferida — some da barra verde
+            para não somar mais de 100%. */}
+        <span
+          className="h-full bg-ok transition-[width] duration-300 motion-reduce:transition-none"
+          style={{ width: `${pctConferido - pctDivergente}%` }}
+        />
+        <span
+          className="h-full bg-accent transition-[width] duration-300 motion-reduce:transition-none"
+          style={{ width: `${pctDivergente}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ── Cabeçalho ───────────────────────────────────────────────
 
 function Cabecalho({
@@ -957,32 +1178,38 @@ function Cabecalho({
     <div className="flex flex-wrap items-start gap-3">
       <Link
         href="/pedidos"
-        className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full border border-line-button text-ink-2 hover:bg-surface-2"
+        className="mt-1 grid h-9 w-9 shrink-0 place-items-center rounded-full border border-line-button text-ink-2 hover:bg-surface-2"
         aria-label="Voltar para os pedidos de compra"
       >
         <ArrowLeft className="h-4 w-4" aria-hidden />
       </Link>
 
+      {/* Hierarquia: quem mandou > qual papel > quanto. O nome do fornecedor é
+          o que o operador procura na tela cheia de notas; "Recebimento
+          inteligente" é onde ele está, não o que ele está olhando. */}
       <div className="min-w-0 flex-1">
-        <h1 className="font-display text-[19px] font-semibold text-ink">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-faint">
           Recebimento inteligente
+        </p>
+        <h1 className="truncate font-display text-[20px] font-semibold text-ink">
+          {nota.fornecedor}
         </h1>
         <p className="truncate text-[13px] text-muted">
-          {pedidoNumero && (
-            <>
-              <span className="font-mono text-ink-2">{pedidoNumero}</span>
-              {" · "}
-            </>
-          )}
-          {nota.fornecedor} ·{" "}
           <span className="font-mono">
             NF {nota.numero}/{nota.serie}
-          </span>{" "}
-          · {nota.siteNome}
+          </span>
+          {" · "}
+          {nota.siteNome}
+          {pedidoNumero && (
+            <>
+              {" · pedido "}
+              <span className="font-mono text-ink-2">{pedidoNumero}</span>
+            </>
+          )}
         </p>
         {semPedido && (
           <p className="mt-1 text-[12px] text-muted">
-            Conferência sem pedido — a nota é a referência do que deveria vir.
+            Sem pedido — a nota é a referência do que deveria vir.
           </p>
         )}
         {nota.vinculoAutomatico && pedidoNumero && (
@@ -1003,23 +1230,46 @@ function Cabecalho({
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-2">
-        {nota.temXml && (
-          // O contador pede o XML, e sem isto o operador volta ao e-mail do
-          // fornecedor procurar o anexo que já está guardado aqui.
-          <a
-            href={`/api/fiscal/entrada/${nota.id}/xml`}
-            className="hidden items-center gap-1.5 rounded-full bg-surface-2 px-3 py-1.5 text-[12px] text-muted transition-colors hover:bg-line hover:text-ink sm:inline-flex"
-          >
-            <FileText className="h-3.5 w-3.5" aria-hidden />
-            Baixar XML
-          </a>
-        )}
-        {onDesvincular && (pedidoNumero || semPedido) && (
-          <Button variant="ghost" size="sm" onClick={onDesvincular}>
-            {pedidoNumero ? "Trocar pedido" : "Trocar forma de receber"}
-          </Button>
-        )}
+      <div className="flex shrink-0 items-start gap-3">
+        <p className="text-right">
+          <span className="block font-mono text-[20px] font-semibold text-ink">
+            {fmtMoney(nota.valorTotal)}
+          </span>
+          <span className="block text-[11px] text-faint">total da nota</span>
+        </p>
+
+        {/* O que não é a decisão da vez sai do caminho. Baixar o XML e trocar
+            a forma de receber são coisas que se faz uma vez por nota — não
+            merecem competir com o botão de receber. */}
+        <Menu
+          trigger={
+            <button
+              type="button"
+              className="grid h-9 w-9 place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2"
+              aria-label="Mais opções desta nota"
+            >
+              <MoreVertical className="h-4 w-4" aria-hidden />
+            </button>
+          }
+        >
+          {nota.temXml && (
+            // O contador pede o XML, e sem isto o operador volta ao e-mail do
+            // fornecedor procurar o anexo que já está guardado aqui.
+            <MenuItem
+              icon={<FileText size={15} />}
+              onClick={() => {
+                window.location.href = `/api/fiscal/entrada/${nota.id}/xml`;
+              }}
+            >
+              Baixar XML
+            </MenuItem>
+          )}
+          {onDesvincular && (pedidoNumero || semPedido) && (
+            <MenuItem icon={<Undo2 size={15} />} onClick={onDesvincular}>
+              {pedidoNumero ? "Trocar pedido" : "Trocar forma de receber"}
+            </MenuItem>
+          )}
+        </Menu>
       </div>
     </div>
   );
@@ -1229,7 +1479,7 @@ function SheetAvisarFornecedor({
     };
   }, [inboundId]);
 
-  const digitos = (dados?.telefone ?? "").replace(/D/g, "");
+  const digitos = (dados?.telefone ?? "").replace(/\D/g, "");
   const zap = digitos.length >= 10 ? `https://wa.me/${digitos.length <= 11 ? "55" : ""}${digitos}?text=${encodeURIComponent(texto)}` : null;
   const email = dados?.email
     ? `mailto:${dados.email}?subject=${encodeURIComponent("Divergência na entrega")}&body=${encodeURIComponent(texto)}`
@@ -1533,70 +1783,94 @@ function explicacao(l: LinhaRecebimento, v: number | null): string {
 
 // ── Card do item ────────────────────────────────────────────
 
-function ItemCard({
-  linha,
-  bloqueado,
-  cega,
-  semPedido,
-  onAlterar,
-  onRelacionar,
-}: {
-  linha: LinhaRecebimento;
-  bloqueado: boolean;
-  /** Esconde pedido/NF enquanto a linha não foi contada. */
-  cega?: boolean;
-  /** Recebimento sem pedido: não existe coluna "Pedido" para mostrar. */
-  semPedido?: boolean;
-  onAlterar: (patch: { qtdRecebida?: number | null; lote?: string | null; validade?: string | null }) => void;
-  onRelacionar: () => void;
-}) {
+const ItemCard = React.forwardRef<
+  HTMLLIElement,
+  {
+    linha: LinhaRecebimento;
+    bloqueado: boolean;
+    /** Esconde pedido/NF enquanto a linha não foi contada. */
+    cega?: boolean;
+    /** Recebimento sem pedido: não existe coluna "Pedido" para mostrar. */
+    semPedido?: boolean;
+    /** Acabou de receber um bipe — destaca por um instante. */
+    piscando?: boolean;
+    onAlterar: (patch: {
+      qtdRecebida?: number | null;
+      lote?: string | null;
+      validade?: string | null;
+    }) => void;
+    onRelacionar: () => void;
+  }
+>(function ItemCard(
+  { linha, bloqueado, cega, semPedido, piscando, onAlterar, onRelacionar },
+  ref,
+) {
   const info = STATUS_INFO[linha.status];
   const v = variacaoDaLinha(linha);
   const [aberto, setAberto] = React.useState(false);
   const recebido = linha.qtdRecebida;
   /** Contou? Então pode ver. Antes disso, o número do pedido enviesa a contagem. */
   const oculto = Boolean(cega) && recebido == null && !bloqueado;
+  const temDetalhe = Boolean(linha.lote || linha.validade || linha.motivoDivergencia);
 
   return (
     <li
+      ref={ref}
       className={cn(
-        "overflow-hidden rounded-[var(--radius-lg)] border bg-surface",
+        "overflow-hidden rounded-[var(--radius-lg)] border bg-surface transition-colors",
         info.grave && !linha.resolucao ? "border-accent/40" : "border-line",
+        // O bipe acerta a linha certa; o destaque é o que prova isso a quem
+        // está de pé, com a caixa na mão, longe da tela.
+        piscando && "border-ok bg-ok-soft/50 motion-reduce:transition-none",
       )}
     >
-      <button
-        type="button"
-        onClick={() => setAberto((a) => !a)}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-2"
-      >
-        <ProdutoThumb url={linha.imagemUrl} nome={linha.descricao} size="lg" />
+      {/* A linha fechada não é mais um botão só: contar é o trabalho, e
+          trabalho não pode morar atrás de um clique de "expandir". O toggle
+          cobre a identidade do item; a quantidade fica ao lado, digitável. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
+        <button
+          type="button"
+          onClick={() => setAberto((a) => !a)}
+          aria-expanded={aberto}
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-[var(--radius)] text-left focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+        >
+          <ProdutoThumb url={linha.imagemUrl} nome={linha.descricao} size="lg" />
 
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium text-ink">{linha.descricao}</span>
-            {linha.bonificacao && (
-              <span className="shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-[11px] text-brand">
-                Bonificação
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-2">
+              <span className="truncate text-sm font-medium text-ink">{linha.descricao}</span>
+              {linha.bonificacao && (
+                <span className="shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-[11px] text-brand">
+                  Bonificação
+                </span>
+              )}
+            </span>
+            <span className="block truncate font-mono text-[11px] text-muted">
+              {linha.sku ?? linha.codigoFornecedor ?? "sem código"}
+              {temDetalhe && !aberto && (
+                <span className="font-sans text-faint">
+                  {linha.lote ? ` · lote ${linha.lote}` : ""}
+                  {linha.validade
+                    ? ` · val. ${new Date(linha.validade).toLocaleDateString("pt-BR")}`
+                    : ""}
+                </span>
+              )}
+            </span>
+            {v != null && !oculto && (
+              <span
+                className={cn(
+                  "mt-0.5 inline-flex items-center gap-1 text-[11px]",
+                  v > 0 ? "text-danger" : "text-ok",
+                )}
+              >
+                {v > 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
+                {fmtMoney(linha.custoPedido)} → {fmtMoney(linha.custoFaturado)} ({pct(v)})
               </span>
             )}
           </span>
-          <span className="block truncate font-mono text-[11px] text-muted">
-            {linha.sku ?? linha.codigoFornecedor ?? "sem código"}
-          </span>
-          {v != null && !oculto && (
-            <span
-              className={cn(
-                "mt-0.5 inline-flex items-center gap-1 text-[11px]",
-                v > 0 ? "text-danger" : "text-ok",
-              )}
-            >
-              {v > 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-              {fmtMoney(linha.custoPedido)} → {fmtMoney(linha.custoFaturado)} ({pct(v)})
-            </span>
-          )}
-        </span>
+        </button>
 
-        <span className="hidden shrink-0 items-center gap-5 sm:flex">
+        <div className="hidden shrink-0 items-center gap-5 sm:flex">
           {oculto ? (
             <Coluna titulo={semPedido ? "NF" : "Pedido / NF"} valor="•••" />
           ) : (
@@ -1605,12 +1879,66 @@ function ItemCard({
               <Coluna titulo="NF" valor={fmtQtd(linha.qtdFaturada)} />
             </>
           )}
+        </div>
+
+        {bloqueado ? (
           <Coluna
             titulo="Recebido"
-            valor={recebido == null ? "—" : fmtQtd(recebido)}
+            valor={recebido == null ? fmtQtd(linha.qtdFaturada) : fmtQtd(recebido)}
             destaque={recebido != null}
           />
-        </span>
+        ) : (
+          <div className="flex shrink-0 items-end gap-1.5">
+            <Campo label="Recebido">
+              <input
+                // `key` amarrado ao valor do servidor: o campo é não
+                // controlado (para não brigar com a digitação), e sem remontar
+                // ele ficava exibindo 12 depois de o bipe somar 13.
+                key={`${linha.id}:${recebido ?? "-"}`}
+                type="number"
+                inputMode="decimal"
+                step="0.001"
+                min={0}
+                defaultValue={recebido ?? ""}
+                placeholder={oculto ? "conte" : fmtQtd(linha.qtdFaturada)}
+                aria-label={`Quantidade recebida de ${linha.descricao}`}
+                onBlur={(e) => {
+                  const bruto = e.target.value.trim();
+                  const novo = bruto === "" ? null : Number(bruto);
+                  if (novo === recebido) return;
+                  onAlterar({ qtdRecebida: novo });
+                }}
+                onKeyDown={(e) => {
+                  // Enter fecha a linha e devolve o teclado ao leitor: contar
+                  // quarenta itens é digitar, tab, digitar — não mirar botão.
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                className={cn(
+                  "h-10 w-[4.5rem] rounded-[var(--radius)] border bg-surface px-2 text-center text-sm tabular-nums focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
+                  recebido == null
+                    ? "border-line-button text-ink placeholder:text-faint"
+                    : "border-ok/50 font-semibold text-ink",
+                )}
+              />
+            </Campo>
+            {/* "Igual à nota" é o caso de 90% das linhas. Um toque, sem abrir
+                nada, sem digitar o número que já está na tela ao lado. */}
+            <button
+              type="button"
+              onClick={() => onAlterar({ qtdRecebida: linha.qtdFaturada })}
+              title="Recebi como está na nota"
+              aria-label={`Recebi ${fmtQtd(linha.qtdFaturada)} de ${linha.descricao}, como na nota`}
+              className={cn(
+                "grid h-10 w-9 place-items-center rounded-[var(--radius)] border border-line-button text-muted transition-colors hover:bg-ok-soft hover:text-ok focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
+                recebido != null &&
+                  Math.abs(recebido - linha.qtdFaturada) < 0.001 &&
+                  "border-ok/50 bg-ok-soft text-ok",
+              )}
+            >
+              <Check className="h-4 w-4" aria-hidden />
+            </button>
+          </div>
+        )}
 
         <span
           className={cn(
@@ -1620,7 +1948,7 @@ function ItemCard({
         >
           {linha.resolucao ? "Resolvido" : oculto ? "A conferir" : info.label}
         </span>
-      </button>
+      </div>
 
       {aberto && (
         <div className="border-t border-line px-4 py-3">
@@ -1633,20 +1961,8 @@ function ItemCard({
             </p>
           ) : (
             <div className="flex flex-wrap items-end gap-3">
-              <Campo label="Quantidade recebida">
-                <input
-                  type="number"
-                  step="0.001"
-                  min={0}
-                  defaultValue={recebido ?? ""}
-                  placeholder={oculto ? "conte e digite" : fmtQtd(linha.qtdFaturada)}
-                  onBlur={(e) => {
-                    const bruto = e.target.value.trim();
-                    onAlterar({ qtdRecebida: bruto === "" ? null : Number(bruto) });
-                  }}
-                  className="h-10 w-32 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink tabular-nums focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-                />
-              </Campo>
+              {/* Quantidade saiu daqui: vive na linha fechada. Aqui fica o que
+                  só se preenche de vez em quando. */}
               <Campo label="Lote">
                 <input
                   defaultValue={linha.lote ?? ""}
@@ -1664,14 +1980,14 @@ function ItemCard({
                 />
               </Campo>
 
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => onAlterar({ qtdRecebida: linha.qtdFaturada })}
-              >
-                <Check className="h-4 w-4" aria-hidden />
-                Recebi como na nota
-              </Button>
+              {/* Só no celular: no desktop as colunas Pedido/NF ficam à vista
+                  na própria linha. */}
+              {!oculto && (
+                <p className="text-[12px] text-muted sm:hidden">
+                  {!semPedido && <>Pedido {fmtQtd(linha.qtdPedida)} · </>}
+                  NF {fmtQtd(linha.qtdFaturada)}
+                </p>
+              )}
 
               {!linha.productId && (
                 <Button size="sm" onClick={onRelacionar}>
@@ -1688,7 +2004,7 @@ function ItemCard({
       )}
     </li>
   );
-}
+});
 
 function Coluna({ titulo, valor, destaque }: { titulo: string; valor: string; destaque?: boolean }) {
   return (

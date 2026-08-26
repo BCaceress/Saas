@@ -1171,18 +1171,6 @@ model Product {
   copoMl      Decimal?    @db.Decimal(10, 2) // tamanho do copo (drink) — tamanho único
   modoPreparo String?
 
-  // Variação COMERCIAL de compra (sabor, cor, aroma). O produto é comprado em
-  // variações — Bubbaloo Morango, Uva, Tutti-Frutti — e vendido/estocado como
-  // um só: "Bubbaloo Sortido". `variacaoLabel` é o EIXO ("Sabor"); as
-  // variações em si vivem em `purchaseVariants`. Nulo = produto sem variação.
-  //
-  // A variação NÃO cria SKU, NÃO cria Stock e NÃO aparece no PDV: é detalhe da
-  // ORIGEM da compra. O saldo é sempre do produto principal.
-  variacaoLabel      String?
-  // Reservado: variação com estoque/venda próprios. Hoje sempre false — o motor
-  // consolida tudo no produto principal. Existe para que o dia em que "Morango"
-  // precisar de saldo próprio não vire migração de dados às pressas.
-  variacaoControlada Boolean @default(false)
 
   vendeOnline     Boolean  @default(false)
   pesoGramas      Int?
@@ -1206,7 +1194,6 @@ model Product {
   usedInRecipes    ProductComponent[]       @relation("ComponentProduct")
   componentGroups  ProductComponentGroup[]
   variants         ProductVariant[]
-  purchaseVariants ProductPurchaseVariant[]
   tags             ProductTag[]
   salesChannels    ProductSalesChannel[]
   suppliers        ProductSupplier[]
@@ -1390,40 +1377,6 @@ model ProductVariant {
   @@index([productId])
 }
 
-/// Variação COMERCIAL de compra — o sabor/cor/aroma que o fornecedor vende e
-/// que a loja compra, mas que NÃO existe para o estoque nem para o caixa.
-///
-/// O operador compra Bubbaloo Morango, Uva e Tutti-Frutti; na prateleira e no
-/// PDV existe um produto só, "Bubbaloo Sortido — 150 UN". Se cada sabor virasse
-/// produto, o operador teria três saldos que ninguém consegue contar (a caixa
-/// vem misturada) e três SKUs que o caixa precisa distinguir com o olho.
-///
-/// Por isso a variação mora aqui e não em Product: ela aparece na ENTRADA
-/// (pedido, nota, lançamento manual), fica gravada no item de compra para o
-/// histórico, e some do resto do sistema. Quem soma é sempre o produto pai.
-model ProductPurchaseVariant {
-  id               String   @id @default(cuid())
-  tenantId         String
-  productId        String
-  /// Valor da variação: "Morango", "Uva", "Tutti-Frutti".
-  nome             String
-  /// EAN do sabor, quando o fornecedor dá um por variação. É o que faz o XML
-  /// da NF-e cair no produto certo JÁ com o sabor preenchido.
-  ean              String?
-  /// cProd do fornecedor para esta variação, quando ele usa código próprio.
-  codigoFornecedor String?
-  ordem            Int      @default(0)
-  ativo            Boolean  @default(true)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-
-  @@unique([productId, nome])
-  @@index([tenantId])
-  @@index([productId])
-  @@index([tenantId, ean])
-}
 
 model Tag {
   id       String @id @default(cuid())
@@ -1710,13 +1663,6 @@ model PurchaseOrderItem {
   qtdRecebida       Decimal            @default(0) @db.Decimal(12, 3) // acumulado conferido
   observacao        String? // nota do item ("trocar por validade longa", etc.)
 
-  // Variação comercial comprada nesta linha (sabor/cor). Não muda nada no
-  // estoque — a mercadoria some dentro do saldo do produto. Serve para pedir e
-  // conferir o que o fornecedor entende: "50 de morango", não "50 de sortido".
-  variantId    String?
-  /// Nome congelado da variação. A linha do pedido é história: renomear ou
-  /// apagar a variação depois não pode reescrever o que foi comprado.
-  variacaoNome String?
 
   purchaseOrder PurchaseOrder                @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   conciliacao   PurchaseReconciliationItem[]
@@ -1735,11 +1681,6 @@ model PurchaseItem {
   quantidade  Decimal @db.Decimal(12, 3)
   custoTotal  Decimal @db.Decimal(12, 2)
 
-  // Variação comercial que entrou nesta linha. É AQUI que o sabor sobrevive:
-  // o StockMovement soma no produto principal e não sabe de sabor nenhum, mas
-  // "quantos morangos entraram no mês passado?" continua tendo resposta.
-  variantId    String?
-  variacaoNome String? // congelado no momento da entrada
 
   purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
 
@@ -2092,6 +2033,7 @@ model Production {
   tenantId   String
   siteId     String
   productId  String
+  /// Tamanho produzido (ProductVariant: P/M/G). Nada a ver com variação de compra.
   variantId  String?
   quantidade Int      @default(1)
   saleId     String? // se a produção foi disparada por uma venda
@@ -2188,6 +2130,7 @@ model SaleItem {
   tenantId      String
   saleId        String
   productId     String
+  /// Tamanho vendido (ProductVariant: P/M/G do drink). Não é variação de compra.
   variantId     String?
   quantidade    Decimal @db.Decimal(12, 3)
   precoUnitario Decimal @db.Decimal(10, 2)
@@ -3033,8 +2976,6 @@ model FiscalInboundItem {
 
   // Resolução no nosso catálogo.
   productId      String?
-  /// Variação comercial reconhecida pelo GTIN/cProd da linha (o sabor do XML).
-  variantId      String?
   packagingId    String? // fornecedor manda caixa, estoque conta unidade
   // Unidades do nosso estoque por unidade do XML (caixa com 12 → 12).
   fatorConversao Decimal @default(1) @db.Decimal(12, 4)
@@ -3200,9 +3141,6 @@ model SupplierItemMap {
   codigoFornecedor String // cProd do XML
   gtin             String?
   productId        String
-  /// Variação comercial deste código do fornecedor. O de-para é por cProd, e o
-  /// cProd do fornecedor É por sabor — então o sabor vem de graça na 2ª nota.
-  variantId        String?
   packagingId      String?
   fatorConversao   Decimal @default(1) @db.Decimal(12, 4)
 
