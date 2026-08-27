@@ -8,6 +8,7 @@ import {
   type ItemNotaXml,
 } from "./nfe-xml";
 import { fatorDaNota } from "./fator";
+import { fatorDaUnidade, unidadesParaEstoque } from "./unidades";
 import { custoDoItem } from "./custo";
 import { ratearTotaisDaNota } from "./rateio";
 import { enriquecerProdutoComNota, atualizarCustoDeReferencia } from "./enriquecer-produto";
@@ -93,16 +94,18 @@ type ItemResolvido = {
  * Sem match, fica null e a nota nasce PENDENTE.
  *
  * O fator, quando não vem de um cadastro nosso, vem da própria nota
- * (`qTrib/qCom`). Sem isso, uma nota de distribuidor com 5 CX de long neck
- * entraria como 5 garrafas em vez de 120 — e o de-para que o operador salvasse
- * em cima disso repetiria o erro em toda nota seguinte.
+ * (`qTrib/qCom`) e, na falta dela, do que a SIGLA da unidade já diz sozinha —
+ * milheiro é mil. Sem isso, uma nota de distribuidor com 5 CX de long neck
+ * entraria como 5 garrafas em vez de 120, e 0,6 MI de cigarro como 0,6 maço —
+ * e o de-para que o operador salvasse em cima disso repetiria o erro em toda
+ * nota seguinte.
  */
 async function resolverItem(
   tenantId: string,
   supplierId: string,
   item: ItemNotaXml,
 ): Promise<ItemResolvido> {
-  const daNota = fatorDaNota(item) ?? 1;
+  const daNota = fatorDaNota(item) ?? fatorDaUnidade(item.unidade) ?? 1;
 
   const mapeado = await db.supplierItemMap.findFirst({
     where: { supplierId, codigoFornecedor: item.codigoFornecedor },
@@ -459,6 +462,15 @@ export async function relacionarItemInbound(input: {
     throw new Error("Esta nota documenta uma entrada já lançada — o de-para dela não muda o saldo.");
   }
 
+  // A conversão tem de fechar em peça inteira ANTES de virar de-para: gravada,
+  // ela se repete em toda nota seguinte deste fornecedor (SupplierItemMap) e o
+  // erro sai de uma linha para o cadastro inteiro.
+  unidadesParaEstoque(
+    Number(item.quantidade),
+    fatorConversao,
+    `Item ${item.codigoFornecedor}`,
+  );
+
   // A nota sabe em que embalagem o fornecedor vende, com que código de barras
   // e por quanto. Aproveitamos isso no cadastro ANTES de gravar o de-para: se
   // a embalagem de compra nasce aqui, é o id dela que fica registrado.
@@ -723,7 +735,12 @@ export async function gerarEntradaDaNota(input: {
       // Convertemos aqui e mandamos packagingId null de propósito: o fator do
       // de-para pode divergir do cadastro da embalagem (fornecedor muda o fardo),
       // e deixar `registrarEntrada` converter de novo dobraria a quantidade.
-      quantidade: Number(i.quantidade) * Number(i.fatorConversao),
+      // Peça inteira ou erro: meia garrafa não entra no saldo.
+      quantidade: unidadesParaEstoque(
+        Number(i.quantidade),
+        Number(i.fatorConversao),
+        `Item ${i.descricao}`,
+      ),
       custoTotal: custoDoItem({
         valorTotal: Number(i.valorTotal),
         valorDesconto: Number(i.valorDesconto),

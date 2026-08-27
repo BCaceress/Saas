@@ -7,6 +7,7 @@ import {
   type EntradaItem,
 } from "@/lib/estoque";
 import { custoDoItem } from "@/lib/fiscal/custo";
+import { unidadesDaLinha } from "@/lib/fiscal/unidades";
 import { atualizarCustoDeReferencia } from "@/lib/fiscal/enriquecer-produto";
 import { registrarEvento } from "./eventos";
 import { gerarTitulosDaNota } from "@/lib/financeiro/contas-pagar";
@@ -251,7 +252,11 @@ function medidaDoItem(item: {
   bonificacao: boolean;
 }): { qtdBase: number; custoBase: number } {
   const fator = Number(item.fatorConversao) || 1;
-  const qtdBase = Number(item.quantidade) * fator;
+  // A linha da conferência conta PEÇA — quem está na doca conta caixa inteira.
+  // Fração aqui é conversão errada, e a régua de divergências (CRITICA) segura
+  // a nota até alguém arrumar; arredondar é só para a tela não mostrar "1,5
+  // garrafa a conferir".
+  const qtdBase = unidadesDaLinha(Number(item.quantidade), fator).unidades;
   const custoTotal = custoDoItem({
     valorTotal: Number(item.valorTotal),
     valorDesconto: Number(item.valorDesconto),
@@ -365,7 +370,7 @@ export async function conciliar(input: {
       id: i.id,
       productId: i.productId,
       compra: i.tipo === "COMPRA",
-      qtdBase: Number(i.qtdPedida) * fator,
+      qtdBase: unidadesDaLinha(Number(i.qtdPedida), fator).unidades,
       custoBase: fator > 0 ? Number(i.custoUnitario) / fator : 0,
       usado: false,
     };

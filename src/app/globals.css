@@ -1136,6 +1136,28 @@ body:has([data-app-shell]) {
   animation: countdown-bar linear both;
 }
 
+/* Linha do recebimento gravando: fio indeterminado no topo do card. A
+   contagem salva sozinha no blur do campo — sem movimento, "salvou" e "não
+   pegou" são a mesma tela. Reduced motion troca o giro por um pulso suave. */
+@keyframes linha-salvando {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+.linha-salvando > span {
+  animation: linha-salvando 1.1s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .linha-salvando > span {
+    width: 100%;
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
 /* Progresso completo */
 @keyframes ready-glow {
   0% {

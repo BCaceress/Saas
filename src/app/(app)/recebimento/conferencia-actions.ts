@@ -151,7 +151,15 @@ export async function reconciliarAction(inboundId: string) {
 const conferirSchema = z.object({
   inboundId: z.string().min(1),
   itemId: z.string().min(1),
-  qtdRecebida: z.coerce.number().min(0).nullable().optional(),
+  // Contagem é de PEÇA: quem está na doca conta garrafa, não meia garrafa.
+  // O saldo só guarda inteiro, então aceitar 1,5 aqui só adiaria o erro para
+  // a hora de receber — e aí a nota inteira trava.
+  qtdRecebida: z.coerce
+    .number()
+    .min(0)
+    .int("A contagem é em unidades inteiras — o estoque não guarda meia peça.")
+    .nullable()
+    .optional(),
   lote: z.string().trim().max(60).nullable().optional(),
   validade: z
     .string()

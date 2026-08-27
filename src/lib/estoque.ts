@@ -3,6 +3,7 @@ import { basePrisma, comTenant } from "./prisma";
 import { registrarEvento } from "./compras/eventos";
 import type { MovementType, PurchaseOrderOrigem } from "@/generated/prisma";
 import { proximoNumeroDocumento } from "@/lib/numeracao";
+import { unidadesParaEstoque } from "@/lib/fiscal/unidades";
 
 // ============================================================
 // Serviço de estoque — toda operação é transacional e grava
@@ -218,14 +219,18 @@ export async function registrarEntrada(
   // 1. Resolve quantidades base (converte embalagem se necessário)
   const resolvedItems = await Promise.all(
     items.map(async (item) => {
-      let qtdBase = item.quantidade;
+      let fator = 1;
       if (item.packagingId) {
         const pkg = await comTenant(tenantId, basePrisma.productPackaging.findUnique({
           where: { id: item.packagingId },
           select: { fatorConversao: true },
         }));
-        if (pkg) qtdBase = item.quantidade * Number(pkg.fatorConversao);
+        if (pkg) fator = Number(pkg.fatorConversao);
       }
+      // Saldo conta PEÇA. 0,6 MI × 1.000 = 600 entra; 0,5 CX × 3 = 1,5 não —
+      // e não vira 2 em silêncio: a conversão está errada e alguém precisa
+      // arrumá-la antes de a mercadoria virar número.
+      const qtdBase = unidadesParaEstoque(item.quantidade, fator, "Entrada de estoque");
       const custoUnitario = qtdBase > 0 ? item.custoTotal / qtdBase : 0;
       return { ...item, qtdBase, custoUnitario };
     })

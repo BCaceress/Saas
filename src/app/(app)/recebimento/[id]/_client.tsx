@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
+  ArrowRightLeft,
   Check,
   CheckCheck,
   ClipboardCheck,
@@ -38,6 +39,7 @@ import { TabelaDePara } from "@/components/recebimento/tabela-de-para";
 import { PainelNota } from "./_painel-nota";
 import { useLeitorTeclado } from "@/lib/hooks/use-leitor-teclado";
 import { variacaoCusto } from "@/lib/compras/conciliacao-regras";
+import { frasesDeConversao, rotuloDaUnidade } from "@/lib/fiscal/unidades";
 import { Metrica, MetricaGrid, fmtMoney, fmtQtd, fmtQuando } from "../../cotacoes/_catalogo/ui";
 import {
   aceitarCustoAction,
@@ -69,6 +71,9 @@ import type { ReconciliationStatus } from "@/generated/prisma";
 // nota e não se digitam.
 // ============================================================
 
+/** Gravação de uma linha: em voo, ou recém-confirmada pelo servidor. */
+type EstadoSalvamento = "salvando" | "salvo";
+
 const STATUS_INFO: Record<
   ReconciliationStatus,
   { label: string; classe: string; grave: boolean }
@@ -93,7 +98,7 @@ type Filtro = "TODOS" | "FALTA" | "DIVERGENTE" | "SEM_PRODUTO";
 const FILTROS: { id: Filtro; label: string }[] = [
   { id: "TODOS", label: "Todos" },
   { id: "FALTA", label: "Falta contar" },
-  { id: "DIVERGENTE", label: "Divergentes" },
+  { id: "DIVERGENTE", label: "Com diferença" },
   { id: "SEM_PRODUTO", label: "Sem produto" },
 ];
 
@@ -200,7 +205,7 @@ function EscolherPedido({
     setSalvando(purchaseOrderId);
     try {
       await vincularPedidoAction({ inboundId: nota.id, purchaseOrderId });
-      toast.success("Nota conciliada com o pedido.", "Confira a mercadoria para dar entrada.");
+      toast.success("Nota conciliada com o pedido.", "Confira a mercadoria para receber no estoque.");
       router.refresh();
     } catch (e) {
       toast.error("Não deu para vincular", e instanceof Error ? e.message : "Tente de novo.");
@@ -233,13 +238,55 @@ function EscolherPedido({
   }
 
   const podeAvancar = semProduto.length === 0;
-  // Nota que chegou inteira relacionada (o comum depois que o mapa do
-  // fornecedor aprendeu) abriria com 40 linhas de tabela cobrindo o trabalho
-  // real, que é escolher a porta. Fica dobrada até alguém querer ver.
-  const [verTabela, setVerTabela] = React.useState(!podeAvancar);
+  // O que entra no saldo se a nota for recebida como está — a conta que o
+  // operador não faz de cabeça e que muda com cada conversão confirmada.
+  const unidades = itensNota.reduce(
+    (s, i) => s + (i.productId ? i.quantidade * i.fatorConversao : 0),
+    0,
+  );
+
+  /**
+   * De onde veio esta compra. Antes eram três cards lado a lado, cada um com
+   * um parágrafo e um botão próprio: três decisões de peso igual competindo,
+   * e o operador lendo tudo para descobrir qual era a dele. Agora é uma
+   * pergunta com três respostas — só a escolhida se abre, e o botão de agir é
+   * um só, no rodapé.
+   */
+  type Porta = "PEDIDO" | "NOVO" | "SEM_PEDIDO";
+  const [porta, setPorta] = React.useState<Porta | null>(
+    sugestoes.length > 0 ? "PEDIDO" : null,
+  );
+  const [pedidoEscolhido, setPedidoEscolhido] = React.useState<string | null>(
+    sugestoes[0]?.purchaseOrderId ?? null,
+  );
+
+  const itensRef = React.useRef<HTMLDivElement>(null);
+
+  /** A ação que o botão do rodapé dispara, conforme a resposta escolhida. */
+  function seguir() {
+    if (porta === "PEDIDO" && pedidoEscolhido) void vincular(pedidoEscolhido);
+    else if (porta === "NOVO") void gerarPedido();
+    else if (porta === "SEM_PEDIDO") void receberSemPedido();
+  }
+
+  /** Por que o botão do rodapé está travado, quando está. */
+  const impedimento =
+    porta === null
+      ? "Escolha de onde veio esta mercadoria."
+      : porta === "PEDIDO" && !pedidoEscolhido
+        ? "Escolha o pedido que esta nota fatura."
+        : porta === "NOVO" && !podeAvancar
+          ? `${semProduto.length} ${semProduto.length === 1 ? "item precisa" : "itens precisam"} de produto antes de criar o pedido.`
+          : null;
+
+  const CTA: Record<Porta, string> = {
+    PEDIDO: "Vincular e conferir",
+    NOVO: "Criar pedido e conferir",
+    SEM_PEDIDO: "Conferir e receber",
+  };
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex min-h-full flex-col gap-5">
       <Cabecalho nota={nota} pedidoNumero={null} />
 
       <Trilho etapa={podeAvancar ? 2 : 1} />
@@ -251,44 +298,21 @@ function EscolherPedido({
       {/* Etapa 1. Nada acontece antes disto: sem produto relacionado não há
           custo, não há saldo e não há conferência. É a etapa que trava — e por
           isso vem primeiro, com o que falta no topo da tabela. */}
-      <section className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="font-display text-[15px] font-semibold text-ink">
-            1 · Relacionar os itens ao catálogo
-          </h2>
-          <p className="flex items-center gap-2 text-[12px]">
-            <span className={podeAvancar ? "text-ok" : "text-warn"}>
-              {podeAvancar
-                ? `Os ${itensNota.length} itens da nota já têm produto.`
-                : `${semProduto.length} de ${itensNota.length} ${
-                    semProduto.length === 1 ? "item ainda sem produto" : "itens ainda sem produto"
-                  }.`}
-            </span>
-            {podeAvancar && (
-              <button
-                type="button"
-                onClick={() => setVerTabela((v) => !v)}
-                aria-expanded={verTabela}
-                className="font-medium text-brand underline"
-              >
-                {verTabela ? "ocultar" : "ver tabela"}
-              </button>
-            )}
-          </p>
-        </div>
+      <section ref={itensRef} className="flex flex-col gap-3">
+        <h2 className="font-display text-[15px] font-semibold text-ink">
+          <span className="text-faint">1 · </span>Produtos
+        </h2>
 
-        {verTabela && (
-          <TabelaDePara
-            inboundId={nota.id}
-            itens={itensNota}
-            sugestoesIniciais={dados.sugestoesDePara}
-            editavel
-            podeCriarProduto={podeCriarProduto}
-            supplierId={nota.supplierId}
-            siteId={nota.siteId}
-            subcategorias={subcategorias}
-          />
-        )}
+        <TabelaDePara
+          inboundId={nota.id}
+          itens={itensNota}
+          sugestoesIniciais={dados.sugestoesDePara}
+          editavel
+          podeCriarProduto={podeCriarProduto}
+          supplierId={nota.supplierId}
+          siteId={nota.siteId}
+          subcategorias={subcategorias}
+        />
 
         {/* A nota fecha? Soma dos itens contra o total do XML. Se o parse
             perdeu uma linha ou o frete entrou fora, é aqui que aparece —
@@ -296,155 +320,259 @@ function EscolherPedido({
         <Fechamento itens={totalItens} nota={nota.valorTotal} />
       </section>
 
-      {/* Etapa 2. Três saídas, lado a lado. A nota fatura um pedido que já
-          existe; o representante deixou mercadoria sem pedido e vale abrir um
-          para o histórico; ou não há compra a documentar como pedido nenhum —
-          só mercadoria na porta para conferir. Esconder qualquer uma joga o
-          operador para outra tela no meio do recebimento.
-
-          Quem não recebe mercadoria não escolhe porta: escolher decide o que
-          vai movimentar estoque, e essa é a decisão de quem está na doca. */}
+      {/* Etapa 2. Quem não recebe mercadoria não responde esta pergunta:
+          responder decide o que vai movimentar estoque, e essa é a decisão de
+          quem está na doca. */}
       {!podeReceber ? (
         <p className="rounded-[var(--radius-lg)] border border-line bg-surface-2 px-4 py-3 text-[13px] text-muted">
-          Você trata a nota: relacionar os itens ao catálogo é a sua etapa. Quem recebe a
-          mercadoria escolhe de onde ela veio e confere o que chegou.
+          Você trata a nota: relacionar os itens aos produtos é a sua etapa. Quem recebe a
+          mercadoria diz de onde ela veio e confere o que chegou.
         </p>
       ) : (
-      <section className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <section className="flex flex-col gap-3">
           <h2 className="font-display text-[15px] font-semibold text-ink">
-            2 · De onde veio esta mercadoria
+            <span className="text-faint">2 · </span>Existe um pedido para esta compra?
           </h2>
-          <p className="text-[12px] text-muted">
-            {fmtMoney(totalItens)} em {itensNota.length}{" "}
-            {itensNota.length === 1 ? "item" : "itens"}
-          </p>
-        </div>
 
-        <div className="grid gap-4 lg:grid-cols-3">
-          <div className="flex flex-col rounded-[var(--radius-lg)] border border-line bg-surface p-5">
-            <h3 className="font-display text-[14px] font-semibold text-ink">
-              Vincular a um pedido existente
-            </h3>
-            <p className="mt-1 text-[13px] text-muted">
-              {sugestoes.length === 0
-                ? "Nenhum pedido em aberto deste fornecedor nesta loja."
-                : "Nenhum candidato se destacou o bastante para o vínculo automático — escolha o certo."}
-            </p>
+          <div className="flex flex-col gap-2" role="radiogroup" aria-label="De onde veio esta compra">
+            <OpcaoPorta
+              selecionada={porta === "PEDIDO"}
+              onSelecionar={() => setPorta("PEDIDO")}
+              titulo="Vincular a um pedido existente"
+              ajuda="Use quando esta NF corresponde a uma compra já registrada."
+              desabilitada={sugestoes.length === 0}
+              motivoDesabilitada="Nenhum pedido em aberto deste fornecedor nesta loja."
+            >
+              <ul className="flex flex-col gap-2">
+                {sugestoes.map((s) => (
+                  <li key={s.purchaseOrderId}>
+                    <button
+                      type="button"
+                      onClick={() => setPedidoEscolhido(s.purchaseOrderId)}
+                      aria-pressed={pedidoEscolhido === s.purchaseOrderId}
+                      className={cn(
+                        "flex w-full items-center gap-3 rounded-[var(--radius)] border px-3.5 py-2.5 text-left transition-colors",
+                        pedidoEscolhido === s.purchaseOrderId
+                          ? "border-brand bg-brand-soft/50"
+                          : "border-line hover:bg-surface-2",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "grid h-4 w-4 shrink-0 place-items-center rounded-full border",
+                          pedidoEscolhido === s.purchaseOrderId
+                            ? "border-brand bg-brand"
+                            : "border-line-button",
+                        )}
+                        aria-hidden
+                      >
+                        {pedidoEscolhido === s.purchaseOrderId && (
+                          <Check className="h-2.5 w-2.5 text-on-brand" />
+                        )}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-mono text-sm font-medium text-ink">
+                          {s.numero}
+                        </span>
+                        <span className="block truncate text-[12px] text-muted">
+                          {s.itens} {s.itens === 1 ? "item" : "itens"} · {fmtMoney(s.valorTotal)} ·{" "}
+                          {fmtQuando(String(s.criadoEm))}
+                        </span>
+                        {s.motivos.length > 0 && (
+                          <span className="mt-0.5 block truncate text-[12px] text-brand">
+                            {s.motivos.join(" · ")}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </OpcaoPorta>
 
-            <ul className="mt-4 space-y-2">
-              {sugestoes.map((s) => (
-                <li
-                  key={s.purchaseOrderId}
-                  className="flex items-center gap-3 rounded-[var(--radius)] border border-line px-4 py-3"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-mono text-sm font-medium text-ink">{s.numero}</p>
-                    <p className="truncate text-[12px] text-muted">
-                      {s.itens} {s.itens === 1 ? "item" : "itens"} · {fmtMoney(s.valorTotal)} ·{" "}
-                      {fmtQuando(String(s.criadoEm))}
-                    </p>
-                    {s.motivos.length > 0 && (
-                      <p className="mt-1 truncate text-[12px] text-brand">
-                        {s.motivos.join(" · ")}
-                      </p>
-                    )}
-                  </div>
-                  <Button
-                    size="sm"
-                    onClick={() => void vincular(s.purchaseOrderId)}
-                    disabled={salvando !== null}
+            <OpcaoPorta
+              selecionada={porta === "NOVO"}
+              onSelecionar={() => setPorta("NOVO")}
+              titulo="Criar pedido com esta NF"
+              ajuda="Use quando a mercadoria chegou sem pedido."
+            >
+              <p className="text-[13px] text-muted">
+                Nenhum pedido foi encontrado. O NoHub pode criar um pedido automaticamente
+                usando os {itensNota.length} itens desta nota — {fmtMoney(totalItens)} em
+                mercadoria, já conciliado e pronto para conferir.
+              </p>
+              {!podeAvancar && (
+                // O pedido é feito DE produtos: nascer com linhas sem catálogo
+                // seria um pedido que não dá para comparar com nada depois.
+                <p className="mt-2 flex items-start gap-2 rounded-[var(--radius)] bg-warn-soft px-3 py-2 text-[12px] text-warn">
+                  <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+                  <span>
+                    {semProduto.length}{" "}
+                    {semProduto.length === 1
+                      ? "item ainda precisa ser relacionado"
+                      : "itens ainda precisam ser relacionados"}{" "}
+                    antes de criar o pedido.
+                  </span>
+                </p>
+              )}
+            </OpcaoPorta>
+
+            <OpcaoPorta
+              selecionada={porta === "SEM_PEDIDO"}
+              onSelecionar={() => setPorta("SEM_PEDIDO")}
+              titulo="Receber sem pedido"
+              ajuda="Apenas confira a NF e lance a mercadoria no estoque."
+            >
+              <p className="text-[13px] text-muted">
+                A mercadoria será lançada diretamente no estoque. A NF-e fica como referência
+                do recebimento — o que não existe é a camada de pedido para comparar preço e
+                quantidade negociados.
+              </p>
+              {!podeAvancar && (
+                // Não bloqueia: com o caminhão na porta, contar primeiro e
+                // relacionar depois é a ordem certa. Mas a entrada não fecha
+                // enquanto sobrar item sem produto, e isso se diz agora.
+                <p className="mt-2 rounded-[var(--radius)] bg-surface-2 px-3 py-2 text-[12px] text-muted">
+                  Dá para conferir já. A entrada no estoque só fecha depois que a etapa 1
+                  terminar.
+                </p>
+              )}
+            </OpcaoPorta>
+          </div>
+        </section>
+      )}
+
+      {/* O botão que faz a coisa acontecer não pode depender de o operador
+          rolar quarenta linhas de volta para achá-lo. */}
+      {podeReceber && (
+        <RodapeAcao>
+          <div className="min-w-0 flex-1">
+            <MedidorRodape
+              total={itensNota.length}
+              feitos={itensNota.length - semProduto.length}
+              atencao={0}
+              rotulo="item com produto"
+              rotuloPlural="itens com produto"
+            />
+            <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted">
+              {podeAvancar ? (
+                <>
+                  <Check className="h-3.5 w-3.5 shrink-0 text-ok" aria-hidden />
+                  <span>
+                    Entram{" "}
+                    <span className="font-mono text-ink-2">+{fmtQtd(unidades)} UN</span> no
+                    estoque quando a conferência fechar.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-warn" aria-hidden />
+                  <span>
+                    {semProduto.length}{" "}
+                    {semProduto.length === 1
+                      ? "item sem produto no catálogo"
+                      : "itens sem produto no catálogo"}
+                    .
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      itensRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+                    }
+                    className="font-medium text-brand underline"
                   >
-                    {salvando === s.purchaseOrderId ? (
-                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                    ) : (
-                      <Link2 className="h-4 w-4" aria-hidden />
-                    )}
-                    Vincular
-                  </Button>
-                </li>
-              ))}
-            </ul>
+                    Ver pendências
+                  </button>
+                </>
+              )}
+            </p>
           </div>
 
-          <div className="flex flex-col rounded-[var(--radius-lg)] border border-brand/30 bg-brand-soft/40 p-5">
-            <h3 className="font-display text-[14px] font-semibold text-ink">
-              Criar o pedido a partir desta nota
-            </h3>
-            <p className="mt-1 text-[13px] text-ink-2">
-              Compra que chegou sem pedido — representante na porta, entrega de rota. O pedido
-              nasce com os {itensNota.length} itens da nota, {fmtMoney(totalItens)} em mercadoria,
-              já conciliado e pronto para conferir.
-            </p>
-
-            {!podeAvancar && (
-              // O pedido é feito DE produtos: nascer com linhas sem catálogo
-              // seria um pedido que não dá para comparar com nada depois.
-              <p className="mt-3 rounded-[var(--radius)] bg-surface px-3 py-2 text-[12px] text-accent">
-                Termine a etapa 1 — o pedido nasceria incompleto com{" "}
-                {semProduto.length === 1
-                  ? "1 item sem produto"
-                  : `${semProduto.length} itens sem produto`}
-                .
-              </p>
+          <div className="flex w-full shrink-0 flex-col items-stretch gap-1 sm:w-auto sm:items-end">
+            <Button
+              onClick={seguir}
+              disabled={salvando !== null || impedimento !== null}
+              className="w-full sm:w-auto"
+            >
+              {salvando !== null ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : porta === "NOVO" ? (
+                <FilePlus2 className="h-4 w-4" aria-hidden />
+              ) : porta === "PEDIDO" ? (
+                <Link2 className="h-4 w-4" aria-hidden />
+              ) : (
+                <ClipboardCheck className="h-4 w-4" aria-hidden />
+              )}
+              {salvando !== null ? "Abrindo conferência…" : porta ? CTA[porta] : "Conferir recebimento"}
+            </Button>
+            {impedimento && (
+              <p className="text-[11px] text-muted sm:text-right">{impedimento}</p>
             )}
-
-            <div className="mt-auto pt-4">
-              <Button
-                onClick={() => void gerarPedido()}
-                disabled={salvando !== null || !podeAvancar}
-              >
-                {salvando === "novo" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                ) : (
-                  <FilePlus2 className="h-4 w-4" aria-hidden />
-                )}
-                Criar pedido com os itens da nota
-              </Button>
-            </div>
           </div>
+        </RodapeAcao>
+      )}
+    </div>
+  );
+}
 
-          <div className="flex flex-col rounded-[var(--radius-lg)] border border-line bg-surface p-5">
-            <h3 className="font-display text-[14px] font-semibold text-ink">
-              Só conferir e receber
-            </h3>
-            <p className="mt-1 text-[13px] text-muted">
-              Sem pedido nenhum, nem agora nem depois. A nota vira a referência da conferência:
-              você confere os {itensNota.length} itens contra o que ela diz e dá entrada. O
-              documento da compra é a própria NF-e.
-            </p>
-
-            <p className="mt-3 text-[12px] text-faint">
-              A mercadoria entra no estoque igual — o que não existe é a camada de pedido para
-              comparar preço e quantidade negociados.
-            </p>
-
-            {!podeAvancar && (
-              // Não bloqueia: com o caminhão na porta, contar primeiro e
-              // relacionar depois é a ordem certa. Mas a entrada não fecha
-              // enquanto sobrar item sem produto, e isso se diz agora.
-              <p className="mt-3 rounded-[var(--radius)] bg-surface-2 px-3 py-2 text-[12px] text-muted">
-                Dá para conferir já. A entrada no estoque só fecha depois que a etapa 1 terminar.
-              </p>
-            )}
-
-            <div className="mt-auto pt-4">
-              <Button
-                variant="secondary"
-                onClick={() => void receberSemPedido()}
-                disabled={salvando !== null}
-              >
-                {salvando === "sem-pedido" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                ) : (
-                  <ClipboardCheck className="h-4 w-4" aria-hidden />
-                )}
-                Conferir sem pedido
-              </Button>
-            </div>
-          </div>
-        </div>
-      </section>
+/**
+ * Uma resposta da pergunta "de onde veio esta compra?".
+ *
+ * Fechada é uma linha: título e para que serve. Aberta traz o que aquela
+ * resposta precisa — a lista de pedidos, o aviso do que falta. O detalhe das
+ * outras duas não fica competindo com a que a pessoa escolheu.
+ */
+function OpcaoPorta({
+  selecionada,
+  onSelecionar,
+  titulo,
+  ajuda,
+  desabilitada,
+  motivoDesabilitada,
+  children,
+}: {
+  selecionada: boolean;
+  onSelecionar: () => void;
+  titulo: string;
+  ajuda: string;
+  desabilitada?: boolean;
+  motivoDesabilitada?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-[var(--radius-lg)] border transition-colors",
+        selecionada ? "border-brand bg-brand-soft/25" : "border-line bg-surface",
+        desabilitada && "opacity-60",
+      )}
+    >
+      <button
+        type="button"
+        role="radio"
+        aria-checked={selecionada}
+        disabled={desabilitada}
+        onClick={onSelecionar}
+        className="flex w-full items-start gap-3 px-4 py-3 text-left disabled:cursor-not-allowed"
+      >
+        <span
+          className={cn(
+            "mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border",
+            selecionada ? "border-brand bg-brand" : "border-line-button",
+          )}
+          aria-hidden
+        >
+          {selecionada && <Check className="h-2.5 w-2.5 text-on-brand" />}
+        </span>
+        <span className="min-w-0">
+          <span className="block text-[14px] font-semibold text-ink">{titulo}</span>
+          <span className="block text-[12px] text-muted">
+            {desabilitada ? (motivoDesabilitada ?? ajuda) : ajuda}
+          </span>
+        </span>
+      </button>
+      {selecionada && !desabilitada && children && (
+        <div className="border-t border-line/70 px-4 py-3">{children}</div>
       )}
     </div>
   );
@@ -594,14 +722,42 @@ function Conferencia({
   const [confirmando, setConfirmando] = React.useState(false);
   const [enviando, setEnviando] = React.useState(false);
   const [verTimeline, setVerTimeline] = React.useState(false);
+  /** Os itens que já fecharam ficam dobrados até alguém querer reler. */
+  const [verFechados, setVerFechados] = React.useState(false);
   const [relacionar, setRelacionar] = React.useState<ItemDeNota | null>(null);
   /** Última linha bipada — pisca para dizer ONDE o número entrou. */
   const [piscando, setPiscando] = React.useState<string | null>(null);
+  /**
+   * O que cada linha está fazendo com o servidor agora.
+   *
+   * A contagem grava sozinha, no blur do campo — sem sinal nenhum, o operador
+   * não tem como distinguir "salvou" de "não pegou" a não ser recarregando a
+   * página. O giro aparece NA LINHA que ele acabou de mexer, vira "salvo" e
+   * some: confirmação é momentânea, não estado permanente.
+   */
+  const [salvandoLinha, setSalvandoLinha] = React.useState<
+    Record<string, EstadoSalvamento>
+  >({});
   const itensRef = React.useRef<Record<string, HTMLLIElement | null>>({});
+  const timersRef = React.useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  // Sair da tela no meio de um "salvo" não pode deixar timer pendurado.
+  React.useEffect(() => {
+    const timers = timersRef.current;
+    return () => {
+      for (const t of Object.values(timers)) clearTimeout(t);
+    };
+  }, []);
 
   const conferidos = linhas.filter((l) => l.qtdRecebida != null).length;
   const divergentes = linhas.filter((l) => STATUS_INFO[l.status].grave && !l.resolucao);
   const impacto = resumo.impactoCusto;
+  // O que vira saldo se a entrada for confirmada agora: o contado, quando
+  // alguém contou; o faturado, quando ninguém contou. É a mesma regra que o
+  // servidor aplica em `confirmarEntradaAction` — a tela só a mostra antes.
+  const entraNoEstoque = linhas.reduce((s, l) => s + (l.qtdRecebida ?? l.qtdFaturada), 0);
+  /** Tudo que ainda espera uma decisão da pessoa antes de receber. */
+  const pendencias = divergentes.length + resumo.produtosNovos;
 
   // Um índice de código → item, com o fator de cada embalagem: bipar a caixa
   // soma 12, bipar a unidade soma 1. É a diferença entre conferir um fardo e
@@ -623,9 +779,18 @@ function Conferencia({
       linhaId: string,
       dadosItem: { qtdRecebida?: number | null; lote?: string | null; validade?: string | null },
     ) => {
+      clearTimeout(timersRef.current[linhaId]);
+      setSalvandoLinha((s) => ({ ...s, [linhaId]: "salvando" }));
+      const limpar = () =>
+        setSalvandoLinha((s) =>
+          Object.fromEntries(Object.entries(s).filter(([id]) => id !== linhaId)),
+        );
       try {
         await conferirItemAction({ inboundId: nota.id, itemId: linhaId, ...dadosItem });
+        setSalvandoLinha((s) => ({ ...s, [linhaId]: "salvo" }));
+        timersRef.current[linhaId] = setTimeout(limpar, 1800);
       } catch (e) {
+        limpar();
         toast.error("Não deu para salvar", e instanceof Error ? e.message : "Tente de novo.");
         router.refresh();
       }
@@ -687,7 +852,7 @@ function Conferencia({
       setLinhas((prev) => prev.map((l) => ({ ...l, qtdRecebida: l.qtdFaturada })));
       toast.success(
         "Tudo conferido conforme a nota.",
-        "Revise antes de dar entrada.",
+        "Revise antes de receber no estoque.",
         { rotulo: "Desfazer", onClick: () => desfazerConferirTudo(antes) },
       );
       router.refresh();
@@ -772,6 +937,20 @@ function Conferencia({
     });
   }, [linhas, busca, filtroAtivo]);
 
+  /**
+   * A lista em duas alturas: o que ainda pede decisão, e o que já fechou.
+   *
+   * Item conferido, sem divergência e com produto é leitura — dezesseis deles
+   * empurram as três linhas que importam para fora da tela. Só agrupa no
+   * estado neutro: com filtro ou busca ativos, a lista JÁ é o recorte pedido, e
+   * esconder metade dele seria o segundo filtro que ninguém pediu.
+   */
+  const agrupar = filtroAtivo === "TODOS" && busca.trim() === "";
+  const fechado = (l: LinhaRecebimento) =>
+    l.qtdRecebida != null && Boolean(l.productId) && !(STATUS_INFO[l.status].grave && !l.resolucao);
+  const emAberto = agrupar ? visiveis.filter((l) => !fechado(l)) : visiveis;
+  const fechados = agrupar ? visiveis.filter(fechado) : [];
+
   return (
     <div className="flex min-h-full flex-col gap-5">
       {camera && (
@@ -800,46 +979,58 @@ function Conferencia({
         />
       )}
 
-      {/* Sem pedido não há preço negociado para comparar: a métrica de custo
-          alterado sairia sempre zero e ocuparia espaço mentindo por omissão. */}
-      <MetricaGrid className={semPedido ? "lg:grid-cols-4" : "lg:grid-cols-5"}>
+      {/* Quatro números, na ordem em que a pergunta é feita: quantos itens,
+          quanto custou, quanto entra no saldo, quanto ainda pede decisão. As
+          contas de segundo plano (custo negociado, produtos novos) viram a
+          linha de apoio de quem as explica — cinco cartões de peso igual não
+          dizem por onde começar. */}
+      <MetricaGrid className="lg:grid-cols-4">
         <Metrica
           label="Itens"
           valor={String(resumo.itens)}
           sub={semPedido ? "linhas da nota" : "linhas conciliadas"}
         />
         <Metrica
-          label="Valor da nota"
+          label="Valor da NF"
           valor={fmtMoney(resumo.valorNota)}
-          sub={pedido ? `pedido ${fmtMoney(pedido.valorTotal)}` : "sem pedido para comparar"}
-        />
-        <Metrica
-          label="Divergências"
-          valor={String(divergentes.length)}
           sub={
-            divergentes.length > 0
-              ? "precisam de decisão"
-              : semPedido
-                ? "confira contra a nota"
-                : "nota igual ao pedido"
+            semPedido
+              ? "sem pedido para comparar"
+              : resumo.custosAlterados === 0
+                ? "preço igual ao negociado"
+                : `${resumo.custosAlterados} ${resumo.custosAlterados === 1 ? "custo mudou" : "custos mudaram"} · ${impacto > 0 ? "+" : ""}${fmtMoney(impacto)}`
           }
-          tom={divergentes.length > 0 ? "accent" : "ok"}
-          icon={<TriangleAlert size={13} />}
+          tom={!semPedido && resumo.custosAlterados > 0 ? "accent" : undefined}
         />
-        {!semPedido && (
-          <Metrica
-            label="Custos alterados"
-            valor={String(resumo.custosAlterados)}
-            sub={impacto === 0 ? "preço igual ao negociado" : `${impacto > 0 ? "+" : ""}${fmtMoney(impacto)} nesta nota`}
-            tom={resumo.custosAlterados > 0 ? "accent" : "ok"}
-          />
-        )}
         <Metrica
-          label="Produtos novos"
-          valor={String(resumo.produtosNovos)}
-          sub={resumo.produtosNovos === 0 ? "tudo relacionado" : "faltam relacionar ao catálogo"}
-          tom={resumo.produtosNovos > 0 ? "accent" : "ok"}
+          label="Entrada no estoque"
+          valor={`+${fmtQtd(entraNoEstoque)} UN`}
+          sub={
+            conferidos === linhas.length
+              ? "tudo conferido"
+              : `${linhas.length - conferidos} ${linhas.length - conferidos === 1 ? "item entra" : "itens entram"} como está na nota`
+          }
           icon={<PackageOpen size={13} />}
+        />
+        <Metrica
+          label="Pendências"
+          valor={String(pendencias)}
+          sub={
+            pendencias === 0
+              ? "nada a decidir"
+              : [
+                  divergentes.length > 0
+                    ? `${divergentes.length} ${divergentes.length === 1 ? "diferença" : "diferenças"}`
+                    : null,
+                  resumo.produtosNovos > 0
+                    ? `${resumo.produtosNovos} sem produto`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+          }
+          tom={pendencias > 0 ? "accent" : "ok"}
+          icon={<TriangleAlert size={13} />}
         />
       </MetricaGrid>
 
@@ -938,8 +1129,12 @@ function Conferencia({
         </div>
       )}
 
+      {/* O que pede decisão em cima; o que já fechou, dobrado embaixo.
+          Sem isso, três divergências ficavam perdidas no meio de dezesseis
+          linhas idênticas que ninguém precisava reler. Agrupa só quando não há
+          filtro nem busca — ali a lista já é o recorte que a pessoa pediu. */}
       <ul className="space-y-2">
-        {visiveis.map((l) => (
+        {emAberto.map((l) => (
           <ItemCard
             key={l.id}
             ref={(el) => {
@@ -950,6 +1145,7 @@ function Conferencia({
             cega={cega}
             semPedido={semPedido}
             piscando={piscando === l.id}
+            salvamento={salvandoLinha[l.id] ?? null}
             onAlterar={(patch) => {
               aplicarLocal(l.id, patch);
               void salvar(l.id, patch);
@@ -958,6 +1154,47 @@ function Conferencia({
           />
         ))}
       </ul>
+
+      {fechados.length > 0 && (
+        <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
+          <button
+            type="button"
+            onClick={() => setVerFechados((v) => !v)}
+            aria-expanded={verFechados}
+            className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-medium text-ink hover:bg-surface-2"
+          >
+            <Check className="h-4 w-4 text-ok" aria-hidden />
+            {fechados.length} {fechados.length === 1 ? "item conferido" : "itens conferidos"} sem
+            diferença
+            <span className="ml-auto text-[12px] text-muted">
+              {verFechados ? "ocultar" : "ver"}
+            </span>
+          </button>
+          {verFechados && (
+            <ul className="space-y-2 border-t border-line p-3">
+              {fechados.map((l) => (
+                <ItemCard
+                  key={l.id}
+                  ref={(el) => {
+                    itensRef.current[l.id] = el;
+                  }}
+                  linha={l}
+                  bloqueado={encerrada}
+                  cega={cega}
+                  semPedido={semPedido}
+                  piscando={piscando === l.id}
+                  salvamento={salvandoLinha[l.id] ?? null}
+                  onAlterar={(patch) => {
+                    aplicarLocal(l.id, patch);
+                    void salvar(l.id, patch);
+                  }}
+                  onRelacionar={() => setRelacionar(paraRelacionar(l))}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {visiveis.length === 0 && (
         <p className="rounded-[var(--radius)] border border-line bg-surface px-4 py-6 text-center text-[13px] text-muted">
@@ -1015,41 +1252,63 @@ function Conferencia({
       </div>
 
       {!encerrada && (
-        // `sticky`, não `fixed`: fixo se ancora na viewport inteira, passa por
-        // baixo da sidebar e obriga a chutar um `pb-24` que o texto de duas
-        // linhas do celular estoura — escondendo o último item da nota.
-        <div className="sticky bottom-0 z-30 -mx-1 mt-auto border-t border-line bg-surface/95 px-4 py-3 backdrop-blur sm:-mx-2">
-          <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-3 gap-y-2">
-            <div className="min-w-0 flex-1 basis-full sm:basis-0">
-              <MedidorConferencia
-                total={linhas.length}
-                conferidos={conferidos}
-                divergentes={divergentes.length}
-              />
-              <p className="mt-1 truncate text-[12px] text-muted">
-                {divergentes.length > 0
-                  ? `${divergentes.length} ${divergentes.length === 1 ? "divergência aberta" : "divergências abertas"} — o que não for conferido entra como está na nota.`
-                  : conferidos === linhas.length
-                    ? "Tudo conferido. Falta apenas confirmar a entrada física."
-                    : `${linhas.length - conferidos} ${linhas.length - conferidos === 1 ? "item entra" : "itens entram"} como está na nota se ninguém contar.`}
-              </p>
-            </div>
+        <RodapeAcao>
+          <div className="min-w-0 flex-1">
+            <MedidorRodape
+              total={linhas.length}
+              feitos={conferidos}
+              atencao={divergentes.length}
+              rotulo="item conferido"
+              rotuloPlural="itens conferidos"
+            />
+            {/* Os totais já estão no topo da tela; aqui embaixo cabe só a
+                consequência de apertar o botão — repetir "R$ 1.234,00" em
+                corpo 12 não é resumo, é ruído em cima da decisão. */}
+            <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted">
+              {pendencias > 0 ? (
+                <>
+                  <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden />
+                  <span>
+                    {pendencias} {pendencias === 1 ? "item precisa" : "itens precisam"} de
+                    atenção — o que não for conferido entra como está na nota.
+                  </span>
+                </>
+              ) : conferidos === linhas.length ? (
+                <>
+                  <Check className="h-3.5 w-3.5 shrink-0 text-ok" aria-hidden />
+                  <span>Tudo conferido. Falta apenas confirmar a entrada física.</span>
+                </>
+              ) : (
+                <span>
+                  {linhas.length - conferidos}{" "}
+                  {linhas.length - conferidos === 1 ? "item entra" : "itens entram"} como está
+                  na nota se ninguém contar.
+                </span>
+              )}
+            </p>
+          </div>
+
+          <div className="flex w-full shrink-0 flex-col items-stretch gap-1 sm:w-auto sm:items-end">
             <Button
               onClick={() => setConfirmando(true)}
               disabled={enviando}
               className="w-full sm:w-auto"
             >
               <ClipboardCheck className="h-4 w-4" aria-hidden />
-              Confirmar entrada no estoque
+              Receber no estoque
             </Button>
+            <p className="text-[11px] text-muted sm:text-right">
+              <span className="font-mono text-ink-2">+{fmtQtd(entraNoEstoque)} UN</span> no
+              estoque
+            </p>
           </div>
-        </div>
+        </RodapeAcao>
       )}
 
       <Sheet
         open={confirmando}
         onClose={() => setConfirmando(false)}
-        title="Confirmar entrada no estoque"
+        title="Receber no estoque"
         description={
           semPedido
             ? "Isto atualiza saldo, custo médio e histórico de compras. A NF-e fica como documento desta entrada. Não dá para desfazer por aqui."
@@ -1108,52 +1367,92 @@ function Conferencia({
   );
 }
 
-// ── Medidor da conferência ──────────────────────────────────
+// ── Rodapé de ação ──────────────────────────────────────────
+
+/**
+ * A barra que fecha as duas etapas.
+ *
+ * `sticky`, não `fixed`: fixo se ancora na viewport inteira, passa por baixo
+ * da sidebar e obriga a chutar um `pb-24` que o texto de duas linhas do
+ * celular estoura — escondendo o último item da nota.
+ *
+ * Uma casca só para as duas etapas. Antes cada uma desenhava a sua: mesma
+ * altura, mesmo botão, e os números do topo repetidos aqui embaixo em corpo
+ * menor. Agora o rodapé responde só duas coisas — quanto falta e o que
+ * acontece ao apertar —, e os totais ficam onde já estavam.
+ */
+function RodapeAcao({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="sticky bottom-0 z-30 -mx-1 mt-auto sm:-mx-2">
+      {/* Véu curto: diz que a lista continua por baixo da barra, em vez de a
+          última linha parecer cortada por um traço. */}
+      <div
+        aria-hidden
+        className="pointer-events-none h-5 bg-gradient-to-b from-transparent to-surface"
+      />
+      <div className="border-t border-line bg-surface/95 px-4 py-3 backdrop-blur">
+        <div className="mx-auto flex max-w-5xl flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /**
  * "12 de 40" é um número que se lê; a barra é um estado que se vê.
  *
  * Dois saldos na mesma régua, como o medidor de estoque do produto: o que já
- * foi contado e, dentro dele, o que veio diferente do papel. Quem está na doca
- * olha de longe, com a caixa na mão — texto de 13px não se lê nessa distância.
+ * foi feito e, dentro dele, o que ainda pede decisão. Quem está na doca olha
+ * de longe, com a caixa na mão — texto de 13px não se lê nessa distância.
+ *
+ * Serve as duas etapas: relacionar produto e contar mercadoria são a mesma
+ * pergunta ("quanto falta para poder receber?") em momentos diferentes.
  */
-function MedidorConferencia({
+function MedidorRodape({
   total,
-  conferidos,
-  divergentes,
+  feitos,
+  atencao,
+  rotulo,
+  rotuloPlural,
 }: {
   total: number;
-  conferidos: number;
-  divergentes: number;
+  feitos: number;
+  /** Subconjunto de `feitos` que ainda espera uma decisão. */
+  atencao: number;
+  rotulo: string;
+  rotuloPlural: string;
 }) {
-  const pctConferido = total > 0 ? (conferidos / total) * 100 : 0;
-  const pctDivergente = total > 0 ? (Math.min(divergentes, conferidos) / total) * 100 : 0;
+  const pctFeito = total > 0 ? (feitos / total) * 100 : 0;
+  const pctAtencao = total > 0 ? (Math.min(atencao, feitos) / total) * 100 : 0;
 
   return (
     <div>
-      <p className="flex items-baseline gap-2 text-[13px] font-medium text-ink">
+      <p className="flex items-baseline gap-2 font-display text-[15px] font-semibold text-ink">
         <span className="tabular-nums">
-          {conferidos} de {total}
+          {feitos} de {total}
         </span>
-        <span className="text-muted">{total === 1 ? "item conferido" : "itens conferidos"}</span>
+        <span className="text-[13px] font-normal text-muted">
+          {total === 1 ? rotulo : rotuloPlural}
+        </span>
       </p>
       <div
-        className="mt-1 flex h-1.5 w-full overflow-hidden rounded-full bg-surface-2"
+        className="mt-1.5 flex h-1.5 w-full overflow-hidden rounded-full bg-surface-2"
         role="progressbar"
-        aria-valuenow={conferidos}
+        aria-valuenow={feitos}
         aria-valuemin={0}
         aria-valuemax={total}
-        aria-label="Itens conferidos"
+        aria-label={rotuloPlural}
       >
-        {/* A fatia divergente é subconjunto da conferida — some da barra verde
+        {/* A fatia de atenção é subconjunto da feita — some da barra verde
             para não somar mais de 100%. */}
         <span
           className="h-full bg-ok transition-[width] duration-300 motion-reduce:transition-none"
-          style={{ width: `${pctConferido - pctDivergente}%` }}
+          style={{ width: `${pctFeito - pctAtencao}%` }}
         />
         <span
           className="h-full bg-accent transition-[width] duration-300 motion-reduce:transition-none"
-          style={{ width: `${pctDivergente}%` }}
+          style={{ width: `${pctAtencao}%` }}
         />
       </div>
     </div>
@@ -1317,7 +1616,7 @@ function PainelDivergencias({
       <div className="flex flex-wrap items-center gap-2 px-4 py-3">
         <TriangleAlert className="h-4 w-4 text-accent" aria-hidden />
         <h2 className="font-display text-[14px] font-semibold text-ink">
-          {linhas.length === 1 ? "1 divergência encontrada" : `${linhas.length} divergências encontradas`}
+          {linhas.length === 1 ? "1 diferença encontrada" : `${linhas.length} diferenças encontradas`}
         </h2>
         {/* O desfecho de verdade acontece com o representante — o sistema só
             precisa entregar o texto pronto, com os números certos. */}
@@ -1794,6 +2093,8 @@ const ItemCard = React.forwardRef<
     semPedido?: boolean;
     /** Acabou de receber um bipe — destaca por um instante. */
     piscando?: boolean;
+    /** Gravando esta linha agora, ou acabou de gravar. */
+    salvamento?: EstadoSalvamento | null;
     onAlterar: (patch: {
       qtdRecebida?: number | null;
       lote?: string | null;
@@ -1802,7 +2103,7 @@ const ItemCard = React.forwardRef<
     onRelacionar: () => void;
   }
 >(function ItemCard(
-  { linha, bloqueado, cega, semPedido, piscando, onAlterar, onRelacionar },
+  { linha, bloqueado, cega, semPedido, piscando, salvamento, onAlterar, onRelacionar },
   ref,
 ) {
   const info = STATUS_INFO[linha.status];
@@ -1812,18 +2113,46 @@ const ItemCard = React.forwardRef<
   /** Contou? Então pode ver. Antes disso, o número do pedido enviesa a contagem. */
   const oculto = Boolean(cega) && recebido == null && !bloqueado;
   const temDetalhe = Boolean(linha.lote || linha.validade || linha.motivoDivergencia);
+  /**
+   * A nota faturou numa unidade que não é a da prateleira (MI, CX, FD).
+   *
+   * A conferência conta unidade — quem está na doca conta maço, não milheiro.
+   * Mas o número do papel é o outro, e sem ele à vista a pessoa procura "0,6"
+   * na tela e não acha.
+   */
+  const doXml =
+    linha.xml && linha.xml.fatorConversao !== 1
+      ? {
+          ...linha.xml,
+          sigla: linha.xml.unidade.trim().toUpperCase(),
+        }
+      : null;
 
   return (
     <li
       ref={ref}
       className={cn(
-        "overflow-hidden rounded-[var(--radius-lg)] border bg-surface transition-colors",
+        "relative overflow-hidden rounded-[var(--radius-lg)] border bg-surface transition-colors",
         info.grave && !linha.resolucao ? "border-accent/40" : "border-line",
         // O bipe acerta a linha certa; o destaque é o que prova isso a quem
         // está de pé, com a caixa na mão, longe da tela.
         piscando && "border-ok bg-ok-soft/50 motion-reduce:transition-none",
+        salvamento === "salvando" && "border-brand/50",
+        salvamento === "salvo" && "border-ok/60",
       )}
     >
+      {/* Fio de luz no topo do card enquanto a linha grava. O operador conta
+          de pé, olhando a caixa e não a tela: o movimento é o que ele capta
+          de canto de olho. Fica atrás do conteúdo e some com o "salvo". */}
+      {salvamento === "salvando" && (
+        <span
+          aria-hidden
+          className="linha-salvando absolute inset-x-0 top-0 h-0.5 overflow-hidden bg-brand-soft"
+        >
+          <span className="block h-full w-1/3 bg-brand" />
+        </span>
+      )}
+
       {/* A linha fechada não é mais um botão só: contar é o trabalho, e
           trabalho não pode morar atrás de um clique de "expandir". O toggle
           cobre a identidade do item; a quantidade fica ao lado, digitável. */}
@@ -1856,6 +2185,23 @@ const ItemCard = React.forwardRef<
                 </span>
               )}
             </span>
+            {/* Nota em milheiro, caixa ou fardo: a quantidade do papel e a
+                contada na porta são números diferentes, e os dois ficam à
+                vista. O XML não muda — o convertido é que é derivado dele. */}
+            {doXml && (
+              <span
+                className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted"
+                title={`A nota fatura em ${rotuloDaUnidade(doXml.unidade)}. ${frasesDeConversao(doXml.sigla, doXml.fatorConversao)} — ${fmtQtd(doXml.quantidade)} ${doXml.sigla} valem ${fmtQtd(doXml.quantidade * doXml.fatorConversao)} UN. A conferência conta unidades.`}
+              >
+                <ArrowRightLeft size={11} aria-hidden />
+                <span className="font-mono">
+                  XML {fmtQtd(doXml.quantidade)} {doXml.sigla}
+                </span>
+                <span className="text-faint">
+                  · {frasesDeConversao(doXml.sigla, doXml.fatorConversao)}
+                </span>
+              </span>
+            )}
             {v != null && !oculto && (
               <span
                 className={cn(
@@ -1896,15 +2242,21 @@ const ItemCard = React.forwardRef<
                 // ele ficava exibindo 12 depois de o bipe somar 13.
                 key={`${linha.id}:${recebido ?? "-"}`}
                 type="number"
-                inputMode="decimal"
-                step="0.001"
+                // Peça inteira, sempre: o saldo conta garrafa, não meia
+                // garrafa. Aceitar decimal aqui só empurraria o erro para a
+                // hora de receber, quando a nota inteira trava.
+                inputMode="numeric"
+                step="1"
                 min={0}
                 defaultValue={recebido ?? ""}
                 placeholder={oculto ? "conte" : fmtQtd(linha.qtdFaturada)}
-                aria-label={`Quantidade recebida de ${linha.descricao}`}
+                aria-label={`Quantidade recebida de ${linha.descricao}, em unidades inteiras`}
                 onBlur={(e) => {
                   const bruto = e.target.value.trim();
-                  const novo = bruto === "" ? null : Number(bruto);
+                  const novo = bruto === "" ? null : Math.round(Number(bruto));
+                  // O campo devolve o inteiro para a tela não ficar mostrando
+                  // "1,5" que o servidor nunca vai gravar.
+                  if (novo != null && String(novo) !== bruto) e.target.value = String(novo);
                   if (novo === recebido) return;
                   onAlterar({ qtdRecebida: novo });
                 }}
@@ -1940,14 +2292,39 @@ const ItemCard = React.forwardRef<
           </div>
         )}
 
-        <span
-          className={cn(
-            "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium",
-            linha.resolucao || oculto ? "bg-surface-2 text-muted" : info.classe,
-          )}
-        >
-          {linha.resolucao ? "Resolvido" : oculto ? "A conferir" : info.label}
-        </span>
+        {/* Enquanto grava, o selo de status dá lugar ao do salvamento: são a
+            mesma informação em momentos diferentes — o status da linha só vale
+            depois que o servidor confirmou o número novo. */}
+        {salvamento ? (
+          <span
+            role="status"
+            className={cn(
+              "flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium",
+              salvamento === "salvando" ? "bg-brand-soft text-brand" : "bg-ok-soft text-ok",
+            )}
+          >
+            {salvamento === "salvando" ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+                Salvando…
+              </>
+            ) : (
+              <>
+                <Check className="h-3 w-3" aria-hidden />
+                Salvo
+              </>
+            )}
+          </span>
+        ) : (
+          <span
+            className={cn(
+              "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium",
+              linha.resolucao || oculto ? "bg-surface-2 text-muted" : info.classe,
+            )}
+          >
+            {linha.resolucao ? "Resolvido" : oculto ? "A conferir" : info.label}
+          </span>
+        )}
       </div>
 
       {aberto && (

@@ -35,7 +35,6 @@ const produto = (over: Partial<ProdutoParaDivergencia> = {}): ProdutoParaDiverge
   packagings: [
     { id: "pk1", nome: "Caixa", ean: "7891000315507", fatorConversao: 24 },
   ],
-  variacoes: [],
   ...over,
 });
 

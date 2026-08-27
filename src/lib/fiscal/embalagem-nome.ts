@@ -14,6 +14,8 @@
 // sugere. Nome errado aqui não quebra conta, mas polui o cadastro para sempre.
 // ============================================================
 
+import { unidadeComercial } from "./unidades";
+
 const NOMES: Record<string, string> = {
   CX: "Caixa",
   CAIXA: "Caixa",
@@ -48,7 +50,16 @@ export function nomeDaEmbalagem(unidade: string | null | undefined): string {
   // "CX24", "FD12" — sigla colada no fator, comum em distribuidor de bebida.
   // O número é descartado: quantas cabem é o `fatorConversao`.
   const soLetras = bruto.replace(/[^A-Z]/g, "");
-  return NOMES[bruto] ?? NOMES[soLetras] ?? (soLetras ? capitalizar(soLetras) : "Embalagem");
+  // O catálogo de unidades comerciais responde pelas siglas que ele conhece
+  // (inclusive MI, DZ, CENTO); a tabela local segue valendo para os apelidos
+  // que só aparecem como nome de embalagem.
+  const doCatalogo = unidadeComercial(bruto)?.nome;
+  return (
+    NOMES[bruto] ??
+    NOMES[soLetras] ??
+    doCatalogo ??
+    (soLetras ? capitalizar(soLetras) : "Embalagem")
+  );
 }
 
 function capitalizar(s: string): string {

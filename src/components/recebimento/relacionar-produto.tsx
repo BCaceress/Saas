@@ -3,6 +3,8 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
+  ArrowLeft,
+  ChevronRight,
   FilePlus2,
   History,
   Loader2,
@@ -10,6 +12,7 @@ import {
   Search,
   SkipForward,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -26,6 +29,14 @@ import {
 } from "@/components/recebimento/comparacao-xml";
 import { cfopDeEntrada } from "@/lib/fiscal/cfop";
 import { casaPorCodigo, inferirVinculo } from "@/lib/fiscal/vinculo";
+import { nomeDaEmbalagem } from "@/lib/fiscal/embalagem-nome";
+import {
+  fatorDaUnidade,
+  frasesDeConversao,
+  rotuloDaUnidade,
+  unidadeComercial,
+  unidadesDaLinha,
+} from "@/lib/fiscal/unidades";
 import { fmtMoney, fmtQtd } from "@/app/(app)/cotacoes/_ui";
 import {
   buscarProdutosRelacionarAction,
@@ -46,10 +57,14 @@ import type { ProdutoBuscado } from "@/lib/compras/busca-produto";
 // de conversão do próprio jeito, o que fazia a mesma caixa de long neck entrar
 // como 5 garrafas numa tela e 12 na outra.
 //
-// O caminho rápido é um clique: a embalagem cujo código de barras é o da nota
-// já vem destacada. Mas o campo "quantas unidades por caixa" fica À VISTA em
-// todo resultado — produto sem embalagem cadastrada só tinha o botão
-// "Unidade", que responde 1 em silêncio e põe 3 caixas como 3 garrafas.
+// Duas perguntas, dois passos. Primeiro QUAL produto (busca, lista enxuta,
+// um clique), depois QUANTAS unidades vêm em cada volume da nota. Enquanto as
+// duas moravam na mesma linha, a busca vinha com dez painéis de conversão
+// empilhados e o operador escolhia o fator antes de ter escolhido o produto.
+//
+// O campo "quantas unidades por caixa" fica À VISTA no passo 2 — a embalagem
+// cadastrada só preenche o número. O antigo botão "Unidade" respondia 1 em
+// silêncio e punha 3 caixas de long neck como 3 garrafas.
 // ============================================================
 
 /**
@@ -88,7 +103,71 @@ const listar = (itens: string[]) =>
 
 const num = (v: string) => Number(v.replace(",", ".")) || 0;
 
+/** Ruído de descrição de nota — não ajuda a achar nada no catálogo. */
+const RUIDO = new Set([
+  "com",
+  "sem",
+  "para",
+  "cx",
+  "fd",
+  "pct",
+  "und",
+  "unid",
+  "un",
+  "kg",
+  "gr",
+  "ml",
+  "lt",
+  "pet",
+  "gfa",
+  "gar",
+  "emb",
+]);
+
+/**
+ * Termos mais curtos para tentar quando a frase inteira não acha nada.
+ *
+ * A descrição do fornecedor vem embolada ("REFRIG COCA COLA 2L PET FD6") e a
+ * busca casa por texto: sobra a frase toda, não sobra resultado. Oferecer as
+ * palavras que valem a pena poupa o operador de descobrir isso apagando
+ * palavra por palavra.
+ */
+function termosAlternativosDaDescricao(descricao: string, atual: string): string[] {
+  const norm = (t: string) =>
+    t
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase();
+  const jaTentado = norm(atual.trim());
+  const palavras = descricao
+    .trim()
+    .split(/\s+/)
+    .map((w) => w.replace(/[^\p{L}\p{N}]/gu, ""))
+    .filter((w) => w.length >= 3 && !/^\d+$/.test(w) && !RUIDO.has(norm(w)));
+
+  const vistos = new Set<string>();
+  const out: string[] = [];
+  for (const w of palavras) {
+    const k = norm(w);
+    if (k === jaTentado || vistos.has(k)) continue;
+    vistos.add(k);
+    out.push(w);
+    if (out.length === 3) break;
+  }
+  return out;
+}
+
 type DonoDoCodigo = Awaited<ReturnType<typeof donoDoCodigoAction>>;
+
+/**
+ * De onde veio o número que a tela sugere como conversão.
+ *
+ * "NOTA" é o que o fornecedor assinou em qTrib/qCom; "UNIDADE" é o que a sigla
+ * significa em qualquer produto (milheiro, dúzia, cento). O número às vezes é o
+ * mesmo — a frase que o explica, não: dizer "como o fornecedor declarou" sobre
+ * uma conversão que a nota nunca declarou é mentira que o operador confere.
+ */
+type OrigemSugerida = "NOTA" | "UNIDADE" | null;
 
 /** Embalagem e fator que o par (produto, item da nota) sugere. */
 function vinculoDoProduto(p: ProdutoBuscado, item: ItemDeNota) {
@@ -103,6 +182,9 @@ function vinculoDoProduto(p: ProdutoBuscado, item: ItemDeNota) {
     },
     {
       gtin: item.gtin,
+      // uCom entra na conta: é ela que sabe que 0,6 MI são 600 unidades
+      // quando a nota não declara qTrib.
+      unidade: item.unidade ?? null,
       quantidade: item.quantidade ?? 0,
       unidadeTributavel: item.unidadeTributavel ?? null,
       quantidadeTributavel: item.quantidadeTributavel ?? null,
@@ -176,19 +258,41 @@ export function RelacionarProduto({
   );
   /** Linha destacada pelo teclado. */
   const [ativo, setAtivo] = React.useState(0);
+  /**
+   * Produto escolhido na busca — passo 2 (quantas unidades entram).
+   *
+   * Guardado junto com o item da nota a que pertence: quando a fila avança, a
+   * escolha do item anterior deixa de valer sozinha, sem efeito para limpar.
+   */
+  const [selecionado, setSelecionado] = React.useState<{
+    itemId: string | null;
+    produto: ProdutoBuscado;
+  } | null>(null);
+  const escolhido =
+    selecionado && selecionado.itemId === item.inboundItemId
+      ? selecionado.produto
+      : null;
   const listaRef = React.useRef<Record<string, HTMLLIElement | null>>({});
+  const buscaRef = React.useRef<HTMLInputElement>(null);
 
-  /** O que a nota declara em qTrib/qCom: padrão do ajuste fino e aviso. */
-  const sugeridoPelaNota = fatorDaNota({
+  /**
+   * O que a nota declara em qTrib/qCom, e — na falta dela — o que a própria
+   * sigla da unidade já diz (milheiro é mil). Padrão do ajuste fino e aviso.
+   */
+  const daNota = fatorDaNota({
     quantidade: item.quantidade ?? 0,
     unidadeTributavel: item.unidadeTributavel ?? null,
     quantidadeTributavel: item.quantidadeTributavel ?? null,
   });
+  const daUnidade = fatorDaUnidade(item.unidade);
+  const sugeridoPelaNota = daNota ?? daUnidade;
+  /** De onde saiu o número sugerido — muda o texto do atalho, não o número. */
+  const origemSugerida: OrigemSugerida = daNota != null ? "NOTA" : daUnidade != null ? "UNIDADE" : null;
 
   // Leitor USB/Bluetooth — bipar o código de barras físico do produto (que
   // pode não ser o mesmo que a nota trouxe) já filtra a busca por ele.
   const aoBipar = React.useCallback((codigo: string) => setTermo(codigo), []);
-  useLeitorTeclado(aoBipar, { ativo: !cadastrando });
+  useLeitorTeclado(aoBipar, { ativo: !cadastrando && !escolhido });
 
   React.useEffect(() => {
     const alvo = termo.trim();
@@ -285,6 +389,7 @@ export function RelacionarProduto({
       // Fila: o pai decide se há próximo pendente (avança) ou fecha. Sempre
       // reabilita o form — se avançar, o efeito acima troca termo/resultados.
       onRelacionado(item.inboundItemId);
+      setSelecionado(null);
       setSalvando(false);
       router.refresh();
     } catch (e) {
@@ -342,14 +447,19 @@ export function RelacionarProduto({
    */
   const lista = resultados.length > 0 || buscou ? resultados : doFornecedor;
   const mostrandoHistorico = lista === doFornecedor && lista.length > 0;
+  /** Atalhos de busca — só valem quando o que está digitado não achou nada. */
+  const termosAlternativos =
+    !buscando && buscou && resultados.length === 0
+      ? termosAlternativosDaDescricao(item.descricao, termo)
+      : [];
 
   /**
-   * ↑↓ percorrem os resultados e Enter escolhe a opção destacada com a
-   * embalagem que o código de barras da nota indica. Sem isto o fluxo era
-   * teclado na tabela → mouse no painel → teclado de novo.
+   * ↑↓ percorrem os resultados e Enter leva o destacado para o passo 2, com
+   * o cursor já no campo de unidades. Sem isto o fluxo era teclado na tabela →
+   * mouse no painel → teclado de novo.
    */
   function aoTeclar(e: React.KeyboardEvent) {
-    if (cadastrando || lista.length === 0) return;
+    if (cadastrando || escolhido || lista.length === 0) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setAtivo((i) => Math.min(i + 1, lista.length - 1));
@@ -360,8 +470,7 @@ export function RelacionarProduto({
       const p = lista[ativo];
       if (!p || salvando) return;
       e.preventDefault();
-      const v = vinculoDoProduto(p, item);
-      void escolher(p.id, v.packagingId, v.fatorConversao);
+      setSelecionado({ itemId: item.inboundItemId, produto: p });
     }
   }
 
@@ -375,7 +484,7 @@ export function RelacionarProduto({
     <Sheet
       open
       onClose={onFechar}
-      title={item.productId ? "Alterar produto" : "Relacionar ao catálogo"}
+      title={item.productId ? "Trocar produto" : "Relacionar produto"}
       description={
         <>
           {item.codigoFornecedor && (
@@ -421,10 +530,24 @@ export function RelacionarProduto({
           <CadastroRapido
             item={item}
             sugeridoPelaNota={sugeridoPelaNota}
+            origemSugerida={origemSugerida}
             subcategoriasProp={subcategoriasProp}
             salvando={salvando}
             onCancelar={() => setCadastrando(false)}
             onSalvar={criarERelacionar}
+          />
+        ) : escolhido ? (
+          /* Passo 2 — o produto já está decidido; falta só quanto entra. */
+          <ConfirmarVinculo
+            produto={escolhido}
+            item={item}
+            sugeridoPelaNota={sugeridoPelaNota}
+            origemSugerida={origemSugerida}
+            salvando={salvando}
+            onVoltar={() => setSelecionado(null)}
+            onConfirmar={(packagingId, fatorConversao) =>
+              escolher(escolhido.id, packagingId, fatorConversao)
+            }
           />
         ) : (
           <>
@@ -434,18 +557,18 @@ export function RelacionarProduto({
               <div className="flex flex-wrap gap-x-6 gap-y-1 rounded-[var(--radius-md)] border border-line bg-surface-2 px-4 py-2.5 text-[12px]">
                 <span className="text-muted">
                   Na nota:{" "}
-                  <span className="text-ink-2">
-                    {fmtQtd(item.quantidade)} {item.unidade ?? ""}
+                  <span className="text-ink-2" title={rotuloDaUnidade(item.unidade)}>
+                    {fmtQtd(item.quantidade)} {(item.unidade ?? "").toUpperCase()}
                   </span>
-                </span>
-                {sugeridoPelaNota != null && (
-                  <span className="text-muted">
-                    O fornecedor declara:{" "}
-                    <span className="font-mono text-ink-2">
-                      {fmtQtd(sugeridoPelaNota)} por {item.unidade ?? "volume"}
+                  {/* "0,6 MI" sozinho lê-se como "menos de um". O que a sigla
+                      vale em unidades é a informação que falta ali. */}
+                  {daUnidade != null && daUnidade > 1 && (
+                    <span className="text-faint">
+                      {" · "}
+                      {frasesDeConversao((item.unidade ?? "").toUpperCase(), daUnidade)}
                     </span>
-                  </span>
-                )}
+                  )}
+                </span>
                 {item.custoLinha != null && item.custoLinha > 0 && (
                   <span className="text-muted">
                     Custo do item:{" "}
@@ -464,14 +587,36 @@ export function RelacionarProduto({
                   aria-hidden
                 />
                 <input
+                  ref={buscaRef}
                   value={termo}
                   onChange={(e) => setTermo(e.target.value)}
                   placeholder="Buscar por nome, SKU ou código de barras"
                   aria-label="Buscar produto no catálogo"
                   autoFocus
                   onKeyDown={aoTeclar}
-                  className="h-10 w-full rounded-full border border-line-button bg-surface pr-4 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  className="h-10 w-full rounded-full border border-line-button bg-surface pr-16 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
                 />
+                {buscando && (
+                  <Loader2
+                    className="absolute top-1/2 right-9 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-faint"
+                    aria-hidden
+                  />
+                )}
+                {/* A busca nasce preenchida com a descrição da nota. Limpar
+                    tem que ser um clique — não apagar 40 caracteres na tecla. */}
+                {termo.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTermo("");
+                      buscaRef.current?.focus();
+                    }}
+                    aria-label="Limpar busca"
+                    className="absolute top-1/2 right-3 -translate-y-1/2 rounded-full p-1 text-faint transition-colors hover:text-ink"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden />
+                  </button>
+                )}
               </div>
               <Button
                 type="button"
@@ -483,6 +628,26 @@ export function RelacionarProduto({
                 Bipar
               </Button>
             </div>
+
+            {/* A descrição do fornecedor vem cheia de ruído ("REFRIG COCA 2L
+                PET FD6"). Buscar por um pedaço acha o que a frase inteira não
+                acha — e o operador não deveria ter que descobrir isso
+                apagando palavra por palavra. */}
+            {termosAlternativos.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-faint">Tentar por:</span>
+                {termosAlternativos.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setTermo(t)}
+                    className="rounded-full border border-line-button px-2.5 py-1 text-[11px] text-ink-2 transition-colors hover:border-brand hover:text-brand"
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* Código de barras que já tem dono. Cadastrar de novo criaria
                 duplicata, e aí o PDV passa a vender o produto errado ao bipar
@@ -505,7 +670,7 @@ export function RelacionarProduto({
                 ? "Procurando…"
                 : mostrandoHistorico
                   ? "Comece pelo que este fornecedor já mandou antes — ou digite para buscar no catálogo inteiro."
-                  : "Escolha a unidade em que o fornecedor vende — é ela que define quantas unidades entram no estoque. ↑ ↓ percorrem, Enter escolhe."}
+                  : "Escolha o produto do catálogo. Quantas unidades entram no estoque é a próxima pergunta. ↑ ↓ percorrem, Enter escolhe."}
             </p>
 
             {mostrandoHistorico && (
@@ -515,7 +680,7 @@ export function RelacionarProduto({
               </p>
             )}
 
-            <ul className="space-y-2">
+            <ul className="space-y-1.5">
               {lista.map((p, i) => (
                 <Resultado
                   key={p.id}
@@ -524,10 +689,10 @@ export function RelacionarProduto({
                   }}
                   produto={p}
                   item={item}
-                  sugeridoPelaNota={sugeridoPelaNota}
-                  salvando={salvando}
                   focado={i === ativo}
-                  onEscolher={escolher}
+                  onSelecionar={(produto) =>
+                    setSelecionado({ itemId: item.inboundItemId, produto })
+                  }
                 />
               ))}
             </ul>
@@ -572,42 +737,26 @@ export function RelacionarProduto({
     </Sheet>
   );
 }
-
 // ── Uma linha de resultado ──────────────────────────────────
 
+/**
+ * Só responde "é este produto?".
+ *
+ * Antes cada linha carregava junto os botões de embalagem, o campo de fator e
+ * o botão de relacionar — dez painéis de conversão empilhados numa busca de
+ * dez resultados, e o operador escolhendo a conversão antes de ter escolhido
+ * o produto. A conversão saiu daqui e virou o passo 2.
+ */
 const Resultado = React.forwardRef<
   HTMLLIElement,
   {
     produto: ProdutoBuscado;
     item: ItemDeNota;
-    sugeridoPelaNota: number | null;
-    salvando: boolean;
     /** Linha destacada pelo teclado. */
     focado: boolean;
-    onEscolher: (
-      productId: string,
-      packagingId: string | null,
-      fator: number,
-    ) => void;
+    onSelecionar: (produto: ProdutoBuscado) => void;
   }
->(function Resultado(
-  {
-    produto: p,
-    item,
-    sugeridoPelaNota,
-    salvando,
-    focado,
-    onEscolher,
-  },
-  ref,
-) {
-  // Mesma regra que o palpite automático usa no servidor: embalagem com o
-  // código de barras da nota manda, depois o que a nota declara, e 1 é o
-  // último recurso. Duplicar essa decisão aqui era o que fazia a caixa de
-  // long neck entrar como 5 garrafas.
-  const vinculo = React.useMemo(() => vinculoDoProduto(p, item), [p, item]);
-
-  const [fator, setFator] = React.useState(String(vinculo.fatorConversao));
+>(function Resultado({ produto: p, item, focado, onSelecionar }, ref) {
   const casa = casaPorCodigo(
     {
       ean: p.ean,
@@ -619,35 +768,21 @@ const Resultado = React.forwardRef<
     },
     item.gtin,
   );
-  const sugerida = item.gtin
-    ? p.embalagens.find((e) => e.ean === item.gtin)
-    : undefined;
-  const fatorNum = num(fator);
-  const unidades = (item.quantidade ?? 0) * fatorNum;
   const medida = medidaDoProduto(p);
-  const custoUnitario =
-    item.custoLinha != null && item.custoLinha > 0 && unidades > 0
-      ? item.custoLinha / unidades
-      : null;
-  // Mesmo limiar da tabela: ±30% do custo médio quase sempre é fator errado.
-  const foraDaCurva =
-    custoUnitario != null && p.custoMedio > 0
-      ? (() => {
-          const d = (custoUnitario - p.custoMedio) / p.custoMedio;
-          return Math.abs(d) >= 0.3 ? d : null;
-        })()
-      : null;
 
   return (
-    <li
-      ref={ref}
-      className={cn(
-        "rounded-[var(--radius)] border px-3 py-2.5 transition-colors",
-        casa ? "border-ok/40 bg-ok-soft/25" : "border-line",
-        focado && "ring-1 ring-brand/60 ring-inset",
-      )}
-    >
-      <div className="flex items-center gap-3">
+    <li ref={ref}>
+      <button
+        type="button"
+        onClick={() => onSelecionar(p)}
+        className={cn(
+          "flex w-full items-center gap-3 rounded-[var(--radius)] border px-3 py-2 text-left transition-colors",
+          casa
+            ? "border-ok/40 bg-ok-soft/25 hover:bg-ok-soft/40"
+            : "border-line hover:border-line-button hover:bg-surface-2/60",
+          focado && "ring-1 ring-brand/60 ring-inset",
+        )}
+      >
         <ProdutoThumb url={p.imagemUrl} nome={p.nome} />
 
         <div className="min-w-0 flex-1">
@@ -663,7 +798,7 @@ const Resultado = React.forwardRef<
           </p>
           <p className="truncate font-mono text-[11px] text-muted">
             {p.sku}
-            {medidaDoProduto(p) ? ` · ${medidaDoProduto(p)}` : ""}
+            {medida ? ` · ${medida}` : ""}
             {p.ean ? ` · ${p.ean}` : ""}
           </p>
 
@@ -696,112 +831,280 @@ const Resultado = React.forwardRef<
           </span>
           <span className="block text-[10px] text-faint">custo médio</span>
         </span>
-      </div>
 
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <Button
-          size="sm"
-          variant={sugerida ? "secondary" : "primary"}
-          disabled={salvando}
-          onClick={() => onEscolher(p.id, null, 1)}
-        >
-          Unidade
-        </Button>
-        {p.embalagens.map((e) => (
-          <Button
-            key={e.id}
-            size="sm"
-            variant={sugerida?.id === e.id ? "primary" : "secondary"}
-            disabled={salvando}
-            onClick={() => onEscolher(p.id, e.id, e.fator)}
-          >
-            {e.nome} ({fmtQtd(e.fator)} un)
-            {sugerida?.id === e.id && " · código da nota"}
-          </Button>
-        ))}
-      </div>
-
-      {/* A conversão fica À VISTA, não atrás de um botão.
-          "Quantas unidades tem na caixa de suco?" é a pergunta que decide se o
-          estoque nasce certo — e o produto que ainda não tem embalagem
-          cadastrada só tinha o botão "Unidade", que responde 1 em silêncio. */}
-      <div className="mt-2 flex flex-wrap items-end gap-3 rounded-[var(--radius)] border border-line bg-surface-2/60 px-3 py-2.5">
-        <label className="block">
-          <span className="mb-1 block text-[11px] font-medium tracking-wide text-faint uppercase">
-            Unidades por {item.unidade ?? "item da nota"}
-          </span>
-          <input
-            value={fator}
-            onChange={(e) => setFator(e.target.value)}
-            inputMode="decimal"
-            aria-label={`Unidades fechadas por ${item.unidade ?? "item da nota"}`}
-            className="h-9 w-28 rounded-[var(--radius)] border border-line-button bg-surface px-3 font-mono text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-          />
-        </label>
-
-        <div className="min-w-0 flex-1 text-[12px] text-muted">
-          {item.quantidade != null && fatorNum > 0 && (
-            <p>
-              Entra no estoque:{" "}
-              <span className="font-mono text-ink-2">
-                {fmtQtd(unidades)} {UNIDADE_ENTRADA}
-              </span>
-              {/* Produto medido em ml/g: a compra soma garrafas inteiras, e o
-                  mililitro só conta no saldo aberto. Dizer o conteúdo evita a
-                  leitura de que o saldo virou mililitro. */}
-              {medida && <span className="text-faint"> de {medida} cada</span>}
-            </p>
-          )}
-          {/* O número que denuncia fator errado não é "entra 24 un" — é o
-                custo por unidade que sai dele. R$ 100,80 a garrafa grita; 24
-                em vez de 12, não. */}
-          {custoUnitario != null && (
-            <p>
-              Custo por unidade:{" "}
-              <span
-                className={cn(
-                  "font-mono",
-                  foraDaCurva === null
-                    ? "text-ink-2"
-                    : foraDaCurva > 0
-                      ? "text-danger"
-                      : "text-ok",
-                )}
-              >
-                {fmtMoney(custoUnitario)}
-              </span>
-              {foraDaCurva != null && (
-                <span className={foraDaCurva > 0 ? "text-danger" : "text-ok"}>
-                  {" "}
-                  ({foraDaCurva > 0 ? "+" : ""}
-                  {Math.round(foraDaCurva * 100)}% vs. médio de{" "}
-                  {fmtMoney(p.custoMedio)})
-                </span>
-              )}
-            </p>
-          )}
-          {sugeridoPelaNota != null && fatorNum !== sugeridoPelaNota && (
-            <button
-              type="button"
-              onClick={() => setFator(String(sugeridoPelaNota))}
-              className="mt-0.5 text-[12px] font-medium text-brand underline"
-            >
-              Usar {fmtQtd(sugeridoPelaNota)}, como o fornecedor declarou
-            </button>
-          )}
-        </div>
-
-        <Button
-          size="sm"
-          disabled={salvando || fatorNum <= 0}
-          onClick={() => onEscolher(p.id, null, fatorNum)}
-        >
-          Relacionar com {fmtQtd(fatorNum)} un
-        </Button>
-      </div>
+        <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
+      </button>
     </li>
   );
 });
+
+// ── Passo 2: quantas unidades entram ────────────────────────
+
+/**
+ * Produto escolhido — falta a conversão.
+ *
+ * Uma pergunta por vez: a busca decide QUAL produto, esta tela decide QUANTAS
+ * unidades a nota traz. A embalagem cadastrada é um atalho para preencher o
+ * número, nunca o número escondido atrás de um botão: o antigo "Unidade"
+ * respondia 1 em silêncio e punha 3 caixas de long neck como 3 garrafas.
+ */
+function ConfirmarVinculo({
+  produto: p,
+  item,
+  sugeridoPelaNota,
+  origemSugerida,
+  salvando,
+  onVoltar,
+  onConfirmar,
+}: {
+  produto: ProdutoBuscado;
+  item: ItemDeNota;
+  sugeridoPelaNota: number | null;
+  origemSugerida: OrigemSugerida;
+  salvando: boolean;
+  onVoltar: () => void;
+  onConfirmar: (packagingId: string | null, fator: number) => void;
+}) {
+  // Mesma regra que o palpite automático usa no servidor: embalagem com o
+  // código de barras da nota manda, depois o que a nota declara, e 1 é o
+  // último recurso. Duplicar essa decisão aqui era o que fazia a caixa de
+  // long neck entrar como 5 garrafas.
+  const vinculo = React.useMemo(() => vinculoDoProduto(p, item), [p, item]);
+  const [embalagemId, setEmbalagemId] = React.useState<string | null>(
+    vinculo.packagingId,
+  );
+  const [fator, setFator] = React.useState(String(vinculo.fatorConversao));
+
+  const uCom = (item.unidade ?? "").trim().toUpperCase() || UNIDADE_ENTRADA;
+  const unidadeInfo = unidadeComercial(item.unidade);
+  const fatorNum = num(fator);
+  /**
+   * Peça é indivisível: 0,5 CX × 3 = 1,5 garrafas não existe, e o servidor
+   * recusa gravar. Melhor travar o botão com a conta na frente do que deixar
+   * clicar para receber um erro.
+   */
+  const conversao = unidadesDaLinha(item.quantidade ?? 0, fatorNum);
+  const fracionada = fatorNum > 0 && item.quantidade != null && !conversao.exata;
+  const unidades = (item.quantidade ?? 0) * fatorNum;
+  const medida = medidaDoProduto(p);
+  const sugerida = item.gtin
+    ? p.embalagens.find((e) => e.ean === item.gtin)
+    : undefined;
+  const custoUnitario =
+    item.custoLinha != null && item.custoLinha > 0 && unidades > 0
+      ? item.custoLinha / unidades
+      : null;
+  // Mesmo limiar da tabela: ±30% do custo médio quase sempre é fator errado.
+  const foraDaCurva =
+    custoUnitario != null && p.custoMedio > 0
+      ? (() => {
+          const d = (custoUnitario - p.custoMedio) / p.custoMedio;
+          return Math.abs(d) >= 0.3 ? d : null;
+        })()
+      : null;
+
+  /** Fator digitado à mão solta a embalagem: gravar o packagingId com um
+   *  fator diferente do cadastro é afirmar que a caixa mudou de tamanho. */
+  function digitar(v: string) {
+    setFator(v);
+    const e = p.embalagens.find((x) => x.id === embalagemId);
+    if (e && num(v) !== e.fator) setEmbalagemId(null);
+  }
+
+  function usarEmbalagem(e: { id: string; fator: number }) {
+    setEmbalagemId(e.id);
+    setFator(String(e.fator));
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Quem foi escolhido, e a saída para trocar sem fechar o painel. */}
+      <div className="flex items-center gap-3 rounded-[var(--radius)] border border-brand/40 bg-brand-soft/25 px-3 py-2.5">
+        <ProdutoThumb url={p.imagemUrl} nome={p.nome} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-ink">{p.nome}</p>
+          <p className="truncate font-mono text-[11px] text-muted">
+            {p.sku}
+            {medida ? ` · ${medida}` : ""}
+            {p.custoMedio > 0 ? ` · médio ${fmtMoney(p.custoMedio)}` : ""}
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          disabled={salvando}
+          onClick={onVoltar}
+        >
+          <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
+          Trocar
+        </Button>
+      </div>
+
+      <div className="rounded-[var(--radius)] border border-line bg-surface-2/60 px-4 py-3.5">
+        <p className="text-[13px] font-medium text-ink">
+          {unidadeInfo?.classe === "MEDIDA"
+            ? `${fmtQtd(item.quantidade ?? 0)} ${uCom}: quantas unidades entram no estoque?`
+            : `Quantas unidades vêm em 1 ${uCom}?`}
+        </p>
+        <p className="mt-0.5 text-[12px] text-muted">
+          É este número que decide quanto entra no estoque
+          {item.quantidade != null && (
+            <>
+              {" — "}a nota traz{" "}
+              <span className="font-mono text-ink-2" title={rotuloDaUnidade(item.unidade)}>
+                {fmtQtd(item.quantidade)} {uCom}
+              </span>
+            </>
+          )}
+          .
+        </p>
+
+        {/* Embalagem cadastrada é atalho para o número, não caminho paralelo:
+            clicar preenche o campo e o operador vê o que escolheu. */}
+        {p.embalagens.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            {p.embalagens.map((e) => (
+              <Button
+                key={e.id}
+                type="button"
+                size="sm"
+                variant={embalagemId === e.id ? "primary" : "secondary"}
+                disabled={salvando}
+                onClick={() => usarEmbalagem(e)}
+              >
+                {e.nome} ({fmtQtd(e.fator)} un)
+                {sugerida?.id === e.id && " · código da nota"}
+              </Button>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-3 flex flex-wrap items-end gap-4">
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-medium tracking-wide text-faint uppercase">
+              Unidades por {uCom}
+            </span>
+            <input
+              value={fator}
+              onChange={(e) => digitar(e.target.value)}
+              inputMode="decimal"
+              autoFocus
+              aria-label={`Unidades fechadas por ${item.unidade ?? "item da nota"}`}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && fatorNum > 0 && !fracionada && !salvando) {
+                  e.preventDefault();
+                  onConfirmar(embalagemId, fatorNum);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  onVoltar();
+                }
+              }}
+              className="h-10 w-28 rounded-[var(--radius)] border border-line-button bg-surface px-3 font-mono text-base text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+            />
+          </label>
+
+          <div className="min-w-0 flex-1 text-[12px] text-muted">
+            {/* As duas quantidades lado a lado, nunca uma no lugar da outra: a
+                do XML é o que o fiscal guarda, a convertida é o que o estoque
+                recebe. */}
+            {item.quantidade != null && fatorNum !== 1 && (
+              <p className="font-mono text-[11px] text-faint">
+                {fmtQtd(item.quantidade)} {uCom} × {fmtQtd(fatorNum)} ={" "}
+                {frasesDeConversao(uCom, fatorNum)}
+              </p>
+            )}
+            {/* Peça é indivisível. Com a conta na frente, o operador vê o que
+                está errado — o botão travado sozinho só irritaria. */}
+            {fracionada && (
+              <p className="flex items-start gap-1.5 text-[12px] font-medium text-danger">
+                <TriangleAlert size={13} className="mt-0.5 shrink-0" aria-hidden />
+                <span>
+                  {fmtQtd(item.quantidade ?? 0)} {uCom} × {fmtQtd(fatorNum)} dá{" "}
+                  {fmtQtd(conversao.bruto)} unidades. O estoque conta peça inteira.
+                </span>
+              </p>
+            )}
+            {item.quantidade != null && fatorNum > 0 && !fracionada && (
+              <p>
+                Entra no estoque:{" "}
+                <span className="font-mono text-ink-2">
+                  {fmtQtd(unidades)} {UNIDADE_ENTRADA}
+                </span>
+                {/* Produto medido em ml/g: a compra soma garrafas inteiras, e
+                    o mililitro só conta no saldo aberto. Dizer o conteúdo
+                    evita a leitura de que o saldo virou mililitro. */}
+                {medida && <span className="text-faint"> de {medida} cada</span>}
+              </p>
+            )}
+            {/* O número que denuncia fator errado não é "entra 24 un" — é o
+                custo por unidade que sai dele. R$ 100,80 a garrafa grita; 24
+                em vez de 12, não. */}
+            {custoUnitario != null && (
+              <p>
+                Custo por unidade:{" "}
+                <span
+                  className={cn(
+                    "font-mono",
+                    foraDaCurva === null
+                      ? "text-ink-2"
+                      : foraDaCurva > 0
+                        ? "text-danger"
+                        : "text-ok",
+                  )}
+                >
+                  {fmtMoney(custoUnitario)}
+                </span>
+                {foraDaCurva != null && (
+                  <span className={foraDaCurva > 0 ? "text-danger" : "text-ok"}>
+                    {" "}
+                    ({foraDaCurva > 0 ? "+" : ""}
+                    {Math.round(foraDaCurva * 100)}% vs. médio de{" "}
+                    {fmtMoney(p.custoMedio)})
+                  </span>
+                )}
+              </p>
+            )}
+            {sugeridoPelaNota != null && fatorNum !== sugeridoPelaNota && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEmbalagemId(null);
+                  setFator(String(sugeridoPelaNota));
+                }}
+                className="mt-0.5 text-[12px] font-medium text-brand underline"
+              >
+                Usar {fmtQtd(sugeridoPelaNota)},{" "}
+                {origemSugerida === "UNIDADE"
+                  ? `conversão padrão do ${(unidadeInfo?.nome ?? uCom).toLowerCase()}`
+                  : "como o fornecedor declarou"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-end gap-2">
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={salvando}
+          onClick={onVoltar}
+        >
+          Voltar à busca
+        </Button>
+        <Button
+          type="button"
+          disabled={salvando || fatorNum <= 0 || fracionada}
+          onClick={() => onConfirmar(embalagemId, fatorNum)}
+        >
+          {salvando && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+          Relacionar com {fmtQtd(fatorNum)} un
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 // ── Cadastro-relâmpago ──────────────────────────────────────
 
@@ -818,6 +1121,7 @@ const Resultado = React.forwardRef<
 function CadastroRapido({
   item,
   sugeridoPelaNota,
+  origemSugerida,
   subcategoriasProp,
   salvando,
   onCancelar,
@@ -825,6 +1129,7 @@ function CadastroRapido({
 }: {
   item: ItemDeNota;
   sugeridoPelaNota: number | null;
+  origemSugerida: OrigemSugerida;
   subcategoriasProp?: SubcategoriaCadastro[];
   salvando: boolean;
   onCancelar: () => void;
@@ -835,13 +1140,20 @@ function CadastroRapido({
     embalagemNome?: string;
   }) => void;
 }) {
-  const uCom = item.unidade?.trim() || "item";
+  const uCom = item.unidade?.trim().toUpperCase() || "item";
   const uTrib = item.unidadeTributavel?.trim() || null;
+  /** Quanto a sigla vale sozinha (milheiro, dúzia) — 1.000 não se digita. */
+  const daUnidade = fatorDaUnidade(item.unidade);
 
   // A nota vende na própria unidade de prateleira quando não há uTrib ou ele é
   // igual ao uCom. Aí não há o que perguntar: 1 = 1, e obrigar a confirmar
   // seria pedágio em cima do caso mais comum do mercadinho.
-  const semConversao = !uTrib || uTrib.toUpperCase() === uCom.toUpperCase();
+  //
+  // Sigla de múltiplo fixo nunca cai aqui: "MI" com uTrib "MI" ainda são mil
+  // maços por milheiro, e tratar como "sem conversão" gravava 0,6 no saldo.
+  const semConversao =
+    (daUnidade == null || daUnidade === 1) &&
+    (!uTrib || uTrib.toUpperCase() === uCom.toUpperCase());
 
   const [nome, setNome] = React.useState(item.descricao.trim());
   const [subcategoryId, setSubcategoryId] = React.useState("");
@@ -852,7 +1164,9 @@ function CadastroRapido({
   // é interrompido; sem palpite ele TEM de digitar, e aí não há o que confirmar.
   const [confirmado, setConfirmado] = React.useState(!sugeridoPelaNota);
   const [editandoFator, setEditandoFator] = React.useState(!sugeridoPelaNota && !semConversao);
-  const [embalagem, setEmbalagem] = React.useState(item.unidade || "Caixa");
+  // "CX" vira "Caixa" — a sigla do fornecedor não é nome de embalagem. E é só
+  // o nome: quantas cabem é o campo de unidades ao lado, não parte do texto.
+  const [embalagem, setEmbalagem] = React.useState(() => nomeDaEmbalagem(item.unidade));
   const [subs, setSubs] = React.useState<SubcategoriaCadastro[] | null>(
     subcategoriasProp ?? null,
   );
@@ -1011,9 +1325,11 @@ function CadastroRapido({
                   className="h-10 w-28 rounded-[var(--radius)] border border-line-button bg-surface px-3 font-mono text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
                 />
                 <span className="text-[12px] font-normal text-muted">
-                  {sugeridoPelaNota
-                    ? `A nota declara ${fmtQtd(sugeridoPelaNota)}.`
-                    : `A nota não declara — ela fatura em ${uCom} e tributa em ${uTrib}. Use 1 se comprar avulso.`}
+                  {sugeridoPelaNota == null
+                    ? `A nota não declara — ela fatura em ${uCom} e tributa em ${uTrib}. Use 1 se comprar avulso.`
+                    : origemSugerida === "UNIDADE"
+                      ? `${rotuloDaUnidade(item.unidade)}: ${frasesDeConversao(uCom, sugeridoPelaNota)}.`
+                      : `A nota declara ${fmtQtd(sugeridoPelaNota)}.`}
                 </span>
               </span>
             </label>
@@ -1026,7 +1342,9 @@ function CadastroRapido({
                 <span className="block text-[11px] text-muted">
                   {confirmado
                     ? "Confirmado — vale para as próximas notas deste fornecedor."
-                    : `Declarado pela nota (${fmtQtd(item.quantidadeTributavel ?? 0)} ${uTrib ?? uCom} ÷ ${fmtQtd(item.quantidade ?? 0)} ${uCom}). Confirme antes de cadastrar.`}
+                    : origemSugerida === "UNIDADE"
+                      ? `Conversão padrão de ${rotuloDaUnidade(item.unidade)}. Confirme antes de cadastrar.`
+                      : `Declarado pela nota (${fmtQtd(item.quantidadeTributavel ?? 0)} ${uTrib ?? uCom} ÷ ${fmtQtd(item.quantidade ?? 0)} ${uCom}). Confirme antes de cadastrar.`}
                 </span>
               </p>
               {confirmado ? (
@@ -1070,7 +1388,8 @@ function CadastroRapido({
             className="h-10 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
           />
           <span className="text-[11px] font-normal text-faint">
-            Fica no cadastro com o código de barras da nota.
+            Só o nome — a quantidade ({fmtQtd(fatorNum)} por {embalagem.trim().toLowerCase() ||
+              "embalagem"}) já é o campo acima. Fica no cadastro com o código de barras da nota.
           </span>
         </label>
       )}

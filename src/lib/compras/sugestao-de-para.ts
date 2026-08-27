@@ -51,6 +51,9 @@ export async function sugestoesDaNota(inboundId: string): Promise<SugestaoDePara
     nota.items.map(async (i) => {
       const item = {
         gtin: i.gtin,
+        // uCom viaja junto: é ela que responde "0,6 MI são 600 unidades"
+        // quando a nota não declara qTrib.
+        unidade: i.unidade,
         quantidade: Number(i.quantidade),
         unidadeTributavel: i.unidadeTributavel,
         quantidadeTributavel:

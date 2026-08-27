@@ -36,7 +36,6 @@ import {
   painelCsv, painelEtiquetas, painelGerenciar, painelImagens, painelLote,
   prepararGerenciar, prepararLote,
 } from "./_sheets/_despachante";
-import { ComplementoSheet } from "./_sheets/complemento-sheet";
 import type { ProdutoImagem } from "./_sheets/imagens-sheet";
 import type { ProdutoLote } from "./_sheets/lote-sheet";
 import { archiveProduct, getGerenciarExtras } from "./actions";
@@ -216,7 +215,6 @@ export function ProdutosClient(props: {
   const [imagensAlvo, setImagensAlvo] = useState<ProdutoImagem[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
   /** Produto com o painel de compra e fiscal aberto. */
-  const [complemento, setComplemento] = useState<ProductRow | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
 
   // Dados dos sheets de "Gerenciar" (categorias/armazenagem/fornecedores) só
@@ -1450,15 +1448,6 @@ export function ProdutosClient(props: {
           : <LoadingSheet title="Etiquetas" onClose={() => setEtiquetasOpen(false)} />
       )}
 
-      {complemento && (
-        <ComplementoSheet
-          key={complemento.id}
-          product={complemento}
-          onClose={() => setComplemento(null)}
-          onSalvo={() => router.refresh()}
-        />
-      )}
-
       {selectedProduct && (() => {
         // Posição na página que está na tela — navegar não muda de página.
         const idx = rows.findIndex((r) => r.id === selectedProduct.id);
@@ -1468,7 +1457,6 @@ export function ProdutosClient(props: {
             product={selectedProduct}
             onClose={() => setSelectedProduct(null)}
             onEdit={() => sairPara(`/produtos/${selectedProduct.id}/editar`)}
-            onComplementar={() => setComplemento(selectedProduct)}
             navegacao={
               idx >= 0
                 ? {

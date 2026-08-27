@@ -2,8 +2,9 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Copy, PackageCheck, Receipt, Trash2, Undo2, Unlink } from "lucide-react";
+import { Copy, MoreVertical, PackageCheck, Receipt, Trash2, Undo2, Unlink } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/sheet";
 import { Field } from "@/components/ui/misc";
@@ -100,6 +101,12 @@ export function PainelNota({
   // e sem validar as três letras que o servidor exige.
   const [confirmando, setConfirmando] = React.useState<Confirmacao | null>(null);
   const [motivo, setMotivo] = React.useState("");
+  /**
+   * Dar entrada sem conferir não pede motivo — pede que a pessoa saiba o que
+   * está pulando. A mercadoria vira saldo pela quantidade da nota, sem
+   * ninguém abrir uma caixa, e isso não se descobre depois do clique.
+   */
+  const [confirmandoEntrada, setConfirmandoEntrada] = React.useState(false);
   // Entradas lançadas à mão que esta nota pode estar documentando. Sem esta
   // pergunta, receber a nota somaria a mesma mercadoria pela segunda vez.
   const [candidatas, setCandidatas] = React.useState<Candidata[] | null>(null);
@@ -124,6 +131,7 @@ export function PainelNota({
         // mesmo assim, a decisão é dele e o servidor não barra de novo.
         await receberNotaAction(nota.id, (candidatas?.length ?? 0) > 0);
         toast.success("Entrada gerada.", "Estoque e custo médio atualizados.");
+        setConfirmandoEntrada(false);
         router.refresh();
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Falha ao gerar a entrada.");
@@ -232,47 +240,58 @@ export function PainelNota({
                 <Trash2 size={15} /> Descartar
               </Button>
             )}
-            {/* Atalho, não caminho: nota de serviço, frete ou compra que o
-                operador já conferiu no papel não precisa de contagem. Some
-                assim que há conferência aberta — aí o botão da etapa 3 manda. */}
-            {editavel && !emConferencia && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={receberSemConferir}
-                disabled={pending || faltamRelacionar > 0}
-                title={
-                  faltamRelacionar > 0
-                    ? "Termine a etapa 1: há item sem produto no catálogo."
-                    : undefined
-                }
-              >
-                <PackageCheck size={15} />
-                {pending ? "Gerando…" : "Dar entrada sem conferir"}
-              </Button>
-            )}
-            {/* Desfazer é operação de verdade, não “registre um ajuste”:
-                volta o saldo, cancela os títulos e libera a nota. */}
-            {nota.status === "RECEBIDO" && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => pedirMotivo("ESTORNAR")}
-                disabled={pending}
-              >
-                <Undo2 size={15} /> Estornar entrada
-              </Button>
-            )}
-            {nota.status === "VINCULADO" && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => pedirMotivo("DESVINCULAR")}
-                disabled={pending}
-              >
-                <Unlink size={15} /> Desfazer vínculo
-              </Button>
-            )}
+            {/* O resto das decisões do documento entra no menu. "Dar entrada
+                sem conferir" em botão no topo da tela era um atalho com peso
+                de caminho principal: pulava a conferência inteira com um
+                clique, ao lado do que o operador clica o tempo todo. */}
+            <Menu
+              trigger={
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="grid h-8 w-8 place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
+                  aria-label="Mais opções do documento"
+                >
+                  <MoreVertical size={15} aria-hidden />
+                </button>
+              }
+            >
+              {/* Atalho, não caminho: nota de serviço, frete ou compra que o
+                  operador já conferiu no papel não precisa de contagem. Some
+                  assim que há conferência aberta — aí o botão da etapa 3 manda. */}
+              {editavel && !emConferencia && (
+                <MenuItem
+                  icon={<PackageCheck size={15} />}
+                  disabled={pending || faltamRelacionar > 0}
+                  onClick={() => setConfirmandoEntrada(true)}
+                >
+                  Dar entrada sem conferir
+                </MenuItem>
+              )}
+              {/* Desfazer é operação de verdade, não “registre um ajuste”:
+                  volta o saldo, cancela os títulos e libera a nota. */}
+              {nota.status === "RECEBIDO" && (
+                <MenuItem
+                  icon={<Undo2 size={15} />}
+                  disabled={pending}
+                  onClick={() => pedirMotivo("ESTORNAR")}
+                >
+                  Estornar entrada
+                </MenuItem>
+              )}
+              {nota.status === "VINCULADO" && (
+                <MenuItem
+                  icon={<Unlink size={15} />}
+                  disabled={pending}
+                  onClick={() => pedirMotivo("DESVINCULAR")}
+                >
+                  Desfazer vínculo
+                </MenuItem>
+              )}
+              {editavel && emConferencia && nota.status !== "RECEBIDO" && (
+                <MenuItem disabled>Conferência aberta — dê entrada pela etapa 3</MenuItem>
+              )}
+            </Menu>
           </div>
         </div>
 
@@ -348,6 +367,40 @@ export function PainelNota({
           </div>
         )}
       </section>
+
+      {confirmandoEntrada && (
+        <Modal
+          open
+          onClose={() => setConfirmandoEntrada(false)}
+          title="Dar entrada sem conferir"
+          description="A mercadoria será lançada no estoque pela quantidade que a nota informa, sem a conferência física."
+          width="md"
+        >
+          <div className="space-y-3 text-[13px] text-ink-2">
+            <p>
+              Ninguém vai abrir caixa: o saldo sobe exatamente como a NF-e diz, e o custo médio
+              é recalculado com o custo dela. Falta, sobra ou avaria só aparecem no próximo
+              inventário.
+            </p>
+            <p className="rounded-[var(--radius)] bg-surface-2 px-3 py-2 text-muted">
+              Use quando não há mercadoria para contar (serviço, frete) ou quando a conferência
+              já foi feita no papel.
+            </p>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => setConfirmandoEntrada(false)}
+              disabled={pending}
+            >
+              Cancelar
+            </Button>
+            <Button onClick={receberSemConferir} disabled={pending}>
+              {pending ? "Gerando…" : "Receber no estoque"}
+            </Button>
+          </div>
+        </Modal>
+      )}
 
       {confirmando && (
         <Modal

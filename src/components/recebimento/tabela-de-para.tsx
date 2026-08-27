@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import {
+  ArrowRightLeft,
   Check,
   CheckCheck,
   ChevronDown,
@@ -36,6 +37,13 @@ import {
 } from "@/components/recebimento/relacionar-produto";
 import { fatorDaNota } from "@/lib/fiscal/fator";
 import { nomeDaEmbalagem } from "@/lib/fiscal/embalagem-nome";
+import {
+  fatorDaUnidade,
+  frasesDeConversao,
+  rotuloDaUnidade,
+  unidadeComercial,
+  unidadesDaLinha,
+} from "@/lib/fiscal/unidades";
 import { origemDoFator, type OrigemFator } from "@/lib/fiscal/vinculo";
 import {
   bloqueia,
@@ -225,7 +233,7 @@ function ondeEncaixaOGtin(i: ItemDePara): string {
  * ainda vai ser salvo.
  */
 export function linhasDeRevisao(i: ItemDePara): LinhaComparacao[] {
-  const uCom = i.unidade.trim() || UNIDADE_ENTRADA;
+  const uCom = i.unidade.trim().toUpperCase() || UNIDADE_ENTRADA;
   const daNota = fatorDaNota(i);
   const emb = i.productEmbalagens.find((e) => e.id === i.packagingId) ?? null;
   const unidades = i.quantidade * i.fatorConversao;
@@ -253,9 +261,12 @@ export function linhasDeRevisao(i: ItemDePara): LinhaComparacao[] {
       diverge: gtinFora,
     },
     {
-      rotulo: "Embalagem",
-      xml: uCom,
-      nohub: emb ? `${emb.nome} → ${UNIDADE_ENTRADA}` : UNIDADE_ENTRADA,
+      // Unidade COMERCIAL do fornecedor × unidade em que o estoque conta. São
+      // coisas diferentes e a tela precisa dizer isso com todas as letras: o
+      // fornecedor fatura milheiro, a prateleira conta maço.
+      rotulo: "Unidade",
+      xml: rotuloDaUnidade(i.unidade),
+      nohub: emb ? `${emb.nome} → ${UNIDADE_ENTRADA}` : `${UNIDADE_ENTRADA} (estoque e venda)`,
     },
     {
       rotulo: "Quantidade",
@@ -263,9 +274,9 @@ export function linhasDeRevisao(i: ItemDePara): LinhaComparacao[] {
       nohub: `${fmtQtd(unidades)} ${UNIDADE_ENTRADA}`,
     },
     {
-      rotulo: "Unidades por embalagem",
-      xml: daNota != null ? `1 ${uCom} = ${fmtQtd(daNota)} ${UNIDADE_ENTRADA}` : null,
-      nohub: `1 ${uCom} = ${fmtQtd(i.fatorConversao)} ${UNIDADE_ENTRADA} · ${ORIGEM_FATOR[origemDoFator(i)]}`,
+      rotulo: "Conversão aplicada",
+      xml: daNota != null ? frasesDeConversao(uCom, daNota) : null,
+      nohub: `${frasesDeConversao(uCom, i.fatorConversao)} · ${ORIGEM_FATOR[origemDoFator(i)]}`,
       diverge: daNota != null && daNota !== i.fatorConversao,
     },
     {
@@ -352,6 +363,7 @@ export function paraRelacionar(i: ItemDePara): ItemDeNota {
 const ORIGEM_FATOR: Record<OrigemFator, string> = {
   CADASTRO: "do cadastro do produto",
   NOTA: "declarado pelo fornecedor",
+  UNIDADE: "conversão padrão da unidade",
   MANUAL: "informado por você",
   SEM_CONVERSAO: "ninguém informou",
 };
@@ -375,8 +387,8 @@ const PENDENCIA_UI: Record<
     tom: "bg-warn-soft text-warn",
   },
   SEM_EMBALAGEM: {
-    titulo: "Precisam da quantidade por embalagem",
-    curto: "sem quantidade por embalagem",
+    titulo: "Precisam de conversão",
+    curto: "sem conversão",
     ponto: "bg-warn",
     linha: "bg-warn-soft/40",
     tom: "bg-warn-soft text-warn",
@@ -633,13 +645,17 @@ export function TabelaDePara({
   const [palpites, setPalpites] = useState<Sugestao[] | null>(sugestoesIniciais);
   // Props novas do servidor (refresh depois de gravar) mandam. Ajuste durante o
   // render, não efeito: assim a tabela nunca pinta com o palpite velho.
+  /** Linha gravando agora — o giro fica nela, não numa barra global. */
+  const [confirmando, setConfirmando] = useState<string | null>(null);
   const [ultimoServidor, setUltimoServidor] = useState(sugestoesIniciais);
   if (ultimoServidor !== sugestoesIniciais) {
     setUltimoServidor(sugestoesIniciais);
     setPalpites(sugestoesIniciais);
+    // Chegou dado novo do servidor: o giro da linha cumpriu o que tinha a
+    // dizer. Sem isto, o de-para feito no painel lateral gravava, o painel
+    // fechava e a linha só mudava quando o refresh caía — em silêncio.
+    setConfirmando(null);
   }
-  /** Linha gravando agora — o giro fica nela, não numa barra global. */
-  const [confirmando, setConfirmando] = useState<string | null>(null);
   /** Gravando o lote inteiro. */
   const [emLote, setEmLote] = useState(false);
   const [busca, setBusca] = useState("");
@@ -1088,8 +1104,12 @@ export function TabelaDePara({
             const proximo = itens.find((i) => !i.productId && i.id !== itemId);
             setRelacionando(proximo ?? null);
             if (!proximo && itemId) emendarNaProxima(itemId);
+            // O giro fica na linha que acabou de ser relacionada até o
+            // servidor devolver a tabela nova — o painel fecha na hora, a
+            // linha ainda não mudou, e sem sinal isso parece não ter gravado.
+            if (itemId) setConfirmando(itemId);
             recalcularPalpites();
-            router.refresh();
+            start(() => router.refresh());
           }}
         />
       )}
@@ -1156,8 +1176,14 @@ const LinhaItem = forwardRef<
   const entra = item.quantidade * item.fatorConversao;
   const desvio = desvioDeCusto(item);
   const origem = origemDoFator(item);
-  const uCom = item.unidade.trim() || UNIDADE_ENTRADA;
+  const uCom = item.unidade.trim().toUpperCase() || UNIDADE_ENTRADA;
   const emb = palavraDaEmbalagem(item);
+  /** O que a sigla do XML significa — "MI (milheiro)". */
+  const unidadeInfo = unidadeComercial(item.unidade);
+  const rotuloUnidade = rotuloDaUnidade(item.unidade);
+  /** A linha entra no estoque num número diferente do que a nota escreveu. */
+  const convertido = item.fatorConversao !== 1;
+  const explicacaoConversao = `A nota fatura em ${rotuloUnidade}. ${frasesDeConversao(uCom, item.fatorConversao)} — ${ORIGEM_FATOR[origem]}. ${fmtQtd(item.quantidade)} ${uCom} × ${fmtQtd(item.fatorConversao)} = ${fmtQtd(entra)} ${UNIDADE_ENTRADA} no estoque. A quantidade e a unidade do XML não mudam.`;
   // Com palpite à vista, o clique solto na linha abriria a busca justamente
   // quando o operador queria confirmar. Aí a ação é só pelos botões.
   const clicavel = editavel && !item.productId && !sugestao;
@@ -1180,14 +1206,22 @@ const LinhaItem = forwardRef<
           clicavel && "cursor-pointer transition-colors hover:bg-warn-soft/70",
           !clicavel && "transition-colors hover:bg-surface-2",
           focado && editavel && "ring-1 ring-brand/60 ring-inset",
+          // Gravando: a linha inteira se marca. Em nota de 40 itens o operador
+          // confirma em sequência e o olho já saiu daqui — o giro no botão
+          // sozinho não alcança quem está lendo a linha de baixo.
+          salvando && "bg-brand-soft/40 ring-1 ring-brand/40 ring-inset",
         )}
       >
         <td className="py-2.5 pl-3">
-          <span
-            className={cn("mt-1.5 block h-2 w-2 rounded-full", ui.ponto)}
-            title={ui.titulo}
-            aria-label={ui.titulo}
-          />
+          {salvando ? (
+            <Loader2 className="mt-1 h-3 w-3 animate-spin text-brand" aria-label="Salvando" />
+          ) : (
+            <span
+              className={cn("mt-1.5 block h-2 w-2 rounded-full", ui.ponto)}
+              title={ui.titulo}
+              aria-label={ui.titulo}
+            />
+          )}
         </td>
 
         {/* ── O que chegou ─────────────────────────────────── */}
@@ -1198,7 +1232,14 @@ const LinhaItem = forwardRef<
           <p className="font-mono text-[11px] text-faint">
             {item.codigoFornecedor}
             {item.gtin ? ` · ${item.gtin}` : ""}
-            {` · ${fmtQtd(item.quantidade)} ${uCom}`}
+            {" · "}
+            {/* A sigla sozinha é o que engana: "0,6 MI" lido como "0,6" faz o
+                operador achar que chegou menos de um maço. O nome por extenso
+                fica a um hover — na linha, só a sigla, que é o que está no
+                papel que ele confere. */}
+            <span title={rotuloUnidade}>
+              {fmtQtd(item.quantidade)} {uCom}
+            </span>
           </p>
           {item.bonificacao && (
             <span className="mt-1 inline-block">
@@ -1373,29 +1414,46 @@ const LinhaItem = forwardRef<
             <div className="flex flex-col items-start gap-1">
               <p className="flex items-center gap-1.5 text-[12px] font-medium text-warn">
                 <TriangleAlert size={12} aria-hidden />
-                Quantidade por embalagem não definida
+                Conversão necessária
               </p>
               <p className="text-[12px] text-muted">
-                Chegaram {fmtQtd(item.quantidade)} {uCom}. Quantas unidades vêm em cada {emb}?
+                {unidadeInfo?.classe === "MEDIDA"
+                  ? `A nota fatura ${fmtQtd(item.quantidade)} ${uCom} e o estoque conta unidades. Quantas unidades esta linha representa?`
+                  : `A unidade ${uCom} do XML não tem conversão cadastrada. Quantas unidades vêm em cada ${emb}?`}
               </p>
               {editavel && (
                 <Button size="sm" variant="secondary" onClick={() => setEditando(true)}>
-                  Informar unidades por {emb}
+                  Configurar conversão
                 </Button>
               )}
             </div>
           ) : (
+            // Três linhas, na ordem da pergunta: o que a nota diz, o que vira
+            // estoque, e por que um virou o outro. "0,6 MI" sozinho fazia o
+            // operador ler "menos de um maço" — e o XML fica intacto: o que a
+            // conversão produz é OUTRO número, ao lado, nunca por cima.
             <div className="flex flex-col items-start gap-0.5">
-              <p className="text-[12px] text-muted">
-                {fmtQtd(item.quantidade)} {uCom} {item.quantidade === 1 ? "recebida" : "recebidas"}
+              <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                <span className="text-[10px] font-medium tracking-wide text-faint uppercase">
+                  XML
+                </span>
+                <span className="font-mono text-[12px] text-ink-2" title={rotuloUnidade}>
+                  {fmtQtd(item.quantidade)} {uCom}
+                </span>
+                {convertido && (
+                  <Badge tone="brand" title={explicacaoConversao}>
+                    <ArrowRightLeft size={10} aria-hidden /> convertido
+                  </Badge>
+                )}
               </p>
-              {item.fatorConversao !== 1 && (
-                <p className={cn("font-mono text-[11px]", divergente ? "text-info" : "text-faint")}>
-                  1 {uCom} = {fmtQtd(item.fatorConversao)} {UNIDADE_ENTRADA}
-                </p>
-              )}
-              <p className="font-mono text-[15px] font-semibold text-brand-strong">
-                {fmtQtd(entra)} {UNIDADE_ENTRADA}
+
+              <p className="flex items-baseline gap-1.5">
+                <span className="text-[10px] font-medium tracking-wide text-faint uppercase">
+                  Estoque
+                </span>
+                <span className="font-mono text-[15px] font-semibold text-brand-strong">
+                  {fmtQtd(entra)} {UNIDADE_ENTRADA}
+                </span>
               </p>
               <p className="text-[11px] text-muted">
                 {entra === 1 ? "entrará no estoque" : "entrarão no estoque"}
@@ -1412,23 +1470,27 @@ const LinhaItem = forwardRef<
                 )}
               </p>
 
-              {item.fatorConversao !== 1 && (
+              {convertido && (
                 <p
                   className={cn(
-                    "flex items-center gap-1 text-[11px]",
-                    origem === "CADASTRO" ? "text-ok" : "text-muted",
+                    "flex flex-wrap items-center gap-x-1.5 text-[11px]",
+                    divergente ? "text-info" : "text-muted",
                   )}
-                  title={
-                    divergente
-                      ? `A nota declara ${fmtQtd(item.quantidadeTributavel ?? 0)} ${item.unidadeTributavel} — dá ${fmtQtd(divergente)} por ${uCom}.`
-                      : undefined
-                  }
+                  title={explicacaoConversao}
                 >
-                  {origem === "CADASTRO" && <Check size={11} aria-hidden />}
-                  {origem === "CADASTRO"
-                    ? "Quantidade do cadastro"
-                    : `Quantidade ${ORIGEM_FATOR[origem]}`}
-                  {divergente ? ` · a nota diz ${fmtQtd(divergente)}` : ""}
+                  <span className="text-[10px] font-medium tracking-wide text-faint uppercase">
+                    Conversão
+                  </span>
+                  <span className={cn("font-mono", divergente ? "text-info" : "text-ink-2")}>
+                    1 {uCom} = {fmtQtd(item.fatorConversao)} {UNIDADE_ENTRADA}
+                  </span>
+                  <span className={cn(origem === "CADASTRO" ? "text-ok" : undefined)}>
+                    {origem === "CADASTRO" && <Check size={11} className="inline" aria-hidden />}{" "}
+                    {ORIGEM_FATOR[origem]}
+                  </span>
+                  {divergente ? (
+                    <span className="text-info">· a nota diz {fmtQtd(divergente)}</span>
+                  ) : null}
                 </p>
               )}
 
@@ -1441,7 +1503,7 @@ const LinhaItem = forwardRef<
                   }}
                   className="mt-0.5 text-[11px] font-medium text-brand underline"
                 >
-                  Alterar unidades por {emb}
+                  {convertido ? "Alterar conversão" : `Informar unidades por ${emb}`}
                 </button>
               )}
             </div>
@@ -1555,15 +1617,26 @@ function DefinirEmbalagem({
   onCancelar: () => void;
   onSalvar: (fator: number, packagingId: string | null) => void;
 }) {
+  /** O que a sigla responde sozinha: milheiro é mil, dúzia é doze. */
+  const daUnidade = fatorDaUnidade(item.unidade);
   const [valor, setValor] = useState(
-    item.fatorConversao > 1 ? String(item.fatorConversao) : (sugeridoPelaNota?.toString() ?? ""),
+    item.fatorConversao > 1
+      ? String(item.fatorConversao)
+      : String(sugeridoPelaNota ?? daUnidade ?? ""),
   );
   const fator = Number(valor.replace(",", ".")) || 0;
   const entra = item.quantidade * fator;
   const custoUnitario = fator > 0 && entra > 0 ? custoItem(item) / entra : null;
+  /**
+   * A conta fecha em peça? 0,5 CX × 3 = 1,5 garrafas não existe, e o servidor
+   * recusa gravar — melhor dizer isso aqui, antes do clique.
+   */
+  const conversao = unidadesDaLinha(item.quantidade, fator);
+  const fracionada = fator > 0 && !conversao.exata;
   const medida = medidaDoProduto(item);
   const emb = palavraDaEmbalagem(item);
-  const uCom = item.unidade.trim() || UNIDADE_ENTRADA;
+  const uCom = item.unidade.trim().toUpperCase() || UNIDADE_ENTRADA;
+  const unidadeInfo = unidadeComercial(item.unidade);
 
   return (
     <div
@@ -1572,7 +1645,9 @@ function DefinirEmbalagem({
       role="presentation"
     >
       <p className="text-[12px] font-medium text-ink">
-        Quantas unidades vêm em cada {emb}?
+        {unidadeInfo?.classe === "MEDIDA"
+          ? `${fmtQtd(item.quantidade)} ${uCom}: quantas unidades entram no estoque?`
+          : `Quantas unidades vêm em cada ${emb}?`}
       </p>
 
       <div className="flex items-center gap-1.5">
@@ -1580,7 +1655,7 @@ function DefinirEmbalagem({
           value={valor}
           onChange={(e) => setValor(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && fator > 0) onSalvar(fator, null);
+            if (e.key === "Enter" && fator > 0 && !fracionada) onSalvar(fator, null);
             if (e.key === "Escape") onCancelar();
           }}
           inputMode="decimal"
@@ -1622,9 +1697,22 @@ function DefinirEmbalagem({
         </button>
       )}
 
+      {/* A sigla que responde sozinha: milheiro é mil em qualquer produto, e
+          quem digita "1000" à mão erra um zero mais cedo ou mais tarde. */}
+      {daUnidade != null && daUnidade !== fator && (
+        <button
+          type="button"
+          onClick={() => setValor(String(daUnidade))}
+          className="text-left text-[11px] font-medium text-brand underline"
+        >
+          usar {fmtQtd(daUnidade)} — {frasesDeConversao(uCom, daUnidade)}, padrão do{" "}
+          {(unidadeInfo?.nome ?? uCom).toLowerCase()}
+        </button>
+      )}
+
       {/* O resultado em tempo real é o que denuncia o número errado antes de
           ele virar saldo: 3 caixas × 6 são 18, e R$ 100,80 a garrafa grita. */}
-      {fator > 0 && (
+      {fator > 0 && !fracionada && (
         <p className="text-[12px] text-ink-2">
           →{" "}
           <span className="font-mono font-semibold text-brand-strong">
@@ -1640,8 +1728,25 @@ function DefinirEmbalagem({
         </p>
       )}
 
+      {/* Peça é indivisível. Dizer isso com a conta na frente evita o clique
+          que o servidor vai recusar — e explica o que está errado. */}
+      {fracionada && (
+        <p className="flex items-start gap-1.5 rounded-[var(--radius-sm)] bg-danger-soft px-2.5 py-2 text-[12px] text-danger">
+          <TriangleAlert size={13} className="mt-0.5 shrink-0" aria-hidden />
+          <span>
+            {fmtQtd(item.quantidade)} {uCom} × {fmtQtd(fator)} dá{" "}
+            {fmtQtd(conversao.bruto)} unidades. O estoque conta peça inteira — ajuste o
+            número.
+          </span>
+        </p>
+      )}
+
       <div className="flex items-center gap-2">
-        <Button size="sm" disabled={salvando || fator <= 0} onClick={() => onSalvar(fator, null)}>
+        <Button
+          size="sm"
+          disabled={salvando || fator <= 0 || fracionada}
+          onClick={() => onSalvar(fator, null)}
+        >
           {salvando ? (
             <Loader2 size={13} className="animate-spin" aria-hidden />
           ) : (

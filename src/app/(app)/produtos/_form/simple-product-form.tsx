@@ -596,7 +596,8 @@ export function SimpleProductForm({
   } | null>(null);
   useEffect(() => {
     let vivo = true;
-    if (!subcategoryId) {
+    // Só o cadastro mostra a sugestão — na edição nem vale gastar a consulta.
+    if (!subcategoryId || mode !== "new") {
       Promise.resolve().then(() => vivo && setSugestao(null));
       return () => {
         vivo = false;
@@ -608,7 +609,7 @@ export function SimpleProductForm({
     return () => {
       vivo = false;
     };
-  }, [subcategoryId]);
+  }, [subcategoryId, mode]);
 
   // Preço que zera a diferença para a margem mediana da subcategoria.
   const precoSugerido =
@@ -1070,11 +1071,28 @@ export function SimpleProductForm({
                 </Eyebrow>
 
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-5">
-                  <ImageThumb
-                    imagemUrl={imagemUrl}
-                    onPick={() => imgFileRef.current?.click()}
-                    onClear={() => setImagemUrl("")}
-                  />
+                  {/* A imagem e a forma de trazê-la ficam juntas: o atalho de
+                      colar URL morava lá embaixo, na faixa de preço, e quem
+                      clicava nele perdia de vista o quadro que ia mudar. */}
+                  <div className="flex shrink-0 flex-col items-center gap-1.5">
+                    <ImageThumb
+                      imagemUrl={imagemUrl}
+                      onPick={() => imgFileRef.current?.click()}
+                      onClear={() => setImagemUrl("")}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowImgUrl((v) => !v);
+                        if (!showImgUrl) requestAnimationFrame(() => focusById("img-url"));
+                      }}
+                      aria-expanded={showImgUrl}
+                      aria-controls="img-url"
+                      className="flex items-center gap-1 text-[11px] text-muted underline-offset-2 hover:text-ink hover:underline"
+                    >
+                      <ImagePlus size={11} /> {showImgUrl ? "Ocultar URL" : "Colar URL"}
+                    </button>
+                  </div>
 
                   <div className="grid min-w-0 flex-1 grid-cols-1 items-start gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-12">
                     {/* Código de barras. Primeiro campo porque quase todo cadastro
@@ -1186,6 +1204,27 @@ export function SimpleProductForm({
                         )}
                       />
                     </Field>
+
+                    {/* Campo da URL nasce ao lado do quadro da imagem, na mesma
+                        faixa — o que se cola aqui aparece dois centímetros à
+                        esquerda, e não numa seção adiante. */}
+                    {showImgUrl && (
+                      <Field
+                        label="URL da imagem"
+                        htmlFor="img-url"
+                        hint="Cole o endereço de uma imagem da web."
+                        className="fade-up sm:col-span-2 xl:col-span-12"
+                      >
+                        <Input
+                          id="img-url"
+                          value={imagemUrl.startsWith("data:") ? "" : imagemUrl}
+                          onChange={(e) => setImagemUrl(e.target.value)}
+                          placeholder="https://…"
+                          inputMode="url"
+                          className="font-mono text-xs placeholder:font-sans placeholder:text-sm"
+                        />
+                      </Field>
+                    )}
 
                     {/* Recados da faixa — atravessam a grade inteira para não
                         empurrar campo nenhum de lugar quando aparecem. */}
@@ -1367,10 +1406,13 @@ export function SimpleProductForm({
                     </Field>
                   )}
 
-                  {/* Margem só quando há custo para comparar — e custo não se
-                      digita aqui: ele é consequência da compra (nota ou estoque
-                      inicial). */}
-                  {(verdict || (precoSugerido && sugestao)) && (
+                  {/* Margem e média da categoria só no CADASTRO, onde ainda
+                      não há preço definido e a referência ajuda a chutar o
+                      primeiro. Na edição saíram: o custo ali é custo médio de
+                      compra, e ver "margem 12%" ao lado do campo empurrava o
+                      operador a mexer no preço por causa de um número que muda
+                      a cada nota — quem analisa margem tem o relatório. */}
+                  {mode === "new" && (verdict || (precoSugerido && sugestao)) && (
                     <div className="flex flex-col justify-end gap-1 text-xs sm:col-span-2 xl:col-span-4 xl:pb-2.5">
                       {verdict && (
                         <span className="flex flex-wrap items-center gap-1.5">
@@ -1409,18 +1451,6 @@ export function SimpleProductForm({
                     </div>
                   )}
 
-                  {showImgUrl && (
-                    <Field label="URL da imagem" htmlFor="img-url" className="sm:col-span-2 xl:col-span-6">
-                      <Input
-                        id="img-url"
-                        value={imagemUrl.startsWith("data:") ? "" : imagemUrl}
-                        onChange={(e) => setImagemUrl(e.target.value)}
-                        placeholder="https://…"
-                        inputMode="url"
-                        className="font-mono text-xs placeholder:font-sans placeholder:text-sm"
-                      />
-                    </Field>
-                  )}
                 </div>
 
                 {/* Venda +18. Não é fiscal: quem obedece isso é o PDV e o totem,
@@ -1437,29 +1467,19 @@ export function SimpleProductForm({
                   Venda restrita a maiores de 18 anos
                 </label>
 
-                {/* Saídas raras viram link, não campo: o SKU nasce da categoria e
-                    a imagem quase sempre vem do código de barras. */}
-                {(!showImgUrl || !showSku) && (
+                {/* Saída rara vira link, não campo: o SKU nasce da categoria.
+                    (A URL da imagem tem o atalho dela junto do quadro, na faixa
+                    de identificação.) */}
+                {!showSku && (
                   <div className="flex flex-wrap items-center gap-4">
-                    {!showImgUrl && (
-                      <button
-                        type="button"
-                        onClick={() => setShowImgUrl(true)}
-                        className="flex items-center gap-1 text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
-                      >
-                        <ImagePlus size={12} /> Colar URL de imagem
-                      </button>
-                    )}
-                    {!showSku && (
-                      <button
-                        type="button"
-                        id="sku"
-                        onClick={() => setShowSku(true)}
-                        className="flex items-center gap-1 text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
-                      >
-                        <Pencil size={12} /> Personalizar SKU
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      id="sku"
+                      onClick={() => setShowSku(true)}
+                      className="flex items-center gap-1 text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
+                    >
+                      <Pencil size={12} /> Personalizar SKU
+                    </button>
                   </div>
                 )}
               </div>
@@ -1699,7 +1719,7 @@ export function SimpleProductForm({
                     aria-hidden
                     className="shrink-0 transition-transform duration-200 group-open:rotate-90"
                   />
-                  Códigos de barras de compra
+                  Unidades de compra e códigos de barras
                   {packagings.length > 0 && (
                     <span className="font-mono text-xs text-faint">
                       · {packagings.length}
@@ -1709,8 +1729,10 @@ export function SimpleProductForm({
 
                 <div className="flex flex-col gap-3 px-5 pb-5 sm:px-6 sm:pb-6">
                   <p className="text-xs text-muted">
-                    O código impresso na caixa ou no fardo, e quantas unidades ele contém.
-                    Em branco, a primeira nota deste produto preenche sozinha.
+                    Como o FORNECEDOR vende — caixa, fardo, milheiro — e quantas unidades
+                    cada uma tem. Estoque e venda continuam em unidade: 1 milheiro de
+                    cigarro entra como 1.000 maços. Em branco, a primeira nota deste
+                    produto preenche sozinha.
                   </p>
 
                   {packagings.map((p, i) => (

@@ -47,6 +47,15 @@ export type LinhaRecebimento = {
   lote: string | null;
   validade: string | null;
   embalagens: EmbalagemView[];
+  /**
+   * O que o XML escreveu nesta linha, intacto.
+   *
+   * A conferência conta UNIDADE — 0,6 MI de cigarro viram 600 maços contados
+   * na porta. Guardar a quantidade e a unidade originais ao lado é o que
+   * mantém a rastreabilidade fiscal: o número convertido é outro campo, nunca
+   * a substituição silenciosa do que o fornecedor faturou.
+   */
+  xml: { quantidade: number; unidade: string; fatorConversao: number } | null;
 };
 
 export type NotaRecebimento = {
@@ -190,6 +199,16 @@ export async function carregarRecebimento(
 
   const semPedido = !pedido && linhasCru.length > 0;
 
+  // A linha da conferência já vem convertida em unidades. Para dizer de ONDE
+  // aquele número saiu — "0,6 MI × 1.000" — a tela precisa do item cru da nota.
+  const itensDaNota = emConferencia
+    ? await db.fiscalInboundItem.findMany({
+        where: { inboundId },
+        select: { id: true, unidade: true, quantidade: true, fatorConversao: true },
+      })
+    : [];
+  const xmlPorItem = new Map(itensDaNota.map((i) => [i.id, i]));
+
   // Antes de escolher a porta, o assunto da tela são os itens crus da nota: é
   // neles que o operador relaciona o catálogo para poder escolher.
   const itensCru = pedido || semPedido
@@ -283,6 +302,7 @@ export async function carregarRecebimento(
 
   const linhas: LinhaRecebimento[] = linhasCru.map((l) => {
     const p = l.productId ? produtos.get(l.productId) : null;
+    const doXml = l.inboundItemId ? xmlPorItem.get(l.inboundItemId) : null;
     return {
       id: l.id,
       productId: l.productId,
@@ -304,6 +324,13 @@ export async function carregarRecebimento(
       lote: l.lote,
       validade: l.validade ? l.validade.toISOString().slice(0, 10) : null,
       embalagens: p?.embalagens ?? [],
+      xml: doXml
+        ? {
+            quantidade: Number(doXml.quantidade),
+            unidade: doXml.unidade,
+            fatorConversao: Number(doXml.fatorConversao),
+          }
+        : null,
     };
   });
 

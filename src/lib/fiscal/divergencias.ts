@@ -1,4 +1,5 @@
 import { fatorDaNota } from "./fator";
+import { unidadeComercial, unidadesDaLinha } from "./unidades";
 import { casaPorCodigo, origemDoFator } from "./vinculo";
 
 // ============================================================
@@ -16,6 +17,7 @@ import { casaPorCodigo, origemDoFator } from "./vinculo";
 export type TipoDivergencia =
   | "FATOR_DIVERGENTE"
   | "FATOR_CHUTADO"
+  | "CONVERSAO_FRACIONADA"
   | "GTIN_DE_OUTRO"
   | "GTIN_NOVO"
   | "CUSTO_FORA_DA_CURVA"
@@ -87,6 +89,7 @@ const UNIDADE_ENTRADA = "UN";
 const DESVIO_CUSTO = 0.3;
 
 const digitos = (v: string | null | undefined) => (v ?? "").replace(/\D/g, "");
+const fmt = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 4 });
 const pct = (v: number) => `${v > 0 ? "+" : "−"}${Math.round(Math.abs(v) * 100)}%`;
 
 /**
@@ -121,6 +124,10 @@ export function divergenciasDoItem(
 
   // Fator 1 numa unidade de compra que não é unidade fechada é o chute mais
   // caro desta tela: 3 caixas entram como 3 garrafas e ninguém percebe.
+  //
+  // Sigla com conversão conhecida (MI, DZ, CENTO) não cai aqui: `origemDoFator`
+  // devolve "UNIDADE" e o número já saiu certo. Sobra o que depende do produto
+  // — caixa, fardo, quilo — e a sigla que o catálogo não conhece.
   if (
     origemDoFator({
       packagingId: item.packagingId,
@@ -128,15 +135,34 @@ export function divergenciasDoItem(
       quantidade: item.quantidade,
       unidadeTributavel: item.unidadeTributavel,
       quantidadeTributavel: item.quantidadeTributavel,
+      unidade: item.unidade,
     }) === "SEM_CONVERSAO" &&
     uCom !== UNIDADE_ENTRADA
   ) {
+    const u = unidadeComercial(item.unidade);
     out.push({
       tipo: "FATOR_CHUTADO",
       severidade: "ATENCAO",
       precisaConfirmar: true,
-      titulo: "Quantidade por embalagem não definida",
-      detalhe: `O fornecedor faturou em ${uCom} e ninguém disse quantas unidades vêm em cada uma. Do jeito que está, ${item.quantidade} ${uCom} entram como ${item.quantidade} unidades no estoque.`,
+      titulo: "Conversão necessária",
+      detalhe:
+        u?.classe === "MEDIDA"
+          ? `A nota fatura ${item.quantidade} ${uCom} (${u.nome.toLowerCase()}) e o estoque conta unidades fechadas. Peso e volume não viram peça sozinhos: diga quantas unidades esta linha representa antes de receber.`
+          : `A unidade ${uCom}${u ? ` (${u.nome.toLowerCase()})` : ""} do XML não tem conversão cadastrada para este produto. Do jeito que está, ${item.quantidade} ${uCom} entram como ${item.quantidade} unidades no estoque.`,
+    });
+  }
+
+  // Saldo conta PEÇA: 0,5 CX × 3 = 1,5 garrafas não existe. Ou a caixa não tem
+  // 3, ou a linha não veio em caixa — de um jeito ou de outro alguém tem de
+  // arrumar antes, porque a entrada recusa a gravar fração.
+  const conversao = unidadesDaLinha(item.quantidade, item.fatorConversao);
+  if (!conversao.exata) {
+    out.push({
+      tipo: "CONVERSAO_FRACIONADA",
+      severidade: "CRITICA",
+      precisaConfirmar: true,
+      titulo: "Conversão não fecha em unidades inteiras",
+      detalhe: `${fmt(item.quantidade)} ${uCom} × ${fmt(item.fatorConversao)} dá ${fmt(conversao.bruto)} unidades. Meia peça não entra no estoque: corrija quantas unidades vêm em cada ${uCom} — ou relacione esta linha à embalagem certa.`,
     });
   }
 

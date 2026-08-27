@@ -8,10 +8,13 @@
 // ============================================================
 
 import { fatorDaNota, type ItemComTributavel } from "./fator";
+import { fatorDaUnidade } from "./unidades";
 
 export type ItemParaVinculo = ItemComTributavel & {
   /** cEAN/cEANTrib da linha — pode ser o da unidade OU o do fardo. */
   gtin: string | null;
+  /** uCom — como o fornecedor vende (MI, CX, UN…). */
+  unidade?: string | null;
 };
 
 export type ProdutoParaVinculo = {
@@ -28,9 +31,11 @@ export type Vinculo = {
  * Embalagem e fator que o par (item, produto) sugere.
  *
  * A ordem importa. Embalagem cujo código de barras é o da nota ganha de tudo:
- * o fornecedor bipou o fardo, então o fator do fardo é o certo. Só depois vem
- * o que a própria nota declara em qCom/qTrib. Cair em 1 é o último recurso —
- * e é o caso que a tela precisa marcar como "chutei".
+ * o fornecedor bipou o fardo, então o fator do fardo é o certo. Depois vem o
+ * que a própria nota declara em qCom/qTrib, e só então o que a SIGLA já diz
+ * sozinha — milheiro é mil em qualquer produto do mundo, e sem isso "0,6 MI"
+ * de cigarro entrava no estoque como 0,6 maço. Cair em 1 é o último recurso, e
+ * é o caso que a tela precisa marcar como "chutei".
  */
 export function inferirVinculo(produto: ProdutoParaVinculo, item: ItemParaVinculo): Vinculo {
   const pelaEmbalagem = item.gtin
@@ -39,7 +44,8 @@ export function inferirVinculo(produto: ProdutoParaVinculo, item: ItemParaVincul
 
   return {
     packagingId: pelaEmbalagem?.id ?? null,
-    fatorConversao: pelaEmbalagem?.fatorConversao ?? fatorDaNota(item) ?? 1,
+    fatorConversao:
+      pelaEmbalagem?.fatorConversao ?? fatorDaNota(item) ?? fatorDaUnidade(item.unidade) ?? 1,
   };
 }
 
@@ -54,7 +60,7 @@ export function casaPorCodigo(produto: ProdutoParaVinculo, gtin: string | null):
  * cadastro" de "chutei 1 porque ninguém me disse" — o segundo é o que estoura
  * o estoque em silêncio.
  */
-export type OrigemFator = "CADASTRO" | "NOTA" | "MANUAL" | "SEM_CONVERSAO";
+export type OrigemFator = "CADASTRO" | "NOTA" | "UNIDADE" | "MANUAL" | "SEM_CONVERSAO";
 
 export function origemDoFator(item: {
   packagingId: string | null;
@@ -62,8 +68,14 @@ export function origemDoFator(item: {
   quantidade: number;
   unidadeTributavel: string | null;
   quantidadeTributavel: number | null;
+  /** uCom — sem ela, "MI" e "CX" viram o mesmo caso na tela. */
+  unidade?: string | null;
 }): OrigemFator {
   if (item.packagingId) return "CADASTRO";
-  if (item.fatorConversao === 1) return "SEM_CONVERSAO";
-  return fatorDaNota(item) === item.fatorConversao ? "NOTA" : "MANUAL";
+  if (fatorDaNota(item) === item.fatorConversao) return "NOTA";
+  // Milheiro, dúzia, cento: a sigla responde sozinha. Sem este ramo, 1.000
+  // aparecia como "informado à mão", e o fator 1 de um item faturado em UN
+  // aparecia como chute — quando é o único valor possível.
+  if (fatorDaUnidade(item.unidade) === item.fatorConversao) return "UNIDADE";
+  return item.fatorConversao === 1 ? "SEM_CONVERSAO" : "MANUAL";
 }

@@ -6,15 +6,7 @@
 // cópias da regra viram, cedo ou tarde, dois estoques diferentes.
 // ============================================================
 
-/**
- * Unidades que medem grandeza contínua. Se a nota tributa em KG ou L, a razão
- * qTrib/qCom é peso por caixa, não peça por caixa — usar aquilo como fator de
- * conversão colocaria "8,4" garrafas no estoque.
- */
-const UNIDADES_CONTINUAS = new Set([
-  "KG", "KGS", "G", "GR", "GRS", "MG", "TON", "TN", "T",
-  "L", "LT", "LTS", "ML", "M", "MT", "M2", "M3", "CM", "MM", "KM",
-]);
+import { unidadeContinua } from "./unidades";
 
 export type ItemComTributavel = {
   /** qCom — quantidade na unidade de venda. */
@@ -39,7 +31,9 @@ export type ItemComTributavel = {
 export function fatorDaNota(item: ItemComTributavel): number | null {
   const { quantidade: qCom, quantidadeTributavel: qTrib, unidadeTributavel: uTrib } = item;
   if (!qTrib || qCom <= 0 || qTrib <= 0) return null;
-  if (uTrib && UNIDADES_CONTINUAS.has(uTrib.trim().toUpperCase())) return null;
+  // Se a nota tributa em KG ou L, a razão qTrib/qCom é peso por caixa, não
+  // peça por caixa — usar aquilo como fator colocaria "8,4" garrafas no saldo.
+  if (unidadeContinua(uTrib)) return null;
 
   const bruto = qTrib / qCom;
   const inteiro = Math.round(bruto);
