@@ -9,7 +9,7 @@ import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { loadComprasFormOptions, loadInventarioFormOptions, loadInventariosConcluidos } from "./_data";
 import { invalidarOpcoesFiltro } from "../produtos/_query";
-import { criarPedidoRetroativo } from "@/lib/compras/documento";
+import { abrirRecebimentoAvulso } from "@/lib/compras/recebimento";
 import { gerarTituloDaEntradaManual } from "@/lib/financeiro/contas-pagar";
 import {
   registrarEntrada,
@@ -34,9 +34,11 @@ import {
   marcarEmTransitoPedido,
   cancelarPedidoCompra,
   excluirPedidoCompra,
-  receberPedidoCompra,
   adicionarBonificacaoPedido,
 } from "@/lib/estoque";
+// Conferir mercadoria é etapa do RECEBIMENTO: o atalho "recebi tudo agora"
+// abre, conta e fecha um GoodsReceipt de verdade em vez de gerar estoque solto.
+import { receberPedidoDeUmaVez } from "@/lib/compras/recebimento";
 
 /** Baseline: só abre o módulo quem enxerga estoque. Use `txp` para escrita. */
 async function tx<T>(fn: (tid: string, userId: string) => Promise<T>): Promise<T> {
@@ -205,6 +207,22 @@ export async function registrarEntradaAction(input: z.input<typeof entradaSchema
     // receber — que é o que impedia a mesma mercadoria de entrar duas vezes.
     const aguardandoDocumento = compra && !d.numeroNota?.trim();
 
+    // Compra lançada à mão é um RECEBIMENTO AVULSO: chegou mercadoria, alguém
+    // conferiu, entrou. Não inventamos um pedido por baixo — o pedido responde
+    // "o que eu comprei?", e aqui ninguém comprou de antemão. Antes isto criava
+    // um PurchaseOrder retroativo, e a tela de Pedidos passava a listar compras
+    // que nunca foram planejadas.
+    const recebimento =
+      compra && d.supplierId
+        ? await abrirRecebimentoAvulso({
+            tenantId: tid,
+            siteId: d.siteId,
+            supplierId: d.supplierId,
+            observacao: d.observacao ?? "Entrada lançada direto no estoque.",
+            userId,
+          })
+        : null;
+
     const id = await registrarEntrada(tid, d.siteId, d.items, {
       tipo: "MANUAL",
       motivo: d.motivo,
@@ -213,42 +231,31 @@ export async function registrarEntradaAction(input: z.input<typeof entradaSchema
       observacao: d.observacao,
       createdBy: userId,
       aguardandoDocumento,
+      receiptId: recebimento?.id ?? null,
+      numero: recebimento?.numero ?? null,
     });
 
-    // Toda mercadoria que entra ganha documento. Sem fornecedor não há a quem
-    // atribuir a compra — aí a entrada segue sendo só um ajuste de saldo.
-    if (compra && d.supplierId) {
-      const pedido = await criarPedidoRetroativo({
-        tenantId: tid,
-        siteId: d.siteId,
-        supplierId: d.supplierId,
-        origem: "ENTRADA_MANUAL",
-        itens: d.items.map((i) => ({
-          productId: i.productId,
-          variantId: i.variantId ?? null,
-          packagingId: i.packagingId ?? null,
-          quantidade: i.quantidade,
-          custoUnitario: i.quantidade > 0 ? (i.custoTotal ?? 0) / i.quantidade : 0,
-        })),
-        observacao: d.observacao ?? "Entrada lançada direto no estoque.",
-        userId,
-      });
-      await db.purchase.update({
-        where: { id },
-        data: { purchaseOrderId: pedido.id },
+    if (recebimento && d.supplierId) {
+      // Nasce e morre no mesmo instante: o lançamento manual É a conferência.
+      await db.goodsReceipt.update({
+        where: { id: recebimento.id },
+        data: {
+          status: "FINALIZADO",
+          finalizadoEm: new Date(),
+          numeroNota: d.numeroNota?.trim() || null,
+        },
       });
 
       await gerarTituloDaEntradaManual({
         tenantId: tid,
         purchaseId: id,
         supplierId: d.supplierId,
-        purchaseOrderId: pedido.id,
         valor: valorTotal,
         numeroNota: d.numeroNota ?? null,
         data: new Date(),
         userId,
       });
-      revalidatePath("/pedidos", "layout");
+      revalidatePath("/recebimento", "layout");
       revalidatePath("/financeiro", "layout");
     }
 
@@ -491,7 +498,7 @@ export async function receberPedidoCompraAction(input: z.input<typeof recebiment
   // Receber é do estoquista; pedir é de quem compra. Permissões diferentes.
   return txpDepois("compras.receber", async (tid, userId, exigirLoja) => {
     exigirLoja(await siteDoPedido(d.pedidoId));
-    const r = await receberPedidoCompra(tid, d.pedidoId, d.items, {
+    const r = await receberPedidoDeUmaVez(tid, d.pedidoId, d.items, {
       numeroNota: d.numeroNota,
       gerarFinanceiro: d.gerarFinanceiro,
       extras: d.extras,
@@ -518,7 +525,7 @@ export async function receberPedidoCompraAction(input: z.input<typeof recebiment
 
     ok();
     revalidatePath("/pedidos", "layout");
-    return { completo: r.completo, valorRecebido: r.valorRecebido };
+    return { completo: r.pedidoCompleto, valorRecebido: r.valorRecebido, recebimento: r.numero };
   });
 }
 

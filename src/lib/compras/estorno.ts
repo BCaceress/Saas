@@ -236,7 +236,12 @@ async function reverterRecebimentoNoPedido(
     where: { id: purchaseOrderId },
     data: {
       // Ainda há mercadoria de outra entrada → parcial. Nada → volta a esperar.
-      status: algumRecebido ? "RECEBIDO_PARCIAL" : "EM_TRANSITO",
+      //
+      // AGUARDANDO (Confirmado), não EM_TRANSITO: "em trânsito" saiu do
+      // vocabulário do pedido — descrevia a entrega, que é assunto do
+      // recebimento. Estornar devolve o pedido ao estado anterior à chegada da
+      // mercadoria, e esse estado é "o fornecedor confirmou, nada chegou".
+      status: algumRecebido ? "RECEBIDO_PARCIAL" : "AGUARDANDO",
       recebidoEm: null,
       saldoResolucao: "PENDENTE",
       saldoResolvidoEm: null,

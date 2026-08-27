@@ -164,7 +164,7 @@ export async function loadSugestoesReposicao(
     db.purchaseOrderItem.findMany({
       where: {
         productId: { in: productIds },
-        purchaseOrder: { status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] }, ...whereSite },
+        purchaseOrder: { status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] }, ...whereSite },
       },
       select: {
         productId: true,

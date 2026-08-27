@@ -1,16 +1,15 @@
 import "server-only";
 import { db } from "@/lib/prisma";
-import {
-  criarPedidoCompra,
-  registrarDevolucao,
-  registrarEntrada,
-  type EntradaItem,
-} from "@/lib/estoque";
+import { criarPedidoCompra, registrarDevolucao } from "@/lib/estoque";
 import { custoDoItem } from "@/lib/fiscal/custo";
 import { unidadesDaLinha } from "@/lib/fiscal/unidades";
-import { atualizarCustoDeReferencia } from "@/lib/fiscal/enriquecer-produto";
 import { registrarEvento } from "./eventos";
-import { gerarTitulosDaNota } from "@/lib/financeiro/contas-pagar";
+import {
+  garantirRecebimentoDaNota,
+  finalizarRecebimento,
+  fatoresDe,
+  type ResultadoRecebimento,
+} from "./recebimento";
 import { TOL_QTD, vereditoDaLinha } from "./conciliacao-regras";
 import type {
   PurchaseOrderStatus,
@@ -42,7 +41,6 @@ const PEDIDOS_ABERTOS: PurchaseOrderStatus[] = [
   "ENVIADO",
   "AGUARDANDO",
   "EM_TRANSITO",
-  "CONFERENCIA",
   "RECEBIDO_PARCIAL",
 ];
 
@@ -434,9 +432,23 @@ export async function conciliar(input: {
     });
   }
 
-  await db.purchaseReconciliationItem.deleteMany({ where: { inboundId } });
+  // A conferência é do RECEBIMENTO, não da nota: é ele que existe também
+  // quando o XML ainda não chegou, e é por ele que a tela abre.
+  const receipt = await garantirRecebimentoDaNota({ tenantId, inboundId, userId });
+  await db.goodsReceipt.update({
+    where: { id: receipt.id },
+    data: { purchaseOrderId, status: "EM_CONFERENCIA" },
+  });
+
+  await db.purchaseReconciliationItem.deleteMany({ where: { receiptId: receipt.id } });
   await db.purchaseReconciliationItem.createMany({
-    data: linhas.map((l) => ({ tenantId, inboundId, purchaseOrderId, ...l })),
+    data: linhas.map((l) => ({
+      tenantId,
+      receiptId: receipt.id,
+      inboundId,
+      purchaseOrderId,
+      ...l,
+    })),
   });
 
   await db.fiscalInbound.update({
@@ -449,20 +461,16 @@ export async function conciliar(input: {
     },
   });
 
-  // Pedido entra em conferência. RECEBIDO_PARCIAL fica como está: já houve
-  // entrada, e voltar para CONFERENCIA esconderia isso das listas.
-  if (["ENVIADO", "AGUARDANDO", "EM_TRANSITO"].includes(pedido.status)) {
-    await db.purchaseOrder.update({
-      where: { id: purchaseOrderId },
-      data: { status: "CONFERENCIA" },
-    });
-  }
+  // O status do pedido NÃO muda aqui. "Em conferência" é situação da doca, e
+  // vive no recebimento (GoodsReceipt.status); o pedido segue confirmado —
+  // aguardando entrega — enquanto alguém conta caixa na porta.
 
   const divergentes = linhas.filter((l) => l.status !== "OK").length;
   await registrarEvento({
     tenantId,
     purchaseOrderId,
     inboundId,
+    receiptId: receipt.id,
     tipo: "XML_RECEBIDO",
     descricao: `Nota ${inbound.numero}/${inbound.serie} vinculada ${
       input.automatico ? "automaticamente" : "manualmente"
@@ -473,6 +481,7 @@ export async function conciliar(input: {
     tenantId,
     purchaseOrderId,
     inboundId,
+    receiptId: receipt.id,
     tipo: "CONCILIACAO_CONCLUIDA",
     descricao:
       divergentes === 0
@@ -614,8 +623,9 @@ export async function conferirSemPedido(input: {
   // Remontar a conciliação não pode apagar a contagem da porta. Aqui isto é
   // rotina, não exceção: relacionar um item ao catálogo no meio da conferência
   // refaz as linhas, e quem já contou trinta caixas não vai contar de novo.
+  const recebimento = await garantirRecebimentoDaNota({ tenantId, inboundId, userId });
   const anteriores = await db.purchaseReconciliationItem.findMany({
-    where: { inboundId },
+    where: { receiptId: recebimento.id },
     select: {
       inboundItemId: true,
       qtdRecebida: true,
@@ -647,12 +657,13 @@ export async function conferirSemPedido(input: {
     };
   });
 
-  await db.purchaseReconciliationItem.deleteMany({ where: { inboundId } });
+  await db.purchaseReconciliationItem.deleteMany({ where: { receiptId: recebimento.id } });
   await db.purchaseReconciliationItem.createMany({
     data: linhas.map((l) => {
       const antes = l.inboundItemId ? conferido.get(l.inboundItemId) : null;
       return {
         tenantId,
+        receiptId: recebimento.id,
         inboundId,
         purchaseOrderId: null,
         ...l,
@@ -675,10 +686,16 @@ export async function conferirSemPedido(input: {
     },
   });
 
+  await db.goodsReceipt.update({
+    where: { id: recebimento.id },
+    data: { purchaseOrderId: null, status: "EM_CONFERENCIA" },
+  });
+
   await registrarEvento({
     tenantId,
     purchaseOrderId: null,
     inboundId,
+    receiptId: recebimento.id,
     tipo: "CONCILIACAO_CONCLUIDA",
     descricao: `Nota ${inbound.numero}/${inbound.serie} em conferência sem pedido — a nota é a referência dos ${linhas.length} itens.`,
     meta: { itens: linhas.length, semPedido: true },
@@ -744,8 +761,9 @@ export async function ehRecebimentoSemPedido(inboundId: string): Promise<boolean
  * ficaria fora do histórico do fornecedor e do controle de recebimento — e o
  * operador teria de digitar à mão um pedido que o XML já descreve inteiro.
  *
- * O pedido nasce em CONFERENCIA, não em RASCUNHO: a mercadoria já está na
- * porta, não há o que enviar ao fornecedor.
+ * O pedido nasce AGUARDANDO (confirmado), não em RASCUNHO: a mercadoria já
+ * está na porta, não há o que enviar ao fornecedor. Quem diz que a conferência
+ * começou é o recebimento, não ele.
  */
 export async function criarPedidoDaNota(input: {
   tenantId: string;
@@ -849,7 +867,7 @@ export async function criarPedidoDaNota(input: {
 
   await db.purchaseOrder.update({
     where: { id: purchaseOrderId },
-    data: { status: "CONFERENCIA", confirmadoEm: new Date() },
+    data: { status: "AGUARDANDO", confirmadoEm: new Date() },
   });
 
   // Score 100: não houve palpite nenhum — o pedido É a nota.
@@ -883,7 +901,7 @@ export async function conferirItem(input: {
     select: { id: true, qtdFaturada: true, status: true, inbound: { select: { status: true } } },
   });
   if (!linha) throw new Error("Item não encontrado.");
-  if (linha.inbound.status === "RECEBIDO") {
+  if (linha.inbound?.status === "RECEBIDO") {
     throw new Error("Esta nota já deu entrada — a conferência está encerrada.");
   }
 
@@ -992,7 +1010,7 @@ export async function devolverItemDivergente(input: {
   });
   if (!linha) throw new Error("Item não encontrado.");
   if (!linha.productId) throw new Error("Relacione o item a um produto antes de devolver.");
-  if (linha.inbound.status !== "RECEBIDO") {
+  if (!linha.inbound || linha.inbound.status !== "RECEBIDO") {
     throw new Error(
       "A nota ainda não deu entrada. Antes da entrada, corrija a quantidade na conferência " +
         "em vez de devolver.",
@@ -1210,251 +1228,44 @@ export async function aceitarCustoDaNota(input: {
 // ── Entrada no estoque ───────────────────────────────────────
 
 /**
- * Camada 3. Fecha o recebimento: move o estoque, acumula o recebido no pedido,
- * marca a nota e escreve a timeline. É a ÚNICA função daqui que mexe em saldo.
+ * Fecha o recebimento desta nota.
  *
- * Linha sem conferência (`qtdRecebida` nulo) entra pelo que a nota diz — a tela
- * mostra quantas são antes de confirmar. Item da nota sem produto relacionado
- * trava tudo: entrar com mercadoria sem cadastro é perder o rastro dela.
+ * Casca fina de propósito: quem move estoque é `finalizarRecebimento`, e ele é
+ * o mesmo para as três origens (pedido, XML, avulso). Antes havia dois motores
+ * de entrada — um aqui, outro no recebimento por pedido — e duas contas de
+ * custo médio para a mesma caixa.
  */
 export async function confirmarEntradaConciliada(input: {
   tenantId: string;
   inboundId: string;
+  motivoDivergencia?: string | null;
   userId?: string | null;
-}): Promise<string> {
-  const { tenantId, inboundId, userId } = input;
-
-  const inbound = await db.fiscalInbound.findFirst({
-    where: { id: inboundId },
-    select: {
-      id: true,
-      siteId: true,
-      status: true,
-      chave: true,
-      numero: true,
-      serie: true,
-      supplierId: true,
-      purchaseOrderId: true,
-      emitRazaoSocial: true,
-    },
+}): Promise<ResultadoRecebimento> {
+  const nota = await db.fiscalInbound.findFirst({
+    where: { id: input.inboundId },
+    select: { id: true, status: true },
   });
-  if (!inbound) throw new Error("Nota não encontrada.");
-  if (inbound.status === "RECEBIDO") throw new Error("Esta nota já gerou entrada de estoque.");
-  if (inbound.status === "DESCARTADO") throw new Error("Esta nota foi descartada.");
-  // Sem pedido é caso legítimo: o recebimento sem pedido monta a conciliação
-  // direto da nota. O que trava a entrada não é a falta de pedido, é a falta
-  // de conferência — e disso quem reclama é o `linhas.length === 0` abaixo.
-  const pedido = inbound.purchaseOrderId
-    ? await db.purchaseOrder.findFirst({
-        where: { id: inbound.purchaseOrderId },
-        select: { id: true, numero: true, status: true, financeiroGerado: true },
-      })
-    : null;
-  if (inbound.purchaseOrderId && !pedido) throw new Error("Pedido não encontrado.");
+  if (!nota) throw new Error("Nota não encontrada.");
+  if (nota.status === "RECEBIDO") throw new Error("Esta nota já gerou entrada de estoque.");
+  if (nota.status === "DESCARTADO") throw new Error("Esta nota foi descartada.");
 
-  const linhas = await db.purchaseReconciliationItem.findMany({
-    where: { inboundId },
-    select: {
-      id: true,
-      productId: true,
-      descricao: true,
-      qtdFaturada: true,
-      qtdRecebida: true,
-      custoFaturado: true,
-      bonificacao: true,
-      lote: true,
-      validade: true,
-      purchaseOrderItemId: true,
-      inboundItemId: true,
-    },
+  const receipt = await garantirRecebimentoDaNota({
+    tenantId: input.tenantId,
+    inboundId: input.inboundId,
+    userId: input.userId,
   });
-  if (linhas.length === 0) {
+
+  const linhas = await db.purchaseReconciliationItem.count({ where: { receiptId: receipt.id } });
+  if (linhas === 0) {
     throw new Error(
       "Escolha primeiro como receber esta nota: vincular a um pedido, gerar o pedido ou conferir sem pedido.",
     );
   }
 
-  const entrando = linhas
-    .map((l) => ({
-      ...l,
-      qtd: l.qtdRecebida == null ? Number(l.qtdFaturada) : Number(l.qtdRecebida),
-    }))
-    .filter((l) => l.qtd > TOL_QTD);
-
-  if (entrando.length === 0) throw new Error("Nenhum item foi recebido — nada a dar entrada.");
-
-  const semProduto = entrando.filter((l) => !l.productId);
-  if (semProduto.length > 0) {
-    throw new Error(
-      `Relacione ao produto antes de receber. Faltam ${semProduto.length}: ${semProduto
-        .slice(0, 3)
-        .map((l) => l.descricao)
-        .join(", ")}${semProduto.length > 3 ? "…" : ""}`,
-    );
-  }
-
-  const paraEntrada = (l: (typeof entrando)[number]): EntradaItem => ({
-    productId: l.productId as string,
-    // Quantidade JÁ em unidade base — packagingId null de propósito, senão
-    // `registrarEntrada` converteria de novo e dobraria o fardo.
-    quantidade: l.qtd,
-    custoTotal: l.bonificacao ? 0 : l.qtd * Number(l.custoFaturado),
-    packagingId: null,
-    lote: l.lote,
-    validade: l.validade ? l.validade.toISOString().slice(0, 10) : null,
+  return finalizarRecebimento({
+    tenantId: input.tenantId,
+    receiptId: receipt.id,
+    motivoDivergencia: input.motivoDivergencia,
+    userId: input.userId,
   });
-
-  const comprados = entrando.filter((l) => !l.bonificacao);
-  const bonificados = entrando.filter((l) => l.bonificacao);
-
-  // Sem pedido, a origem da mercadoria é a própria nota — e é ela que a
-  // entrada carrega (chave, número, fornecedor). Marcar `aguardandoDocumento`
-  // aqui seria mentira: o documento chegou primeiro, foi ele que abriu a
-  // conferência.
-  const referencia = pedido
-    ? `Recebimento do pedido ${pedido.numero} — nota ${inbound.numero}`
-    : `Recebimento sem pedido — nota ${inbound.numero}/${inbound.serie}`;
-
-  let purchaseId = "";
-  if (comprados.length > 0) {
-    purchaseId = await registrarEntrada(tenantId, inbound.siteId, comprados.map(paraEntrada), {
-      tipo: "FORNECEDOR",
-      motivo: pedido ? null : "COMPRA_SEM_PEDIDO",
-      supplierId: inbound.supplierId,
-      purchaseOrderId: pedido?.id ?? null,
-      numeroNota: `${inbound.numero}/${inbound.serie}`,
-      chaveNfe: inbound.chave,
-      observacao: referencia,
-      createdBy: userId ?? undefined,
-    });
-  }
-  if (bonificados.length > 0) {
-    const idBonus = await registrarEntrada(
-      tenantId,
-      inbound.siteId,
-      bonificados.map(paraEntrada),
-      {
-        tipo: "FORNECEDOR",
-        motivo: "BONIFICACAO",
-        supplierId: inbound.supplierId,
-        purchaseOrderId: pedido?.id ?? null,
-        numeroNota: `${inbound.numero}/${inbound.serie}`,
-        chaveNfe: inbound.chave,
-        observacao: pedido
-          ? `Bonificação do pedido ${pedido.numero} — nota ${inbound.numero}`
-          : `Bonificação sem pedido — nota ${inbound.numero}/${inbound.serie}`,
-        createdBy: userId ?? undefined,
-      },
-    );
-    purchaseId ||= idBonus;
-  }
-
-  // Acumula o recebido em cada linha do pedido, de volta em unidade de compra.
-  // Sem pedido não há saldo a acumular: a nota inteira entrou de uma vez.
-  let completo = true;
-  if (pedido) {
-    const itensPedido = await db.purchaseOrderItem.findMany({
-      where: { purchaseOrderId: pedido.id },
-      select: { id: true, packagingId: true, qtdPedida: true, qtdRecebida: true },
-    });
-    const fatores = await fatoresDe(itensPedido.map((i) => i.packagingId));
-
-    const recebidoPorItem = new Map<string, number>();
-    for (const l of entrando) {
-      if (!l.purchaseOrderItemId) continue; // item fora do pedido não tem onde somar
-      recebidoPorItem.set(
-        l.purchaseOrderItemId,
-        (recebidoPorItem.get(l.purchaseOrderItemId) ?? 0) + l.qtd,
-      );
-    }
-
-    for (const it of itensPedido) {
-      const fator = (it.packagingId ? fatores.get(it.packagingId) : null) ?? 1;
-      const novo =
-        Number(it.qtdRecebida) + (recebidoPorItem.get(it.id) ?? 0) / (fator > 0 ? fator : 1);
-      if (recebidoPorItem.has(it.id)) {
-        await db.purchaseOrderItem.update({ where: { id: it.id }, data: { qtdRecebida: novo } });
-      }
-      if (novo < Number(it.qtdPedida) - TOL_QTD) completo = false;
-    }
-
-    await db.purchaseOrder.update({
-      where: { id: pedido.id },
-      data: {
-        status: completo ? "RECEBIDO" : "RECEBIDO_PARCIAL",
-        recebidoEm: completo ? new Date() : null,
-      },
-    });
-  }
-
-  await db.fiscalInbound.update({
-    where: { id: inboundId },
-    data: { status: "RECEBIDO", purchaseId: purchaseId || null },
-  });
-
-  // Estoque e financeiro são o mesmo fato visto de dois lados. As duplicatas da
-  // nota viram títulos aqui, no instante em que a mercadoria passa a ser nossa.
-  const titulos = await gerarTitulosDaNota({
-    tenantId,
-    inboundId,
-    purchaseId: purchaseId || null,
-    userId,
-  });
-  if (titulos.criados > 0) {
-    await registrarEvento({
-      tenantId,
-      purchaseOrderId: pedido?.id ?? null,
-      inboundId,
-      tipo: "TITULOS_GERADOS",
-      descricao: titulos.estimado
-        ? `1 título a pagar de R$ ${titulos.valorTotal.toFixed(2)} — a nota não trouxe duplicata, o vencimento veio do prazo do fornecedor.`
-        : `${titulos.criados} título(s) a pagar, somando R$ ${titulos.valorTotal.toFixed(2)}.`,
-      meta: { criados: titulos.criados, valorTotal: titulos.valorTotal },
-      createdBy: userId,
-    });
-  }
-
-  // Custo de referência do produto: agora o dinheiro é real, então o que a
-  // nota cobrou vira o custo do cadastro. (Custo médio quem move é o serviço
-  // de estoque; este é o "quanto custou da última vez" que a tela mostra.)
-  await atualizarCustoDeReferencia(
-    comprados.map((l) => ({
-      productId: l.productId as string,
-      custoUnitarioBase: Number(l.custoFaturado),
-    })),
-  );
-
-  await registrarEvento({
-    tenantId,
-    purchaseOrderId: pedido?.id ?? null,
-    inboundId,
-    tipo: "CONFERENCIA_CONCLUIDA",
-    descricao: `Conferência física concluída: ${entrando.length} itens recebidos.`,
-    createdBy: userId,
-  });
-  await registrarEvento({
-    tenantId,
-    purchaseOrderId: pedido?.id ?? null,
-    inboundId,
-    tipo: "ESTOQUE_ATUALIZADO",
-    descricao: !pedido
-      ? `Estoque atualizado pela nota ${inbound.numero}/${inbound.serie}, sem pedido.`
-      : completo
-        ? `Estoque atualizado. Pedido ${pedido.numero} recebido integralmente.`
-        : `Estoque atualizado. Pedido ${pedido.numero} segue com itens pendentes.`,
-    meta: { purchaseId, itens: entrando.length },
-    createdBy: userId,
-  });
-
-  return purchaseId;
-}
-
-async function fatoresDe(ids: (string | null)[]): Promise<Map<string, number>> {
-  const unicos = [...new Set(ids.filter((i): i is string => Boolean(i)))];
-  if (unicos.length === 0) return new Map();
-  const pacotes = await db.productPackaging.findMany({
-    where: { id: { in: unicos } },
-    select: { id: true, fatorConversao: true },
-  });
-  return new Map(pacotes.map((p) => [p.id, Number(p.fatorConversao)]));
 }

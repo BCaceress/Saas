@@ -20,10 +20,10 @@ import type { Prisma } from "@/generated/prisma";
 // fornecedor.
 // ============================================================
 
-export type TipoDocumento = "PC" | "COT" | "DEV";
+export type TipoDocumento = "PC" | "COT" | "DEV" | "REC";
 
 /** Quantos dígitos cada prefixo usa. Mudar aqui muda só a aparência. */
-const DIGITOS: Record<TipoDocumento, number> = { PC: 5, COT: 5, DEV: 5 };
+const DIGITOS: Record<TipoDocumento, number> = { PC: 5, COT: 5, DEV: 5, REC: 5 };
 
 /**
  * Próximo número do tipo, para este tenant. Atômico: pode ser chamado em

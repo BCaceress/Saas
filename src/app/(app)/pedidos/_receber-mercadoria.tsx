@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Barcode,
   Building2,
   CalendarClock,
   ChevronLeft,
@@ -15,36 +14,39 @@ import {
   PackageSearch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Sheet, Modal, type SheetWidth } from "@/components/ui/sheet";
+import { Sheet, type SheetWidth } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
 import {
   importarXmlRecebimentoAction,
   vincularPedidoAction,
+  iniciarRecebimentoAction,
+  abrirRecebimentoAvulsoAction,
 } from "../recebimento/conferencia-actions";
 import { listarPedidosAReceberAction } from "./actions";
-import { PedidoReceber } from "./_recebimentos";
 import { previsaoLabel, fmtMoney } from "../cotacoes/_ui";
 import type { PedidoView } from "./_pedidos";
 
 // ── Painel "Receber mercadoria" ─────────────────────────────────
-// Ponto de entrada único do recebimento, aberto a partir de um pedido (card,
-// drawer, kanban) ou sem pedido nenhum ("Receber sem pedido"). XML deixa de
-// ser tela própria: é só uma das 3 portas — as outras duas reaproveitam
-// `PedidoReceber`, que já existe e já grava a entrada.
+// Ponto de entrada único do recebimento. O eixo da escolha não é "como
+// registrar" (XML × bipe × digitação) — é "de onde vem este recebimento":
+// de uma nota fiscal, de um pedido já feito, ou avulso (sem pedido e sem XML).
 //
-// Quem entra sem pedido escolhe um aqui mesmo: antes, escanear e conferir à
-// mão ficavam desabilitados explicando o porquê num `title` que celular
-// nenhum mostra — a tela dizia "não" sem dizer "por aqui".
+// As três portas terminam no MESMO lugar: um recebimento aberto em
+// /recebimento/[id], onde a conferência acontece. O painel só descobre de onde
+// a mercadoria veio; contar caixa é trabalho de tela cheia.
 
-type Etapa = "escolha" | "xml" | "escolher-pedido" | "scan" | "manual";
+type Etapa = "escolha" | "xml" | "escolher-pedido";
 
 export function ReceberMercadoriaPanel({
   pedido,
   open,
   onClose,
   etapaInicial = "escolha",
-  cega = false,
+  /** Libera o cartão "Recebimento avulso" — exige `estoque.ajustar`, permissão
+   *  diferente de `compras.receber` (quem confere na porta nem sempre pode
+   *  lançar estoque direto, sem pedido nenhum por trás). */
+  podeAvulso = false,
 }: {
   /** `null` = "Receber sem pedido": o painel pede o pedido antes de conferir. */
   pedido: PedidoView | null;
@@ -52,17 +54,12 @@ export function ReceberMercadoriaPanel({
   onClose: () => void;
   /** "xml" pula a escolha e já abre o upload — usado pelo botão "Receber pedido". */
   etapaInicial?: Etapa;
-  /** Conferência cega ligada nas configurações de estoque do tenant. */
-  cega?: boolean;
+  podeAvulso?: boolean;
 }) {
   const router = useRouter();
   const [etapa, setEtapa] = useState<Etapa>(etapaInicial);
   const [enviando, setEnviando] = useState(false);
   const [escolhido, setEscolhido] = useState<PedidoView | null>(null);
-  const [sujo, setSujo] = useState(false);
-  const [confirmandoSaida, setConfirmandoSaida] = useState(false);
-  /** Para onde ir depois de escolher o pedido na lista. */
-  const destinoRef = useRef<Etapa>("manual");
 
   const alvo = pedido ?? escolhido;
 
@@ -72,26 +69,46 @@ export function ReceberMercadoriaPanel({
     setTimeout(() => {
       setEtapa(etapaInicial);
       setEscolhido(null);
-      setSujo(false);
     }, 200);
   }
 
-  function fechar() {
-    // Conferência em andamento não some por um clique no fundo da gaveta.
-    if (sujo) {
-      setConfirmandoSaida(true);
-      return;
+  const fechar = limpar;
+
+  /**
+   * "Iniciar recebimento" de um pedido.
+   *
+   * O pedido não vira nada: ganha mais um recebimento vinculado, e o operador
+   * cai direto na conferência. Idempotente no servidor — clicar duas vezes
+   * reabre a mesma conferência em vez de criar uma segunda.
+   */
+  async function abrirDoPedido(p: PedidoView) {
+    setEnviando(true);
+    try {
+      const id = await iniciarRecebimentoAction(p.id);
+      limpar();
+      router.push(`/recebimento/${id}`);
+    } catch (e) {
+      toast.error(
+        "Não deu para iniciar o recebimento",
+        e instanceof Error ? e.message : "Tente de novo.",
+      );
+      setEnviando(false);
     }
-    limpar();
   }
 
-  function irPara(destino: Etapa) {
-    if (alvo) {
-      setEtapa(destino);
-      return;
+  async function abrirAvulso() {
+    setEnviando(true);
+    try {
+      const id = await abrirRecebimentoAvulsoAction();
+      limpar();
+      router.push(`/recebimento/${id}`);
+    } catch (e) {
+      toast.error(
+        "Não deu para abrir o recebimento",
+        e instanceof Error ? e.message : "Tente de novo.",
+      );
+      setEnviando(false);
     }
-    destinoRef.current = destino;
-    setEtapa("escolher-pedido");
   }
 
   async function enviarXml(arquivos: FileList | File[]) {
@@ -120,12 +137,16 @@ export function ReceberMercadoriaPanel({
 
       // Já sabemos o pedido (veio de um card/drawer específico) — vincula
       // direto, sem depender da heurística de sugestão.
+      let receiptId = importada.receiptId ?? null;
       if (alvo) {
-        await vincularPedidoAction({ inboundId: importada.inboundId, purchaseOrderId: alvo.id });
+        receiptId = await vincularPedidoAction({
+          inboundId: importada.inboundId,
+          purchaseOrderId: alvo.id,
+        });
       }
 
       limpar();
-      router.push(`/recebimento/${importada.inboundId}`);
+      router.push(`/recebimento/${receiptId ?? importada.inboundId}`);
     } catch (e) {
       toast.error("Não foi possível ler o arquivo", e instanceof Error ? e.message : "Tente de novo.");
     } finally {
@@ -133,18 +154,15 @@ export function ReceberMercadoriaPanel({
     }
   }
 
-  // A conferência precisa de espaço (lista, contador, detalhes por linha); a
-  // escolha das portas, não. A largura acompanha o que está na tela.
-  const largura: SheetWidth = etapa === "scan" || etapa === "manual" ? "2xl" : etapa === "escolher-pedido" ? "xl" : "lg";
+  // Escolher o pedido é uma lista; escolher a porta são três cartões.
+  const largura: SheetWidth = etapa === "escolher-pedido" ? "xl" : "lg";
 
   const descricao =
     etapa === "escolha"
-      ? "Escolha como deseja iniciar o recebimento."
+      ? "Escolha de onde vem esta mercadoria. A conferência abre em seguida."
       : etapa === "escolher-pedido"
         ? "De qual pedido é esta mercadoria?"
-        : alvo
-          ? `${alvo.supplierNome} · ${alvo.numero}`
-          : "Importe o XML — depois você escolhe se ele vira pedido, entra num existente ou é só conferência.";
+        : "Importe o XML — depois você escolhe se ele vira pedido, entra num existente ou é só conferência.";
 
   return (
     <>
@@ -154,24 +172,25 @@ export function ReceberMercadoriaPanel({
             <OpcaoCard
               icon={FileCode}
               destaque
-              titulo="Importar XML"
-              descricao="Conciliar com o pedido, gerar o pedido pela nota ou só conferir."
+              titulo="Importar NF-e"
+              descricao="Localize um pedido existente, crie um pedido pela nota ou receba sem pedido."
               onClick={() => setEtapa("xml")}
             />
             <OpcaoCard
-              icon={Barcode}
-              titulo="Escanear produtos"
-              descricao="Conferir os itens usando leitor ou câmera."
+              icon={PackageSearch}
+              titulo="A partir de um pedido"
+              descricao="Confira o que chegou contra o que foi pedido. O pedido continua aberto até tudo entrar."
               nota={alvo ? undefined : "Você escolhe o pedido no próximo passo."}
-              onClick={() => irPara("scan")}
+              onClick={() => (alvo ? void abrirDoPedido(alvo) : setEtapa("escolher-pedido"))}
             />
-            <OpcaoCard
-              icon={ClipboardList}
-              titulo="Conferência manual"
-              descricao="Receber a mercadoria mesmo sem XML."
-              nota={alvo ? undefined : "Você escolhe o pedido no próximo passo."}
-              onClick={() => irPara("manual")}
-            />
+            {podeAvulso && (
+              <OpcaoCard
+                icon={ClipboardList}
+                titulo="Recebimento avulso"
+                descricao="Sem pedido e sem NF-e. Some o que chegou — não cria pedido nenhum por baixo."
+                onClick={() => void abrirAvulso()}
+              />
+            )}
           </div>
         )}
 
@@ -184,53 +203,11 @@ export function ReceberMercadoriaPanel({
             onVoltar={() => setEtapa("escolha")}
             onEscolher={(p) => {
               setEscolhido(p);
-              setEtapa(destinoRef.current);
+              void abrirDoPedido(p);
             }}
           />
         )}
-
-        {etapa === "scan" && alvo && (
-          <div className="flex flex-col gap-3">
-            <Voltar onClick={() => setEtapa("escolha")} />
-            <PedidoReceber key={alvo.id} pedido={alvo} onDone={limpar} onSujoChange={setSujo} cega={cega} modoScan />
-          </div>
-        )}
-
-        {etapa === "manual" && alvo && (
-          <div className="flex flex-col gap-3">
-            <Voltar onClick={() => setEtapa("escolha")} />
-            <PedidoReceber key={alvo.id} pedido={alvo} onDone={limpar} onSujoChange={setSujo} cega={cega} />
-          </div>
-        )}
       </Sheet>
-
-      <Modal
-        open={confirmandoSaida}
-        onClose={() => setConfirmandoSaida(false)}
-        title="Sair da conferência?"
-        description="A contagem fica guardada neste aparelho e volta quando você abrir de novo."
-        width="md"
-        footer={
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => setConfirmandoSaida(false)} className="flex-1">
-              Continuar conferindo
-            </Button>
-            <Button
-              onClick={() => {
-                setConfirmandoSaida(false);
-                limpar();
-              }}
-              className="flex-1"
-            >
-              Sair
-            </Button>
-          </div>
-        }
-      >
-        <p className="text-[13px] text-ink-2">
-          Nada entra no estoque até você gerar a entrada — sair agora não move saldo nenhum.
-        </p>
-      </Modal>
     </>
   );
 }

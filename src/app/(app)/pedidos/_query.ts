@@ -4,6 +4,12 @@
 // searchParams e o client monta a URL de volta. Um só vocabulário nos dois
 // lados evita a divergência clássica em que a tela mostra um recorte e o
 // servidor devolve outro.
+//
+// São DOIS recortes, e a separação é a regra do módulo: `status` é o ciclo do
+// pedido (rascunho → enviado → confirmado → parcial → concluído/cancelado);
+// `recebimento` é só uma condição sobre ele — quanto da mercadoria já chegou.
+// Recebimento não é status de pedido: os status da conferência (em
+// conferência, com divergência) pertencem a /recebimento.
 
 export const PO_STATUS_ABERTOS = "abertos";
 
@@ -13,30 +19,34 @@ export const STATUS_ABERTOS = [
   "ENVIADO",
   "AGUARDANDO",
   "EM_TRANSITO",
-  "CONFERENCIA",
   "RECEBIDO_PARCIAL",
 ];
 
 export type PoOrdem = "recentes" | "entrega" | "valor-desc" | "valor-asc" | "numero";
 
+/** Recorte por quanto da mercadoria já entrou. "" = todos. */
+export type PoRecebimento = "" | "sem" | "parcial" | "recebido";
+
+const RECEBIMENTOS: PoRecebimento[] = ["", "sem", "parcial", "recebido"];
+
 export type PoFiltros = {
   q: string;
   supplierId: string;
-  /** "abertos" (padrão) | "" = todos | "saldo" | um status específico */
+  /** "abertos" (padrão) | "" = todos | um status do pedido */
   status: string;
+  /** Condição de recebimento — separada do status por design. */
+  recebimento: PoRecebimento;
   /** dias de criação: "" | "7" | "30" | "90" */
   periodo: string;
   ordem: PoOrdem;
   pagina: number;
 };
 
-/** Recorte especial: parcial cuja pendência ninguém resolveu. */
-export const PO_STATUS_SALDO = "saldo";
-
 export const PO_FILTROS_VAZIO: PoFiltros = {
   q: "",
   supplierId: "",
   status: PO_STATUS_ABERTOS,
+  recebimento: "",
   periodo: "30",
   ordem: "recentes",
   pagina: 1,
@@ -55,6 +65,7 @@ export function filtrosDaUrl(sp: Record<string, string | string[] | undefined>):
   const statusBruto = um("status");
   const periodoBruto = um("periodo");
   const ordemBruta = um("ordem") as PoOrdem;
+  const recBruto = um("recebimento") as PoRecebimento;
 
   return {
     q,
@@ -62,6 +73,7 @@ export function filtrosDaUrl(sp: Record<string, string | string[] | undefined>):
     // Chegou com busca na URL? A pessoa procura UM pedido, que pode muito bem
     // estar concluído — esconder o que ela veio buscar seria a tela mentindo.
     status: statusBruto || (q ? "" : PO_FILTROS_VAZIO.status),
+    recebimento: RECEBIMENTOS.includes(recBruto) ? recBruto : "",
     periodo: periodoBruto || (q ? "" : PO_FILTROS_VAZIO.periodo),
     ordem: ORDENS.includes(ordemBruta) ? ordemBruta : "recentes",
     pagina: Math.max(1, Number(um("pagina")) || 1),
@@ -74,6 +86,7 @@ export function urlDosFiltros(f: PoFiltros): string {
   if (f.q.trim()) q.set("q", f.q.trim());
   if (f.supplierId) q.set("fornecedor", f.supplierId);
   if (f.status !== PO_FILTROS_VAZIO.status) q.set("status", f.status);
+  if (f.recebimento) q.set("recebimento", f.recebimento);
   if (f.periodo !== PO_FILTROS_VAZIO.periodo) q.set("periodo", f.periodo);
   if (f.ordem !== PO_FILTROS_VAZIO.ordem) q.set("ordem", f.ordem);
   if (f.pagina > 1) q.set("pagina", String(f.pagina));
@@ -86,6 +99,7 @@ export function filtrosAtivos(f: PoFiltros): boolean {
     f.q.trim() !== "" ||
     f.supplierId !== "" ||
     f.status !== PO_FILTROS_VAZIO.status ||
+    f.recebimento !== "" ||
     f.periodo !== PO_FILTROS_VAZIO.periodo
   );
 }
@@ -101,10 +115,15 @@ export function filtroDoBanco(f: PoFiltros, opts: { skip: number; take: number }
     status:
       f.status === PO_STATUS_ABERTOS
         ? STATUS_ABERTOS
-        : f.status && f.status !== PO_STATUS_SALDO
-          ? [f.status]
+        : f.status
+          ? // "Confirmado" arrasta o EM_TRANSITO legado junto: a tela mostra os
+            // dois com o mesmo badge, então filtrar por um e esconder o outro
+            // seria a lista contradizendo a coluna Status.
+            f.status === "AGUARDANDO"
+            ? ["AGUARDANDO", "EM_TRANSITO"]
+            : [f.status]
           : undefined,
-    saldoPendente: f.status === PO_STATUS_SALDO,
+    recebimento: f.recebimento || null,
     periodoDias: f.periodo ? Number(f.periodo) : null,
     ordem: f.ordem,
     skip: opts.skip,

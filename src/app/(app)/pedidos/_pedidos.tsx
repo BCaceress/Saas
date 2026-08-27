@@ -33,6 +33,8 @@ import {
   ClipboardCheck,
   History,
   PackageX,
+  FileUp,
+  Receipt,
 } from "lucide-react";
 import { cn, moneyToMask, parseMoney } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
@@ -44,13 +46,11 @@ import {
   atualizarPedidoCompraAction,
   atualizarPrevisaoEntregaPedidoAction,
   enviarPedidoCompraAction,
-  marcarAguardandoPedidoAction,
-  marcarEmTransitoPedidoAction,
-  cancelarPedidoCompraAction,
+  marcarAguardandoPedidoAction,  cancelarPedidoCompraAction,
   excluirPedidoCompraAction,
   adicionarBonificacaoPedidoAction,
 } from "../estoque/actions";
-import { listarEventosPedidoAction } from "./actions";
+import { listarEventosPedidoAction, listarRecebimentosPedidoAction, type RecebimentoDoPedido } from "./actions";
 import { SolicitarSheet, type GrupoEnvio, copiarTexto } from "./_solicitar";
 import { ReenviarSheet } from "./_reenviar";
 import { QrPedidoSheet } from "@/components/app/qr-pedido";
@@ -140,8 +140,11 @@ export type FormOptions = { suppliers: Supplier[]; sites: Site[]; products: Prod
 const supplierLabel = (s: Supplier) => s.nomeFantasia ?? s.razaoSocial;
 
 // ── Drawer de detalhe ─────────────────────────────────────────
-// Edição de rascunho e recebimento são delegados a quem hospeda o
-// drawer (inbox) via `onEditar`/`onReceber`.
+// Edição de rascunho é delegada a quem hospeda o drawer via `onEditar`.
+//
+// Receber mercadoria NÃO é ação daqui. O drawer mostra os recebimentos que o
+// pedido já tem e leva para /recebimento, onde a operação acontece — o pedido
+// não vira recebimento, ele acumula recebimentos.
 
 export function PedidoDrawer({
   pedido,
@@ -149,7 +152,6 @@ export function PedidoDrawer({
   products,
   onClose,
   onEditar,
-  onReceber,
   onStatusChanging,
 }: {
   pedido: PedidoView | null;
@@ -158,7 +160,6 @@ export function PedidoDrawer({
   products: Product[];
   onClose: () => void;
   onEditar?: (p: PedidoView) => void;
-  onReceber?: (p: PedidoView) => void;
   /** Notifica a lista que o status de um pedido está sendo alterado (id) — null quando termina. */
   onStatusChanging?: (id: string | null) => void;
 }) {
@@ -175,6 +176,9 @@ export function PedidoDrawer({
   const [verTimeline, setVerTimeline] = useState(false);
   const [timeline, setTimeline] = useState<EventoPedido[]>([]);
   const [timelineCarregada, setTimelineCarregada] = useState(false);
+  const [recebimentosAbertos, setRecebimentosAbertos] = useState(false);
+  const [recebimentos, setRecebimentos] = useState<RecebimentoDoPedido[]>([]);
+  const [recebimentosCarregados, setRecebimentosCarregados] = useState(false);
   const [isRefreshing, startTransition] = useTransition();
   const pendingIdRef = useRef<string | null>(null);
   const p = pedido;
@@ -199,6 +203,9 @@ export function PedidoDrawer({
     setVerTimeline(false);
     setTimeline([]);
     setTimelineCarregada(false);
+    setRecebimentosAbertos(false);
+    setRecebimentos([]);
+    setRecebimentosCarregados(false);
   }, [pedidoId]);
 
   // Histórico é carregado só quando aberto — a maioria das visitas ao drawer
@@ -212,6 +219,19 @@ export function PedidoDrawer({
       })
       .catch(() => setTimelineCarregada(true));
   }, [pedidoId, verTimeline, timelineCarregada]);
+
+  // Um pedido pode ter vários recebimentos parciais — cada `Purchase` da
+  // conferência é um. Lazy pelo mesmo motivo da timeline: a maioria abre o
+  // drawer só para olhar status, não a lista de entradas.
+  useEffect(() => {
+    if (!pedidoId || !recebimentosAbertos || recebimentosCarregados) return;
+    listarRecebimentosPedidoAction(pedidoId)
+      .then((r) => {
+        setRecebimentos(r);
+        setRecebimentosCarregados(true);
+      })
+      .catch(() => setRecebimentosCarregados(true));
+  }, [pedidoId, recebimentosAbertos, recebimentosCarregados]);
 
   // Some visível até o refresh (RSC) aplicar o novo status — não só a
   // resposta da action — porque a lista lê os dados do server.
@@ -327,18 +347,6 @@ export function PedidoDrawer({
       );
       botoes.push(
         <AcaoBtn
-          key="transito"
-          tone="secondary"
-          icon={Truck}
-          label="Marcar em trânsito"
-          tooltip="A mercadoria já está a caminho"
-          loading={pending === "transito"}
-          disabled={pending !== null}
-          onClick={() => run("transito", () => marcarEmTransitoPedidoAction(p.id))}
-        />,
-      );
-      botoes.push(
-        <AcaoBtn
           key="cancelar"
           tone="danger"
           icon={CircleX}
@@ -349,26 +357,8 @@ export function PedidoDrawer({
           onClick={() => run("cancelar", () => cancelarPedidoCompraAction(p.id))}
         />,
       );
-    } else if (p.status === "AGUARDANDO" || p.status === "EM_TRANSITO" || p.status === "CONFERENCIA") {
-      if (onReceber) {
-        botoes.push(
-          <AcaoBtn key="receber" tone="primary" icon={PackageCheck} label="Receber mercadoria" tooltip="Conferir os itens recebidos e gerar a entrada no estoque" onClick={() => onReceber(p)} />,
-        );
-      }
-      if (p.status === "AGUARDANDO") {
-        botoes.push(
-          <AcaoBtn
-            key="transito"
-            tone="secondary"
-            icon={Truck}
-            label="Marcar em trânsito"
-            tooltip="A mercadoria já está a caminho"
-            loading={pending === "transito"}
-            disabled={pending !== null}
-            onClick={() => run("transito", () => marcarEmTransitoPedidoAction(p.id))}
-          />,
-        );
-      }
+    } else if (p.status === "AGUARDANDO" || p.status === "EM_TRANSITO") {
+      botoes.push(<IrParaRecebimentos key="rec" pedido={p} />);
       botoes.push(
         <AcaoBtn
           key="cancelar"
@@ -382,11 +372,7 @@ export function PedidoDrawer({
         />,
       );
     } else if (p.status === "RECEBIDO_PARCIAL") {
-      if (onReceber) {
-        botoes.push(
-          <AcaoBtn key="conferir" tone="primary" icon={PackageCheck} label="Conferir recebimento" tooltip="Lançar o restante da mercadoria recebida" onClick={() => onReceber(p)} />,
-        );
-      }
+      botoes.push(<IrParaRecebimentos key="rec" pedido={p} />);
       // Sem esta saída o pedido parcial fica aberto para sempre: ninguém sabe
       // se o resto vem, e a reposição segue contando mercadoria que não chega.
       botoes.push(
@@ -554,6 +540,92 @@ export function PedidoDrawer({
                 <p className="rounded-lg border border-dashed border-line px-3 py-3 text-center text-xs text-muted">
                   Nenhuma bonificação neste pedido ainda.
                 </p>
+              )}
+            </ItemSection>
+          )}
+
+          {/* Recebimentos — o que efetivamente chegou (pode ser mais de um,
+              em recebimentos parciais). Separado da timeline: aqui é "o que
+              chegou", lá é "como chegou aqui". */}
+          {p.status !== "RASCUNHO" && (
+            <ItemSection
+              icon={PackageCheck}
+              titulo="Recebimentos"
+              resumo={recebimentosCarregados ? `${recebimentos.length}` : recebimentosAbertos ? "" : "ver"}
+              aberto={recebimentosAbertos}
+              onToggle={() => setRecebimentosAbertos((v) => !v)}
+              acao={
+                /* Importar XML abre uma ENTRADA de mercadoria — é a operação
+                   de recebimento, e ela mora em /recebimento. Aqui vira só o
+                   caminho até lá. */
+                !p.temNota && p.status !== "CANCELADO" ? (
+                  <Link
+                    href={`/recebimento?q=${encodeURIComponent(p.numero)}&periodo=`}
+                    className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-semibold text-ink hover:bg-surface-2"
+                  >
+                    <FileUp size={12} /> Receber em Recebimentos
+                  </Link>
+                ) : null
+              }
+            >
+              {!recebimentosCarregados ? (
+                <p className="rounded-lg border border-dashed border-line px-3 py-3 text-center text-xs text-muted">
+                  Carregando…
+                </p>
+              ) : recebimentos.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-line px-3 py-3 text-center text-xs text-muted">
+                  Nenhum recebimento ainda. A mercadoria entra no estoque quando um
+                  recebimento é finalizado — o pedido sozinho não move saldo.
+                </p>
+              ) : (
+                <ul className="divide-y divide-line rounded-xl border border-line">
+                  {recebimentos.map((r) => (
+                    <li key={r.id} className={cn(r.estornado && "opacity-60")}>
+                      <Link
+                        href={r.href}
+                        className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 text-[13px] transition-colors hover:bg-surface-2"
+                      >
+                        <span className="font-mono text-[11px] text-faint">{r.numero}</span>
+                        <span className="text-muted">
+                          {new Date(r.data).toLocaleDateString("pt-BR")}
+                        </span>
+                        <span className="tabular-nums text-ink-2">
+                          {fmtQtd(r.recebido)}/{fmtQtd(r.esperado)}
+                        </span>
+                        <span className="font-semibold tabular-nums text-ink">{fmtMoney(r.valor)}</span>
+                        {r.temNota ? (
+                          <span className="inline-flex items-center gap-1 font-mono text-[11px] text-muted">
+                            <Receipt size={11} /> {r.numeroNota}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-faint">Sem NF-e</span>
+                        )}
+                        <span
+                          className={cn(
+                            "ml-auto rounded-full px-2 py-0.5 text-[11px] font-medium",
+                            r.estornado
+                              ? "bg-danger-soft text-danger"
+                              : r.status === "FINALIZADO"
+                                ? "bg-ok-soft text-ok"
+                                : r.status === "CANCELADO"
+                                  ? "bg-surface-2 text-muted"
+                                  : "bg-brand-soft text-brand",
+                          )}
+                        >
+                          {r.estornado
+                            ? "Estornado"
+                            : r.status === "FINALIZADO"
+                              ? "Finalizado"
+                              : r.status === "CANCELADO"
+                                ? "Cancelado"
+                                : r.status === "DIVERGENCIA"
+                                  ? "Com divergência"
+                                  : "Em conferência"}
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
               )}
             </ItemSection>
           )}
@@ -1230,7 +1302,7 @@ export function PedidoFormSheet({
 // global, só leitura de PedidoView. Mantidos fora do componente porque
 // não fecham sobre nada além dos props recebidos.
 
-type StepKey = "criado" | "enviado" | "confirmado" | "transito" | "conferencia" | "recebido";
+type StepKey = "criado" | "enviado" | "confirmado" | "conferencia" | "recebido";
 
 type PedidoStep = {
   key: StepKey;
@@ -1247,8 +1319,9 @@ const ORDEM_STATUS: Record<string, number> = {
   RASCUNHO: 0,
   ENVIADO: 1,
   AGUARDANDO: 2,
-  EM_TRANSITO: 3,
-  CONFERENCIA: 4,
+  // Legado: pedidos gravados antes de "em trânsito" sair do vocabulário do
+  // pedido. O estado real deles é o mesmo de Confirmado.
+  EM_TRANSITO: 2,
   RECEBIDO_PARCIAL: 5,
   RECEBIDO: 6,
   CANCELADO: -1,
@@ -1261,7 +1334,8 @@ function pedidoSteps(p: PedidoView): PedidoStep[] {
     { key: "criado", label: "Pedido criado", icon: FilePenLine, quando: p.createdAt, limiar: 0 },
     { key: "enviado", label: "Enviado", icon: Send, quando: p.enviadoEm, limiar: 1 },
     { key: "confirmado", label: "Confirmado", icon: CircleCheck, quando: p.confirmadoEm, limiar: 2 },
-    { key: "transito", label: "Em trânsito", icon: Truck, quando: p.emTransitoEm, limiar: 3 },
+    // "Em trânsito" saiu: descrevia a entrega, não o pedido — e a entrega é
+    // assunto do recebimento. A etapa seguinte a Confirmado é a conferência.
     { key: "conferencia", label: "Conferência", icon: ClipboardCheck, quando: null, limiar: 4 },
     { key: "recebido", label: "Recebido", icon: PackageCheck, quando: p.recebidoEm, limiar: 6 },
   ];
@@ -1290,10 +1364,8 @@ function stepDetalhe(step: PedidoStep, p: PedidoView): string {
         return "Aguardando envio ao fornecedor.";
       case "confirmado":
         return "Aguardando confirmação do fornecedor.";
-      case "transito":
-        return "Aguardando início do transporte.";
       case "conferencia":
-        return "Aguardando o XML da nota para conciliar com o pedido.";
+        return "A mercadoria é conferida em Compras › Recebimentos.";
       case "recebido":
         return p.status === "RECEBIDO_PARCIAL"
           ? "Recebimento parcial registrado — aguardando o restante da mercadoria."
@@ -1316,13 +1388,15 @@ function assistenteMensagem(p: PedidoView, etapaAtual: PedidoStep | undefined): 
   if (p.status === "RECEBIDO") {
     return { icon: CircleCheck, tom: "ok", texto: "Pedido concluído — mercadoria lançada no estoque." };
   }
+  const conferencia =
+    "Quando a mercadoria chegar, a conferência acontece em Compras › Recebimentos — confirmado não significa recebido.";
   const textos: Record<string, string> = {
     RASCUNHO: "Pedido em rascunho. Envie ao fornecedor quando estiver pronto, usando “Enviar pedido”.",
     ENVIADO: "Pedido enviado ao fornecedor. Assim que ele confirmar o recebimento do pedido, marque como “Confirmado”.",
-    AGUARDANDO: "Pedido confirmado. A próxima etapa será marcar este pedido como “Em trânsito” quando o fornecedor informar o envio.",
-    EM_TRANSITO: "Pedido em trânsito. Quando a mercadoria chegar, utilize “Receber mercadoria” para conferir os itens e gerar a entrada no estoque.",
-    CONFERENCIA: "Nota fiscal conciliada com o pedido. Confira a mercadoria na porta para dar entrada no estoque.",
-    RECEBIDO_PARCIAL: "Recebimento parcial registrado. Utilize “Conferir recebimento” para lançar o restante assim que chegar.",
+    AGUARDANDO: `Pedido confirmado pelo fornecedor. ${conferencia}`,
+    EM_TRANSITO: `Pedido confirmado pelo fornecedor. ${conferencia}`,
+    RECEBIDO_PARCIAL:
+      "Parte da mercadoria já entrou. O restante é lançado por um novo recebimento em Compras › Recebimentos, ou você resolve o saldo aqui.",
   };
   return { icon: etapaAtual?.icon ?? Sparkles, tom: "brand", texto: textos[p.status] ?? "Acompanhe o andamento do pedido pela linha do tempo." };
 }
@@ -1622,6 +1696,27 @@ function TabelaItens({ itens, bonus = false }: { itens: ItemView[]; bonus?: bool
 }
 
 /** Botão de ação do rodapé fixo — ícone + cor coerente com o tom + tooltip nativo. */
+/**
+ * A ponte entre as duas telas. Navega, não executa: quem decide se abre um
+ * recebimento novo ou continua um já aberto é /recebimento, que enxerga a
+ * fila inteira — daqui, um "iniciar" cego criaria uma segunda conferência do
+ * mesmo caminhão sem ninguém notar.
+ *
+ * A busca pelo número do pedido é o recorte: um pedido pode ter vários
+ * recebimentos, então o destino é a lista deles, não um deles.
+ */
+function IrParaRecebimentos({ pedido: p }: { pedido: PedidoView }) {
+  return (
+    <Link
+      href={`/recebimento?q=${encodeURIComponent(p.numero)}&periodo=`}
+      title="Abre a tela de Recebimentos com este pedido no recorte"
+      className="flex cursor-pointer items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+    >
+      <PackageCheck size={14} /> Ver recebimentos
+    </Link>
+  );
+}
+
 function AcaoBtn({
   icon: Icon,
   label,

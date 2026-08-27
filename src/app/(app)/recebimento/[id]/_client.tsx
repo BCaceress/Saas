@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   ArrowRightLeft,
+  CircleX,
   Check,
   CheckCheck,
   ClipboardCheck,
@@ -15,6 +16,9 @@ import {
   Link2,
   Loader2,
   PackageOpen,
+  PackagePlus,
+  Plus,
+  Trash2,
   ScanLine,
   Search,
   Send,
@@ -45,7 +49,8 @@ import {
   aceitarCustoAction,
   devolverDivergenciaAction,
   resumoDivergenciasAction,
-  confirmarEntradaAction,
+  finalizarRecebimentoAction,
+  cancelarRecebimentoAction,
   conferirItemAction,
   conferirTudoAction,
   criarPedidoDaNotaAction,
@@ -54,7 +59,14 @@ import {
   resolverDivergenciaAction,
   restaurarContagemAction,
   vincularPedidoAction,
+  adicionarItemAction,
+  removerItemAction,
 } from "../conferencia-actions";
+import {
+  buscarProdutosRecebimentoAction,
+  buscarProdutoPorCodigoAction,
+  type ProdutoRecebimento,
+} from "../../pedidos/actions";
 import type { LinhaRecebimento, RecebimentoView, SubcategoriaCadastro } from "../_data";
 import type { ReconciliationStatus } from "@/generated/prisma";
 
@@ -155,11 +167,13 @@ export function RecebimentoClient({
   subcategorias: SubcategoriaCadastro[];
 }) {
   // Três portas, uma tela: com pedido é conciliação, sem pedido é a nota
-  // contra a contagem. O que ainda não escolheu porta fica na escolha.
-  if (!dados.pedido && !dados.semPedido) {
+  // contra a contagem. Só o XML tem porta a escolher — quem clicou "Iniciar
+  // recebimento" num pedido já entra conferindo, e o avulso também.
+  if (dados.escolherPorta && dados.nota) {
     return (
       <EscolherPedido
         dados={dados}
+        nota={dados.nota}
         podeReceber={podeReceber}
         podeTratarNota={podeTratarNota}
         podeCriarProduto={podeCriarProduto}
@@ -183,19 +197,22 @@ export function RecebimentoClient({
 
 function EscolherPedido({
   dados,
+  nota,
   podeReceber,
   podeTratarNota,
   podeCriarProduto,
   subcategorias,
 }: {
   dados: RecebimentoView;
+  /** Esta etapa só existe com nota — é ela que está sendo decidida aqui. */
+  nota: NonNullable<RecebimentoView["nota"]>;
   podeReceber: boolean;
   podeTratarNota: boolean;
   podeCriarProduto: boolean;
   subcategorias: SubcategoriaCadastro[];
 }) {
   const router = useRouter();
-  const { nota, sugestoes, itensNota } = dados;
+  const { sugestoes, itensNota } = dados;
   const [salvando, setSalvando] = React.useState<string | null>(null);
 
   const semProduto = itensNota.filter((i) => !i.productId);
@@ -287,7 +304,7 @@ function EscolherPedido({
 
   return (
     <div className="flex min-h-full flex-col gap-5">
-      <Cabecalho nota={nota} pedidoNumero={null} />
+      <Cabecalho recebimento={dados.recebimento} nota={nota} pedidoNumero={null} />
 
       <Trilho etapa={podeAvancar ? 2 : 1} />
 
@@ -699,10 +716,15 @@ function Conferencia({
   subcategorias: SubcategoriaCadastro[];
 }) {
   const router = useRouter();
-  const { nota, pedido, semPedido, resumo, timeline } = dados;
-  // Nota já recebida e pessoa que não recebe mercadoria dão no mesmo lugar:
+  const { recebimento, nota, pedido, semPedido, resumo, timeline } = dados;
+  // Recebimento fechado e pessoa que não recebe mercadoria dão no mesmo lugar:
   // a conferência é só leitura. Contar caixa é decisão de quem está na doca.
-  const encerrada = nota.status === "RECEBIDO" || !podeReceber;
+  const encerrada =
+    recebimento.status === "FINALIZADO" ||
+    recebimento.status === "CANCELADO" ||
+    !podeReceber;
+  /** Uma frase para o que não bateu — pedida uma vez, no fechamento. */
+  const [motivoDivergencia, setMotivoDivergencia] = React.useState("");
 
   // Cópia local para o bipe e os campos responderem na hora; o servidor é a
   // verdade e o refresh reconcilia.
@@ -720,11 +742,22 @@ function Conferencia({
   const [filtro, setFiltro] = React.useState<Filtro>("TODOS");
   const [camera, setCamera] = React.useState(false);
   const [confirmando, setConfirmando] = React.useState(false);
+  const [cancelando, setCancelando] = React.useState(false);
+  const [motivoCancelamento, setMotivoCancelamento] = React.useState("");
   const [enviando, setEnviando] = React.useState(false);
   const [verTimeline, setVerTimeline] = React.useState(false);
   /** Os itens que já fecharam ficam dobrados até alguém querer reler. */
   const [verFechados, setVerFechados] = React.useState(false);
   const [relacionar, setRelacionar] = React.useState<ItemDeNota | null>(null);
+  /**
+   * Item que ninguém esperava. É o único caminho de entrada do recebimento
+   * AVULSO (que nasce sem linha nenhuma) e a resposta ao "veio uma caixa a
+   * mais" nos outros dois — o excedente vira linha visível em vez de sumir
+   * num ajuste de estoque sem dono.
+   */
+  const [adicionando, setAdicionando] = React.useState<
+    { produto: ProdutoRecebimento; packagingId: string | null } | true | null
+  >(null);
   /** Última linha bipada — pisca para dizer ONDE o número entrou. */
   const [piscando, setPiscando] = React.useState<string | null>(null);
   /**
@@ -759,6 +792,22 @@ function Conferencia({
   /** Tudo que ainda espera uma decisão da pessoa antes de receber. */
   const pendencias = divergentes.length + resumo.produtosNovos;
 
+  /**
+   * Linhas contadas diferente do esperado e ainda sem explicação — mesma régua
+   * que o servidor aplica ao fechar. Uma frase resolve o recebimento inteiro:
+   * pedir justificativa item a item para uma carga que veio pela metade é o
+   * tipo de formulário que faz o operador desistir e lançar tudo à mão.
+   */
+  const esperadoDe = (l: LinhaRecebimento) => l.qtdFaturada || l.qtdPedida;
+  const naoExplicadas = linhas.filter(
+    (l) =>
+      !l.motivoDivergencia &&
+      l.resolucao !== "ACEITO" &&
+      l.resolucao !== "IGNORADO" &&
+      Math.abs((l.qtdRecebida ?? esperadoDe(l)) - esperadoDe(l)) > 0.001,
+  );
+  const precisaMotivo = naoExplicadas.length > 0;
+
   // Um índice de código → item, com o fator de cada embalagem: bipar a caixa
   // soma 12, bipar a unidade soma 1. É a diferença entre conferir um fardo e
   // digitar doze vezes.
@@ -786,7 +835,7 @@ function Conferencia({
           Object.fromEntries(Object.entries(s).filter(([id]) => id !== linhaId)),
         );
       try {
-        await conferirItemAction({ inboundId: nota.id, itemId: linhaId, ...dadosItem });
+        await conferirItemAction({ receiptId: recebimento.id, itemId: linhaId, ...dadosItem });
         setSalvandoLinha((s) => ({ ...s, [linhaId]: "salvo" }));
         timersRef.current[linhaId] = setTimeout(limpar, 1800);
       } catch (e) {
@@ -795,7 +844,7 @@ function Conferencia({
         router.refresh();
       }
     },
-    [nota.id, router],
+    [recebimento.id, router],
   );
 
   const aplicarLocal = React.useCallback(
@@ -809,7 +858,15 @@ function Conferencia({
       if (encerrada) return;
       const achado = porCodigo.get(codigo) ?? porCodigo.get(codigo.toLowerCase());
       if (!achado) {
-        toast.error("Fora desta nota", `O código ${codigo} não está entre os itens.`);
+        // Fornecedor mandar item a mais é rotina. Em vez de dizer "não está
+        // aqui" e morrer, a tela procura o produto no catálogo e abre a linha.
+        void buscarProdutoPorCodigoAction(codigo).then((r) => {
+          if (!r) {
+            toast.error("Código desconhecido", `${codigo} não está neste recebimento nem no catálogo.`);
+            return;
+          }
+          setAdicionando({ produto: r.produto, packagingId: r.packagingId });
+        });
         return;
       }
       const atual = achado.linha.qtdRecebida ?? 0;
@@ -848,7 +905,7 @@ function Conferencia({
     // linhas já contadas, que o "conferi tudo" sobrescreve.
     const antes = linhas.map((l) => ({ itemId: l.id, qtdRecebida: l.qtdRecebida }));
     try {
-      await conferirTudoAction(nota.id);
+      await conferirTudoAction(recebimento.id);
       setLinhas((prev) => prev.map((l) => ({ ...l, qtdRecebida: l.qtdFaturada })));
       toast.success(
         "Tudo conferido conforme a nota.",
@@ -865,7 +922,7 @@ function Conferencia({
     antes: { itemId: string; qtdRecebida: number | null }[],
   ) {
     try {
-      await restaurarContagemAction({ inboundId: nota.id, itens: antes });
+      await restaurarContagemAction({ receiptId: recebimento.id, itens: antes });
       setLinhas((prev) =>
         prev.map((l) => ({
           ...l,
@@ -882,12 +939,17 @@ function Conferencia({
   async function confirmarEntrada() {
     setEnviando(true);
     try {
-      await confirmarEntradaAction(nota.id);
+      const r = await finalizarRecebimentoAction({
+        receiptId: recebimento.id,
+        motivoDivergencia: motivoDivergencia.trim() || null,
+      });
       toast.success(
-        "Entrada registrada.",
-        semPedido
-          ? "Estoque e custo médio atualizados — a NF-e é o documento desta compra."
-          : "Estoque, custo médio e pedido já foram atualizados.",
+        `Recebimento ${r.numero} finalizado.`,
+        pedido
+          ? r.pedidoCompleto
+            ? `Estoque atualizado. Pedido ${pedido.numero} recebido por completo.`
+            : `Estoque atualizado. Pedido ${pedido.numero} segue aberto para o que falta.`
+          : "Estoque e custo médio atualizados.",
       );
       setConfirmando(false);
       router.refresh();
@@ -897,9 +959,37 @@ function Conferencia({
     }
   }
 
+  /**
+   * Conferência abandonada — o caminhão foi embora, o pedido estava errado.
+   *
+   * Não apaga nada: o recebimento fica CANCELADO com o motivo. Some do caminho
+   * por status, não por DELETE, e o pedido volta a aparecer em "aguardando
+   * recebimento" com o saldo intacto.
+   */
+  async function cancelar() {
+    setEnviando(true);
+    try {
+      await cancelarRecebimentoAction({
+        receiptId: recebimento.id,
+        motivo: motivoCancelamento.trim(),
+      });
+      toast.info(
+        `Recebimento ${recebimento.numero} cancelado.`,
+        "Nada entrou no estoque. O pedido continua aberto.",
+      );
+      setCancelando(false);
+      router.refresh();
+    } catch (e) {
+      toast.error("Não deu para cancelar", e instanceof Error ? e.message : "Tente de novo.");
+    } finally {
+      setEnviando(false);
+    }
+  }
+
   async function desvincular() {
     try {
-      await desvincularPedidoAction(nota.id);
+      if (!nota) return;
+      await desvincularPedidoAction({ receiptId: recebimento.id, inboundId: nota.id });
       toast.info(
         semPedido ? "Conferência cancelada." : "Vínculo desfeito.",
         "Escolha de novo como receber esta nota.",
@@ -963,15 +1053,17 @@ function Conferencia({
       )}
 
       <Cabecalho
+        recebimento={recebimento}
         nota={nota}
         pedidoNumero={pedido?.numero ?? null}
         semPedido={semPedido}
-        onDesvincular={encerrada ? undefined : desvincular}
+        onDesvincular={encerrada || !nota ? undefined : desvincular}
+        onCancelar={encerrada ? undefined : () => setCancelando(true)}
       />
 
       {!encerrada && <Trilho etapa={3} />}
 
-      {podeTratarNota && (
+      {podeTratarNota && nota && (
         <PainelNota
           nota={nota}
           faltamRelacionar={resumo.produtosNovos}
@@ -991,7 +1083,7 @@ function Conferencia({
           sub={semPedido ? "linhas da nota" : "linhas conciliadas"}
         />
         <Metrica
-          label="Valor da NF"
+          label={nota ? "Valor da NF" : "Valor esperado"}
           valor={fmtMoney(resumo.valorNota)}
           sub={
             semPedido
@@ -1008,7 +1100,7 @@ function Conferencia({
           sub={
             conferidos === linhas.length
               ? "tudo conferido"
-              : `${linhas.length - conferidos} ${linhas.length - conferidos === 1 ? "item entra" : "itens entram"} como está na nota`
+              : `${linhas.length - conferidos} ${linhas.length - conferidos === 1 ? "item entra" : "itens entram"} como esperado`
           }
           icon={<PackageOpen size={13} />}
         />
@@ -1039,7 +1131,8 @@ function Conferencia({
           mundo ser contado. */}
       {divergentes.length > 0 && (!cega || conferidos === linhas.length) && (
         <PainelDivergencias
-          inboundId={nota.id}
+          receiptId={recebimento.id}
+          inboundId={nota?.id ?? null}
           linhas={divergentes}
           bloqueado={encerrada}
           onRelacionar={(l) => setRelacionar(paraRelacionar(l))}
@@ -1055,10 +1148,15 @@ function Conferencia({
       )}
 
       {encerrada ? (
-        nota.status === "RECEBIDO" ? (
+        recebimento.status === "FINALIZADO" ? (
           <p className="rounded-[var(--radius)] bg-ok-soft px-4 py-3 text-[13px] text-ok">
-            Esta nota já deu entrada no estoque. A conferência está encerrada — o histórico
-            abaixo mostra como ela foi feita.
+            Recebimento {recebimento.numero} finalizado — a mercadoria já entrou no estoque. O
+            histórico abaixo mostra como a conferência foi feita.
+          </p>
+        ) : recebimento.status === "CANCELADO" ? (
+          <p className="rounded-[var(--radius)] bg-surface-2 px-4 py-3 text-[13px] text-muted">
+            Recebimento cancelado{recebimento.canceladoMotivo ? `: ${recebimento.canceladoMotivo}` : "."}{" "}
+            Nada entrou no estoque.
           </p>
         ) : (
           <p className="rounded-[var(--radius)] bg-surface-2 px-4 py-3 text-[13px] text-muted">
@@ -1089,10 +1187,17 @@ function Conferencia({
               <ScanLine className="h-4 w-4" aria-hidden />
               Bipar
             </Button>
-            {!cega && (
+            <Button variant="secondary" onClick={() => setAdicionando(true)}>
+              <Plus className="h-4 w-4" aria-hidden />
+              <span className="hidden sm:inline">Adicionar item</span>
+              <span className="sm:hidden">Item</span>
+            </Button>
+            {!cega && linhas.length > 0 && (
               <Button variant="secondary" onClick={() => void conferirTudo()}>
                 <CheckCheck className="h-4 w-4" aria-hidden />
-                <span className="hidden sm:inline">Conferi tudo conforme a nota</span>
+                <span className="hidden sm:inline">
+                  Conferi tudo conforme {nota ? "a nota" : "o esperado"}
+                </span>
                 <span className="sm:hidden">Conferi tudo</span>
               </Button>
             )}
@@ -1133,6 +1238,31 @@ function Conferencia({
           Sem isso, três divergências ficavam perdidas no meio de dezesseis
           linhas idênticas que ninguém precisava reler. Agrupa só quando não há
           filtro nem busca — ali a lista já é o recorte que a pessoa pediu. */}
+      {linhas.length === 0 && (
+        <div className="flex flex-col items-center gap-2 rounded-[var(--radius-lg)] border border-dashed border-line bg-surface px-6 py-12 text-center">
+          <span className="grid h-11 w-11 place-items-center rounded-full bg-surface-2 text-muted">
+            <PackagePlus size={20} aria-hidden />
+          </span>
+          <p className="text-sm font-medium text-ink">Nada conferido ainda</p>
+          <p className="max-w-sm text-[13px] text-muted">
+            Este recebimento não tem pedido nem nota por trás. Bipe ou busque cada produto que
+            chegou — nada entra no estoque até você finalizar.
+          </p>
+          {!encerrada && (
+            <div className="mt-1 flex gap-2">
+              <Button variant="secondary" onClick={() => setCamera(true)}>
+                <ScanLine className="h-4 w-4" aria-hidden />
+                Bipar
+              </Button>
+              <Button onClick={() => setAdicionando(true)}>
+                <Plus className="h-4 w-4" aria-hidden />
+                Adicionar item
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
       <ul className="space-y-2">
         {emAberto.map((l) => (
           <ItemCard
@@ -1151,6 +1281,22 @@ function Conferencia({
               void salvar(l.id, patch);
             }}
             onRelacionar={() => setRelacionar(paraRelacionar(l))}
+            onRemover={
+              // Só a linha que ninguém esperava sai da lista. A do pedido ou da
+              // nota se zera — apagar esconderia a falta em vez de mostrá-la.
+              l.avulsa && !encerrada
+                ? () => {
+                    void removerItemAction({ receiptId: recebimento.id, itemId: l.id })
+                      .then(() => router.refresh())
+                      .catch((e: unknown) =>
+                        toast.error(
+                          "Não deu para remover",
+                          e instanceof Error ? e.message : "Tente de novo.",
+                        ),
+                      );
+                  }
+                : undefined
+            }
           />
         ))}
       </ul>
@@ -1320,7 +1466,11 @@ function Conferencia({
             <Button variant="secondary" onClick={() => setConfirmando(false)} className="flex-1">
               Voltar
             </Button>
-            <Button onClick={() => void confirmarEntrada()} disabled={enviando} className="flex-1">
+            <Button
+              onClick={() => void confirmarEntrada()}
+              disabled={enviando || (precisaMotivo && motivoDivergencia.trim().length < 3)}
+              className="flex-1"
+            >
               {enviando && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
               Confirmar
             </Button>
@@ -1343,11 +1493,83 @@ function Conferencia({
             <p className="rounded-[var(--radius)] bg-danger-soft px-3 py-2 text-danger">
               {divergentes.length}{" "}
               {divergentes.length === 1 ? "divergência segue aberta" : "divergências seguem abertas"}.
-              Elas ficam registradas no histórico {semPedido ? "desta nota" : "do pedido"}.
+              Elas ficam registradas no histórico deste recebimento.
             </p>
+          )}
+
+          {/* Uma frase, uma vez. Sem ela, a diferença vira daqui a três meses a
+              palavra do estoquista contra a do fornecedor. */}
+          {precisaMotivo && (
+            <label className="block">
+              <span className="mb-1 block text-[13px] font-medium text-ink">
+                O que aconteceu com {naoExplicadas.length === 1 ? "a linha" : "as"}{" "}
+                {naoExplicadas.length === 1 ? "que não bateu" : `${naoExplicadas.length} linhas que não bateram`}?
+              </span>
+              <textarea
+                value={motivoDivergencia}
+                onChange={(e) => setMotivoDivergencia(e.target.value)}
+                rows={2}
+                placeholder="Ex.: veio só metade da carga, o resto o motorista traz amanhã."
+                className="w-full rounded-[var(--radius)] border border-line-button bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
+              />
+              <span className="mt-1 block text-[12px] text-muted">
+                Fica na história do recebimento e do pedido.
+              </span>
+            </label>
           )}
         </div>
       </Sheet>
+
+      <Sheet
+        open={cancelando}
+        onClose={() => setCancelando(false)}
+        title="Cancelar recebimento"
+        description="A conferência é encerrada sem mover estoque. O pedido continua aberto, com o saldo intacto."
+        width="sm"
+        footer={
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => setCancelando(false)} className="flex-1">
+              Voltar
+            </Button>
+            <Button
+              onClick={() => void cancelar()}
+              disabled={enviando || motivoCancelamento.trim().length < 3}
+              className="flex-1"
+            >
+              {enviando && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+              Cancelar recebimento
+            </Button>
+          </div>
+        }
+      >
+        <label className="block">
+          <span className="mb-1 block text-[13px] font-medium text-ink">
+            Por que esta conferência não vai continuar?
+          </span>
+          <textarea
+            value={motivoCancelamento}
+            onChange={(e) => setMotivoCancelamento(e.target.value)}
+            rows={2}
+            placeholder="Ex.: carga era de outra loja, o motorista levou de volta."
+            className="w-full rounded-[var(--radius)] border border-line-button bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
+          />
+          <span className="mt-1 block text-[12px] text-muted">
+            Fica no histórico. Nada é apagado.
+          </span>
+        </label>
+      </Sheet>
+
+      {adicionando && !encerrada && (
+        <AdicionarItem
+          receiptId={recebimento.id}
+          inicial={adicionando === true ? null : adicionando}
+          onClose={() => setAdicionando(null)}
+          onPronto={() => {
+            setAdicionando(null);
+            router.refresh();
+          }}
+        />
+      )}
 
       {relacionar && (
         <RelacionarProduto
@@ -1462,16 +1684,22 @@ function MedidorRodape({
 // ── Cabeçalho ───────────────────────────────────────────────
 
 function Cabecalho({
+  recebimento,
   nota,
   pedidoNumero,
   semPedido,
   onDesvincular,
+  onCancelar,
 }: {
+  recebimento: RecebimentoView["recebimento"];
+  /** Nulo é caso normal: recebimento de pedido sem XML, ou avulso. */
   nota: RecebimentoView["nota"];
   pedidoNumero: string | null;
   /** Conferência aberta sem pedido — o rótulo do voltar muda com isso. */
   semPedido?: boolean;
   onDesvincular?: () => void;
+  /** Abandonar a conferência sem mover estoque. */
+  onCancelar?: () => void;
 }) {
   return (
     <div className="flex flex-wrap items-start gap-3">
@@ -1487,18 +1715,26 @@ function Cabecalho({
           o que o operador procura na tela cheia de notas; "Recebimento
           inteligente" é onde ele está, não o que ele está olhando. */}
       <div className="min-w-0 flex-1">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-faint">
-          Recebimento inteligente
+        <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
+          <span className="font-mono">{recebimento.numero}</span>
+          <span aria-hidden>·</span>
+          <span>Recebimento</span>
         </p>
         <h1 className="truncate font-display text-[20px] font-semibold text-ink">
-          {nota.fornecedor}
+          {recebimento.supplierNome ?? "Sem fornecedor"}
         </h1>
         <p className="truncate text-[13px] text-muted">
-          <span className="font-mono">
-            NF {nota.numero}/{nota.serie}
-          </span>
+          {nota ? (
+            <span className="font-mono">
+              NF {nota.numero}/{nota.serie}
+            </span>
+          ) : recebimento.numeroNota ? (
+            <span className="font-mono">NF {recebimento.numeroNota} (sem XML)</span>
+          ) : (
+            <span>Sem nota fiscal</span>
+          )}
           {" · "}
-          {nota.siteNome}
+          {recebimento.siteNome}
           {pedidoNumero && (
             <>
               {" · pedido "}
@@ -1511,12 +1747,22 @@ function Cabecalho({
             Sem pedido — a nota é a referência do que deveria vir.
           </p>
         )}
-        {nota.vinculoAutomatico && pedidoNumero && (
+        {!nota && !pedidoNumero && (
+          <p className="mt-1 text-[12px] text-muted">
+            Recebimento avulso — sem pedido e sem nota. Some o que chegou.
+          </p>
+        )}
+        {!nota && pedidoNumero && (
+          <p className="mt-1 text-[12px] text-muted">
+            Sem XML por enquanto. Você pode receber assim e vincular a NF-e quando ela chegar.
+          </p>
+        )}
+        {nota?.vinculoAutomatico && pedidoNumero && (
           <p className="mt-1 text-[12px] text-brand">
             Pedido {pedidoNumero} encontrado automaticamente pela nota.
           </p>
         )}
-        {nota.duplicatas.length > 0 && (
+        {nota && nota.duplicatas.length > 0 && (
           <p className="mt-1 text-[12px] text-muted">
             {nota.duplicatas.length === 1 ? "Vencimento" : `${nota.duplicatas.length} parcelas`}:{" "}
             {nota.duplicatas
@@ -1530,12 +1776,14 @@ function Cabecalho({
       </div>
 
       <div className="flex shrink-0 items-start gap-3">
-        <p className="text-right">
-          <span className="block font-mono text-[20px] font-semibold text-ink">
-            {fmtMoney(nota.valorTotal)}
-          </span>
-          <span className="block text-[11px] text-faint">total da nota</span>
-        </p>
+        {nota && (
+          <p className="text-right">
+            <span className="block font-mono text-[20px] font-semibold text-ink">
+              {fmtMoney(nota.valorTotal)}
+            </span>
+            <span className="block text-[11px] text-faint">total da nota</span>
+          </p>
+        )}
 
         {/* O que não é a decisão da vez sai do caminho. Baixar o XML e trocar
             a forma de receber são coisas que se faz uma vez por nota — não
@@ -1551,7 +1799,7 @@ function Cabecalho({
             </button>
           }
         >
-          {nota.temXml && (
+          {nota?.temXml && (
             // O contador pede o XML, e sem isto o operador volta ao e-mail do
             // fornecedor procurar o anexo que já está guardado aqui.
             <MenuItem
@@ -1568,6 +1816,11 @@ function Cabecalho({
               {pedidoNumero ? "Trocar pedido" : "Trocar forma de receber"}
             </MenuItem>
           )}
+          {onCancelar && (
+            <MenuItem icon={<CircleX size={15} />} onClick={onCancelar} danger>
+              Cancelar recebimento
+            </MenuItem>
+          )}
         </Menu>
       </div>
     </div>
@@ -1579,12 +1832,15 @@ function Cabecalho({
 // para o topo, com a decisão ao lado.
 
 function PainelDivergencias({
+  receiptId,
   inboundId,
   linhas,
   bloqueado,
   onRelacionar,
 }: {
-  inboundId: string;
+  receiptId: string;
+  /** Nulo quando ainda não há NF-e — aí não há fornecedor a quem reclamar. */
+  inboundId: string | null;
   linhas: LinhaRecebimento[];
   bloqueado: boolean;
   onRelacionar: (l: LinhaRecebimento) => void;
@@ -1665,7 +1921,7 @@ function PainelDivergencias({
                           onClick={() =>
                             void agir(
                               l.id,
-                              () => aceitarCustoAction({ inboundId, itemId: l.id }),
+                              () => aceitarCustoAction({ receiptId, itemId: l.id }),
                               "Custo do pedido atualizado para o da nota.",
                             )
                           }
@@ -1698,11 +1954,13 @@ function PainelDivergencias({
         })}
       </ul>
 
-      {avisar && <SheetAvisarFornecedor inboundId={inboundId} onClose={() => setAvisar(false)} />}
+      {avisar && inboundId && (
+        <SheetAvisarFornecedor inboundId={inboundId} onClose={() => setAvisar(false)} />
+      )}
 
       {devolver && (
         <SheetDevolver
-          inboundId={inboundId}
+          receiptId={receiptId}
           linha={devolver}
           onClose={() => setDevolver(null)}
           onFeito={() => {
@@ -1725,7 +1983,7 @@ function PainelDivergencias({
               alvo.linha.id,
               () =>
                 resolverDivergenciaAction({
-                  inboundId,
+                  receiptId,
                   itemId: alvo.linha.id,
                   resolucao: alvo.resolucao,
                   motivo,
@@ -1848,12 +2106,12 @@ function SheetAvisarFornecedor({
 // ── Devolver ao fornecedor ──────────────────────────────────
 
 function SheetDevolver({
-  inboundId,
+  receiptId,
   linha,
   onClose,
   onFeito,
 }: {
-  inboundId: string;
+  receiptId: string;
   linha: LinhaRecebimento;
   onClose: () => void;
   onFeito: () => void;
@@ -1871,7 +2129,7 @@ function SheetDevolver({
     void (async () => {
       try {
         await devolverDivergenciaAction({
-          inboundId,
+          receiptId,
           itemId: linha.id,
           quantidade: qtd,
           motivo: motivo.trim(),
@@ -2082,6 +2340,308 @@ function explicacao(l: LinhaRecebimento, v: number | null): string {
 
 // ── Card do item ────────────────────────────────────────────
 
+
+// ── Adicionar item ──────────────────────────────────────────
+//
+// Uma linha que ninguém esperava: o excedente do caminhão, ou — no recebimento
+// avulso — TODAS as linhas, já que ele nasce vazio de propósito (não há pedido
+// nem nota de onde tirá-las).
+//
+// A quantidade é digitada na unidade de COMPRA (caixa, fardo) porque é assim
+// que a mercadoria chega empilhada; o servidor converte para peça com o fator
+// do cadastro. Digitar 3 quando chegaram 3 caixas de 12 é o erro que a
+// conferência inteira herda.
+
+function AdicionarItem({
+  receiptId,
+  inicial,
+  onClose,
+  onPronto,
+}: {
+  receiptId: string;
+  /** Já veio do bipe: o produto está escolhido, falta a quantidade. */
+  inicial: { produto: ProdutoRecebimento; packagingId: string | null } | null;
+  onClose: () => void;
+  onPronto: () => void;
+}) {
+  const [termo, setTermo] = React.useState("");
+  /**
+   * O resultado carrega o TERMO que o produziu. É o que deixa "procurando…"
+   * ser derivado (`o termo mudou e a resposta ainda é do anterior`) em vez de
+   * um segundo estado ligado e desligado à mão — dois booleanos para o mesmo
+   * fato acabam discordando.
+   */
+  const [resultado, setResultado] = React.useState<{
+    q: string;
+    itens: ProdutoRecebimento[];
+  }>({ q: "", itens: [] });
+  const [escolhido, setEscolhido] = React.useState<ProdutoRecebimento | null>(
+    inicial?.produto ?? null,
+  );
+  /**
+   * Embalagem escolhida À MÃO. Nula = vale a de compra padrão do cadastro,
+   * derivada abaixo — guardar o padrão no estado obrigaria um efeito para
+   * corrigi-lo a cada troca de produto, e efeito que só ajusta estado é
+   * render a mais sem informação nova.
+   */
+  const [packagingManual, setPackagingManual] = React.useState<
+    { id: string | null } | null
+  >(inicial ? { id: inicial.packagingId } : null);
+  const [quantidade, setQuantidade] = React.useState("");
+  const [custo, setCusto] = React.useState("");
+  const [lote, setLote] = React.useState("");
+  const [validade, setValidade] = React.useState("");
+  const [bonificacao, setBonificacao] = React.useState(false);
+  const [motivo, setMotivo] = React.useState("");
+  const [enviando, setEnviando] = React.useState(false);
+
+  // Busca com folga: a doca digita devagar e uma consulta por tecla derrubaria
+  // o banco para mostrar resultado de "ce", "cer", "cerv".
+  const buscavel = !escolhido && termo.trim().length >= 2;
+  React.useEffect(() => {
+    if (!buscavel) return;
+    const q = termo.trim();
+    const t = setTimeout(() => {
+      buscarProdutosRecebimentoAction(q).then((itens) => setResultado({ q, itens }));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [termo, buscavel]);
+
+  // Tudo derivado: com produto já escolhido (ou termo curto) não há resultado a
+  // mostrar, e limpar o estado por efeito só adicionaria um render.
+  const buscando = buscavel && resultado.q !== termo.trim();
+  const visiveis = buscavel && resultado.q === termo.trim() ? resultado.itens : [];
+
+  // Embalagem de compra padrão já vem escolhida: na porta, o que se digita é a
+  // quantidade.
+  const packagingId =
+    packagingManual?.id ??
+    escolhido?.packagings.find((e) => e.isCompraDefault)?.id ??
+    null;
+  const setPackagingId = (id: string | null) => setPackagingManual({ id });
+
+  const pacote = escolhido?.packagings.find((e) => e.id === packagingId) ?? null;
+  const fator = pacote?.fatorConversao ?? 1;
+  const qtd = Number(quantidade.replace(",", "."));
+  const custoNum = custo.trim() === "" ? 0 : Number(custo.replace(",", "."));
+  const podeEnviar =
+    Boolean(escolhido) && qtd > 0 && !enviando && (bonificacao || custoNum >= 0);
+
+  async function enviar() {
+    if (!escolhido) return;
+    setEnviando(true);
+    try {
+      await adicionarItemAction({
+        receiptId,
+        productId: escolhido.id,
+        packagingId,
+        quantidade: qtd,
+        custoUnitario: bonificacao ? 0 : custoNum,
+        lote: lote.trim() || null,
+        validade: validade || null,
+        bonificacao,
+        motivo: motivo.trim() || null,
+      });
+      toast.success(escolhido.nome, `${fmtQtd(qtd * fator)} adicionadas ao recebimento.`);
+      onPronto();
+    } catch (e) {
+      toast.error("Não deu para adicionar", e instanceof Error ? e.message : "Tente de novo.");
+      setEnviando(false);
+    }
+  }
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title="Adicionar item"
+      description="Produto que chegou e não estava na lista. Ele entra como linha própria — a diferença fica visível."
+      width="lg"
+      footer={
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={onClose} className="flex-1">
+            Cancelar
+          </Button>
+          <Button onClick={() => void enviar()} disabled={!podeEnviar} className="flex-1">
+            {enviando && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+            Adicionar
+          </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        {!escolhido ? (
+          <>
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-faint"
+                aria-hidden
+              />
+              <input
+                autoFocus
+                value={termo}
+                onChange={(e) => setTermo(e.target.value)}
+                placeholder="Nome, SKU ou código de barras"
+                aria-label="Buscar produto no catálogo"
+                className="h-10 w-full rounded-full border border-line-button bg-surface pr-4 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+              />
+            </div>
+
+            {buscando && (
+              <p className="flex items-center justify-center gap-2 py-8 text-sm text-muted">
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Procurando…
+              </p>
+            )}
+
+            {!buscando && buscavel && visiveis.length === 0 && (
+              <p className="rounded-[var(--radius)] border border-dashed border-line px-4 py-6 text-center text-[13px] text-muted">
+                Nenhum produto com “{termo.trim()}”. Cadastre-o antes de receber — mercadoria sem
+                cadastro é rastro perdido.
+              </p>
+            )}
+
+            <ul className="flex flex-col gap-1.5">
+              {visiveis.map((prod) => (
+                <li key={prod.id}>
+                  <button
+                    type="button"
+                    onClick={() => setEscolhido(prod)}
+                    className="flex w-full items-center gap-3 rounded-[var(--radius-lg)] border border-line bg-surface px-3 py-2.5 text-left transition-colors hover:bg-surface-2"
+                  >
+                    <ProdutoThumb url={prod.imagemUrl} nome={prod.nome} size="lg" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-ink">
+                        {prod.nome}
+                      </span>
+                      <span className="block truncate font-mono text-[11px] text-muted">
+                        {prod.sku}
+                        {prod.custoMedio != null && (
+                          <span className="font-sans text-faint">
+                            {" · custo médio "}
+                            {fmtMoney(prod.custoMedio)}
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-3 rounded-[var(--radius-lg)] border border-line bg-surface-2 px-3 py-2.5">
+              <ProdutoThumb url={escolhido.imagemUrl} nome={escolhido.nome} size="lg" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-ink">{escolhido.nome}</span>
+                <span className="block truncate font-mono text-[11px] text-muted">{escolhido.sku}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setEscolhido(null);
+                  setPackagingManual(null);
+                }}
+                className="shrink-0 text-xs font-medium text-muted hover:text-ink"
+              >
+                Trocar
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-end gap-3">
+              {escolhido.packagings.length > 0 && (
+                <Campo label="Embalagem">
+                  <select
+                    value={packagingId ?? ""}
+                    onChange={(e) => setPackagingId(e.target.value || null)}
+                    className="h-10 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  >
+                    <option value="">Unidade</option>
+                    {escolhido.packagings.map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.nome} ({e.fatorConversao}x)
+                      </option>
+                    ))}
+                  </select>
+                </Campo>
+              )}
+              <Campo label="Quantidade">
+                <input
+                  autoFocus
+                  inputMode="decimal"
+                  value={quantidade}
+                  onChange={(e) => setQuantidade(e.target.value)}
+                  placeholder="0"
+                  className="h-10 w-24 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-center text-sm tabular-nums text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                />
+              </Campo>
+              {!bonificacao && (
+                <Campo label={`Custo por ${pacote?.nome ?? "unidade"}`}>
+                  <input
+                    inputMode="decimal"
+                    value={custo}
+                    onChange={(e) => setCusto(e.target.value)}
+                    placeholder="0,00"
+                    className="h-10 w-28 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-right text-sm tabular-nums text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  />
+                </Campo>
+              )}
+            </div>
+
+            {qtd > 0 && fator !== 1 && (
+              <p className="text-[12px] text-muted">
+                Entram <span className="font-mono text-ink-2">{fmtQtd(qtd * fator)}</span> unidades
+                no estoque.
+              </p>
+            )}
+
+            <label className="flex items-center gap-2 text-[13px] text-ink-2">
+              <input
+                type="checkbox"
+                checked={bonificacao}
+                onChange={(e) => setBonificacao(e.target.checked)}
+                className="h-4 w-4 rounded border-line-button"
+              />
+              Bonificação — entra no estoque sem custo
+            </label>
+
+            <div className="flex flex-wrap items-end gap-3">
+              <Campo label="Lote">
+                <input
+                  value={lote}
+                  onChange={(e) => setLote(e.target.value)}
+                  placeholder="opcional"
+                  className="h-10 w-36 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                />
+              </Campo>
+              <Campo label="Validade">
+                <input
+                  type="date"
+                  value={validade}
+                  onChange={(e) => setValidade(e.target.value)}
+                  className="h-10 w-40 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                />
+              </Campo>
+            </div>
+
+            <label className="block">
+              <span className="mb-1 block text-[13px] font-medium text-ink">
+                Por que este item entrou? <span className="font-normal text-faint">(opcional)</span>
+              </span>
+              <input
+                value={motivo}
+                onChange={(e) => setMotivo(e.target.value)}
+                placeholder="Ex.: veio a mais, o vendedor mandou junto."
+                className="h-10 w-full rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+              />
+            </label>
+          </>
+        )}
+      </div>
+    </Sheet>
+  );
+}
+
 const ItemCard = React.forwardRef<
   HTMLLIElement,
   {
@@ -2101,9 +2661,11 @@ const ItemCard = React.forwardRef<
       validade?: string | null;
     }) => void;
     onRelacionar: () => void;
+    /** Só nas linhas avulsas — o que veio do pedido/nota se zera, não some. */
+    onRemover?: () => void;
   }
 >(function ItemCard(
-  { linha, bloqueado, cega, semPedido, piscando, salvamento, onAlterar, onRelacionar },
+  { linha, bloqueado, cega, semPedido, piscando, salvamento, onAlterar, onRelacionar, onRemover },
   ref,
 ) {
   const info = STATUS_INFO[linha.status];
@@ -2324,6 +2886,18 @@ const ItemCard = React.forwardRef<
           >
             {linha.resolucao ? "Resolvido" : oculto ? "A conferir" : info.label}
           </span>
+        )}
+
+        {onRemover && (
+          <button
+            type="button"
+            onClick={onRemover}
+            aria-label={`Remover ${linha.descricao} do recebimento`}
+            title="Remover — esta linha foi adicionada na porta"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-faint transition-colors hover:bg-danger-soft hover:text-danger focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          >
+            <Trash2 className="h-4 w-4" aria-hidden />
+          </button>
         )}
       </div>
 

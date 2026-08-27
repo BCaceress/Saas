@@ -13,11 +13,11 @@ import { custoDoItem } from "./custo";
 import { ratearTotaisDaNota } from "./rateio";
 import { enriquecerProdutoComNota, atualizarCustoDeReferencia } from "./enriquecer-produto";
 import { conciliarComPedidoSugerido } from "@/lib/compras/conciliacao";
+import { garantirRecebimentoDaNota } from "@/lib/compras/recebimento";
 import { classificarDocumento, ehConhecimentoDeTransporte } from "./tipo-documento";
 import { importarCte, freteCteDaNota } from "./cte-entrada";
 import {
   entradasAguardandoDocumento,
-  garantirPedidoDaNota,
   type CandidatoEntradaManual,
 } from "@/lib/compras/documento";
 import { gerarTitulosDaNota } from "@/lib/financeiro/contas-pagar";
@@ -47,6 +47,8 @@ export type ResultadoImportacao = {
   chave?: string;
   /** Id da nota importada — leva direto ao recebimento inteligente. */
   inboundId?: string;
+  /** Recebimento aberto para esta nota — é ele que a tela abre. */
+  receiptId?: string;
   /** Itens que já nasceram relacionados pelo de-para. */
   itensResolvidos?: number;
   itensTotal?: number;
@@ -772,29 +774,43 @@ export async function gerarEntradaDaNota(input: {
     }
   }
 
-  // Todo o que entra tem documento: nota sem pedido ganha um retroativo, com a
-  // origem real registrada. É o que faz o histórico do fornecedor e o
-  // financeiro enxergarem a compra que ninguém planejou.
-  const purchaseOrderId =
-    nota.purchaseOrderId ??
-    (await garantirPedidoDaNota({
-      tenantId,
-      inboundId,
-      origem: input.origem ?? "XML",
-      userId,
-    }));
+  // Nota sem pedido segue sem pedido: quem documenta o que entrou é o
+  // RECEBIMENTO, criado logo abaixo. Antes daqui saía um PurchaseOrder
+  // retroativo, e /pedidos passava a listar compras que ninguém fez —
+  // misturando "o que eu comprei" com "o que chegou".
+  const purchaseOrderId = nota.purchaseOrderId;
 
   const soBonificacao = nota.items.every((i) => i.bonificacao);
+
+  // Mesmo o atalho do escritório ("dar entrada direto pela nota", sem contar
+  // caixa na porta) gera um RECEBIMENTO. Sem isto, a mercadoria entraria no
+  // estoque sem aparecer na tela que responde "o que chegou?" — e o operador
+  // procuraria pela carga num lugar onde ela nunca esteve.
+  const receipt = await garantirRecebimentoDaNota({ tenantId, inboundId, userId });
 
   const purchaseId = await registrarEntrada(tenantId, nota.siteId, itens, {
     tipo: "FORNECEDOR",
     motivo: soBonificacao ? "BONIFICACAO" : purchaseOrderId ? null : "COMPRA_SEM_PEDIDO",
     supplierId: nota.supplierId,
     purchaseOrderId,
+    receiptId: receipt.id,
+    numero: receipt.numero,
     numeroNota: `${nota.numero}/${nota.serie}`,
-    observacao: `Entrada por XML — ${nota.emitRazaoSocial}`,
+    observacao: `Recebimento ${receipt.numero} — entrada direta pela NF-e ${nota.emitRazaoSocial}`,
     createdBy: userId ?? undefined,
     chaveNfe: nota.chave,
+  });
+
+  await db.goodsReceipt.update({
+    where: { id: receipt.id },
+    data: {
+      status: "FINALIZADO",
+      finalizadoEm: new Date(),
+      purchaseOrderId,
+      supplierId: nota.supplierId,
+      observacao:
+        "Entrada gerada direto da NF-e, sem conferência física item a item.",
+    },
   });
 
   await db.fiscalInbound.update({

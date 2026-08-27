@@ -11,6 +11,7 @@ import { listarEventos } from "@/lib/compras/eventos";
 import { loadHistoricoCompraProduto } from "../cotacoes/_data";
 import { loadComprasFormOptions, loadPedidosAReceber } from "../estoque/_data";
 import { getActiveSiteId } from "@/lib/sites";
+import type { GoodsReceiptStatus } from "@/generated/prisma";
 
 /** Baseline de leitura do módulo. Escrita usa `txp` com a loja de destino. */
 async function tx<T>(fn: (tid: string, userId: string) => Promise<T>): Promise<T> {
@@ -102,6 +103,80 @@ export async function fetchHistoricoCompraProdutoAction(productId: string) {
 
 export async function listarEventosPedidoAction(purchaseOrderId: string) {
   return tx((tid) => listarEventos(tid, purchaseOrderId));
+}
+
+// ── Recebimentos do pedido (lazy, p/ drawer) ──────────────────
+// O pedido NÃO vira recebimento: ele continua existindo e pode ter vários.
+// Esta é a resposta de "o que já chegou deste pedido?" — uma linha por
+// recebimento, aberto ou finalizado, com o caminho para abrir cada um.
+
+export type RecebimentoDoPedido = {
+  id: string;
+  numero: string;
+  status: GoodsReceiptStatus;
+  data: string;
+  valor: number;
+  /** Quantidade contada e quanto se esperava neste recebimento. */
+  recebido: number;
+  esperado: number;
+  numeroNota: string | null;
+  temNota: boolean;
+  estornado: boolean;
+  href: string;
+};
+
+export async function listarRecebimentosPedidoAction(
+  purchaseOrderId: string,
+): Promise<RecebimentoDoPedido[]> {
+  return tx(async () => {
+    const rows = await db.goodsReceipt.findMany({
+      where: { purchaseOrderId },
+      select: {
+        id: true,
+        numero: true,
+        status: true,
+        numeroNota: true,
+        iniciadoEm: true,
+        finalizadoEm: true,
+        inbound: { select: { numero: true, serie: true } },
+        itens: {
+          select: {
+            qtdPedida: true,
+            qtdFaturada: true,
+            qtdRecebida: true,
+            custoFaturado: true,
+            bonificacao: true,
+          },
+        },
+        entradas: { select: { estornadaEm: true } },
+      },
+      orderBy: { iniciadoEm: "asc" },
+    });
+
+    return rows.map((r): RecebimentoDoPedido => {
+      const finalizado = r.status === "FINALIZADO";
+      const esperadoDe = (i: (typeof r.itens)[number]) =>
+        Number(i.qtdFaturada) || Number(i.qtdPedida);
+      const recebidoDe = (i: (typeof r.itens)[number]) =>
+        i.qtdRecebida == null ? (finalizado ? esperadoDe(i) : 0) : Number(i.qtdRecebida);
+      return {
+        id: r.id,
+        numero: r.numero,
+        status: r.status,
+        data: (r.finalizadoEm ?? r.iniciadoEm).toISOString(),
+        valor: r.itens.reduce(
+          (a, i) => a + (i.bonificacao ? 0 : recebidoDe(i) * Number(i.custoFaturado)),
+          0,
+        ),
+        recebido: r.itens.reduce((a, i) => a + recebidoDe(i), 0),
+        esperado: r.itens.reduce((a, i) => a + esperadoDe(i), 0),
+        numeroNota: r.inbound ? `${r.inbound.numero}/${r.inbound.serie}` : r.numeroNota,
+        temNota: !!r.inbound,
+        estornado: r.entradas.length > 0 && r.entradas.every((e) => e.estornadaEm),
+        href: `/recebimento/${r.id}`,
+      };
+    });
+  });
 }
 
 // ── Códigos de barras do pedido (p/ bipe no recebimento sem XML) ──

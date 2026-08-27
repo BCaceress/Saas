@@ -1,20 +1,26 @@
 import "server-only";
 import { db } from "@/lib/prisma";
 import { sugerirPedidos, type SugestaoPedido } from "@/lib/compras/conciliacao";
-import { listarEventos, listarEventosDaNota, type EventoPedido } from "@/lib/compras/eventos";
+import { listarEventosDoRecebimento, type EventoPedido } from "@/lib/compras/eventos";
 import { sugestoesDaNota, type SugestaoDePara } from "@/lib/compras/sugestao-de-para";
 import type { ItemDePara } from "@/components/recebimento/tabela-de-para";
 import type {
   FiscalInboundStatus,
+  GoodsReceiptOrigem,
+  GoodsReceiptStatus,
   PurchaseOrderStatus,
   ReconciliationResolucao,
   ReconciliationStatus,
 } from "@/generated/prisma";
 
 // ============================================================
-// Leitura da tela de recebimento inteligente.
+// Leitura da tela de UM recebimento.
 //
 // A tela mostra três colunas por item — pedido, nota, recebido — e nada mais.
+// Cada uma pode faltar: recebimento de pedido sem XML não tem coluna "nota", e
+// o avulso não tem "pedido". O que nunca falta é a terceira, "recebido", que é
+// o assunto da doca.
+//
 // Tudo aqui já vem em UNIDADE BASE, com as embalagens do produto por perto
 // para o bipe somar 12 quando o que passou no leitor foi a caixa.
 // ============================================================
@@ -47,6 +53,8 @@ export type LinhaRecebimento = {
   lote: string | null;
   validade: string | null;
   embalagens: EmbalagemView[];
+  /** Linha que ninguém esperava (item fora do pedido/nota, ou o avulso). */
+  avulsa: boolean;
   /**
    * O que o XML escreveu nesta linha, intacto.
    *
@@ -93,8 +101,28 @@ export type PedidoRecebimento = {
   previsaoEntrega: string | null;
 };
 
+/** O recebimento em si: identidade, ciclo próprio e de onde ele nasceu. */
+export type CabecalhoRecebimento = {
+  id: string;
+  numero: string;
+  status: GoodsReceiptStatus;
+  origem: GoodsReceiptOrigem;
+  siteId: string;
+  siteNome: string;
+  supplierId: string | null;
+  supplierNome: string | null;
+  /** Número da nota no papel, quando o XML ainda não veio. */
+  numeroNota: string | null;
+  iniciadoEm: string;
+  finalizadoEm: string | null;
+  divergenciaMotivo: string | null;
+  canceladoMotivo: string | null;
+  observacao: string | null;
+};
+
 export type ResumoRecebimento = {
   itens: number;
+  /** Total esperado: a nota, quando há; o que o pedido diz, quando não há. */
   valorNota: number;
   divergencias: number;
   custosAlterados: number;
@@ -112,8 +140,21 @@ export type ResumoRecebimento = {
 export type ItemNotaView = ItemDePara;
 
 export type RecebimentoView = {
-  nota: NotaRecebimento;
+  /** Sempre existe. É a entidade da tela — o resto é contexto dele. */
+  recebimento: CabecalhoRecebimento;
+  /**
+   * A NF-e, quando há. Nulo é caso normal, não erro: o recebimento de um
+   * pedido sem XML e o avulso vivem sem documento até ele chegar (ou para
+   * sempre).
+   */
+  nota: NotaRecebimento | null;
   pedido: PedidoRecebimento | null;
+  /**
+   * A nota chegou e ainda não se decidiu o que fazer com ela: vincular a um
+   * pedido, gerar um pedido ou conferir sem pedido. Só acontece na origem XML —
+   * quem começou pelo pedido já entra conferindo.
+   */
+  escolherPorta: boolean;
   /**
    * Conferência sem pedido: há linhas para conferir e não há (nem haverá) um
    * pedido por trás. A tela esconde a coluna "Pedido" — comparar a nota com
@@ -127,7 +168,7 @@ export type RecebimentoView = {
    * nascer: "sem produto" → "procurando…" → o palpite.
    */
   sugestoesDePara: SugestaoDePara[];
-  /** Só preenchido enquanto a nota não entrou em conferência (com ou sem pedido). */
+  /** Só preenchido enquanto a nota não entrou em conferência. */
   itensNota: ItemNotaView[];
   linhas: LinhaRecebimento[];
   resumo: ResumoRecebimento;
@@ -136,44 +177,78 @@ export type RecebimentoView = {
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
 
+/**
+ * Carrega a tela de UM recebimento.
+ *
+ * A chave é o RECEBIMENTO, não a nota: é ele que existe nas três origens
+ * (pedido, XML, avulso) e o único que existe quando o XML ainda não chegou.
+ * Antes a tela era endereçada pelo `inboundId`, o que fazia "receber sem nota"
+ * não ter URL — e por isso a contagem sem XML acabava no localStorage.
+ */
 export async function carregarRecebimento(
   tenantId: string,
-  inboundId: string,
+  receiptId: string,
 ): Promise<RecebimentoView | null> {
-  const inbound = await db.fiscalInbound.findFirst({
-    where: { id: inboundId },
+  const receipt = await db.goodsReceipt.findFirst({
+    where: { id: receiptId },
     select: {
       id: true,
-      status: true,
-      chave: true,
       numero: true,
-      serie: true,
-      dataEmissao: true,
-      valorTotal: true,
-      emitRazaoSocial: true,
-      emitCnpj: true,
-      emitUf: true,
-      supplierId: true,
-      observacao: true,
-      semEstoqueMotivo: true,
-      purchaseId: true,
-      purchaseOrderId: true,
-      vinculoAutomatico: true,
-      conciliadoEm: true,
+      status: true,
+      origem: true,
       siteId: true,
+      supplierId: true,
+      fornecedorLivre: true,
+      numeroNota: true,
+      observacao: true,
+      divergenciaMotivo: true,
+      canceladoMotivo: true,
+      iniciadoEm: true,
+      finalizadoEm: true,
+      purchaseOrderId: true,
+      inboundId: true,
       site: { select: { nome: true } },
-      xmlArquivo: { select: { id: true } },
-      duplicatas: {
-        orderBy: { vencimento: "asc" },
-        select: { numero: true, vencimento: true, valor: true },
-      },
+      supplier: { select: { razaoSocial: true, nomeFantasia: true } },
     },
   });
-  if (!inbound) return null;
+  if (!receipt) return null;
 
-  const pedido = inbound.purchaseOrderId
+  const inboundId = receipt.inboundId;
+
+  const inbound = inboundId
+    ? await db.fiscalInbound.findFirst({
+        where: { id: inboundId },
+        select: {
+          id: true,
+          status: true,
+          chave: true,
+          numero: true,
+          serie: true,
+          dataEmissao: true,
+          valorTotal: true,
+          emitRazaoSocial: true,
+          emitCnpj: true,
+          emitUf: true,
+          supplierId: true,
+          observacao: true,
+          semEstoqueMotivo: true,
+          purchaseId: true,
+          vinculoAutomatico: true,
+          conciliadoEm: true,
+          siteId: true,
+          site: { select: { nome: true } },
+          xmlArquivo: { select: { id: true } },
+          duplicatas: {
+            orderBy: { vencimento: "asc" },
+            select: { numero: true, vencimento: true, valor: true },
+          },
+        },
+      })
+    : null;
+
+  const pedido = receipt.purchaseOrderId
     ? await db.purchaseOrder.findFirst({
-        where: { id: inbound.purchaseOrderId },
+        where: { id: receipt.purchaseOrderId },
         select: {
           id: true,
           numero: true,
@@ -184,68 +259,69 @@ export async function carregarRecebimento(
       })
     : null;
 
-  // A conferência existe com pedido (conciliação) ou sem ele (a nota é a
-  // referência). O que decide é haver linha montada, não haver pedido.
-  const emConferencia = Boolean(pedido) || Boolean(inbound.conciliadoEm);
+  const linhasCru = await db.purchaseReconciliationItem.findMany({
+    where: { receiptId: receipt.id },
+    // Ordem alfabética e estável: a lista é para conferir na sequência da
+    // paleteira, e o que está errado já subiu para o painel de divergências.
+    orderBy: { descricao: "asc" },
+  });
 
-  const linhasCru = emConferencia
-    ? await db.purchaseReconciliationItem.findMany({
-        where: { inboundId },
-        // Ordem alfabética e estável: a lista é para conferir na sequência da
-        // paleteira, e o que está errado já subiu para o painel de divergências.
-        orderBy: { descricao: "asc" },
-      })
-    : [];
-
+  // Só a nota tem porta a escolher. Quem veio do pedido (ou do avulso) já
+  // nasce com as linhas montadas — perguntar "de qual pedido é isto?" a quem
+  // clicou "Iniciar recebimento" NESTE pedido seria pedir o que já se sabe.
+  const escolherPorta =
+    receipt.origem === "XML" && !pedido && linhasCru.length === 0 && receipt.status !== "FINALIZADO";
   const semPedido = !pedido && linhasCru.length > 0;
 
   // A linha da conferência já vem convertida em unidades. Para dizer de ONDE
   // aquele número saiu — "0,6 MI × 1.000" — a tela precisa do item cru da nota.
-  const itensDaNota = emConferencia
-    ? await db.fiscalInboundItem.findMany({
-        where: { inboundId },
-        select: { id: true, unidade: true, quantidade: true, fatorConversao: true },
-      })
-    : [];
+  const itensDaNota =
+    inboundId && linhasCru.length > 0
+      ? await db.fiscalInboundItem.findMany({
+          where: { inboundId },
+          select: { id: true, unidade: true, quantidade: true, fatorConversao: true },
+        })
+      : [];
   const xmlPorItem = new Map(itensDaNota.map((i) => [i.id, i]));
 
   // Antes de escolher a porta, o assunto da tela são os itens crus da nota: é
   // neles que o operador relaciona o catálogo para poder escolher.
-  const itensCru = pedido || semPedido
-    ? []
-    : await db.fiscalInboundItem.findMany({
-        where: { inboundId },
-        select: {
-          id: true,
-          ordem: true,
-          descricao: true,
-          codigoFornecedor: true,
-          gtin: true,
-          ncm: true,
-          cest: true,
-          cfop: true,
-          unidade: true,
-          quantidade: true,
-          unidadeTributavel: true,
-          quantidadeTributavel: true,
-          fatorConversao: true,
-          valorUnitario: true,
-          valorTotal: true,
-          // O custo real da linha (e o alerta de custo fora da curva) precisa
-          // de tudo que soma ou desconta, não só do valor da mercadoria.
-          valorDesconto: true,
-          valorIcmsSt: true,
-          valorFcpSt: true,
-          valorIpi: true,
-          valorFrete: true,
-          bonificacao: true,
-          productId: true,
-          packagingId: true,
-        },
-        // Alfabética, igual à lista pós-vínculo — a ordem da nota (`ordem`)
-        // não ajuda a achar o item na hora de relacionar ao catálogo.
-        orderBy: { descricao: "asc" },
-      });
+  const itensCru =
+    inboundId && escolherPorta
+      ? await db.fiscalInboundItem.findMany({
+          where: { inboundId },
+          select: {
+            id: true,
+            ordem: true,
+            descricao: true,
+            codigoFornecedor: true,
+            gtin: true,
+            ncm: true,
+            cest: true,
+            cfop: true,
+            unidade: true,
+            quantidade: true,
+            unidadeTributavel: true,
+            quantidadeTributavel: true,
+            fatorConversao: true,
+            valorUnitario: true,
+            valorTotal: true,
+            // O custo real da linha (e o alerta de custo fora da curva) precisa
+            // de tudo que soma ou desconta, não só do valor da mercadoria.
+            valorDesconto: true,
+            valorIcmsSt: true,
+            valorFcpSt: true,
+            valorIpi: true,
+            valorFrete: true,
+            bonificacao: true,
+            productId: true,
+            packagingId: true,
+          },
+          // Alfabética, igual à lista pós-vínculo — a ordem da nota (`ordem`)
+          // não ajuda a achar o item na hora de relacionar ao catálogo.
+          orderBy: { descricao: "asc" },
+        })
+      : [];
 
   const produtos = await produtosDe([
     ...linhasCru.map((l) => l.productId),
@@ -324,6 +400,8 @@ export async function carregarRecebimento(
       lote: l.lote,
       validade: l.validade ? l.validade.toISOString().slice(0, 10) : null,
       embalagens: p?.embalagens ?? [],
+      /** Linha que ninguém esperava — só ela pode ser removida da conferência. */
+      avulsa: !l.purchaseOrderItemId && !l.inboundItemId,
       xml: doXml
         ? {
             quantidade: Number(doXml.quantidade),
@@ -336,7 +414,11 @@ export async function carregarRecebimento(
 
   const resumo: ResumoRecebimento = {
     itens: linhas.length,
-    valorNota: Number(inbound.valorTotal),
+    // Sem nota, o "total esperado" é o que o pedido combinou — é contra ele
+    // que a soma do que chegou faz sentido.
+    valorNota: inbound
+      ? Number(inbound.valorTotal)
+      : linhas.reduce((s, l) => s + l.qtdFaturada * l.custoFaturado, 0),
     divergencias: linhas.filter((l) => l.status !== "OK" && !l.resolucao).length,
     custosAlterados: linhas.filter((l) => l.status === "PRECO_ALTERADO").length,
     conferidos: linhas.filter((l) => l.qtdRecebida != null).length,
@@ -351,32 +433,55 @@ export async function carregarRecebimento(
   };
 
   return {
-    nota: {
-      id: inbound.id,
-      status: inbound.status,
-      chave: inbound.chave,
-      numero: inbound.numero,
-      serie: inbound.serie,
-      dataEmissao: inbound.dataEmissao.toISOString(),
-      valorTotal: Number(inbound.valorTotal),
-      fornecedor: inbound.emitRazaoSocial,
-      cnpj: inbound.emitCnpj,
-      uf: inbound.emitUf,
-      supplierId: inbound.supplierId,
-      siteId: inbound.siteId,
-      siteNome: inbound.site.nome,
-      observacao: inbound.observacao,
-      semEstoqueMotivo: inbound.semEstoqueMotivo,
-      purchaseId: inbound.purchaseId,
-      vinculoAutomatico: inbound.vinculoAutomatico,
-      conciliadoEm: iso(inbound.conciliadoEm),
-      temXml: Boolean(inbound.xmlArquivo),
-      duplicatas: inbound.duplicatas.map((d) => ({
-        numero: d.numero,
-        vencimento: d.vencimento.toISOString(),
-        valor: Number(d.valor),
-      })),
+    recebimento: {
+      id: receipt.id,
+      numero: receipt.numero,
+      status: receipt.status,
+      origem: receipt.origem,
+      siteId: receipt.siteId,
+      siteNome: receipt.site.nome,
+      supplierId: receipt.supplierId,
+      supplierNome:
+        receipt.supplier?.nomeFantasia ||
+        receipt.supplier?.razaoSocial ||
+        receipt.fornecedorLivre ||
+        inbound?.emitRazaoSocial ||
+        null,
+      numeroNota: receipt.numeroNota,
+      iniciadoEm: receipt.iniciadoEm.toISOString(),
+      finalizadoEm: iso(receipt.finalizadoEm),
+      divergenciaMotivo: receipt.divergenciaMotivo,
+      canceladoMotivo: receipt.canceladoMotivo,
+      observacao: receipt.observacao,
     },
+    nota: inbound
+      ? {
+          id: inbound.id,
+          status: inbound.status,
+          chave: inbound.chave,
+          numero: inbound.numero,
+          serie: inbound.serie,
+          dataEmissao: inbound.dataEmissao.toISOString(),
+          valorTotal: Number(inbound.valorTotal),
+          fornecedor: inbound.emitRazaoSocial,
+          cnpj: inbound.emitCnpj,
+          uf: inbound.emitUf,
+          supplierId: inbound.supplierId,
+          siteId: inbound.siteId,
+          siteNome: inbound.site.nome,
+          observacao: inbound.observacao,
+          semEstoqueMotivo: inbound.semEstoqueMotivo,
+          purchaseId: inbound.purchaseId,
+          vinculoAutomatico: inbound.vinculoAutomatico,
+          conciliadoEm: iso(inbound.conciliadoEm),
+          temXml: Boolean(inbound.xmlArquivo),
+          duplicatas: inbound.duplicatas.map((d) => ({
+            numero: d.numero,
+            vencimento: d.vencimento.toISOString(),
+            valor: Number(d.valor),
+          })),
+        }
+      : null,
     pedido: pedido
       ? {
           id: pedido.id,
@@ -386,25 +491,23 @@ export async function carregarRecebimento(
           previsaoEntrega: iso(pedido.previsaoEntrega),
         }
       : null,
+    escolherPorta,
     semPedido,
     // Enquanto a porta não foi escolhida a tela vira "de qual pedido é isto?" —
     // as sugestões são o conteúdo principal, então valem a consulta.
-    sugestoes: pedido || semPedido ? [] : await sugerirPedidos(inboundId),
+    sugestoes: escolherPorta && inboundId ? await sugerirPedidos(inboundId) : [],
     // Só antes da porta: depois dela o de-para pendente aparece na conferência,
     // e são N buscas ranqueadas que ninguém pediu.
     sugestoesDePara:
-      pedido || semPedido || itensNota.every((i) => i.productId)
-        ? []
-        : await sugestoesDaNota(inboundId),
+      escolherPorta && inboundId && itensNota.some((i) => !i.productId)
+        ? await sugestoesDaNota(inboundId)
+        : [],
     itensNota,
     linhas,
     resumo,
-    // Sem pedido a história mora na nota — é a única chave que sobra.
-    timeline: pedido
-      ? await listarEventos(tenantId, pedido.id)
-      : semPedido
-        ? await listarEventosDaNota(tenantId, inboundId)
-        : [],
+    // A história é DESTE recebimento. A do pedido inteiro (que pode ter três
+    // entregas) fica na tela do pedido.
+    timeline: await listarEventosDoRecebimento(tenantId, receipt.id),
   };
 }
 

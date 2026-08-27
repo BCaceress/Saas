@@ -20,15 +20,21 @@ export async function registrarEvento(input: {
   /** Nulo no recebimento sem pedido — aí a história pendura na nota. */
   purchaseOrderId: string | null;
   inboundId?: string | null;
+  /** Entrada de estoque exata, quando o evento nasce de um lançamento na razão. */
+  purchaseId?: string | null;
+  /** Recebimento (a doca) a que o evento pertence. É por ele que a tela de UM
+   *  recebimento mostra a sua própria história, e não a do pedido inteiro. */
+  receiptId?: string | null;
   tipo: PurchaseEventType;
   descricao: string;
   meta?: Prisma.InputJsonValue;
   createdBy?: string | null;
 }): Promise<void> {
-  // Evento sem pedido E sem nota não tem por onde ser lido de volta — é lixo
-  // silencioso na tabela. Melhor estourar aqui do que sumir com a história.
-  if (!input.purchaseOrderId && !input.inboundId) {
-    throw new Error("Evento de compra precisa de um pedido ou de uma nota.");
+  // Evento sem pedido, sem nota E sem recebimento não tem por onde ser lido de
+  // volta — é lixo silencioso na tabela. Melhor estourar aqui do que sumir com
+  // a história.
+  if (!input.purchaseOrderId && !input.inboundId && !input.receiptId) {
+    throw new Error("Evento de compra precisa de um pedido, uma nota ou um recebimento.");
   }
 
   await comTenant(
@@ -38,6 +44,8 @@ export async function registrarEvento(input: {
         tenantId: input.tenantId,
         purchaseOrderId: input.purchaseOrderId,
         inboundId: input.inboundId ?? null,
+        purchaseId: input.purchaseId ?? null,
+        receiptId: input.receiptId ?? null,
         tipo: input.tipo,
         descricao: input.descricao,
         meta: input.meta,
@@ -75,9 +83,21 @@ export async function listarEventosDaNota(
   return listarEventosPor(tenantId, { inboundId });
 }
 
+/**
+ * Timeline de UM recebimento. Um pedido com três entregas tem três histórias
+ * diferentes na doca; a do pedido conta o arco inteiro, esta conta a carga que
+ * está na frente de quem confere agora.
+ */
+export async function listarEventosDoRecebimento(
+  tenantId: string,
+  receiptId: string,
+): Promise<EventoPedido[]> {
+  return listarEventosPor(tenantId, { receiptId });
+}
+
 async function listarEventosPor(
   tenantId: string,
-  filtro: { purchaseOrderId: string } | { inboundId: string },
+  filtro: { purchaseOrderId: string } | { inboundId: string } | { receiptId: string },
 ): Promise<EventoPedido[]> {
   const eventos = await comTenant(
     tenantId,

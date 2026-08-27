@@ -328,7 +328,16 @@ export function NovaEntradaForm({
                       onChange={(e) => setBusca(e.target.value)}
                       onFocus={() => setBuscaAberta(true)}
                       onBlur={() => setTimeout(() => setBuscaAberta(false), 120)}
-                      placeholder="Buscar produto por nome, SKU ou código de barras..."
+                      onKeyDown={(e) => {
+                        // Leitor USB/Bluetooth "digita" o código e manda Enter
+                        // sozinho — sem isto o operador ainda precisava clicar
+                        // no resultado depois de bipar.
+                        if (e.key !== "Enter") return;
+                        const exato = resultados.find((p) => p.ean === busca.trim());
+                        if (exato) { e.preventDefault(); selecionarProduto(exato); return; }
+                        if (resultados.length === 1) { e.preventDefault(); selecionarProduto(resultados[0]); }
+                      }}
+                      placeholder="Buscar ou bipar produto por nome, SKU ou código de barras..."
                       className="w-full rounded-[var(--radius)] border border-line bg-surface py-2 pl-8 pr-8 text-sm text-ink placeholder:text-faint focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                     />
                     {busca && (

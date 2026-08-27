@@ -6,7 +6,6 @@ import {
   filtrosAtivos,
   PO_FILTROS_VAZIO,
   PO_STATUS_ABERTOS,
-  PO_STATUS_SALDO,
   STATUS_ABERTOS,
 } from "@/app/(app)/pedidos/_query";
 
@@ -71,7 +70,8 @@ describe("urlDosFiltros", () => {
       ...PO_FILTROS_VAZIO,
       q: "cerveja",
       supplierId: "forn-1",
-      status: "EM_TRANSITO",
+      status: "AGUARDANDO",
+      recebimento: "parcial" as const,
       periodo: "90",
       ordem: "valor-desc" as const,
       pagina: 2,
@@ -95,6 +95,7 @@ describe("filtrosAtivos", () => {
     expect(filtrosAtivos({ ...PO_FILTROS_VAZIO, q: "x" })).toBe(true);
     expect(filtrosAtivos({ ...PO_FILTROS_VAZIO, supplierId: "x" })).toBe(true);
     expect(filtrosAtivos({ ...PO_FILTROS_VAZIO, status: "" })).toBe(true);
+    expect(filtrosAtivos({ ...PO_FILTROS_VAZIO, recebimento: "sem" })).toBe(true);
     expect(filtrosAtivos({ ...PO_FILTROS_VAZIO, periodo: "" })).toBe(true);
   });
 });
@@ -119,12 +120,21 @@ describe("filtroDoBanco", () => {
     ]);
   });
 
-  // "Saldo sem decisão" não é um status: é um recorte que o loader traduz em
-  // status + saldoResolucao. Mandar o pseudo-status para o banco não acharia nada.
-  it("saldo sem decisão vira flag, não status", () => {
-    const f = filtroDoBanco({ ...PO_FILTROS_VAZIO, status: PO_STATUS_SALDO }, paginacao);
-    expect(f.saldoPendente).toBe(true);
-    expect(f.status).toBeUndefined();
+  // EM_TRANSITO saiu do vocabulário do pedido mas continua no enum do banco.
+  // Filtrar por "Confirmado" e esconder o legado faria a lista contradizer a
+  // coluna Status, que desenha os dois com o mesmo badge.
+  it("Confirmado arrasta o EM_TRANSITO legado junto", () => {
+    const f = filtroDoBanco({ ...PO_FILTROS_VAZIO, status: "AGUARDANDO" }, paginacao);
+    expect(f.status).toEqual(["AGUARDANDO", "EM_TRANSITO"]);
+  });
+
+  // Recebimento é condição SOBRE o pedido, não status dele: os dois recortes
+  // convivem em vez de disputar o mesmo campo.
+  it("recebimento viaja separado do status", () => {
+    const f = filtroDoBanco({ ...PO_FILTROS_VAZIO, recebimento: "parcial" }, paginacao);
+    expect(f.recebimento).toBe("parcial");
+    expect(f.status).toEqual(STATUS_ABERTOS);
+    expect(filtroDoBanco(PO_FILTROS_VAZIO, paginacao).recebimento).toBeNull();
   });
 
   it("período vazio significa todo período, não zero dias", () => {

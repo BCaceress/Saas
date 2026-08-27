@@ -13,16 +13,33 @@ import {
   conferirSemPedido,
   criarPedidoDaNota,
   desvincularPedido,
-  conferirItem,
-  conferirTudoConformeNota,
   remontarConferencia,
   resolverDivergencia,
   aceitarCustoDaNota,
-  confirmarEntradaConciliada,
   devolverItemDivergente,
   resumoDivergenciasParaFornecedor,
 } from "@/lib/compras/conciliacao";
+import {
+  iniciarRecebimentoDoPedido,
+  abrirRecebimentoAvulso,
+  garantirRecebimentoDaNota,
+  vincularNotaAoRecebimento,
+  vincularPedidoAoRecebimento,
+  adicionarItemAoRecebimento,
+  removerItemDoRecebimento,
+  registrarContagem,
+  finalizarRecebimento,
+  cancelarRecebimento,
+} from "@/lib/compras/recebimento";
 import type { ActiveTenant } from "@/lib/current-tenant";
+
+// ── Ações da doca ───────────────────────────────────────────
+//
+// Tudo aqui gira em torno do RECEBIMENTO (o `receiptId` da URL). As ações que
+// ainda falam em `inboundId` são as do XML — vincular pedido, gerar pedido pela
+// nota, conferir sem pedido — porque é a nota que está sendo decidida ali.
+//
+// O estoque só se move em `finalizarRecebimentoAction`.
 
 const ROTA = "/recebimento";
 
@@ -31,12 +48,66 @@ async function tx<T>(fn: (ctx: ActiveTenant) => Promise<T>): Promise<T> {
   return runWithTenant(ctx.tenant.id, () => fn(ctx));
 }
 
-function revalidar(inboundId?: string) {
-  if (inboundId) revalidatePath(`${ROTA}/${inboundId}`);
-  // A fila de recebimento deixou de existir: quem lista o que está por
-  // conferir agora é a própria lista de pedidos.
+function revalidar(receiptId?: string) {
+  if (receiptId) revalidatePath(`${ROTA}/${receiptId}`);
+  revalidatePath(ROTA);
   revalidatePath("/pedidos");
   revalidatePath("/cotacoes");
+}
+
+/** O recebimento de uma nota — para as ações que ainda entram pelo XML. */
+async function recebimentoDaNota(tenantId: string, inboundId: string, userId?: string | null) {
+  const r = await garantirRecebimentoDaNota({ tenantId, inboundId, userId });
+  return r.id;
+}
+
+// ── Abrir ───────────────────────────────────────────────────
+
+/**
+ * "Iniciar recebimento" a partir de um pedido.
+ *
+ * O pedido NÃO se transforma em nada: ele continua existindo e ganha mais um
+ * recebimento pendurado. Devolve o id para a tela levar o operador direto à
+ * conferência — que é o que ele queria ao clicar.
+ */
+export async function iniciarRecebimentoAction(purchaseOrderId: string): Promise<string> {
+  return tx(async (ctx) => {
+    const pedido = await db.purchaseOrder.findFirst({
+      where: { id: purchaseOrderId },
+      select: { siteId: true },
+    });
+    if (!pedido) throw new Error("Pedido não encontrado.");
+    assertSite(ctx, "compras.receber", pedido.siteId);
+
+    const r = await iniciarRecebimentoDoPedido({
+      tenantId: ctx.tenant.id,
+      purchaseOrderId,
+      userId: ctx.user.id,
+    });
+    revalidar(r.id);
+    return r.id;
+  });
+}
+
+/** Mercadoria na porta sem pedido e sem nota. Exige `estoque.ajustar`. */
+export async function abrirRecebimentoAvulsoAction(input?: {
+  supplierId?: string | null;
+  fornecedorLivre?: string | null;
+}): Promise<string> {
+  const ctx = await guardAction("estoque.ajustar");
+  return runWithTenant(ctx.tenant.id, async () => {
+    const ativo = await getActiveSiteId();
+    const siteId = ativo ?? (await getOrCreateDefaultSite(ctx.tenant.id)).id;
+    const r = await abrirRecebimentoAvulso({
+      tenantId: ctx.tenant.id,
+      siteId,
+      supplierId: input?.supplierId ?? null,
+      fornecedorLivre: input?.fornecedorLivre ?? null,
+      userId: ctx.user.id,
+    });
+    revalidar(r.id);
+    return r.id;
+  });
 }
 
 /**
@@ -71,16 +142,23 @@ export async function importarXmlRecebimentoAction(
       cnpjDestino: emitente?.cnpj ?? null,
     });
 
-    await registrarImportacoes(
-      { origem: "UPLOAD", siteId, usuarioId: ctx.user.id },
-      resultado,
-    );
+    await registrarImportacoes({ origem: "UPLOAD", siteId, usuarioId: ctx.user.id }, resultado);
+
+    // Cada nota importada já ganha o seu recebimento: é ele que a tela abre, e
+    // criá-lo aqui evita que a nota fique num limbo sem endereço.
+    for (const r of resultado) {
+      if (r.status === "IMPORTADA" && r.inboundId) {
+        r.receiptId = await recebimentoDaNota(ctx.tenant.id, r.inboundId, ctx.user.id);
+      }
+    }
 
     revalidar();
     revalidatePath("/fiscal/notas-recebidas");
     return resultado;
   });
 }
+
+// ── Portas do XML ───────────────────────────────────────────
 
 const vincularSchema = z.object({
   inboundId: z.string().min(1),
@@ -96,7 +174,9 @@ export async function vincularPedidoAction(input: z.input<typeof vincularSchema>
       purchaseOrderId: d.purchaseOrderId,
       userId: ctx.user.id,
     });
-    revalidar(d.inboundId);
+    const receiptId = await recebimentoDaNota(ctx.tenant.id, d.inboundId, ctx.user.id);
+    revalidar(receiptId);
+    return receiptId;
   });
 }
 
@@ -112,7 +192,8 @@ export async function criarPedidoDaNotaAction(inboundId: string) {
       inboundId,
       userId: ctx.user.id,
     });
-    revalidar(inboundId);
+    const receiptId = await recebimentoDaNota(ctx.tenant.id, inboundId, ctx.user.id);
+    revalidar(receiptId);
     revalidatePath("/pedidos");
     return purchaseOrderId;
   });
@@ -128,38 +209,92 @@ export async function criarPedidoDaNotaAction(inboundId: string) {
 export async function receberSemPedidoAction(inboundId: string) {
   return tx(async (ctx) => {
     await conferirSemPedido({ tenantId: ctx.tenant.id, inboundId, userId: ctx.user.id });
-    revalidar(inboundId);
+    const receiptId = await recebimentoDaNota(ctx.tenant.id, inboundId, ctx.user.id);
+    revalidar(receiptId);
     revalidatePath("/fiscal/notas-recebidas");
+    return receiptId;
   });
 }
 
-export async function desvincularPedidoAction(inboundId: string) {
+export async function desvincularPedidoAction(input: { receiptId: string; inboundId: string }) {
   return tx(async (ctx) => {
-    await desvincularPedido({ tenantId: ctx.tenant.id, inboundId, userId: ctx.user.id });
-    revalidar(inboundId);
+    await desvincularPedido({
+      tenantId: ctx.tenant.id,
+      inboundId: input.inboundId,
+      userId: ctx.user.id,
+    });
+    await db.goodsReceipt.update({
+      where: { id: input.receiptId },
+      data: { purchaseOrderId: null, status: "PENDENTE" },
+    });
+    revalidar(input.receiptId);
   });
 }
 
 /** Refaz a conciliação — usado depois de relacionar um item ao catálogo. */
-export async function reconciliarAction(inboundId: string) {
+export async function reconciliarAction(input: { receiptId: string; inboundId: string }) {
   return tx(async (ctx) => {
-    await remontarConferencia(ctx.tenant.id, inboundId, ctx.user.id);
-    revalidar(inboundId);
+    await remontarConferencia(ctx.tenant.id, input.inboundId, ctx.user.id);
+    revalidar(input.receiptId);
   });
 }
 
+// ── XML que chega depois da mercadoria ──────────────────────
+
+const vincularNotaSchema = z.object({
+  receiptId: z.string().min(1),
+  inboundId: z.string().min(1, "Escolha a nota."),
+});
+
+/**
+ * A NF-e chegou depois. Documenta o recebimento que já existe em vez de abrir
+ * outro — é o que impede a mesma carga de entrar duas vezes.
+ */
+export async function vincularNotaAction(input: z.input<typeof vincularNotaSchema>) {
+  return tx(async (ctx) => {
+    const d = vincularNotaSchema.parse(input);
+    await vincularNotaAoRecebimento({
+      tenantId: ctx.tenant.id,
+      receiptId: d.receiptId,
+      inboundId: d.inboundId,
+      userId: ctx.user.id,
+    });
+    revalidar(d.receiptId);
+    revalidatePath("/fiscal/notas-recebidas");
+  });
+}
+
+/** O avulso era, afinal, de um pedido. */
+export async function vincularPedidoAoRecebimentoAction(input: {
+  receiptId: string;
+  purchaseOrderId: string;
+}) {
+  return tx(async (ctx) => {
+    await vincularPedidoAoRecebimento({
+      tenantId: ctx.tenant.id,
+      receiptId: input.receiptId,
+      purchaseOrderId: input.purchaseOrderId,
+      userId: ctx.user.id,
+    });
+    revalidar(input.receiptId);
+  });
+}
+
+// ── Conferência física ──────────────────────────────────────
+
 const conferirSchema = z.object({
-  inboundId: z.string().min(1),
+  receiptId: z.string().min(1),
   itemId: z.string().min(1),
   // Contagem é de PEÇA: quem está na doca conta garrafa, não meia garrafa.
   // O saldo só guarda inteiro, então aceitar 1,5 aqui só adiaria o erro para
-  // a hora de receber — e aí a nota inteira trava.
+  // a hora de receber — e aí o recebimento inteiro trava.
   qtdRecebida: z.coerce
     .number()
     .min(0)
     .int("A contagem é em unidades inteiras — o estoque não guarda meia peça.")
     .nullable()
     .optional(),
+  custoUnitario: z.coerce.number().min(0).nullable().optional(),
   lote: z.string().trim().max(60).nullable().optional(),
   validade: z
     .string()
@@ -169,32 +304,47 @@ const conferirSchema = z.object({
 });
 
 export async function conferirItemAction(input: z.input<typeof conferirSchema>) {
-  return tx(async (ctx) => {
+  return tx(async () => {
     const d = conferirSchema.parse(input);
     // Sem `?? null`: a tela salva um campo por vez, e ausente tem de chegar
     // ausente. Convertê-lo em null aqui fazia o bipe (que manda só a
-    // quantidade) apagar lote e validade — ver `conferirItem`.
-    await conferirItem({
-      tenantId: ctx.tenant.id,
-      reconciliationItemId: d.itemId,
+    // quantidade) apagar lote e validade.
+    await registrarContagem({
+      receiptId: d.receiptId,
+      itemId: d.itemId,
       qtdRecebida: d.qtdRecebida,
+      custoUnitario: d.custoUnitario,
       lote: d.lote,
       validade: d.validade,
     });
-    revalidar(d.inboundId);
+    revalidar(d.receiptId);
   });
 }
 
-export async function conferirTudoAction(inboundId: string) {
-  return tx(async (ctx) => {
-    const n = await conferirTudoConformeNota({ tenantId: ctx.tenant.id, inboundId });
-    revalidar(inboundId);
-    return n;
+/** "Conferi tudo como está" — o caminho de 90% dos recebimentos. */
+export async function conferirTudoAction(receiptId: string) {
+  return tx(async () => {
+    const linhas = await db.purchaseReconciliationItem.findMany({
+      where: { receiptId },
+      select: { id: true, qtdPedida: true, qtdFaturada: true },
+    });
+    for (const l of linhas) {
+      await db.purchaseReconciliationItem.update({
+        where: { id: l.id },
+        data: {
+          qtdRecebida: Number(l.qtdFaturada) || Number(l.qtdPedida),
+          // Bateu com o esperado: se havia ajuste registrado, ele deixa de valer.
+          resolucao: null,
+        },
+      });
+    }
+    revalidar(receiptId);
+    return linhas.length;
   });
 }
 
 const restaurarSchema = z.object({
-  inboundId: z.string().min(1),
+  receiptId: z.string().min(1),
   itens: z
     .array(
       z.object({
@@ -206,29 +356,89 @@ const restaurarSchema = z.object({
 });
 
 /**
- * Desfazer o "conferi tudo conforme a nota".
+ * Desfazer o "conferi tudo".
  *
  * A tela manda de volta o retrato que tinha antes do clique — inclusive as
  * linhas que já estavam contadas e foram sobrescritas. Sem isto, um clique
- * errado num botão sem confirmação apagava a contagem da nota inteira, e o
- * único caminho de volta era recontar.
+ * errado num botão sem confirmação apagava a contagem inteira, e o único
+ * caminho de volta era recontar.
  */
 export async function restaurarContagemAction(input: z.input<typeof restaurarSchema>) {
-  return tx(async (ctx) => {
+  return tx(async () => {
     const d = restaurarSchema.parse(input);
     for (const i of d.itens) {
-      await conferirItem({
-        tenantId: ctx.tenant.id,
-        reconciliationItemId: i.itemId,
+      await registrarContagem({
+        receiptId: d.receiptId,
+        itemId: i.itemId,
         qtdRecebida: i.qtdRecebida,
       });
     }
-    revalidar(d.inboundId);
+    revalidar(d.receiptId);
   });
 }
 
+const itemExtraSchema = z.object({
+  receiptId: z.string().min(1),
+  productId: z.string().min(1),
+  packagingId: z.string().nullable().optional(),
+  quantidade: z.coerce.number().positive("Informe a quantidade conferida."),
+  custoUnitario: z.coerce.number().min(0).default(0),
+  lote: z.string().trim().max(60).nullable().optional(),
+  validade: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Data no formato dd/mm/aaaa.")
+    .nullable()
+    .optional(),
+  bonificacao: z.boolean().default(false),
+  motivo: z.string().trim().max(240).nullable().optional(),
+});
+
+/**
+ * Item conferido que ninguém esperava — o que veio a mais no caminhão, ou a
+ * linha inteira do recebimento avulso.
+ */
+export async function adicionarItemAction(input: z.input<typeof itemExtraSchema>) {
+  return tx(async (ctx) => {
+    const d = itemExtraSchema.parse(input);
+    // A tela conta na unidade de COMPRA (caixa); a conferência pensa em peça.
+    const fator = d.packagingId
+      ? Number(
+          (
+            await db.productPackaging.findFirst({
+              where: { id: d.packagingId },
+              select: { fatorConversao: true },
+            })
+          )?.fatorConversao ?? 1,
+        ) || 1
+      : 1;
+
+    const id = await adicionarItemAoRecebimento({
+      tenantId: ctx.tenant.id,
+      receiptId: d.receiptId,
+      productId: d.productId,
+      quantidade: d.quantidade * fator,
+      custoUnitario: fator > 0 ? d.custoUnitario / fator : d.custoUnitario,
+      lote: d.lote,
+      validade: d.validade,
+      bonificacao: d.bonificacao,
+      motivo: d.motivo,
+    });
+    revalidar(d.receiptId);
+    return id;
+  });
+}
+
+export async function removerItemAction(input: { receiptId: string; itemId: string }) {
+  return tx(async () => {
+    await removerItemDoRecebimento(input);
+    revalidar(input.receiptId);
+  });
+}
+
+// ── Divergências ────────────────────────────────────────────
+
 const resolverSchema = z.object({
-  inboundId: z.string().min(1),
+  receiptId: z.string().min(1),
   itemId: z.string().min(1),
   resolucao: z.enum(["ACEITO", "IGNORADO", "AJUSTADO"]),
   // Obrigatório: divergência resolvida sem justificativa vira discussão com o
@@ -246,12 +456,12 @@ export async function resolverDivergenciaAction(input: z.input<typeof resolverSc
       motivo: d.motivo,
       userId: ctx.user.id,
     });
-    revalidar(d.inboundId);
+    revalidar(d.receiptId);
   });
 }
 
 const devolucaoSchema = z.object({
-  inboundId: z.string().min(1),
+  receiptId: z.string().min(1),
   itemId: z.string().min(1),
   quantidade: z.coerce.number().positive("Informe a quantidade devolvida."),
   motivo: z.string().trim().min(3, "Explique o motivo da devolução.").max(240),
@@ -268,7 +478,7 @@ export async function devolverDivergenciaAction(input: z.input<typeof devolucaoS
       motivo: d.motivo,
       userId: ctx.user.id,
     });
-    revalidar(d.inboundId);
+    revalidar(d.receiptId);
     revalidatePath("/estoque/saldos");
   });
 }
@@ -284,28 +494,55 @@ export async function resumoDivergenciasAction(inboundId: string) {
   );
 }
 
-export async function aceitarCustoAction(input: { inboundId: string; itemId: string }) {
+export async function aceitarCustoAction(input: { receiptId: string; itemId: string }) {
   return tx(async (ctx) => {
     await aceitarCustoDaNota({
       tenantId: ctx.tenant.id,
       reconciliationItemId: input.itemId,
       userId: ctx.user.id,
     });
-    revalidar(input.inboundId);
+    revalidar(input.receiptId);
   });
 }
 
-export async function confirmarEntradaAction(inboundId: string) {
+// ── Fechar ──────────────────────────────────────────────────
+
+const finalizarSchema = z.object({
+  receiptId: z.string().min(1),
+  motivoDivergencia: z.string().trim().max(240).nullable().optional(),
+});
+
+/** O único ponto em que a mercadoria entra no estoque. */
+export async function finalizarRecebimentoAction(input: z.input<typeof finalizarSchema>) {
   return tx(async (ctx) => {
-    const purchaseId = await confirmarEntradaConciliada({
+    const d = finalizarSchema.parse(input);
+    const r = await finalizarRecebimento({
       tenantId: ctx.tenant.id,
-      inboundId,
+      receiptId: d.receiptId,
+      motivoDivergencia: d.motivoDivergencia,
       userId: ctx.user.id,
     });
-    revalidar(inboundId);
+    revalidar(d.receiptId);
     revalidatePath("/estoque");
     revalidatePath("/inicio");
-    return purchaseId;
+    return r;
   });
 }
 
+const cancelarSchema = z.object({
+  receiptId: z.string().min(1),
+  motivo: z.string().trim().min(3, "Diga por que a conferência não vai continuar.").max(240),
+});
+
+export async function cancelarRecebimentoAction(input: z.input<typeof cancelarSchema>) {
+  return tx(async (ctx) => {
+    const d = cancelarSchema.parse(input);
+    await cancelarRecebimento({
+      tenantId: ctx.tenant.id,
+      receiptId: d.receiptId,
+      motivo: d.motivo,
+      userId: ctx.user.id,
+    });
+    revalidar(d.receiptId);
+  });
+}

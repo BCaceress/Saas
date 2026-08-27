@@ -12,6 +12,7 @@ import {
   PEDIDO_A_RECEBER,
   PEDIDO_FLUXO,
   PEDIDO_STATUS,
+  statusPedidoExibido,
   SupplierAvatar,
 } from "../cotacoes/_ui";
 import type { PedidoView } from "./_pedidos";
@@ -46,7 +47,10 @@ export function PurchaseOrderKanban({
   return (
     <div className="-mx-1 flex snap-x gap-3 overflow-x-auto px-1 pb-2">
       {PEDIDO_FLUXO.map((status) => {
-        const doStatus = pedidos.filter((p) => p.status === status);
+        // `statusPedidoExibido` porque a coluna desenha o vocabulário do
+        // pedido, não o enum: pedido gravado como EM_TRANSITO cai em
+        // Confirmado, senão sumiria do quadro.
+        const doStatus = pedidos.filter((p) => statusPedidoExibido(p.status) === status);
         const valor = doStatus.reduce((a, p) => a + p.valorTotal, 0);
         const meta = PEDIDO_STATUS[status];
         const aceita = dragging ? transicaoDrag(dragging.status, status) !== null : false;

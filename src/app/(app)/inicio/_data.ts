@@ -41,7 +41,7 @@ export type PedidoAndamento = {
   valorTotal: number;
 };
 
-const STATUS_EM_ANDAMENTO = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] as const;
+const STATUS_EM_ANDAMENTO = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] as const;
 
 export async function pedidosEmAndamento(siteId: SiteFilter): Promise<PedidoAndamento[]> {
   const hoje0 = new Date();

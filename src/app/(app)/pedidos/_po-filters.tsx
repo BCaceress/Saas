@@ -8,8 +8,8 @@ import {
   filtrosAtivos,
   PO_FILTROS_VAZIO,
   PO_STATUS_ABERTOS,
-  PO_STATUS_SALDO,
   type PoFiltros,
+  type PoRecebimento,
 } from "./_query";
 
 // ── Filtros de Pedidos ─────────────────────────────────────────
@@ -17,6 +17,18 @@ import {
 // Componente de apresentação: o estado é a URL. Filtrar agora acontece no
 // banco, então quem manda no recorte precisa ser algo que o servidor leia — e
 // de quebra o filtro passa a ser compartilhável e sobrevive ao F5.
+//
+// Status e recebimento são DOIS seletores porque são duas perguntas: "em que
+// pé está o pedido?" e "quanto já chegou?". Misturá-los num só criaria
+// pseudo-status ("aguardando recebimento", "em conferência") que não existem
+// no ciclo do pedido — esses pertencem ao recebimento, que é outra entidade.
+
+const RECEBIMENTOS: { value: PoRecebimento; label: string }[] = [
+  { value: "", label: "Recebimento: todos" },
+  { value: "sem", label: "Sem recebimento" },
+  { value: "parcial", label: "Parcial" },
+  { value: "recebido", label: "Recebido" },
+];
 
 const selectCls =
   "h-9 rounded-sm border border-line bg-surface px-2.5 text-sm text-ink focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)";
@@ -110,17 +122,26 @@ export function PurchaseOrderFilters({
         className={cn(
           selectCls,
           filtros.status === PO_STATUS_ABERTOS && "border-brand/40 bg-brand-soft text-brand",
-          filtros.status === PO_STATUS_SALDO && "border-accent/40 bg-accent-soft text-accent",
         )}
-        aria-label="Status"
+        aria-label="Status do pedido"
       >
         <option value={PO_STATUS_ABERTOS}>Em aberto</option>
         <option value="">Status: todos</option>
-        {/* Não é um status: é a fila de decisão que o parcial cria. Fica junto
-            porque é assim que o operador pensa — "me mostra o que travou". */}
-        <option value={PO_STATUS_SALDO}>Saldo sem decisão</option>
+        {/* Exatamente os seis status do ciclo do pedido — PEDIDO_STATUS é a
+            fonte única, então um status novo aparece aqui sozinho. */}
         {Object.entries(PEDIDO_STATUS).map(([k, m]) => (
           <option key={k} value={k}>{m.label}</option>
+        ))}
+      </select>
+
+      <select
+        value={filtros.recebimento}
+        onChange={(e) => set({ recebimento: e.target.value as PoRecebimento })}
+        className={cn(selectCls, filtros.recebimento && "border-accent/40 bg-accent-soft text-accent")}
+        aria-label="Recebimento"
+      >
+        {RECEBIMENTOS.map((r) => (
+          <option key={r.value} value={r.value}>{r.label}</option>
         ))}
       </select>
 

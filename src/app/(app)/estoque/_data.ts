@@ -172,7 +172,7 @@ export async function loadSaldos(
           where: {
             productId: { in: productIds },
             purchaseOrder: {
-              status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] },
+              status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] },
               ...(siteId ? { siteId } : {}),
             },
           },
@@ -918,6 +918,11 @@ export type PedidosCompraFiltro = {
   periodoDias?: number | null;
   /** Só parciais com saldo sem decisão. */
   saldoPendente?: boolean;
+  /**
+   * Quanto da mercadoria já entrou. Condição SOBRE o pedido, não status dele
+   * — por isso convive com `status` em vez de disputar o mesmo campo.
+   */
+  recebimento?: "sem" | "parcial" | "recebido" | null;
   ordem?: "recentes" | "entrega" | "valor-desc" | "valor-asc" | "numero";
   skip?: number;
 };
@@ -945,9 +950,24 @@ function wherePedidos(f: PedidosCompraFiltro, productIds: string[]) {
       ? { status: { in: f.status as never } }
       : {};
 
+  // "Já chegou?" em SQL. `qtdRecebida` só se move quando um recebimento é
+  // FINALIZADO, então ela é a fonte honesta — contar recebimentos abertos
+  // marcaria como recebido o que ainda está sendo conferido na doca.
+  const recebimento =
+    f.recebimento === "sem"
+      ? { items: { none: { qtdRecebida: { gt: 0 } } } }
+      : f.recebimento === "parcial"
+        ? { items: { some: { qtdRecebida: { gt: 0 } } }, status: { not: "RECEBIDO" as never } }
+        : f.recebimento === "recebido"
+          ? { status: "RECEBIDO" as never }
+          : {};
+
   return {
     ...(f.id ? { id: f.id } : {}),
     ...status,
+    // Depois do status de propósito: pedir "Confirmado" + "já recebido" é
+    // contraditório, e o recorte de recebimento é o mais específico.
+    ...recebimento,
     ...(f.siteId ? { siteId: f.siteId } : {}),
     ...(f.supplierId ? { supplierId: f.supplierId } : {}),
     ...(corte ? { createdAt: { gte: corte } } : {}),
@@ -1119,17 +1139,17 @@ export async function loadPedidosCompraPagina(
 }
 
 /** Status em que um pedido ainda espera mercadoria na porta. */
-const STATUS_A_RECEBER = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"];
+const STATUS_A_RECEBER = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"];
 
 export type ResumoPedidos = {
+  /** Nem concluídos, nem cancelados — o que ainda dá trabalho. */
   ativos: number;
+  /** Confirmados/enviados em que NADA chegou ainda. */
   aguardandoRecebimento: number;
-  /** Dinheiro do que AINDA NÃO CHEGOU — não o valor dos pedidos abertos. */
-  valorSaldo: number;
+  /** Já receberam alguma coisa e ainda têm saldo. */
+  parciais: number;
   entregaHoje: number;
   atrasados: number;
-  /** Parciais sem decisão sobre o saldo. */
-  saldoPendente: number;
 };
 
 /**
@@ -1137,9 +1157,13 @@ export type ResumoPedidos = {
  * mudam a cada filtro não são resumo, são ruído — o operador leria "3
  * atrasados" achando que são todos.
  *
- * `valorSaldo` conserta um número que mentia: somava `valorTotal` de todo
- * pedido a receber, inclusive parcial cuja mercadoria já está na prateleira.
- * O certo é o que falta chegar.
+ * Cada um responde a uma pergunta diferente do ciclo do PEDIDO. Nada aqui
+ * mede a operação de conferência: quantos recebimentos estão abertos ou com
+ * divergência é resumo de /recebimento, e duplicá-lo aqui faria as duas telas
+ * contarem a mesma coisa com nomes diferentes.
+ *
+ * "Aguardando recebimento" e "Parcialmente recebido" se excluem de propósito:
+ * juntos são exatamente os pedidos a receber, sem contar ninguém duas vezes.
  */
 export async function loadResumoPedidos(): Promise<ResumoPedidos> {
   const [abertos, aReceber] = await Promise.all([
@@ -1151,8 +1175,7 @@ export async function loadResumoPedidos(): Promise<ResumoPedidos> {
       select: {
         status: true,
         previsaoEntrega: true,
-        saldoResolucao: true,
-        items: { select: { tipo: true, qtdPedida: true, qtdRecebida: true, custoUnitario: true } },
+        items: { select: { qtdRecebida: true } },
       },
     }),
   ]);
@@ -1161,33 +1184,31 @@ export async function loadResumoPedidos(): Promise<ResumoPedidos> {
   hoje.setHours(0, 0, 0, 0);
   const amanha = new Date(hoje.getTime() + 864e5);
 
-  let valorSaldo = 0;
+  let aguardando = 0;
+  let parciais = 0;
   let entregaHoje = 0;
   let atrasados = 0;
-  let saldoPendente = 0;
 
   for (const p of aReceber) {
-    valorSaldo += p.items.reduce(
-      (a, i) =>
-        i.tipo === "COMPRA"
-          ? a + Math.max(0, n(i.qtdPedida) - n(i.qtdRecebida)) * n(i.custoUnitario)
-          : a,
-      0,
-    );
+    // O que separa os dois cards é a MERCADORIA, não o status: um pedido
+    // marcado RECEBIDO_PARCIAL cuja entrada foi estornada voltou a não ter
+    // nada recebido, e continuaria contado como "em andamento".
+    const chegouAlgo = p.items.some((i) => n(i.qtdRecebida) > 0);
+    if (chegouAlgo) parciais += 1;
+    else aguardando += 1;
+
     if (p.previsaoEntrega) {
       if (p.previsaoEntrega < hoje) atrasados += 1;
       else if (p.previsaoEntrega < amanha) entregaHoje += 1;
     }
-    if (p.status === "RECEBIDO_PARCIAL" && p.saldoResolucao === "PENDENTE") saldoPendente += 1;
   }
 
   return {
     ativos: abertos,
-    aguardandoRecebimento: aReceber.length,
-    valorSaldo: Math.round(valorSaldo * 100) / 100,
+    aguardandoRecebimento: aguardando,
+    parciais,
     entregaHoje,
     atrasados,
-    saldoPendente,
   };
 }
 
@@ -1263,7 +1284,7 @@ export async function loadComprasFormOptions() {
     }),
     // Itens já pedidos e não recebidos — aviso de duplicidade no form.
     db.purchaseOrderItem.findMany({
-      where: { purchaseOrder: { status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] } } },
+      where: { purchaseOrder: { status: { in: ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] } } },
       select: {
         productId: true,
         packagingId: true,

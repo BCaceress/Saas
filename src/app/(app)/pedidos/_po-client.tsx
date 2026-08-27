@@ -2,20 +2,16 @@
 
 import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Kanban, List, PackageCheck, Plus, ShoppingBag, Truck, X } from "lucide-react";
+import { Kanban, List, Plus, ShoppingBag, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Sheet } from "@/components/ui/sheet";
 import {
   cancelarPedidoCompraAction,
   enviarPedidoCompraAction,
   excluirPedidoCompraAction,
   marcarAguardandoPedidoAction,
-  marcarEmTransitoPedidoAction,
 } from "../estoque/actions";
 import { PedidoDrawer, type PedidoView } from "./_pedidos";
 import { PedidoFormSheetLazy, useFormOptions } from "./_form-options";
-import { TransferReceber, type Transfer } from "./_recebimentos";
-import { ReceberMercadoriaPanel } from "./_receber-mercadoria";
 import { useAbrirNovoPedido } from "./_novo-pedido";
 import { PurchaseOrderFilters } from "./_po-filters";
 import {
@@ -29,13 +25,19 @@ import { PurchaseOrderList, type PoAcoes } from "./_po-list";
 import { PurchaseOrderKanban } from "./_po-kanban";
 import { PurchaseOrderSummary } from "./_po-summary";
 import type { ResumoPedidos } from "../estoque/_data";
-import { relDia, transicaoDrag } from "../cotacoes/_ui";
+import { transicaoDrag } from "../cotacoes/_ui";
 
 // ── Raiz do módulo Pedidos de Compra ───────────────────────────
 // Lista e Kanban consomem exatamente os mesmos dados filtrados —
 // trocar de visualização muda só a apresentação; filtros, ordenação
 // e permissões são preservados. A preferência fica em cookie e a
 // página abre no último modo usado.
+//
+// Esta tela gerencia PEDIDOS e nada mais. Iniciar, continuar ou conferir
+// recebimento saiu daqui inteiro: pedido e recebimento são entidades
+// separadas, um pedido gera 0..N recebimentos, e a operação toda mora em
+// /recebimento. O que sobra aqui é o reflexo — a coluna Recebimento e o
+// status derivado dela.
 
 export type PoView = "lista" | "kanban";
 
@@ -48,10 +50,8 @@ export function PurchaseOrdersClient({
   filtros,
   fornecedores,
   resumo,
-  transferencias,
   empresa,
   initialView,
-  conferenciaCega,
 }: {
   /** Já é a FATIA da página — filtrar e ordenar aconteceu no banco. */
   pedidos: PedidoView[];
@@ -60,11 +60,8 @@ export function PurchaseOrdersClient({
   filtros: PoFiltros;
   fornecedores: { id: string; nome: string }[];
   resumo: ResumoPedidos;
-  transferencias: Transfer[];
   empresa: string;
   initialView: PoView;
-  /** Contagem às cegas: o esperado só aparece depois de contar. */
-  conferenciaCega: boolean;
 }) {
   const router = useRouter();
   const { options, garantir: garantirFormOptions } = useFormOptions();
@@ -90,8 +87,6 @@ export function PurchaseOrdersClient({
   );
   const [editar, setEditar] = useState<PedidoView | null>(null);
   const [duplicar, setDuplicar] = useState<PedidoView | null>(null);
-  const [receber, setReceber] = useState<PedidoView | null>(null);
-  const [receberTransfer, setReceberTransfer] = useState<Transfer | null>(null);
   const abrirNovoPedido = useAbrirNovoPedido();
 
   // Feedback do drag inválido / ações de status
@@ -116,23 +111,25 @@ export function PurchaseOrdersClient({
   }
 
   // ── Drag-and-drop: regras de negócio ──
+  //
+  // Só "enviar" e "confirmar" existem. Parcial e Concluído são derivados dos
+  // recebimentos — arrastar até eles concluiria um pedido sem ninguém ter
+  // contado a mercadoria.
   async function moverPedido(p: PedidoView, para: string) {
     const acao = transicaoDrag(p.status, para);
     if (!acao) {
-      mostrarAviso("Movimento não permitido — o pedido só avança no fluxo.");
-      return;
-    }
-    if (acao === "receber") {
-      // Concluir exige conferência — abre o recebimento em vez de trocar status direto.
-      setReceber(p);
+      mostrarAviso(
+        para === "RECEBIDO_PARCIAL" || para === "RECEBIDO"
+          ? "Isso depende do recebimento — conclua a conferência em Compras › Recebimentos."
+          : "Movimento não permitido — o pedido só avança no fluxo.",
+      );
       return;
     }
     if (acao === "enviar" && !window.confirm(`Enviar o pedido ${p.numero} ao fornecedor?`)) return;
     setMovendoId(p.id);
     try {
       if (acao === "enviar") await enviarPedidoCompraAction(p.id);
-      else if (acao === "confirmar") await marcarAguardandoPedidoAction(p.id);
-      else await marcarEmTransitoPedidoAction(p.id);
+      else await marcarAguardandoPedidoAction(p.id);
       router.refresh();
     } catch (e) {
       mostrarAviso(e instanceof Error ? e.message : "Falha ao mover o pedido.");
@@ -155,7 +152,6 @@ export function PurchaseOrdersClient({
       setDuplicar(p);
       garantirFormOptions();
     },
-    onReceber: setReceber,
     onCancelar: async (p) => {
       if (!window.confirm(`Cancelar o pedido ${p.numero}?`)) return;
       try {
@@ -182,37 +178,6 @@ export function PurchaseOrdersClient({
   return (
     <div className="flex flex-col gap-4">
       <PurchaseOrderSummary resumo={resumo} />
-
-      {/* Transferências CD→loja aguardando conferência — recebimento também mora aqui */}
-      {transferencias.length > 0 && (
-        <div className="flex flex-col gap-2">
-          {transferencias.map((t) => (
-            <div key={t.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-line bg-surface px-4 py-2.5">
-              {/* Token, não azul do Tailwind: era a única cor hardcoded do
-                  módulo e no dark mode ficava com temperatura errada ao lado
-                  do brand. Transferência é movimento interno — violeta, a mesma
-                  cor que a bonificação usa para dizer "não é compra". */}
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-sm bg-violet-soft text-violet">
-                <Truck size={15} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-ink">Transferência de {t.origemNome}</p>
-                <p className="truncate text-xs text-muted">
-                  {t.items.length} {t.items.length === 1 ? "produto" : "produtos"} em trânsito
-                  {t.expedidoEm && <> · expedida {relDia(t.expedidoEm)}</>}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setReceberTransfer(t)}
-                className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3.5 py-1.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-              >
-                <PackageCheck size={14} /> Receber
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* Toolbar: filtros à esquerda, alternador de visualização à direita —
           ambos valem para lista e kanban. */}
@@ -294,7 +259,6 @@ export function PurchaseOrdersClient({
         products={options?.products ?? []}
         onClose={() => setDetalhe(null)}
         onEditar={(p) => { setDetalhe(null); setEditar(p); }}
-        onReceber={(p) => { setDetalhe(null); setReceber(p); }}
         onStatusChanging={setStatusPendingId}
       />
 
@@ -307,22 +271,6 @@ export function PurchaseOrdersClient({
         <PedidoFormSheetLazy open onClose={() => setDuplicar(null)} mode="novo" pedido={duplicar} empresa={empresa} onDone={() => setDuplicar(null)} />
       )}
 
-      <ReceberMercadoriaPanel
-        pedido={receber}
-        open={receber !== null}
-        onClose={() => setReceber(null)}
-        cega={conferenciaCega}
-      />
-
-      <Sheet
-        open={receberTransfer !== null}
-        onClose={() => setReceberTransfer(null)}
-        title="Receber transferência"
-        description={receberTransfer ? `De ${receberTransfer.origemNome} — confira as quantidades recebidas.` : ""}
-        width="xl"
-      >
-        {receberTransfer && <TransferReceber transfer={receberTransfer} onDone={() => setReceberTransfer(null)} />}
-      </Sheet>
     </div>
   );
 }

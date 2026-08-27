@@ -592,7 +592,6 @@ const ROTULO_PEDIDO: Record<string, string> = {
   ENVIADO: "Enviado",
   AGUARDANDO: "Aguardando entrega",
   EM_TRANSITO: "Em trânsito",
-  CONFERENCIA: "Em conferência",
   RECEBIDO_PARCIAL: "Recebido parcial",
   RECEBIDO: "Recebido",
   CANCELADO: "Cancelado",

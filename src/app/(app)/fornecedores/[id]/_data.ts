@@ -7,7 +7,7 @@ import type { IndicadorIE } from "@/generated/prisma";
 // ============================================================
 
 const DIA_MS = 24 * 60 * 60 * 1000;
-const PEDIDOS_ATIVOS = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"] as const;
+const PEDIDOS_ATIVOS = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"] as const;
 
 // ── Cabeçalho (layout, vale para todas as abas) ─────────────
 

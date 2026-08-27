@@ -4,7 +4,6 @@ import {
   CalendarClock,
   CircleCheck,
   CircleX,
-  ClipboardCheck,
   Clock3,
   FilePenLine,
   Minus,
@@ -22,42 +21,61 @@ import { cn } from "@/lib/utils";
 export const fmtMoney = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 export const fmtQtd = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 
-/** Status do pedido de compra — ícone/cores/label únicos, usados em toda tela que referencia um PurchaseOrder. */
+/**
+ * Status do PEDIDO — o ciclo é só dele:
+ *
+ *   Rascunho → Enviado → Confirmado → Parcialmente recebido → Concluído
+ *                                                           ↘ Cancelado
+ *
+ * Nada aqui descreve a operação de conferência: "em conferência", "com
+ * divergência" e afins são status do RECEBIMENTO, que é outra entidade e
+ * mora em /recebimento. O pedido só reflete o RESULTADO dela.
+ */
 export const PEDIDO_STATUS: Record<string, { label: string; icon: React.ElementType; cls: string; dot: string; soft: string; text: string }> = {
-  RASCUNHO:         { label: "Rascunho",              icon: FilePenLine,  cls: "bg-surface-2 text-muted",  dot: "bg-faint",  soft: "bg-surface-2",  text: "text-muted" },
-  ENVIADO:          { label: "Enviado",               icon: Send,         cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500", soft: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400" },
-  AGUARDANDO:       { label: "Confirmado",            icon: Clock3,       cls: "bg-warn-soft text-warn",   dot: "bg-warn",   soft: "bg-warn-soft",  text: "text-warn" },
-  EM_TRANSITO:      { label: "Em trânsito",           icon: Truck,        cls: "bg-purple-500/10 text-purple-600 dark:text-purple-400", dot: "bg-purple-500", soft: "bg-purple-500/10", text: "text-purple-600 dark:text-purple-400" },
-  CONFERENCIA:      { label: "Em conferência",        icon: ClipboardCheck, cls: "bg-brand-soft text-brand", dot: "bg-brand", soft: "bg-brand-soft", text: "text-brand" },
-  RECEBIDO_PARCIAL: { label: "Recebimento pendente",  icon: PackageCheck, cls: "bg-accent-soft text-accent", dot: "bg-accent", soft: "bg-accent-soft", text: "text-accent" },
-  RECEBIDO:         { label: "Concluído",             icon: CircleCheck,  cls: "bg-ok-soft text-ok",       dot: "bg-ok",     soft: "bg-ok-soft",    text: "text-ok" },
-  CANCELADO:        { label: "Cancelado",             icon: CircleX,      cls: "bg-danger-soft text-danger", dot: "bg-danger", soft: "bg-danger-soft", text: "text-danger" },
+  RASCUNHO:         { label: "Rascunho",               icon: FilePenLine,  cls: "bg-surface-2 text-muted",  dot: "bg-faint",  soft: "bg-surface-2",  text: "text-muted" },
+  ENVIADO:          { label: "Enviado",                icon: Send,         cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500", soft: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400" },
+  AGUARDANDO:       { label: "Confirmado",             icon: Clock3,       cls: "bg-warn-soft text-warn",   dot: "bg-warn",   soft: "bg-warn-soft",  text: "text-warn" },
+  RECEBIDO_PARCIAL: { label: "Parcialmente recebido",  icon: PackageCheck, cls: "bg-accent-soft text-accent", dot: "bg-accent", soft: "bg-accent-soft", text: "text-accent" },
+  RECEBIDO:         { label: "Concluído",              icon: CircleCheck,  cls: "bg-ok-soft text-ok",       dot: "bg-ok",     soft: "bg-ok-soft",    text: "text-ok" },
+  CANCELADO:        { label: "Cancelado",              icon: CircleX,      cls: "bg-danger-soft text-danger", dot: "bg-danger", soft: "bg-danger-soft", text: "text-danger" },
 };
 
+/**
+ * EM_TRANSITO saiu do vocabulário do pedido — "a mercadoria está a caminho"
+ * descreve a entrega, não o pedido, e a entrega agora é assunto de
+ * /recebimento. O valor continua no enum do banco por causa dos pedidos que
+ * já foram gravados assim; toda leitura passa por aqui e o vê como
+ * Confirmado, que é o estado real dele (o fornecedor confirmou e nada chegou).
+ */
+export const statusPedidoExibido = (status: string) =>
+  status === "EM_TRANSITO" ? "AGUARDANDO" : status;
+
 /** Pedidos que ainda vão gerar entrada no estoque (tudo menos concluído/cancelado). */
-export const PEDIDO_ABERTO = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"];
+export const PEDIDO_ABERTO = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"];
 /** Abertos já enviados (têm prazo de entrega relevante). */
-export const PEDIDO_A_RECEBER = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL"];
+export const PEDIDO_A_RECEBER = ["ENVIADO", "AGUARDANDO", "EM_TRANSITO", "RECEBIDO_PARCIAL"];
 
 /** Ordem do fluxo — colunas do kanban. CANCELADO fica fora (só na lista). */
-export const PEDIDO_FLUXO = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "EM_TRANSITO", "CONFERENCIA", "RECEBIDO_PARCIAL", "RECEBIDO"] as const;
+export const PEDIDO_FLUXO = ["RASCUNHO", "ENVIADO", "AGUARDANDO", "RECEBIDO_PARCIAL", "RECEBIDO"] as const;
 
 /**
  * Transições permitidas por drag-and-drop no kanban. Avançar segue o fluxo;
- * voltar nunca. RECEBIDO_PARCIAL/RECEBIDO não são setáveis por arraste direto —
- * dependem da conferência do recebimento ("receber" abre o fluxo de conferência).
+ * voltar nunca.
+ *
+ * Só as duas primeiras existem: RECEBIDO_PARCIAL e RECEBIDO são DERIVADOS dos
+ * recebimentos do pedido, não estados que alguém escolhe. Arrastar um card
+ * para "Concluído" concluiria um pedido sem ninguém ter contado a mercadoria.
  */
-export function transicaoDrag(de: string, para: string): "enviar" | "confirmar" | "transito" | "receber" | null {
+export function transicaoDrag(de: string, para: string): "enviar" | "confirmar" | null {
   if (de === para) return null;
   if (de === "RASCUNHO" && para === "ENVIADO") return "enviar";
   if (de === "ENVIADO" && para === "AGUARDANDO") return "confirmar";
-  if ((de === "ENVIADO" || de === "AGUARDANDO") && para === "EM_TRANSITO") return "transito";
-  if (PEDIDO_A_RECEBER.includes(de) && para === "RECEBIDO") return "receber";
   return null;
 }
 
 export function StatusBadge({ status }: { status: string }) {
-  const m = PEDIDO_STATUS[status] ?? { label: status, icon: FilePenLine, cls: "bg-surface-2 text-muted" };
+  const chave = statusPedidoExibido(status);
+  const m = PEDIDO_STATUS[chave] ?? { label: chave, icon: FilePenLine, cls: "bg-surface-2 text-muted" };
   const Icon = m.icon;
   return (
     <span className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold", m.cls)}>

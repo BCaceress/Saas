@@ -17,7 +17,6 @@ const PEDIDOS_ABERTOS = [
   "ENVIADO",
   "AGUARDANDO",
   "EM_TRANSITO",
-  "CONFERENCIA",
   "RECEBIDO_PARCIAL",
 ] as const;
 

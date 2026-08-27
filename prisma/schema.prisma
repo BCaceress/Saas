@@ -613,8 +613,7 @@ enum PurchaseOrderStatus {
   ENVIADO // enviado ao fornecedor 🔵
   AGUARDANDO // confirmado pelo fornecedor, aguardando entrega 🟡
   EM_TRANSITO // mercadoria a caminho 🟣
-  CONFERENCIA // XML conciliado, conferência física em andamento 🔷
-  RECEBIDO_PARCIAL // recebimento pendente (chegou em parte) 🟠
+  RECEBIDO_PARCIAL // chegou em parte — derivado dos recebimentos 🟠
   RECEBIDO // concluído ✅
   CANCELADO // 🔴
 }
@@ -956,6 +955,7 @@ model Supplier {
   fiscalDocuments FiscalDocument[]
   fiscalInbounds  FiscalInbound[]
   itemMaps        SupplierItemMap[]
+  recebimentos    GoodsReceipt[]
 
   integration  SupplierIntegration?
   catalogs     SupplierCatalog[]
@@ -1171,7 +1171,6 @@ model Product {
   copoMl      Decimal?    @db.Decimal(10, 2) // tamanho do copo (drink) — tamanho único
   modoPreparo String?
 
-
   vendeOnline     Boolean  @default(false)
   pesoGramas      Int?
   alturaCm        Decimal? @db.Decimal(6, 2)
@@ -1187,16 +1186,16 @@ model Product {
   subcategory   Subcategory?   @relation(fields: [subcategoryId], references: [id])
   fiscalProfile FiscalProfile? @relation(fields: [fiscalProfileId], references: [id])
 
-  stocks           Stock[]
-  lots             StockLot[]
-  packagings       ProductPackaging[]
-  components       ProductComponent[]       @relation("ParentProduct")
-  usedInRecipes    ProductComponent[]       @relation("ComponentProduct")
-  componentGroups  ProductComponentGroup[]
-  variants         ProductVariant[]
-  tags             ProductTag[]
-  salesChannels    ProductSalesChannel[]
-  suppliers        ProductSupplier[]
+  stocks          Stock[]
+  lots            StockLot[]
+  packagings      ProductPackaging[]
+  components      ProductComponent[]      @relation("ParentProduct")
+  usedInRecipes   ProductComponent[]      @relation("ComponentProduct")
+  componentGroups ProductComponentGroup[]
+  variants        ProductVariant[]
+  tags            ProductTag[]
+  salesChannels   ProductSalesChannel[]
+  suppliers       ProductSupplier[]
 
   promotions ProductPromotion[]
 
@@ -1377,7 +1376,6 @@ model ProductVariant {
   @@index([productId])
 }
 
-
 model Tag {
   id       String @id @default(cuid())
   tenantId String
@@ -1473,6 +1471,7 @@ model Site {
   promotions         ProductPromotion[]
   fiscalEmailInboxes FiscalEmailInbox[]
   devolucoes         SupplierReturn[]
+  recebimentos       GoodsReceipt[]
 
   @@unique([tenantId, nome])
   @@index([tenantId])
@@ -1556,10 +1555,27 @@ model Purchase {
   supplierId      String?
   purchaseOrderId String? // entrada gerada pela conferência de um pedido de compra
   numeroNota      String?
-  data            DateTime        @default(now())
-  observacao      String?
-  createdAt       DateTime        @default(now())
-  createdBy       String?
+
+  /// Número do RECEBIMENTO (REC-00087) — o que o operador fala ao telefone.
+  ///
+  /// De propósito NÃO é único: uma conferência com bonificação gera duas
+  /// linhas aqui (compra e bonificação entram em Purchases separadas, para o
+  /// histórico do produto e o financeiro não confundirem as origens), e as
+  /// duas são o MESMO recebimento físico. O número é a identidade do evento,
+  /// não da linha — é por ele que a tela de Recebimentos agrupa.
+  ///
+  /// Nulo nas entradas anteriores à numeração.
+  numero String?
+
+  /// Recebimento (GoodsReceipt) que gerou esta entrada. É ELE a identidade do
+  /// que chegou; esta linha é só o lançamento na razão do estoque. Nulo nas
+  /// entradas anteriores ao modelo de recebimento e nos ajustes sem doca
+  /// (estoque inicial, transferência, produção).
+  receiptId  String?
+  data       DateTime @default(now())
+  observacao String?
+  createdAt  DateTime @default(now())
+  createdBy  String?
 
   // Entrada lançada à mão sem documento: fica marcada esperando o XML que vai
   // chegar depois (upload, e-mail ou SEFAZ). Sem isto, a mesma mercadoria
@@ -1578,11 +1594,13 @@ model Purchase {
   site          Site             @relation(fields: [siteId], references: [id])
   supplier      Supplier?        @relation(fields: [supplierId], references: [id])
   purchaseOrder PurchaseOrder?   @relation(fields: [purchaseOrderId], references: [id])
+  receipt       GoodsReceipt?    @relation(fields: [receiptId], references: [id], onDelete: SetNull)
   items         PurchaseItem[]
   fiscalDocs    FiscalDocument[]
   fiscalInbound FiscalInbound?
   titulos       AccountPayable[]
   devolucoes    SupplierReturn[]
+  eventos       PurchaseEvent[]
 
   @@index([tenantId])
   @@index([siteId])
@@ -1590,6 +1608,9 @@ model Purchase {
   @@index([purchaseOrderId])
   @@index([tenantId, aguardandoDocumento])
   @@index([chaveNfe])
+  @@index([tenantId, numero])
+  @@index([tenantId, data])
+  @@index([receiptId])
 }
 
 // Pedido de compra ao fornecedor (PC-00125). Ciclo: rascunho → enviado →
@@ -1634,6 +1655,7 @@ model PurchaseOrder {
   pedidosSaldo PurchaseOrder[]              @relation("SaldoPedido")
   items        PurchaseOrderItem[]
   entradas     Purchase[]
+  recebimentos GoodsReceipt[]
   inbounds     FiscalInbound[]
   conciliacao  PurchaseReconciliationItem[]
   eventos      PurchaseEvent[]
@@ -1650,6 +1672,105 @@ model PurchaseOrder {
   @@index([tenantId, status, saldoResolucao])
 }
 
+// ============================================================
+// RECEBIMENTO — o que chegou na doca.
+//
+// Pedido e Recebimento são entidades diferentes do MESMO fluxo de compra. O
+// pedido NÃO vira recebimento: ele continua existindo e pode gerar zero, um
+// ou vários recebimentos.
+//
+//   PEDIDO ──┬── RECEBIMENTO 1 (60 de 100)
+//            └── RECEBIMENTO 2 (40 de 100)
+//
+// E o inverso também vale: recebimento sem pedido (a NF-e que ninguém pediu,
+// ou a mercadoria que chegou sem documento nenhum) é caso legítimo, não erro.
+// Por isso `purchaseOrderId` e `inboundId` são NULOS aqui — nenhum dos dois
+// é condição para a mercadoria existir.
+//
+// O recebimento é dono da conferência (PurchaseReconciliationItem) e do
+// status próprio dela. O estoque só se move quando ele é FINALIZADO — o
+// pedido, sozinho, nunca movimenta saldo.
+// ============================================================
+
+/// Situação do recebimento. É o ciclo da DOCA, separado do ciclo do pedido:
+/// "pedido confirmado + recebimento em conferência" é combinação normal.
+enum GoodsReceiptStatus {
+  PENDENTE // aberto, ainda sem nada contado (XML sem de-para, por exemplo)
+  EM_CONFERENCIA // alguém está contando
+  DIVERGENCIA // conferido, mas o que chegou não bate — falta decidir
+  FINALIZADO // entrou no estoque
+  CANCELADO // conferência abandonada — não movimentou nada
+}
+
+/// De onde este recebimento nasceu. Não é o mesmo que "tem pedido": um
+/// recebimento de origem XML pode ganhar pedido depois, e um de origem PEDIDO
+/// pode ganhar NF-e depois.
+enum GoodsReceiptOrigem {
+  PEDIDO // "Iniciar recebimento" a partir de um pedido
+  XML // NF-e importada (upload, e-mail ou SEFAZ)
+  AVULSO // mercadoria na porta sem pedido e sem nota
+}
+
+model GoodsReceipt {
+  id       String @id @default(cuid())
+  tenantId String
+  siteId   String // onde a mercadoria entra
+
+  /// REC-00087 — o número que o operador fala ao telefone.
+  numero String
+
+  status GoodsReceiptStatus @default(EM_CONFERENCIA)
+  origem GoodsReceiptOrigem
+
+  /// 0 ou 1 pedido. Nulo = recebimento avulso (nunca houve pedido) — e isso
+  /// NÃO é resolvido criando um pedido retroativo por baixo do pano.
+  purchaseOrderId String?
+
+  /// 0 ou 1 NF-e. Pode chegar depois da mercadoria: o XML não controla a
+  /// existência do recebimento, só o documenta.
+  inboundId String? @unique
+
+  supplierId String?
+
+  /// Fornecedor digitado quando não há cadastro nem nota (avulso na correria).
+  fornecedorLivre String?
+
+  /// Número da nota no papel, quando o XML não veio (o canhoto que o
+  /// entregador deixou). Não substitui o documento fiscal: a entrada segue
+  /// marcada como aguardando o XML.
+  numeroNota String?
+
+  observacao        String?
+  /// Por que a conferência foi encerrada com diferença. Obrigatório na tela
+  /// quando o recebimento fecha em DIVERGENCIA.
+  divergenciaMotivo String?
+
+  iniciadoEm      DateTime  @default(now())
+  finalizadoEm    DateTime?
+  canceladoEm     DateTime?
+  canceladoMotivo String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+
+  site          Site                         @relation(fields: [siteId], references: [id])
+  supplier      Supplier?                    @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  purchaseOrder PurchaseOrder?               @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  inbound       FiscalInbound?               @relation(fields: [inboundId], references: [id], onDelete: SetNull)
+  itens         PurchaseReconciliationItem[]
+  entradas      Purchase[]
+  eventos       PurchaseEvent[]
+
+  @@unique([tenantId, numero])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([siteId])
+  @@index([supplierId])
+  @@index([purchaseOrderId])
+  @@index([tenantId, iniciadoEm])
+}
+
 model PurchaseOrderItem {
   id                String             @id @default(cuid())
   tenantId          String
@@ -1662,7 +1783,6 @@ model PurchaseOrderItem {
   custoUnitario     Decimal            @default(0) @db.Decimal(12, 2) // custo por unidade de compra — sempre 0 quando tipo != COMPRA
   qtdRecebida       Decimal            @default(0) @db.Decimal(12, 3) // acumulado conferido
   observacao        String? // nota do item ("trocar por validade longa", etc.)
-
 
   purchaseOrder PurchaseOrder                @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   conciliacao   PurchaseReconciliationItem[]
@@ -1680,7 +1800,6 @@ model PurchaseItem {
   packagingId String?
   quantidade  Decimal @db.Decimal(12, 3)
   custoTotal  Decimal @db.Decimal(12, 2)
-
 
   purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
 
@@ -2928,6 +3047,7 @@ model FiscalInbound {
   xmlArquivo    FiscalInboundXml?
   duplicatas    FiscalInboundDuplicata[]
   conciliacao   PurchaseReconciliationItem[]
+  receipt       GoodsReceipt?
   eventos       PurchaseEvent[]
   titulos       AccountPayable[]
   devolucoes    SupplierReturn[]
@@ -3045,7 +3165,13 @@ enum ReconciliationResolucao {
 model PurchaseReconciliationItem {
   id                  String  @id @default(cuid())
   tenantId            String
-  inboundId           String
+  /// Recebimento dono da linha. É a espinha: a conferência existe com XML, só
+  /// com pedido, ou com nenhum dos dois — o que nunca falta é o recebimento.
+  /// Nulo apenas nas linhas anteriores à migração.
+  receiptId           String?
+  /// Nota que faturou esta linha. Nulo no recebimento sem XML (de pedido ou
+  /// avulso) e enquanto o XML ainda não chegou.
+  inboundId           String?
   /// Nulo = recebimento sem pedido: a conferência é da NOTA contra o que
   /// chegou na porta. Não há camada de pedido para comparar, e inventar uma
   /// (retroativa) faria a tela mostrar "pedi 48" de algo que ninguém pediu.
@@ -3076,12 +3202,14 @@ model PurchaseReconciliationItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  inbound       FiscalInbound      @relation(fields: [inboundId], references: [id], onDelete: Cascade)
+  receipt       GoodsReceipt?      @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  inbound       FiscalInbound?     @relation(fields: [inboundId], references: [id], onDelete: Cascade)
   purchaseOrder PurchaseOrder?     @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   orderItem     PurchaseOrderItem? @relation(fields: [purchaseOrderItemId], references: [id], onDelete: SetNull)
   inboundItem   FiscalInboundItem? @relation(fields: [inboundItemId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
+  @@index([receiptId])
   @@index([inboundId])
   @@index([purchaseOrderId])
   @@index([productId])
@@ -3090,6 +3218,8 @@ model PurchaseReconciliationItem {
 /// Marcos do pedido de compra — a timeline. Cada transição vira uma linha;
 /// nada aqui é derivado de status, porque status só guarda o "agora".
 enum PurchaseEventType {
+  RECEBIMENTO_INICIADO // alguém abriu a doca para este pedido/nota
+  RECEBIMENTO_CANCELADO // conferência abandonada — nada entrou
   PEDIDO_CRIADO
   PEDIDO_ENVIADO
   PEDIDO_CONFIRMADO
@@ -3117,6 +3247,15 @@ model PurchaseEvent {
   /// único sem história — e é justamente o que mais precisa dela.
   purchaseOrderId String?
   inboundId       String?
+  /// Recebimento (entrada) exato que gerou o evento. Um pedido pode ter
+  /// vários recebimentos parciais — sem isto, "este recebimento teve
+  /// divergência?" só tinha resposta lendo a linha do tempo do pedido
+  /// inteiro por extenso.
+  purchaseId      String?
+  /// Recebimento a que o evento pertence, quando nasceu na doca. É por ele que
+  /// a tela de UM recebimento mostra a sua própria história, e não a do pedido
+  /// inteiro — que pode ter três recebimentos e três conversas diferentes.
+  receiptId       String?
   tipo            PurchaseEventType
   descricao       String
   meta            Json? // detalhe da linha (item, quantidades, custos)
@@ -3125,10 +3264,14 @@ model PurchaseEvent {
 
   purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   inbound       FiscalInbound? @relation(fields: [inboundId], references: [id], onDelete: SetNull)
+  purchase      Purchase?      @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  receipt       GoodsReceipt?  @relation(fields: [receiptId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
   @@index([purchaseOrderId, createdAt])
   @@index([inboundId, createdAt])
+  @@index([purchaseId])
+  @@index([receiptId, createdAt])
 }
 
 // De-para persistido fornecedor↔catálogo. Escrito quando o operador relaciona

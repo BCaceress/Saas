@@ -1,208 +1,23 @@
 import "server-only";
-import { db, basePrisma, comTenant } from "@/lib/prisma";
-import { proximoNumeroPedido } from "@/lib/estoque";
+import { db } from "@/lib/prisma";
 import { registrarEvento } from "@/lib/compras/eventos";
-import type { PurchaseOrderOrigem } from "@/generated/prisma";
 
 // ============================================================
-// Documento de Compra — a espinha de tudo que entra na loja.
+// Entrada lançada à mão × XML que chega depois.
 //
-// Havia cinco portas de entrada e só duas deixavam rastro de pedido. XML sem
-// pedido já criava um retroativo; NF-e capturada no DFe e lançamento manual
-// não criavam nada — a mercadoria aparecia no saldo sem documento por trás.
+// A mercadoria chega antes do papel o tempo todo: o entregador deixa a carga,
+// o XML do fornecedor cai no e-mail dois dias depois. A entrada fica marcada
+// como `aguardandoDocumento`, e quando a nota chega ela é oferecida para
+// VINCULAR em vez de gerar estoque de novo — é o que impede a mesma carga de
+// entrar duas vezes.
 //
-// Aqui o pedido deixa de ser "o que eu planejei comprar" e passa a ser "o
-// documento daquilo que entrou". Quando houve planejamento, ele nasce antes;
-// quando não houve, nasce retroativo, marcado com a origem real. A pergunta
-// "de onde veio esta mercadoria?" passa a ter resposta sempre.
-//
-// O outro lado do mesmo problema mora aqui também: uma entrada lançada à mão
-// fica marcada como `aguardandoDocumento`, e quando o XML chega (upload, IMAP
-// ou SEFAZ) ele é oferecido para VINCULAR em vez de gerar estoque de novo.
+// O que MORAVA aqui e não mora mais: o "pedido retroativo". Toda entrada sem
+// pedido criava um PurchaseOrder para "ter documento", e /pedidos acabava
+// listando compras que ninguém planejou. Hoje quem documenta o que chegou é o
+// RECEBIMENTO (`lib/compras/recebimento.ts`), que existe com pedido, com nota,
+// com os dois ou com nenhum. Pedido responde "o que eu comprei?"; recebimento
+// responde "o que chegou?" — e um não precisa inventar o outro.
 // ============================================================
-
-export type ItemRetroativo = {
-  productId: string;
-  /** Variação comercial (sabor/cor) que entrou nesta linha, quando houver. */
-  packagingId?: string | null;
-  /** Quantidade na unidade de COMPRA (o fator do pacote é do cadastro). */
-  quantidade: number;
-  custoUnitario: number;
-  bonificacao?: boolean;
-};
-
-/**
- * Cria o pedido que documenta uma entrada que não teve pedido. Nasce já
- * RECEBIDO — não existe "aguardando" para algo que já está na prateleira.
- */
-export async function criarPedidoRetroativo(input: {
-  tenantId: string;
-  siteId: string;
-  supplierId: string;
-  origem: PurchaseOrderOrigem;
-  itens: ItemRetroativo[];
-  dataDocumento?: Date | null;
-  observacao?: string | null;
-  userId?: string | null;
-}): Promise<{ id: string; numero: string }> {
-  const { tenantId, siteId, supplierId, origem, itens } = input;
-  const validos = itens.filter((i) => i.productId && i.quantidade > 0);
-  if (validos.length === 0) {
-    throw new Error("Não há itens com produto para documentar esta entrada.");
-  }
-
-  const numero = await proximoNumeroPedido(tenantId);
-  const recebidoEm = input.dataDocumento ?? new Date();
-  const valorTotal = validos.reduce(
-    (a, i) => a + (i.bonificacao ? 0 : i.quantidade * i.custoUnitario),
-    0,
-  );
-
-  const po = await basePrisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT set_config('app.current_tenant', ${tenantId}, TRUE)`;
-    return tx.purchaseOrder.create({
-      data: {
-        tenantId,
-        siteId,
-        supplierId,
-        numero,
-        origem,
-        status: "RECEBIDO",
-        // Um retroativo nunca teve saldo em aberto: o que chegou é tudo o que
-        // foi "pedido". Marcar ENCERRADO evita que ele apareça na fila de
-        // pendências de saldo junto com pedidos de verdade.
-        saldoResolucao: "ENCERRADO",
-        saldoResolvidoEm: recebidoEm,
-        saldoMotivo: "Pedido criado a partir da entrada — não houve saldo.",
-        recebidoEm,
-        enviadoEm: recebidoEm,
-        confirmadoEm: recebidoEm,
-        valorTotal,
-        observacao: input.observacao ?? null,
-        createdBy: input.userId ?? null,
-        items: {
-          create: validos.map((i) => ({
-            tenantId,
-            productId: i.productId,
-            packagingId: i.packagingId ?? null,
-            tipo: i.bonificacao ? "BONIFICACAO" : "COMPRA",
-            motivoBonificacao: i.bonificacao ? "COMERCIAL" : null,
-            qtdPedida: i.quantidade,
-            qtdRecebida: i.quantidade,
-            custoUnitario: i.bonificacao ? 0 : i.custoUnitario,
-          })),
-        },
-      },
-      select: { id: true, numero: true },
-    });
-  });
-
-  await registrarEvento({
-    tenantId,
-    purchaseOrderId: po.id,
-    tipo: "PEDIDO_CRIADO",
-    descricao: `Pedido ${numero} criado a partir da entrada (${rotuloOrigem(origem)}).`,
-    createdBy: input.userId,
-  });
-
-  return po;
-}
-
-export function rotuloOrigem(o: PurchaseOrderOrigem): string {
-  switch (o) {
-    case "COTACAO": return "cotação";
-    case "REPOSICAO": return "reposição";
-    case "CARRINHO": return "comparador";
-    case "XML": return "XML importado";
-    case "DFE": return "NF-e capturada na SEFAZ";
-    case "ENTRADA_MANUAL": return "lançamento manual";
-    default: return "pedido direto";
-  }
-}
-
-/**
- * Garante que a nota tenha um pedido por trás. Chamado antes de gerar estoque:
- * a nota que veio do DFe (ninguém pediu, o fornecedor mandou) sai daqui com o
- * mesmo documento que a nota conciliada tem.
- */
-export async function garantirPedidoDaNota(input: {
-  tenantId: string;
-  inboundId: string;
-  origem: PurchaseOrderOrigem;
-  userId?: string | null;
-}): Promise<string | null> {
-  const nota = await db.fiscalInbound.findFirst({
-    where: { id: input.inboundId },
-    select: {
-      id: true,
-      siteId: true,
-      supplierId: true,
-      purchaseOrderId: true,
-      numero: true,
-      serie: true,
-      dataEmissao: true,
-      emitRazaoSocial: true,
-      items: {
-        select: {
-          productId: true,
-          packagingId: true,
-          quantidade: true,
-          fatorConversao: true,
-          valorTotal: true,
-          bonificacao: true,
-        },
-      },
-    },
-  });
-  if (!nota) throw new Error("Nota não encontrada.");
-  if (nota.purchaseOrderId) return nota.purchaseOrderId;
-  if (!nota.supplierId) return null;
-
-  const itens: ItemRetroativo[] = nota.items
-    .filter((i) => i.productId)
-    .map((i) => {
-      // O pedido guarda a unidade de COMPRA (o que o fornecedor cobra), não a
-      // unidade base — é assim que o pedido feito à mão registra, e misturar as
-      // duas faria a conferência comparar caixa com garrafa.
-      const qtd = Number(i.quantidade);
-      return {
-        productId: i.productId as string,
-        packagingId: i.packagingId,
-        quantidade: qtd,
-        custoUnitario: qtd > 0 ? Number(i.valorTotal) / qtd : 0,
-        bonificacao: i.bonificacao,
-      };
-    });
-
-  if (itens.length === 0) return null;
-
-  const po = await criarPedidoRetroativo({
-    tenantId: input.tenantId,
-    siteId: nota.siteId,
-    supplierId: nota.supplierId,
-    origem: input.origem,
-    itens,
-    dataDocumento: nota.dataEmissao,
-    observacao: `Gerado pela NF-e ${nota.numero}/${nota.serie} — ${nota.emitRazaoSocial}`,
-    userId: input.userId,
-  });
-
-  await db.fiscalInbound.update({
-    where: { id: nota.id },
-    data: { purchaseOrderId: po.id, conciliadoEm: new Date(), vinculoAutomatico: true },
-  });
-
-  await registrarEvento({
-    tenantId: input.tenantId,
-    purchaseOrderId: po.id,
-    inboundId: nota.id,
-    tipo: "XML_RECEBIDO",
-    descricao: `NF-e ${nota.numero}/${nota.serie} originou este pedido.`,
-    createdBy: input.userId,
-  });
-
-  return po.id;
-}
 
 // ── Entrada manual × XML que chega depois ─────────────────────
 
@@ -328,7 +143,13 @@ export async function vincularNotaAEntradaManual(input: {
 
   const entrada = await db.purchase.findFirst({
     where: { id: purchaseId },
-    select: { id: true, chaveNfe: true, purchaseOrderId: true, aguardandoDocumento: true },
+    select: {
+      id: true,
+      chaveNfe: true,
+      purchaseOrderId: true,
+      receiptId: true,
+      aguardandoDocumento: true,
+    },
   });
   if (!entrada) throw new Error("Entrada não encontrada.");
   if (entrada.chaveNfe) {
@@ -345,6 +166,23 @@ export async function vincularNotaAEntradaManual(input: {
     },
   });
 
+  // O XML chegou DEPOIS da mercadoria — cenário obrigatório, não exceção. Ele
+  // documenta o recebimento que já existe em vez de abrir outro; é isto que
+  // impede a mesma carga de entrar duas vezes.
+  if (entrada.receiptId) {
+    const jaVinculada = await db.goodsReceipt.findFirst({
+      where: { inboundId, id: { not: entrada.receiptId } },
+      select: { numero: true },
+    });
+    if (jaVinculada) {
+      throw new Error(`Esta nota já documenta o recebimento ${jaVinculada.numero}.`);
+    }
+    await db.goodsReceipt.update({
+      where: { id: entrada.receiptId },
+      data: { inboundId, numeroNota: `${nota.numero}/${nota.serie}` },
+    });
+  }
+
   await db.fiscalInbound.update({
     where: { id: inboundId },
     data: {
@@ -358,22 +196,15 @@ export async function vincularNotaAEntradaManual(input: {
   });
 
   const pedidoId = nota.purchaseOrderId ?? entrada.purchaseOrderId;
-  if (pedidoId) {
+  if (pedidoId || entrada.receiptId) {
     await registrarEvento({
       tenantId,
       purchaseOrderId: pedidoId,
       inboundId,
+      receiptId: entrada.receiptId,
       tipo: "DOCUMENTO_VINCULADO",
       descricao: `NF-e ${nota.numero}/${nota.serie} documentou a entrada lançada à mão — estoque não movimentado de novo.`,
       createdBy: userId,
     });
   }
-}
-
-/** Quantas entradas manuais ainda esperam documento — vira alerta na tela. */
-export async function contarAguardandoDocumento(tenantId: string): Promise<number> {
-  return comTenant(
-    tenantId,
-    basePrisma.purchase.count({ where: { tenantId, aguardandoDocumento: true, chaveNfe: null } }),
-  );
 }

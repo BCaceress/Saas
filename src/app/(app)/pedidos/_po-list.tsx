@@ -3,16 +3,22 @@
 import {
   ChevronLeft,
   ChevronRight,
+  CircleX,
+  Copy,
+  Eye,
   FileText,
   Gift,
   Loader2,
-  PackageCheck,
+  MoreHorizontal,
   PackageX,
+  Pencil,
   Receipt,
+  Trash2,
   TriangleAlert,
   Truck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import {
   fmtMoney,
   previsaoLabel,
@@ -24,6 +30,12 @@ import {
 import type { PedidoView } from "./_pedidos";
 
 // ── Visualização em lista — análise, busca e produtividade ─────
+//
+// Só ações do PEDIDO moram aqui. "Iniciar recebimento" saiu da linha de
+// propósito: receber é uma operação com fila, conferência e divergência
+// próprias, e ela vive inteira em /recebimento. Esta tela responde "quais
+// pedidos eu tenho e em que situação estão?" — a coluna Recebimento mostra o
+// RESULTADO da outra tela, sem virar um atalho para executá-la.
 
 export type PoAcoes = {
   onVer: (p: PedidoView) => void;
@@ -31,8 +43,53 @@ export type PoAcoes = {
   onDuplicar: (p: PedidoView) => void;
   onCancelar: (p: PedidoView) => void;
   onExcluir: (p: PedidoView) => void;
-  onReceber: (p: PedidoView) => void;
 };
+
+/**
+ * "60/100 — 60%": quanto do pedido já chegou.
+ *
+ * A conta sai de `qtdRecebida` dos itens, que só se move quando um recebimento
+ * é FINALIZADO. Contar recebimentos daria outro número (e o errado): dois
+ * podem somar 40%, um só pode somar 100%.
+ */
+function progressoDoPedido(p: PedidoView): { pedido: number; recebido: number; pct: number } {
+  const pedido = p.items.reduce((a, i) => a + i.qtdPedida, 0);
+  const recebido = p.items.reduce((a, i) => a + Math.min(i.qtdRecebida, i.qtdPedida), 0);
+  return { pedido, recebido, pct: pedido > 0 ? Math.round((recebido / pedido) * 100) : 0 };
+}
+
+const fmtQtdCurta = (v: number) =>
+  Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/0+$/, "").replace(/[.,]$/, "");
+
+/**
+ * O medidor do recebimento — a resposta de "já chegou?" sem abrir o pedido.
+ *
+ * Informativo, e só. Ele mostra o que a tela de Recebimentos produziu; clicar
+ * nele não inicia nada, porque o pedido não vira recebimento — ele ganha
+ * recebimentos, que nascem do outro lado.
+ */
+function ProgressoRecebimento({ pedido: p }: { pedido: PedidoView }) {
+  const { pedido, recebido, pct } = progressoDoPedido(p);
+  if (pedido <= 0) return <span className="text-[11px] text-faint">—</span>;
+
+  const completo = pct >= 100;
+  return (
+    <span className="flex min-w-24 flex-col gap-1">
+      <span className="whitespace-nowrap text-[12px] tabular-nums text-ink-2">
+        {fmtQtdCurta(recebido)}/{fmtQtdCurta(pedido)} un.
+        <span className={cn("ml-1", completo ? "text-ok" : recebido > 0 ? "text-accent" : "text-faint")}>
+          {pct}%
+        </span>
+      </span>
+      <span className="flex h-1 w-full overflow-hidden rounded-full bg-surface-2" aria-hidden>
+        <span
+          className={cn("h-full transition-[width] duration-300 motion-reduce:transition-none", completo ? "bg-ok" : "bg-accent")}
+          style={{ width: `${Math.min(100, pct)}%` }}
+        />
+      </span>
+    </span>
+  );
+}
 
 function previsaoComAno(iso: string | null): string {
   if (!iso) return previsaoLabel(iso);
@@ -163,6 +220,7 @@ export function PurchaseOrderList({
               <th className="px-4 py-2.5">Pedido</th>
               <th className="px-4 py-2.5">Fornecedor</th>
               <th className="px-4 py-2.5">Status</th>
+              <th className="px-4 py-2.5">Recebimento</th>
               <th className="px-4 py-2.5 text-right">Valor</th>
               <th className="px-4 py-2.5">Entrega prevista</th>
               <th className="w-px px-4 py-2.5" />
@@ -242,6 +300,9 @@ export function PurchaseOrderRow({
           <PurchaseOrderStatusBadge status={p.status} />
         )}
       </td>
+      <td className="px-4 py-2.5">
+        <ProgressoRecebimento pedido={p} />
+      </td>
       <td className="px-4 py-2.5 text-right">
         <span className="block font-medium tabular-nums text-ink">{fmtMoney(p.valorTotal)}</span>
         {/* Em pedido parcial o total já não é o que interessa: o que interessa
@@ -263,20 +324,68 @@ export function PurchaseOrderRow({
         </span>
       </td>
       <td className="w-px whitespace-nowrap px-4 py-2.5 text-right">
-        {aberto && (
+        <span className="flex items-center justify-end gap-1">
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              acoes.onReceber(p);
+              acoes.onVer(p);
             }}
-            className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-xs font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+            className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-surface-2"
           >
-            <PackageCheck size={13} /> Receber
+            <Eye size={13} className="text-muted" /> Ver pedido
           </button>
-        )}
+          <AcoesDoPedido pedido={p} acoes={acoes} />
+        </span>
       </td>
     </tr>
+  );
+}
+
+/**
+ * Menu secundário da linha. Tudo aqui pertence ao ciclo do pedido — editar,
+ * duplicar, cancelar, excluir. Nada de recebimento: essas ações são de
+ * /recebimento, e oferecê-las nos dois lugares criaria dois caminhos para
+ * mover estoque, com regras que fatalmente divergem.
+ */
+function AcoesDoPedido({ pedido: p, acoes }: { pedido: PedidoView; acoes: PoAcoes }) {
+  const rascunho = p.status === "RASCUNHO";
+  const encerrado = p.status === "RECEBIDO" || p.status === "CANCELADO";
+  return (
+    <span onClick={(e) => e.stopPropagation()}>
+      <Menu
+        trigger={
+          <button
+            type="button"
+            aria-label={`Mais ações do pedido ${p.numero}`}
+            className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+          >
+            <MoreHorizontal size={16} />
+          </button>
+        }
+      >
+        <MenuItem icon={<Eye size={14} />} onClick={() => acoes.onVer(p)}>
+          Ver pedido
+        </MenuItem>
+        {/* Editar só em rascunho: pedido já enviado ao fornecedor mudou de
+            mãos — alterar itens por baixo faria a tela e o fornecedor
+            discordarem sobre o que foi comprado. */}
+        <MenuItem icon={<Pencil size={14} />} disabled={!rascunho} onClick={() => acoes.onEditar(p)}>
+          Editar pedido
+        </MenuItem>
+        <MenuItem icon={<Copy size={14} />} onClick={() => acoes.onDuplicar(p)}>
+          Duplicar pedido
+        </MenuItem>
+        <MenuItem icon={<CircleX size={14} />} danger disabled={encerrado} onClick={() => acoes.onCancelar(p)}>
+          Cancelar pedido
+        </MenuItem>
+        {rascunho && (
+          <MenuItem icon={<Trash2 size={14} />} danger onClick={() => acoes.onExcluir(p)}>
+            Excluir rascunho
+          </MenuItem>
+        )}
+      </Menu>
+    </span>
   );
 }
 
@@ -324,6 +433,7 @@ function PurchaseOrderCardRow({
         <SupplierAvatar nome={p.supplierNome} logoUrl={p.supplierLogoUrl} />
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{p.supplierNome}</span>
       </div>
+      <ProgressoRecebimento pedido={p} />
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
         <span className="tabular-nums">{p.totalItems}</span>
         <span className="font-medium tabular-nums text-ink">{fmtMoney(p.valorTotal)}</span>
@@ -342,18 +452,19 @@ function PurchaseOrderCardRow({
         )}
         <span className="text-faint">{relTempo(p.updatedAt)}</span>
       </div>
-      {aberto && (
+      <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            acoes.onReceber(p);
+            acoes.onVer(p);
           }}
-          className="flex items-center justify-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+          className="flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-semibold text-ink transition-colors hover:bg-surface-2"
         >
-          <PackageCheck size={14} /> Receber
+          <Eye size={14} className="text-muted" /> Ver pedido
         </button>
-      )}
+        <AcoesDoPedido pedido={p} acoes={acoes} />
+      </div>
     </div>
   );
 }
