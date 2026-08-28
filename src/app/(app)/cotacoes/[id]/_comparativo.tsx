@@ -396,6 +396,13 @@ export function ComparativoCotacao({
     ? `${previaUnico.nome} · ${fmtMoney(previaUnico.total)}${previaUnico.atende < cotacao.itens.length ? ` · ${previaUnico.atende} de ${cotacao.itens.length} itens` : ""}`
     : null;
 
+  /**
+   * Quem a opção "um único fornecedor" seleciona ao ser clicada — o MESMO que
+   * a prévia dela anuncia. Sem isto, o cartão dizia "FLAMARSUL · R$ 215,64" e
+   * o clique caía no primeiro convite da lista, que quase nunca é ele.
+   */
+  const idUnicoSugerido = conviteUnico?.id ?? null;
+
   const itensEscolhidos = Object.entries(escolhas).filter(([, v]) => v !== null).length;
 
   /**
@@ -957,6 +964,7 @@ export function ComparativoCotacao({
             fornecedorUnico={fornecedorUnico}
             resultadoMelhor={resultadoMelhor}
             resultadoUnico={resultadoUnico}
+            idUnicoSugerido={idUnicoSugerido}
             onMelhorPreco={aplicarMelhorPreco}
             onFornecedor={aplicarFornecedor}
           />
@@ -1117,6 +1125,7 @@ export function ComparativoCotacao({
             fornecedorUnico={fornecedorUnico}
             resultadoMelhor={resultadoMelhor}
             resultadoUnico={resultadoUnico}
+            idUnicoSugerido={idUnicoSugerido}
             onMelhorPreco={aplicarMelhorPreco}
             onFornecedor={aplicarFornecedor}
             comTitulo={false}
@@ -1348,6 +1357,7 @@ function EstrategiaCompra({
   fornecedorUnico,
   resultadoMelhor,
   resultadoUnico,
+  idUnicoSugerido,
   onMelhorPreco,
   onFornecedor,
   comTitulo = true,
@@ -1359,6 +1369,8 @@ function EstrategiaCompra({
   /** O que cada caminho custa — a consequência da escolha, ao lado dela. */
   resultadoMelhor: string;
   resultadoUnico: string | null;
+  /** Quem o cartão "um único fornecedor" seleciona — é o nome que ele mostra. */
+  idUnicoSugerido: string | null;
   onMelhorPreco: () => void;
   onFornecedor: (conviteId: string) => void;
   /** Dentro da folha o título já é o cabeçalho dela — repetido, vira eco. */
@@ -1385,7 +1397,9 @@ function EstrategiaCompra({
           titulo="Um único fornecedor"
           descricao="Comprar tudo de um fornecedor para simplificar a entrega e o pedido."
           resultado={resultadoUnico}
-          onClick={() => onFornecedor(fornecedorUnico ?? respondidos[0].id)}
+          onClick={() =>
+            onFornecedor(fornecedorUnico ?? idUnicoSugerido ?? respondidos[0].id)
+          }
         />
       </div>
 
