@@ -50,7 +50,14 @@ import {
   excluirPedidoCompraAction,
   adicionarBonificacaoPedidoAction,
 } from "../estoque/actions";
-import { listarEventosPedidoAction, listarRecebimentosPedidoAction, type RecebimentoDoPedido } from "./actions";
+import {
+  listarEventosPedidoAction,
+  listarNotasPedidoAction,
+  listarRecebimentosPedidoAction,
+  type NotaDoPedido,
+  type RecebimentoDoPedido,
+} from "./actions";
+import { ReceberMercadoriaPanel } from "./_receber-mercadoria";
 import { SolicitarSheet, type GrupoEnvio, copiarTexto } from "./_solicitar";
 import { ReenviarSheet } from "./_reenviar";
 import { QrPedidoSheet } from "@/components/app/qr-pedido";
@@ -179,6 +186,9 @@ export function PedidoDrawer({
   const [recebimentosAbertos, setRecebimentosAbertos] = useState(false);
   const [recebimentos, setRecebimentos] = useState<RecebimentoDoPedido[]>([]);
   const [recebimentosCarregados, setRecebimentosCarregados] = useState(false);
+  const [notas, setNotas] = useState<NotaDoPedido[]>([]);
+  const [notasCarregadas, setNotasCarregadas] = useState(false);
+  const [importandoNota, setImportandoNota] = useState(false);
   const [isRefreshing, startTransition] = useTransition();
   const pendingIdRef = useRef<string | null>(null);
   const p = pedido;
@@ -206,7 +216,24 @@ export function PedidoDrawer({
     setRecebimentosAbertos(false);
     setRecebimentos([]);
     setRecebimentosCarregados(false);
+    setImportandoNota(false);
+    setNotas([]);
+    setNotasCarregadas(false);
   }, [pedidoId]);
+
+  // Documentos fiscais do pedido. Ao contrário de recebimentos e histórico,
+  // este carrega junto com o drawer: "tem nota?" é a pergunta que decide a
+  // próxima ação do operador, e escondê-la atrás de um clique faria ele
+  // importar de novo uma NF-e que já está aqui.
+  useEffect(() => {
+    if (!pedidoId || notasCarregadas) return;
+    listarNotasPedidoAction(pedidoId)
+      .then((n) => {
+        setNotas(n);
+        setNotasCarregadas(true);
+      })
+      .catch(() => setNotasCarregadas(true));
+  }, [pedidoId, notasCarregadas]);
 
   // Histórico é carregado só quando aberto — a maioria das visitas ao drawer
   // nem chega a olhar, e é uma consulta a mais no PurchaseEvent.
@@ -544,6 +571,71 @@ export function PedidoDrawer({
             </ItemSection>
           )}
 
+          {/* Documentos fiscais — a NF-e que cobre esta compra.
+              "Importar NF-e" aqui significa UMA coisa: esta nota pertence a
+              este pedido. Ela não movimenta estoque; abre o recebimento onde a
+              mercadoria será conferida. Vincular a nota a um recebimento que
+              JÁ existe é a outra ação, e mora lá — em /recebimento/[id]. */}
+          {p.status !== "RASCUNHO" && (
+            <div className="flex flex-col gap-2.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="flex items-center gap-2 font-display text-[13px] font-semibold text-ink">
+                  <Receipt size={14} className="text-faint" aria-hidden />
+                  Documentos fiscais
+                </h3>
+                {p.status !== "CANCELADO" && (
+                  <button
+                    type="button"
+                    onClick={() => setImportandoNota(true)}
+                    className="ml-auto flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-surface-2"
+                  >
+                    <FileUp size={12} /> Importar NF-e
+                  </button>
+                )}
+              </div>
+
+              {!notasCarregadas ? (
+                <p className="rounded-lg border border-dashed border-line px-3 py-3 text-center text-xs text-muted">
+                  Carregando…
+                </p>
+              ) : notas.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-line px-3 py-3 text-center text-xs text-muted">
+                  Nenhuma NF-e vinculada. Importe o XML quando a nota chegar — ela abre o
+                  recebimento, e a mercadoria só entra no estoque quando a conferência fecha.
+                </p>
+              ) : (
+                <ul className="divide-y divide-line rounded-xl border border-line">
+                  {notas.map((n) => (
+                    <li
+                      key={n.id}
+                      className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 text-[13px]"
+                    >
+                      <span className="inline-flex items-center gap-1.5 font-mono text-[12px] text-ink">
+                        <Receipt size={12} className="text-faint" aria-hidden /> NF {n.numero}
+                      </span>
+                      <span className="text-muted">
+                        {new Date(n.emissao).toLocaleDateString("pt-BR")}
+                      </span>
+                      <span className="font-semibold tabular-nums text-ink">
+                        {fmtMoney(n.valorTotal)}
+                      </span>
+                      {n.receiptId ? (
+                        <Link
+                          href={`/recebimento/${n.receiptId}`}
+                          className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-brand hover:underline"
+                        >
+                          <PackageCheck size={12} /> Ver recebimento {n.receiptNumero}
+                        </Link>
+                      ) : (
+                        <span className="ml-auto text-[11px] text-faint">Sem recebimento</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
           {/* Recebimentos — o que efetivamente chegou (pode ser mais de um,
               em recebimentos parciais). Separado da timeline: aqui é "o que
               chegou", lá é "como chegou aqui". */}
@@ -554,19 +646,6 @@ export function PedidoDrawer({
               resumo={recebimentosCarregados ? `${recebimentos.length}` : recebimentosAbertos ? "" : "ver"}
               aberto={recebimentosAbertos}
               onToggle={() => setRecebimentosAbertos((v) => !v)}
-              acao={
-                /* Importar XML abre uma ENTRADA de mercadoria — é a operação
-                   de recebimento, e ela mora em /recebimento. Aqui vira só o
-                   caminho até lá. */
-                !p.temNota && p.status !== "CANCELADO" ? (
-                  <Link
-                    href={`/recebimento?q=${encodeURIComponent(p.numero)}&periodo=`}
-                    className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-semibold text-ink hover:bg-surface-2"
-                  >
-                    <FileUp size={12} /> Receber em Recebimentos
-                  </Link>
-                ) : null
-              }
             >
               {!recebimentosCarregados ? (
                 <p className="rounded-lg border border-dashed border-line px-3 py-3 text-center text-xs text-muted">

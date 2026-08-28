@@ -187,13 +187,51 @@ export function RecebimentosView({
 
       <Resumo resumo={resumo} filtros={filtros} />
 
-      {/* Abas — o recorte da tela. Uma consulta cada, uma lista por vez. */}
+      {/* Abas — o recorte da tela. Uma consulta cada, uma lista por vez.
+          A busca divide a linha com elas: procurar UM recebimento é a primeira
+          coisa que se faz aqui, e enterrar o campo na linha de baixo custava um
+          pulo de olho toda vez. */}
       <div className="flex flex-col gap-2.5">
-        <div
-          role="tablist"
-          aria-label="Recorte dos recebimentos"
-          className="-mx-1 flex flex-nowrap items-center gap-1.5 overflow-x-auto px-1 pb-1"
-        >
+        <div className="flex flex-wrap items-center gap-2">
+          <form
+            className="relative order-1 w-full min-w-0 sm:w-72 sm:shrink-0"
+            onSubmit={(e) => {
+              e.preventDefault();
+              irPara({ q: busca.trim() });
+            }}
+          >
+            <Search
+              size={15}
+              className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-faint"
+              aria-hidden
+            />
+            <input
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              placeholder={placeholderBusca(filtros.aba)}
+              aria-label={placeholderBusca(filtros.aba)}
+              className="h-9 w-full rounded-full border border-line-button bg-surface pr-8 pl-9 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
+            />
+            {busca && (
+              <button
+                type="button"
+                onClick={() => {
+                  setBusca("");
+                  irPara({ q: "" });
+                }}
+                aria-label="Limpar busca"
+                className="absolute top-1/2 right-2.5 -translate-y-1/2 cursor-pointer text-faint hover:text-ink"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </form>
+
+          <div
+            role="tablist"
+            aria-label="Recorte dos recebimentos"
+            className="order-2 -mx-1 flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto px-1 pb-1 sm:justify-end"
+          >
           {REC_TABS.map((t) => {
             const ativa = filtros.aba === t.aba;
             const n = t.contador ? contagens[t.contador] : null;
@@ -228,44 +266,14 @@ export function RecebimentosView({
               Sem NF-e
             </span>
           )}
+          </div>
         </div>
 
-        {/* Filtros — contextuais à aba selecionada. */}
+        {/* Filtros — contextuais à aba selecionada. A linha só existe quando
+            tem o que mostrar: um espaçamento vazio abaixo das abas parece
+            defeito de layout. */}
+        {(fornecedores.length > 0 || periodoAplicavel(filtros.aba) || filtrosAtivos(filtros)) && (
         <div className="flex flex-wrap items-center gap-2">
-          <form
-            className="relative min-w-0 flex-1 sm:max-w-sm"
-            onSubmit={(e) => {
-              e.preventDefault();
-              irPara({ q: busca.trim() });
-            }}
-          >
-            <Search
-              size={15}
-              className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-faint"
-              aria-hidden
-            />
-            <input
-              value={busca}
-              onChange={(e) => setBusca(e.target.value)}
-              placeholder={placeholderBusca(filtros.aba)}
-              aria-label={placeholderBusca(filtros.aba)}
-              className="h-9 w-full rounded-full border border-line-button bg-surface pr-8 pl-9 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
-            />
-            {busca && (
-              <button
-                type="button"
-                onClick={() => {
-                  setBusca("");
-                  irPara({ q: "" });
-                }}
-                aria-label="Limpar busca"
-                className="absolute top-1/2 right-2.5 -translate-y-1/2 cursor-pointer text-faint hover:text-ink"
-              >
-                <X size={14} />
-              </button>
-            )}
-          </form>
-
           {fornecedores.length > 0 && (
             <select
               value={filtros.supplierId}
@@ -308,6 +316,7 @@ export function RecebimentosView({
             </button>
           )}
         </div>
+        )}
       </div>
 
       {/* O recorte "Sem NF-e" avisa, não recebe: a mercadoria já entrou no

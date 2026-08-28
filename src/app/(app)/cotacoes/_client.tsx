@@ -64,15 +64,12 @@ function prazoTexto(iso: string | null): { texto: string; urgente: boolean } | n
 
 export function ListaCotacoes({
   linhas,
-  produtosSugeridos,
   multiSite,
   podePedir,
   descricao,
   visaoInicial,
 }: {
   linhas: CotacaoRow[];
-  /** Contagem ao vivo de `loadSugestoesReposicao` — mesma fonte da Reposição Inteligente. */
-  produtosSugeridos: number;
   /** Mais de uma loja no tenant. Com uma só, dizer o nome dela é ruído. */
   multiSite: boolean;
   podePedir: boolean;
@@ -150,18 +147,20 @@ export function ListaCotacoes({
         actions={
           podePedir ? (
             <div className="flex items-center gap-2">
-              <Link
-                href="/cotacoes/reposicao-inteligente"
-                className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+              {/* Reposição inteligente ainda não abriu para o operador — o botão
+                  fica visível para anunciar o que vem, mas desabilitado. */}
+              <button
+                type="button"
+                disabled
+                title="Em breve"
+                className="flex cursor-not-allowed items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-muted opacity-60"
               >
                 <Sparkles size={15} className="text-muted" />
                 <span className="hidden sm:inline">Sugestão de reposição</span>
-                {produtosSugeridos > 0 && (
-                  <span className="rounded-full bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-accent">
-                    {produtosSugeridos}
-                  </span>
-                )}
-              </Link>
+                <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-muted">
+                  Em breve
+                </span>
+              </button>
               <button
                 type="button"
                 onClick={novaCotacao}

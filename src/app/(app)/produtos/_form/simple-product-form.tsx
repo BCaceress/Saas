@@ -38,6 +38,7 @@ import { Input, Select } from "@/components/ui/input";
 import { Combobox, type ComboOption } from "@/components/ui/combobox";
 import { Field, Label, Eyebrow } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PageHeader } from "@/components/app/page-header";
 import { SkuTag } from "@/components/sku-tag";
 import {
@@ -271,6 +272,7 @@ export function SimpleProductForm({
   // Embalagem de compra. Não é pergunta do cadastro — o XML da primeira nota
   // preenche sozinho —, mas quem tem o fardo na mão e quer bipar hoje precisa
   // de um lugar para digitar. Fica recolhido.
+  const [pkARemover, setPkARemover] = useState<number | null>(null);
   const [packagings, setPackagings] = useState<PkLinha[]>(
     (product?.packagings ?? []).map((pk) => ({
       nome: pk.nome ?? "",
@@ -278,6 +280,19 @@ export function SimpleProductForm({
       fator: pk.fatorConversao != null ? String(pk.fatorConversao) : "",
     })),
   );
+  function removerPk(i: number) {
+    setPackagings((prev) => prev.filter((_, idx) => idx !== i));
+    setPkARemover(null);
+  }
+  // Linha em branco some direto: não há nada a perder, e confirmar o vazio irrita.
+  function pedirRemocaoPk(i: number) {
+    const pk = packagings[i];
+    if (!pk?.nome.trim() && !pk?.ean.trim() && !pk?.fator.trim()) {
+      removerPk(i);
+      return;
+    }
+    setPkARemover(i);
+  }
 
   // Locais criados aqui — mesma ideia das categorias: entram na lista antes
   // do refresh, senão o operador cria o local e não consegue selecioná-lo.
@@ -1791,9 +1806,7 @@ export function SimpleProductForm({
                       </Field>
                       <button
                         type="button"
-                        onClick={() =>
-                          setPackagings((prev) => prev.filter((_, idx) => idx !== i))
-                        }
+                        onClick={() => pedirRemocaoPk(i)}
                         className="mb-1.5 grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line text-faint transition-colors hover:border-danger/40 hover:bg-danger-soft hover:text-danger"
                         aria-label="Remover embalagem"
                       >
@@ -1866,6 +1879,25 @@ export function SimpleProductForm({
           {pending ? "Salvando…" : "Salvar produto"}
         </Button>
       </div>
+
+      {pkARemover !== null && (
+        <ConfirmDialog
+          title="Remover embalagem"
+          description={
+            <>
+              A embalagem{" "}
+              <span className="font-medium text-ink">
+                {packagings[pkARemover]?.nome.trim() || "sem nome"}
+              </span>{" "}
+              sai deste produto. O código de barras dela deixa de bipar na entrada de
+              estoque. A remoção só vale depois de salvar o produto.
+            </>
+          }
+          confirmLabel="Remover"
+          onCancel={() => setPkARemover(null)}
+          onConfirm={() => removerPk(pkARemover)}
+        />
+      )}
     </div>
   );
 }

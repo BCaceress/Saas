@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Field, Label } from "@/components/ui/misc";
 import { Sheet } from "@/components/ui/sheet";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { toast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app/page-header";
 import { SkuTag } from "@/components/sku-tag";
@@ -195,6 +196,7 @@ function InsumoForm({
   const imgFileRef = useRef<HTMLInputElement>(null);
 
   // Embalagens de compra (fardo, caixa…) — cada uma com EAN e fator próprios.
+  const [pkARemover, setPkARemover] = useState<number | null>(null);
   const [packagings, setPackagings] = useState<PackagingRow[]>(
     product?.packagings?.map((p) => ({
       nome: p.nome ?? "",
@@ -212,6 +214,16 @@ function InsumoForm({
   }
   function removePackaging(i: number) {
     setPackagings((prev) => prev.filter((_, idx) => idx !== i));
+    setPkARemover(null);
+  }
+  // Linha em branco some direto: não há nada a perder, e confirmar o vazio irrita.
+  function pedirRemocaoPackaging(i: number) {
+    const pk = packagings[i];
+    if (!pk?.nome.trim() && !pk?.ean.trim() && !pk?.fatorConversao.trim()) {
+      removePackaging(i);
+      return;
+    }
+    setPkARemover(i);
   }
 
   const [fornecedorPrincipalId, setFornecedor] = useState(
@@ -727,7 +739,7 @@ function InsumoForm({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={() => removePackaging(i)}
+                        onClick={() => pedirRemocaoPackaging(i)}
                         className="mb-1 text-danger hover:text-danger"
                       >
                         <Trash2 size={15} />
@@ -900,6 +912,25 @@ function InsumoForm({
           </div>
         )}
       </Sheet>
+
+      {pkARemover !== null && (
+        <ConfirmDialog
+          title="Remover embalagem"
+          description={
+            <>
+              A embalagem{" "}
+              <span className="font-medium text-ink">
+                {packagings[pkARemover]?.nome.trim() || "sem nome"}
+              </span>{" "}
+              sai deste produto. O código de barras dela deixa de bipar na entrada
+              de estoque. A remoção só vale depois de salvar o produto.
+            </>
+          }
+          confirmLabel="Remover"
+          onCancel={() => setPkARemover(null)}
+          onConfirm={() => removePackaging(pkARemover)}
+        />
+      )}
     </div>
   );
 }

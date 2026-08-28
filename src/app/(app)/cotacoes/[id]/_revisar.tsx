@@ -482,7 +482,7 @@ export function RevisarCotacao({
                 dois campos da linha começam e terminam juntos. */}
             <div className="flex flex-col gap-1">
               <span className="text-[12px] font-medium text-ink-2" id="pede-escala-label">
-                Perguntar preço por volume
+                Perguntar preço por volume ?
               </span>
               <div className="flex min-h-[4.5rem] flex-1 items-center justify-between gap-3 rounded-[var(--radius)] border border-line bg-surface-2 px-3 py-2.5">
                 <p className="min-w-0 text-[11px] leading-snug text-muted">

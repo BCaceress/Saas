@@ -9,8 +9,7 @@ import { criarPedidoCompra } from "@/lib/estoque";
 import { db } from "@/lib/prisma";
 import { listarEventos } from "@/lib/compras/eventos";
 import { loadHistoricoCompraProduto } from "../cotacoes/_data";
-import { loadComprasFormOptions, loadPedidosAReceber } from "../estoque/_data";
-import { getActiveSiteId } from "@/lib/sites";
+import { loadComprasFormOptions } from "../estoque/_data";
 import type { GoodsReceiptStatus } from "@/generated/prisma";
 
 /** Baseline de leitura do módulo. Escrita usa `txp` com a loja de destino. */
@@ -210,6 +209,57 @@ export async function buscarCodigosDeBarrasAction(
   });
 }
 
+// ── Documentos fiscais do pedido (lazy, p/ drawer) ────────────
+// Uma NF-e não é um recebimento: ela é o papel que cobre a compra. O pedido
+// pode ter nenhuma (ainda não faturou / não vai ter), uma, ou várias — o
+// fornecedor que entrega em dois caminhões costuma emitir duas notas.
+//
+// O que a tela precisa saber por nota: quem é, quanto, e se ela já tem um
+// recebimento por trás (aí o caminho é "ver recebimento", não "importar").
+
+export type NotaDoPedido = {
+  id: string;
+  numero: string;
+  chave: string;
+  emissao: string;
+  valorTotal: number;
+  status: string;
+  /** Recebimento que esta nota documenta, quando já existe. */
+  receiptId: string | null;
+  receiptNumero: string | null;
+};
+
+export async function listarNotasPedidoAction(
+  purchaseOrderId: string,
+): Promise<NotaDoPedido[]> {
+  return tx(async () => {
+    const notas = await db.fiscalInbound.findMany({
+      where: { purchaseOrderId },
+      select: {
+        id: true,
+        numero: true,
+        serie: true,
+        chave: true,
+        dataEmissao: true,
+        valorTotal: true,
+        status: true,
+        receipt: { select: { id: true, numero: true } },
+      },
+      orderBy: { dataEmissao: "asc" },
+    });
+    return notas.map((n) => ({
+      id: n.id,
+      numero: `${n.numero}/${n.serie}`,
+      chave: n.chave,
+      emissao: n.dataEmissao.toISOString(),
+      valorTotal: Number(n.valorTotal),
+      status: n.status,
+      receiptId: n.receipt?.id ?? null,
+      receiptNumero: n.receipt?.numero ?? null,
+    }));
+  });
+}
+
 // ── Catálogo do form de pedido (lazy) ─────────────────────────
 // `loadComprasFormOptions` varre catálogo, embalagens, saldos, últimos
 // preços e lead time — é o item mais caro da tela e só serve DEPOIS de
@@ -218,29 +268,6 @@ export async function buscarCodigosDeBarrasAction(
 
 export async function carregarFormOptionsAction() {
   return tx(() => loadComprasFormOptions());
-}
-
-// ── Pedidos abertos para receber (p/ o painel "Receber mercadoria") ──
-// Quem chega pela porta "escanear"/"manual" sem ter clicado num pedido
-// precisa escolher um ali mesmo. Sem isto, as duas portas ficavam
-// desabilitadas explicando o motivo num `title` que celular nenhum mostra.
-
-export async function listarPedidosAReceberAction() {
-  return tx(async () => {
-    const siteId = await getActiveSiteId();
-    const pedidos = await loadPedidosAReceber(siteId);
-    return pedidos.map((p) => ({
-      ...p,
-      previsaoEntrega: p.previsaoEntrega?.toISOString() ?? null,
-      createdAt: p.createdAt.toISOString(),
-      updatedAt: p.updatedAt.toISOString(),
-      enviadoEm: p.enviadoEm?.toISOString() ?? null,
-      confirmadoEm: p.confirmadoEm?.toISOString() ?? null,
-      emTransitoEm: p.emTransitoEm?.toISOString() ?? null,
-      recebidoEm: p.recebidoEm?.toISOString() ?? null,
-      canceladoEm: p.canceladoEm?.toISOString() ?? null,
-    }));
-  });
 }
 
 // ── Busca de produto na conferência (item fora do pedido) ─────

@@ -1,42 +1,33 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  Building2,
-  CalendarClock,
-  ChevronLeft,
-  ChevronRight,
-  ClipboardList,
-  FileCode,
-  FileUp,
-  Loader2,
-  PackageSearch,
-} from "lucide-react";
+import { ChevronLeft, ClipboardList, FileCode, FileUp, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Sheet, type SheetWidth } from "@/components/ui/sheet";
+import { Sheet } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
 import {
   importarXmlRecebimentoAction,
   vincularPedidoAction,
-  iniciarRecebimentoAction,
   abrirRecebimentoAvulsoAction,
 } from "../recebimento/conferencia-actions";
-import { listarPedidosAReceberAction } from "./actions";
-import { previsaoLabel, fmtMoney } from "../cotacoes/_ui";
 import type { PedidoView } from "./_pedidos";
 
 // ── Painel "Receber mercadoria" ─────────────────────────────────
-// Ponto de entrada único do recebimento. O eixo da escolha não é "como
-// registrar" (XML × bipe × digitação) — é "de onde vem este recebimento":
-// de uma nota fiscal, de um pedido já feito, ou avulso (sem pedido e sem XML).
+// Ponto de entrada do recebimento a partir de FORA de um pedido: chegou uma
+// nota, ou chegou mercadoria sem papel nenhum. Duas portas, e só.
 //
-// As três portas terminam no MESMO lugar: um recebimento aberto em
+// "A partir de um pedido" NÃO mora aqui de propósito. Pedido que espera
+// mercadoria já tem lugar próprio — a aba "Aguardando recebimento", com o
+// botão "Iniciar recebimento" na linha do pedido. Ter a mesma operação em duas
+// portas é como o mesmo caminhão vira dois recebimentos.
+//
+// As duas portas terminam no MESMO lugar: um recebimento aberto em
 // /recebimento/[id], onde a conferência acontece. O painel só descobre de onde
 // a mercadoria veio; contar caixa é trabalho de tela cheia.
 
-type Etapa = "escolha" | "xml" | "escolher-pedido";
+type Etapa = "escolha" | "xml";
 
 export function ReceberMercadoriaPanel({
   pedido,
@@ -48,53 +39,29 @@ export function ReceberMercadoriaPanel({
    *  lançar estoque direto, sem pedido nenhum por trás). */
   podeAvulso = false,
 }: {
-  /** `null` = "Receber sem pedido": o painel pede o pedido antes de conferir. */
+  /** O pedido dono desta NF-e, quando o painel foi aberto de dentro dele.
+   *  `null` = a nota ainda não sabe a que pedido pertence (ou não pertence a
+   *  nenhum) — quem decide isso é a tela do recebimento. */
   pedido: PedidoView | null;
   open: boolean;
   onClose: () => void;
-  /** "xml" pula a escolha e já abre o upload — usado pelo botão "Receber pedido". */
+  /** "xml" pula a escolha e já abre o upload — usado pelo "Importar NF-e" do pedido. */
   etapaInicial?: Etapa;
   podeAvulso?: boolean;
 }) {
   const router = useRouter();
   const [etapa, setEtapa] = useState<Etapa>(etapaInicial);
   const [enviando, setEnviando] = useState(false);
-  const [escolhido, setEscolhido] = useState<PedidoView | null>(null);
 
-  const alvo = pedido ?? escolhido;
+  const alvo = pedido;
 
   function limpar() {
     onClose();
     // Reset depois da animação de saída do Sheet, não no meio dela.
-    setTimeout(() => {
-      setEtapa(etapaInicial);
-      setEscolhido(null);
-    }, 200);
+    setTimeout(() => setEtapa(etapaInicial), 200);
   }
 
   const fechar = limpar;
-
-  /**
-   * "Iniciar recebimento" de um pedido.
-   *
-   * O pedido não vira nada: ganha mais um recebimento vinculado, e o operador
-   * cai direto na conferência. Idempotente no servidor — clicar duas vezes
-   * reabre a mesma conferência em vez de criar uma segunda.
-   */
-  async function abrirDoPedido(p: PedidoView) {
-    setEnviando(true);
-    try {
-      const id = await iniciarRecebimentoAction(p.id);
-      limpar();
-      router.push(`/recebimento/${id}`);
-    } catch (e) {
-      toast.error(
-        "Não deu para iniciar o recebimento",
-        e instanceof Error ? e.message : "Tente de novo.",
-      );
-      setEnviando(false);
-    }
-  }
 
   async function abrirAvulso() {
     setEnviando(true);
@@ -154,165 +121,54 @@ export function ReceberMercadoriaPanel({
     }
   }
 
-  // Escolher o pedido é uma lista; escolher a porta são três cartões.
-  const largura: SheetWidth = etapa === "escolher-pedido" ? "xl" : "lg";
-
   const descricao =
     etapa === "escolha"
       ? "Escolha de onde vem esta mercadoria. A conferência abre em seguida."
-      : etapa === "escolher-pedido"
-        ? "De qual pedido é esta mercadoria?"
+      : alvo
+        ? `Importe o XML da nota deste pedido — a conferência de ${alvo.numero} abre em seguida.`
         : "Importe o XML — depois você escolhe se ele vira pedido, entra num existente ou é só conferência.";
 
   return (
     <>
-      <Sheet open={open} onClose={fechar} title="Receber mercadoria" description={descricao} width={largura}>
+      <Sheet open={open} onClose={fechar} title="Receber mercadoria" description={descricao} width="lg">
         {etapa === "escolha" && (
           <div className="flex flex-col gap-2.5">
             <OpcaoCard
               icon={FileCode}
               destaque
               titulo="Importar NF-e"
-              descricao="Localize um pedido existente, crie um pedido pela nota ou receba sem pedido."
+              descricao="Receba uma mercadoria através do XML da NF-e."
+              nota="O NoHub cria o recebimento com os produtos da nota. Havendo pedido relacionado, você o vincula durante o processo."
               onClick={() => setEtapa("xml")}
-            />
-            <OpcaoCard
-              icon={PackageSearch}
-              titulo="A partir de um pedido"
-              descricao="Confira o que chegou contra o que foi pedido. O pedido continua aberto até tudo entrar."
-              nota={alvo ? undefined : "Você escolhe o pedido no próximo passo."}
-              onClick={() => (alvo ? void abrirDoPedido(alvo) : setEtapa("escolher-pedido"))}
             />
             {podeAvulso && (
               <OpcaoCard
                 icon={ClipboardList}
                 titulo="Recebimento avulso"
-                descricao="Sem pedido e sem NF-e. Some o que chegou — não cria pedido nenhum por baixo."
+                descricao="Registre uma entrada manual de produtos."
+                nota="Sem pedido, sem cotação e sem NF-e."
                 onClick={() => void abrirAvulso()}
               />
             )}
+            {/* Pedido esperando mercadoria não entra por aqui: ele já tem a sua
+                fila. Dizer onde fica evita a caçada — e evita a segunda porta. */}
+            <p className="px-1 text-[12px] text-muted">
+              Recebendo um pedido que já existe? Ele está na aba{" "}
+              <strong className="font-semibold text-ink-2">Aguardando recebimento</strong>, com o
+              botão “Iniciar recebimento” na própria linha.
+            </p>
           </div>
         )}
 
         {etapa === "xml" && (
-          <XmlDropzone enviando={enviando} onArquivos={enviarXml} onVoltar={() => setEtapa("escolha")} />
-        )}
-
-        {etapa === "escolher-pedido" && (
-          <EscolherPedido
-            onVoltar={() => setEtapa("escolha")}
-            onEscolher={(p) => {
-              setEscolhido(p);
-              void abrirDoPedido(p);
-            }}
+          <XmlDropzone
+            enviando={enviando}
+            onArquivos={enviarXml}
+            onVoltar={etapa === etapaInicial ? undefined : () => setEtapa("escolha")}
           />
         )}
       </Sheet>
     </>
-  );
-}
-
-// ── Escolha do pedido ─────────────────────────────────────────
-
-function EscolherPedido({
-  onVoltar,
-  onEscolher,
-}: {
-  onVoltar: () => void;
-  onEscolher: (p: PedidoView) => void;
-}) {
-  const [pedidos, setPedidos] = useState<PedidoView[] | null>(null);
-  const [erro, setErro] = useState<string | null>(null);
-  const [busca, setBusca] = useState("");
-
-  useEffect(() => {
-    listarPedidosAReceberAction()
-      .then((lista) => setPedidos(lista as PedidoView[]))
-      .catch((e: unknown) => setErro(e instanceof Error ? e.message : "Não foi possível listar os pedidos."));
-  }, []);
-
-  const termo = busca.trim().toLowerCase();
-  const visiveis = (pedidos ?? []).filter(
-    (p) => !termo || `${p.numero} ${p.supplierNome}`.toLowerCase().includes(termo),
-  );
-
-  return (
-    <div className="flex flex-col gap-3">
-      <Voltar onClick={onVoltar} />
-
-      {pedidos === null && !erro && (
-        <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted">
-          <Loader2 size={16} className="animate-spin" aria-hidden /> Buscando pedidos abertos…
-        </div>
-      )}
-
-      {erro && <p className="rounded-[var(--radius)] bg-danger-soft px-3.5 py-2.5 text-sm text-danger">{erro}</p>}
-
-      {pedidos !== null && pedidos.length === 0 && (
-        <div className="flex flex-col items-center gap-2 rounded-[var(--radius-lg)] border border-line bg-surface px-6 py-12 text-center">
-          <span className="grid h-11 w-11 place-items-center rounded-full bg-surface-2 text-muted">
-            <PackageSearch size={20} aria-hidden />
-          </span>
-          <p className="text-sm font-medium text-ink">Nenhum pedido aberto nesta loja</p>
-          <p className="max-w-xs text-[13px] text-muted">
-            Mercadoria sem pedido entra pelo XML — a nota localiza ou cria o pedido sozinha.
-          </p>
-        </div>
-      )}
-
-      {pedidos !== null && pedidos.length > 0 && (
-        <>
-          <input
-            value={busca}
-            onChange={(e) => setBusca(e.target.value)}
-            placeholder="Filtrar por número ou fornecedor"
-            aria-label="Filtrar pedidos"
-            className="h-10 w-full rounded-full border border-line-button bg-surface px-4 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
-          />
-          <ul className="flex flex-col gap-1.5">
-            {visiveis.map((p) => (
-              <li key={p.id}>
-                <button
-                  type="button"
-                  onClick={() => onEscolher(p)}
-                  className="flex w-full items-center gap-3 rounded-[var(--radius-lg)] border border-line bg-surface px-3.5 py-3 text-left transition-colors hover:bg-surface-2"
-                >
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-surface-2 text-muted">
-                    <Building2 size={16} aria-hidden />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium text-ink">{p.supplierNome}</span>
-                      <span className="shrink-0 font-mono text-[11px] text-faint">{p.numero}</span>
-                    </span>
-                    <span className="mt-0.5 flex flex-wrap items-center gap-x-2.5 text-[12px] text-muted">
-                      <span className="flex items-center gap-1">
-                        <CalendarClock size={12} aria-hidden /> {previsaoLabel(p.previsaoEntrega)}
-                      </span>
-                      <span className="tabular-nums">
-                        {p.totalItems} {p.totalItems === 1 ? "item" : "itens"}
-                      </span>
-                      <span className="tabular-nums">{fmtMoney(p.valorTotal)}</span>
-                      {p.status === "RECEBIDO_PARCIAL" && (
-                        <span className="rounded-full bg-brand-soft px-1.5 py-px text-[10px] font-semibold text-brand">
-                          parcial
-                        </span>
-                      )}
-                    </span>
-                  </span>
-                  <ChevronRight size={16} className="shrink-0 text-faint" aria-hidden />
-                </button>
-              </li>
-            ))}
-            {visiveis.length === 0 && (
-              <li className="rounded-[var(--radius)] border border-line bg-surface px-4 py-6 text-center text-[13px] text-muted">
-                Nenhum pedido com “{busca.trim()}”.
-              </li>
-            )}
-          </ul>
-        </>
-      )}
-    </div>
   );
 }
 
@@ -377,14 +233,16 @@ function XmlDropzone({
 }: {
   enviando: boolean;
   onArquivos: (arquivos: FileList | File[]) => void;
-  onVoltar: () => void;
+  /** Ausente quando o upload É a tela — abrir "voltar" para uma escolha que
+   *  nunca apareceu só confundiria. */
+  onVoltar?: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [sobre, setSobre] = useState(false);
 
   return (
     <div className="flex flex-col gap-3">
-      <Voltar onClick={onVoltar} />
+      {onVoltar && <Voltar onClick={onVoltar} />}
       <div
         onDragOver={(e) => {
           e.preventDefault();

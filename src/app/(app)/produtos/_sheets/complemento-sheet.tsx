@@ -8,6 +8,7 @@ import { Input, Select } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { Field, Eyebrow, Badge } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { atualizarComplementoProduto } from "../actions";
 import { opcoesDoLote } from "../list-actions";
 import type { LoteOpcoes, ProductRow } from "../_types";
@@ -50,6 +51,7 @@ export function ComplementoSheet({
   );
   const [codigoAnp, setCodigoAnp] = useState(product.codigoAnp ?? "");
 
+  const [pkARemover, setPkARemover] = useState<number | null>(null);
   const [packagings, setPackagings] = useState<PkLinha[]>(
     product.packagings.map((pk) => ({
       nome: pk.nome ?? "",
@@ -57,6 +59,19 @@ export function ComplementoSheet({
       fator: pk.fatorConversao != null ? String(pk.fatorConversao) : "",
     })),
   );
+  function removerPk(i: number) {
+    setPackagings((prev) => prev.filter((_, idx) => idx !== i));
+    setPkARemover(null);
+  }
+  // Linha em branco some direto: não há nada a perder, e confirmar o vazio irrita.
+  function pedirRemocaoPk(i: number) {
+    const pk = packagings[i];
+    if (!pk?.nome.trim() && !pk?.ean.trim() && !pk?.fator.trim()) {
+      removerPk(i);
+      return;
+    }
+    setPkARemover(i);
+  }
   const [fornecedores, setFornecedores] = useState<string[]>(
     [...product.fornecedores]
       .sort((a, b) => Number(b.isPrincipal) - Number(a.isPrincipal))
@@ -190,7 +205,7 @@ export function ComplementoSheet({
               </Field>
               <button
                 type="button"
-                onClick={() => setPackagings((prev) => prev.filter((_, idx) => idx !== i))}
+                onClick={() => pedirRemocaoPk(i)}
                 className="mb-1.5 grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line text-faint transition-colors hover:border-danger/40 hover:bg-danger-soft hover:text-danger"
                 aria-label="Remover embalagem"
               >
@@ -375,6 +390,25 @@ export function ComplementoSheet({
           </details>
         </section>
       </div>
+
+      {pkARemover !== null && (
+        <ConfirmDialog
+          title="Remover embalagem"
+          description={
+            <>
+              A embalagem{" "}
+              <span className="font-medium text-ink">
+                {packagings[pkARemover]?.nome.trim() || "sem nome"}
+              </span>{" "}
+              sai deste produto. O código de barras dela deixa de bipar na entrada de
+              estoque. A remoção só vale depois de salvar.
+            </>
+          }
+          confirmLabel="Remover"
+          onCancel={() => setPkARemover(null)}
+          onConfirm={() => removerPk(pkARemover)}
+        />
+      )}
     </Sheet>
   );
 }
