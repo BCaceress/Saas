@@ -1,8 +1,9 @@
 import type { Metadata, Viewport } from "next";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { Space_Grotesk, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { ServiceWorkerRegister } from "@/components/app/sw-register";
+import { TEMA_FORCADO_HEADER } from "@/lib/tema-forcado";
 
 const spaceGrotesk = Space_Grotesk({
   variable: "--font-space-grotesk",
@@ -66,8 +67,13 @@ export default async function RootLayout({
   // sem flash, sem script inline no cliente. Sem cookie, o padrão é CLARO: não
   // seguimos o prefers-color-scheme do sistema, senão quem tem o SO no escuro
   // entrava no escuro sem ter escolhido.
-  const cookieTheme = (await cookies()).get("theme")?.value;
-  const dataTheme = cookieTheme === "dark" ? "dark" : "light";
+  // Rota de público externo (link de cotação) vem com o tema fixado pelo proxy:
+  // quem abre não é o operador, não escolheu tema e não deve herdar o dele.
+  const [cookieStore, headerStore] = await Promise.all([cookies(), headers()]);
+  const temaForcado = headerStore.get(TEMA_FORCADO_HEADER);
+  const cookieTheme = cookieStore.get("theme")?.value;
+  const dataTheme =
+    temaForcado === "light" ? "light" : cookieTheme === "dark" ? "dark" : "light";
 
   // Barra de status do app instalado e chrome nativo (scrollbar, campos) seguem
   // o tema ESCOLHIDO, não o do sistema — senão quem forçou claro num celular no

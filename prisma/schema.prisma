@@ -242,6 +242,7 @@ model Tenant {
   comodatoAssets    ComodatoAsset[]
   containerTypes    ContainerType[]
   paymentProvider   PaymentProviderConfig?
+  whatsappConfig    WhatsAppConfig?
   fiscalConfig      FiscalConfig?
   fiscalEmitentes   FiscalEmitente[]
   savedReports      SavedReport[]
@@ -2342,6 +2343,51 @@ model PaymentProviderConfig {
   @@index([tenantId])
 }
 
+// ── WhatsApp Business (disparo automático) ──────────────────
+// Add-on do plano Diamante. O NoHub deixa de abrir o WhatsApp do operador e
+// passa a mandar a mensagem ele mesmo, pela Cloud API da Meta — o que só é
+// possível com número dedicado, empresa verificada e template aprovado. Nada
+// disso vale sem o add-on contratado: ver `temFeature("compras.whatsapp")`.
+
+enum WhatsAppProviderKind {
+  META_CLOUD // WhatsApp Cloud API (Meta) — o único oficial
+  SIMULADO // desenvolvimento: nada sai, tudo "entrega"
+}
+
+model WhatsAppConfig {
+  id       String               @id @default(cuid())
+  tenantId String               @unique
+  provider WhatsAppProviderKind @default(META_CLOUD)
+  /// Desligado, a folha de envio volta ao fluxo manual — é a chave que o
+  /// operador tem para parar o disparo sem cancelar o add-on.
+  ativo    Boolean              @default(false)
+
+  /// Id do número na Cloud API. Não é segredo, e é por ele que o webhook
+  /// descobre de qual tenant é o status que chegou — por isso fica em claro.
+  phoneNumberId  String  @unique
+  /// Conta WhatsApp Business (WABA). Só para a tela mostrar de onde sai.
+  wabaId         String?
+  /// Número como o fornecedor vê ("+55 51 99999-0000"). Exibição, não envio.
+  numeroExibicao String?
+
+  /// Credenciais — cifradas em repouso (lib/crypto), como as do PSP.
+  accessToken String
+  appSecret   String? // valida a assinatura X-Hub-Signature-256 do webhook
+
+  /// Template aprovado na Meta. Mensagem que a empresa inicia SEMPRE sai por
+  /// template — texto livre só é aceito dentro da janela de 24h aberta pelo
+  /// fornecedor, e cotação nunca começa assim.
+  templateNome   String @default("cotacao_fornecedor")
+  templateIdioma String @default("pt_BR")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
 // Maquininha vinculada a um site/caixa (Mercado Pago Point: device_id).
 model PaymentTerminal {
   id         String              @id @default(cuid())
@@ -3799,6 +3845,15 @@ enum QuotationCanal {
   EMAIL
 }
 
+/// Ciclo de vida de um disparo AUTOMÁTICO (Cloud API). O envio manual não tem
+/// nada disso: o operador esteve no aplicativo e a palavra dele é o registro.
+enum QuotationSendStatus {
+  ENVIADA // aceita pela Meta (tem wamid)
+  ENTREGUE // chegou ao aparelho
+  LIDA // o fornecedor abriu
+  FALHOU // a Meta recusou ou devolveu erro depois
+}
+
 enum QuotationResponseOrigem {
   OPERADOR // alguém da loja registrou o que o fornecedor mandou
   LINK // o fornecedor preencheu o link público
@@ -3937,11 +3992,20 @@ model QuotationSend {
   enviadoEm   DateTime       @default(now())
   enviadoPor  String?
 
+  /// Saiu pela Cloud API, sem ninguém abrir o WhatsApp. Muda o significado de
+  /// `sucesso`: aqui ele é o que a Meta respondeu, não o que o operador disse.
+  automatico Boolean              @default(false)
+  /// `wamid` da Meta — a chave por onde o webhook acha esta linha.
+  externalId String?
+  status     QuotationSendStatus?
+  statusEm   DateTime?
+
   quotationSupplier QuotationSupplier @relation(fields: [quotationSupplierId], references: [id], onDelete: Cascade)
   contact           SupplierContact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
   @@index([quotationSupplierId, enviadoEm])
+  @@index([externalId])
 }
 
 /// A resposta de um fornecedor para um item. Sem linha = não respondeu;

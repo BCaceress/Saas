@@ -262,7 +262,14 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
         enviadaEm: true,
         createdAt: true,
         siteId: true,
-        suppliers: { select: { status: true } },
+        suppliers: {
+          select: {
+            status: true,
+            respondidaEm: true,
+            respondidaVia: true,
+            supplier: { select: { nomeFantasia: true, razaoSocial: true } },
+          },
+        },
       },
     }),
     // ── Documento de Compra ──────────────────────────────────
@@ -521,6 +528,46 @@ export async function computarAlertas(tenant: Tenant): Promise<AlertItem[]> {
     ).length;
     const href = `/cotacoes/${c.id}`;
     const quando = new Date(c.enviadaEm ?? c.createdAt).toISOString();
+
+    // Proposta fresca chegada pelo LINK: ninguém da loja digitou, então
+    // ninguém da loja sabe. É o único alerta desta tela que avisa de algo que
+    // aconteceu sozinho — e o motivo de ele existir.
+    const recentes = c.suppliers.filter(
+      (s) =>
+        s.status === "RESPONDIDA" &&
+        s.respondidaVia === "LINK" &&
+        s.respondidaEm !== null &&
+        agora - new Date(s.respondidaEm).getTime() < DIA,
+    );
+    if (recentes.length > 0) {
+      const ultima = recentes.reduce((a, b) =>
+        new Date(b.respondidaEm!).getTime() > new Date(a.respondidaEm!).getTime() ? b : a,
+      );
+      const nome =
+        ultima.supplier.nomeFantasia || ultima.supplier.razaoSocial || "Fornecedor";
+      emitir(
+        alerts,
+        "cotacao-nova-resposta",
+        // A CONTAGEM entra no sujeito: sem ela, a segunda proposta da mesma
+        // cotação reusaria o id da primeira e o push a trataria como repetida.
+        `${c.id}:${respondidos}`,
+        {
+          titulo:
+            recentes.length === 1
+              ? "Proposta recebida"
+              : `${recentes.length} propostas recebidas`,
+          descricao: comLocal(
+            c.siteId,
+            recentes.length === 1
+              ? `${c.numero} · ${nome} respondeu pelo link.`
+              : `${c.numero} · ${recentes.length} fornecedores responderam pelo link.`,
+          ),
+          at: new Date(ultima.respondidaEm!).toISOString(),
+          href,
+          acaoLabel: "Ver preços",
+        },
+      );
+    }
 
     // Todo mundo já falou: o trabalho agora é decidir, não esperar.
     if (pendentes === 0 && respondidos > 0) {

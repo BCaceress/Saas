@@ -560,22 +560,79 @@ async function assertCodigosLivres(
   }
 }
 
-/** Substitui o conjunto de embalagens de compra do produto (delete + recreate). */
+/**
+ * Substitui o conjunto de embalagens de compra do produto PRESERVANDO os ids
+ * das que continuam existindo.
+ *
+ * Isto não é detalhe de implementação: `ProductPackaging.id` é referência solta
+ * (sem FK) em cotação, pedido, recebimento e devolução — `QuotationItem.
+ * packagingId`, `PurchaseOrderItem.packagingId` e companhia. Enquanto isto era
+ * delete + recreate, salvar o cadastro por qualquer motivo (trocar a FOTO,
+ * mexer no preço) dava ids novos às mesmas embalagens, e toda cotação aberta
+ * perdia a embalagem pedida em silêncio: o item que era "3 × Caixa (12 un.)"
+ * aparecia para o fornecedor como "3 unidades", ou seja, com o preço errado.
+ *
+ * O casamento é por código de barras primeiro (DUN é identidade de verdade) e
+ * por nome depois — as duas coisas que o operador reconhece como "a mesma
+ * embalagem". Só o que sumiu da lista é apagado.
+ */
 async function syncPackagings(
   tid: string,
   productId: string,
   packagings: { nome: string; ean?: string | null; fatorConversao: number }[],
 ) {
-  await db.productPackaging.deleteMany({ where: { productId } });
-  if (packagings.length) {
+  const atuais = await db.productPackaging.findMany({
+    where: { productId },
+    select: { id: true, nome: true, ean: true },
+  });
+
+  const porEan = new Map<string, string>();
+  const porNome = new Map<string, string>();
+  for (const a of atuais) {
+    if (a.ean) porEan.set(a.ean, a.id);
+    porNome.set(a.nome.trim().toLowerCase(), a.id);
+  }
+
+  const aproveitados = new Set<string>();
+  const novas: { nome: string; ean: string | null; fatorConversao: number; ordem: number }[] = [];
+  const atualizacoes: Promise<unknown>[] = [];
+
+  packagings.forEach((pk, i) => {
+    const nome = pk.nome.trim();
+    const ean = pk.ean ? onlyDigits(pk.ean) : null;
+    // Uma embalagem já aproveitada não casa de novo: duas linhas com o mesmo
+    // nome viram uma reaproveitada e uma nova, nunca duas apontando ao mesmo id.
+    const candidato = (ean && porEan.get(ean)) || porNome.get(nome.toLowerCase()) || null;
+    const id = candidato && !aproveitados.has(candidato) ? candidato : null;
+
+    if (id) {
+      aproveitados.add(id);
+      atualizacoes.push(
+        db.productPackaging.updateMany({
+          where: { id },
+          data: { nome, ean, fatorConversao: pk.fatorConversao, isCompraDefault: i === 0 },
+        }),
+      );
+    } else {
+      novas.push({ nome, ean, fatorConversao: pk.fatorConversao, ordem: i });
+    }
+  });
+
+  const removidas = atuais.filter((a) => !aproveitados.has(a.id)).map((a) => a.id);
+
+  if (removidas.length) {
+    await db.productPackaging.deleteMany({ where: { id: { in: removidas } } });
+  }
+  await Promise.all(atualizacoes);
+  if (novas.length) {
     await db.productPackaging.createMany({
-      data: packagings.map((pk, i) => ({
+      data: novas.map((pk) => ({
         tenantId: tid,
         productId,
-        nome: pk.nome.trim(),
-        ean: pk.ean ? onlyDigits(pk.ean) : null,
+        nome: pk.nome,
+        ean: pk.ean,
         fatorConversao: pk.fatorConversao,
-        isCompraDefault: i === 0,
+        isCompraDefault: pk.ordem === 0,
       })),
     });
   }

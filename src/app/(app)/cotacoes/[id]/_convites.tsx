@@ -3,13 +3,17 @@
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
+  Ban,
   Check,
+  ChevronDown,
+  CheckCircle2,
+  Circle,
+  Eye,
   MoreVertical,
   RotateCcw,
   Send,
   Trash2,
   Users,
-  MessageCircle,
   Mail,
   Copy,
   Link as LinkIcon,
@@ -28,6 +32,7 @@ import { copiarTexto } from "@/lib/clipboard";
 import { mascaraMoeda, paraMascara, paraNumero } from "@/lib/moeda";
 import { MAX_FAIXAS_ITEM } from "@/lib/compras/escalas";
 import { Menu, MenuItem } from "@/components/ui/menu";
+import { Sheet } from "@/components/ui/sheet";
 import {
   EstadoVazio,
   SupplierAvatar,
@@ -39,10 +44,12 @@ import {
 import { Thumb } from "../_ui";
 import type { ConviteCotacao, CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
 import { ContatoSheet } from "@/components/app/contato-fornecedor";
+import { IconeWhatsApp } from "@/components/app/icone-whatsapp";
 import { EnvioSheet } from "./_envio";
 import type { Envio } from "../_compra-actions";
 import {
   convidarFornecedoresAction,
+  desfazerRecusaAction,
   mensagemDoConviteAction,
   linkDoConviteAction,
   recusarConviteAction,
@@ -85,7 +92,6 @@ export function ConvitesCotacao({
   editavel,
   podeConvidar,
   podeRemover,
-  compacto = false,
 }: {
   cotacao: CotacaoDetalhe;
   fornecedores: FornecedorOpcao[];
@@ -95,22 +101,33 @@ export function ConvitesCotacao({
   podeConvidar: boolean;
   /** Tirar alguém da cotação — só em rascunho, antes de o convite existir lá fora. */
   podeRemover: boolean;
-  /**
-   * Coluna estreita da tela de acompanhamento: uma linha por fornecedor, sem a
-   * barra de ações do topo (que na página inteira é o rodapé da tela).
-   */
-  compacto?: boolean;
 }) {
   const router = useRouter();
   const [pendente, startTransition] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
   const [convidando, setConvidando] = useState(false);
   const [respondendo, setRespondendo] = useState<ConviteCotacao | null>(null);
+  /** Convite aberto no painel lateral — a ficha de quem é e o que já foi mandado. */
+  const [ficha, setFicha] = useState<ConviteCotacao | null>(null);
+  /**
+   * A faixa nasce FECHADA. Depois do primeiro dia, quem responde já respondeu:
+   * o comprador volta a esta tela para mexer na escolha, não para reler a fila
+   * de convidados. A linha do cabeçalho ("1 de 4 responderam") é o que ele
+   * precisa em 90% das visitas — e as ações de cobrança continuam à vista,
+   * fora do que recolhe.
+   */
+  const [aberto, setAberto] = useState(false);
   const [envios, setEnvios] = useState<Envio[] | null>(null);
   const [linkCopiado, setLinkCopiado] = useState<string | null>(null);
   const [textoCopiado, setTextoCopiado] = useState<string | null>(null);
-  /** Folha de conferência aberta: quem recebe, em qual fornecedor, por onde. */
-  const [enviando, setEnviando] = useState(false);
+  /**
+   * Folha de conferência aberta: quem recebe, em qual fornecedor, por onde.
+   *
+   * Guarda os convites, não um booleano: a mesma folha serve ao "enviar para
+   * os 5 pendentes" da barra e ao "enviar a mensagem" de UM fornecedor que
+   * entrou depois que os outros já receberam.
+   */
+  const [enviando, setEnviando] = useState<ConviteCotacao[] | null>(null);
   /** Convite específico em reenvio, ou "todos" para os que não responderam. */
   const [reenviando, setReenviando] = useState<ConviteCotacao | "todos" | null>(null);
 
@@ -131,279 +148,291 @@ export function ConvitesCotacao({
   const pendentes = cotacao.convites.filter((c) => c.status === "PENDENTE");
   /** Já receberam e não devolveram nada — o alvo natural do reenvio. */
   const aguardando = cotacao.convites.filter((c) => c.status === "ENVIADA");
+  const respondidos = cotacao.convites.filter((c) => c.status === "RESPONDIDA");
+  /** Sem ninguém convidado não há o que recolher: o vazio é a mensagem. */
+  const mostrarLista = aberto || cotacao.convites.length === 0;
 
   return (
-    <div className="flex flex-col gap-4">
-      {editavel && !compacto && (
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-          {podeConvidar && (
-            <button
-              type="button"
-              onClick={() => setConvidando(true)}
-              disabled={disponiveis.length === 0}
-              className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
-            >
-              <Users size={15} />
-              Adicionar fornecedores
-            </button>
+    <section
+      aria-label="Fornecedores da cotação"
+      className="rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-3"
+    >
+      {/* Título e ações de CONJUNTO na mesma linha: mandar para quem não
+          recebeu, cobrar quem não voltou, chamar mais um. Por fornecedor,
+          tudo está no menu da linha. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <button
+          type="button"
+          onClick={() => setAberto((v) => !v)}
+          aria-expanded={mostrarLista}
+          disabled={cotacao.convites.length === 0}
+          className="flex cursor-pointer items-center gap-2 text-left transition-colors hover:text-ink disabled:cursor-default"
+        >
+          <ChevronDown
+            size={14}
+            className={cn(
+              "shrink-0 text-muted transition-transform",
+              mostrarLista && "rotate-180",
+              cotacao.convites.length === 0 && "invisible",
+            )}
+            aria-hidden
+          />
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">
+            Fornecedores
+          </span>
+          {cotacao.convites.length > 0 && (
+            <span className="text-[12px] text-muted">
+              {respondidos.length} de {cotacao.convites.length}{" "}
+              {respondidos.length === 1 ? "respondeu" : "responderam"}
+              {aguardando.length > 0 && ` · ${aguardando.length} aguardando`}
+            </span>
           )}
+        </button>
 
-          {aguardando.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setReenviando("todos")}
-              className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-            >
-              <RotateCcw size={15} />
-              Reenviar aos {aguardando.length} pendentes
-            </button>
-          )}
-          </div>
+        {editavel && cotacao.convites.length > 0 && (
+          <div className="flex flex-wrap items-center gap-3">
+            {aguardando.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setReenviando("todos")}
+                className="flex cursor-pointer items-center gap-1.5 text-[12px] font-medium text-brand underline-offset-4 transition-colors hover:underline"
+              >
+                <RotateCcw size={13} />
+                Cobrar {aguardando.length}
+              </button>
+            )}
 
-          {pendentes.length > 0 && cotacao.itens.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setEnviando(true)}
-              disabled={pendente}
-              className="flex items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
-            >
-              <Send size={15} />
-              Enviar para {pendentes.length}{" "}
-              {pendentes.length === 1 ? "fornecedor" : "fornecedores"}
-            </button>
-          )}
-        </div>
-      )}
+            {pendentes.length > 0 && cotacao.itens.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setEnviando(pendentes)}
+                disabled={pendente}
+                className="flex cursor-pointer items-center gap-1.5 text-[12px] font-medium text-brand underline-offset-4 transition-colors hover:underline disabled:opacity-50"
+              >
+                <Send size={13} />
+                Enviar para {pendentes.length}
+              </button>
+            )}
 
-      {erro && <p className="text-[13px] text-danger">{erro}</p>}
-
-      {cotacao.convites.length === 0 ? (
-        <EstadoVazio
-          icon={<Users size={20} />}
-          titulo="Nenhum fornecedor na cotação"
-          descricao="Escolha os fornecedores que vão receber a lista. Quanto mais gente na disputa, melhor o preço."
-          acao={
-            podeConvidar ? (
+            {podeConvidar && (
               <button
                 type="button"
                 onClick={() => setConvidando(true)}
-                className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+                disabled={disponiveis.length === 0}
+                className="flex cursor-pointer items-center gap-1.5 text-[12px] font-medium text-ink-2 underline-offset-4 transition-colors hover:text-ink hover:underline disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Adicionar fornecedores
+                <UserPlus size={13} />
+                {disponiveis.length === 0 ? "Todos convidados" : "Adicionar"}
               </button>
-            ) : undefined
-          }
-        />
-      ) : (
-        <ul className={cn("grid gap-2.5", !compacto && "md:grid-cols-2 xl:grid-cols-3")}>
-          {cotacao.convites.map((c) => (
-            <li
-              key={c.id}
-              className={cn(
-                "flex items-start gap-3 rounded-[var(--radius-lg)] border border-line bg-surface",
-                compacto ? "p-3" : "p-4",
-              )}
-            >
-              <SupplierAvatar
-                nome={c.supplierNome}
-                logoUrl={c.supplierLogoUrl}
-                size={compacto ? 30 : 38}
-              />
+            )}
+          </div>
+        )}
+      </div>
 
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="truncate text-sm font-semibold text-ink">{c.supplierNome}</p>
-                  {/* Etiqueta encostada na direita: em cartão de largura fixa
-                      ela vira coluna, e o olho varre uma coluna de estados
-                      sem reler nome por nome. */}
-                  <span
-                    className={cn(
-                      "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                      rotulo(c).classe,
-                    )}
-                  >
-                    {rotulo(c).label}
-                  </span>
-                </div>
+      {erro && <p className="mt-2 text-[13px] text-danger">{erro}</p>}
 
-                <p className="mt-0.5 text-[12px] text-muted">
-                  {c.status === "RESPONDIDA"
-                    ? `Respondeu ${fmtQuando(c.respondidaEm)} · ${c.itensAtendidos} de ${cotacao.itens.length} itens`
-                    : c.status === "ENVIADA"
-                      ? c.abertoEm
-                        ? `Abriu o link ${fmtQuando(c.abertoEm)} · ainda não respondeu`
-                        : `Enviado ${fmtQuando(c.enviadaEm)} · ainda não abriu`
-                      : c.status === "RECUSADA"
-                        ? (c.observacao ?? "Não vai cotar")
-                        : "Ainda não recebeu a lista"}
-                </p>
+      {cotacao.convites.length === 0 ? (
+        <div className="mt-2">
+          <EstadoVazio
+            icon={<Users size={20} />}
+            titulo="Nenhum fornecedor na cotação"
+            descricao="Escolha os fornecedores que vão receber a lista. Quanto mais gente na disputa, melhor o preço."
+            acao={
+              podeConvidar ? (
+                <button
+                  type="button"
+                  onClick={() => setConvidando(true)}
+                  className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+                >
+                  Adicionar fornecedores
+                </button>
+              ) : undefined
+            }
+          />
+        </div>
+      ) : !mostrarLista ? null : (
+        // UMA LINHA por convidado, em colunas: com seis fornecedores, uma
+        // pilha vertical de seis linhas empurra a matriz para baixo da dobra.
+        //
+        // O TOTAL não aparece aqui de propósito: ele é o cabeçalho da coluna
+        // do fornecedor na matriz, logo abaixo. Esta faixa responde "quem já
+        // voltou e o que fazer com quem não voltou"; a matriz responde "por
+        // quanto". O resto — contato, condições, trilha de envio — mora na
+        // ficha lateral, atrás do nome.
+        <ul className="mt-2 grid gap-x-6 sm:grid-cols-2 xl:grid-cols-3">
+          {cotacao.convites.map((c) => {
+            const respondeu = c.status === "RESPONDIDA";
+            const visualizou = c.status === "ENVIADA" && !!c.abertoEm;
+            const Icone = respondeu
+              ? CheckCircle2
+              : c.status === "RECUSADA"
+                ? Ban
+                : visualizou
+                  ? Eye
+                  : Circle;
+            return (
+              <li key={c.id} className="flex items-center gap-2 border-b border-line py-1.5 last:border-b-0 sm:[&:nth-last-child(-n+1)]:border-b-0">
+                <Icone
+                  size={14}
+                  className={cn(
+                    "shrink-0",
+                    respondeu ? "text-ok" : visualizou ? "text-accent" : "text-faint",
+                  )}
+                  aria-hidden
+                />
 
-                {c.envios.length > 0 && <HistoricoEnvios envios={c.envios} />}
+                {/* O nome é a porta da ficha: histórico de envios, contato e
+                    condições do cadastro não cabem na linha e não são a
+                    decisão — mas são o que se procura quando alguém some. */}
+                <button
+                  type="button"
+                  onClick={() => setFicha(c)}
+                  className={cn(
+                    "min-w-0 flex-1 cursor-pointer truncate text-left text-[13px] underline-offset-4 transition-colors hover:underline",
+                    respondeu ? "font-medium text-ink" : "text-ink-2",
+                  )}
+                >
+                  {c.supplierNome}
+                </button>
 
-                {c.status === "RESPONDIDA" && (
-                  <>
-                    <p className="mt-1.5 flex flex-wrap items-baseline gap-x-3 text-[12px] text-muted">
-                      <span className="font-mono text-[15px] font-semibold tabular-nums text-ink">
-                        {fmtMoney(c.total)}
-                      </span>
-                      {c.prazoEntregaDias !== null && <span>entrega em {c.prazoEntregaDias}d</span>}
-                      {c.condicaoPagamento && <span>{c.condicaoPagamento}</span>}
-                      {c.frete ? <span>frete {fmtMoney(c.frete)}</span> : null}
-                    </p>
-                    <OrigemDaResposta origem={c.origemResposta} />
-                  </>
-                )}
+                {/* O contexto que a matriz NÃO dá: cobertura de quem respondeu,
+                    e há quanto tempo a bola está com quem não respondeu — que é
+                    o que decide entre cobrar hoje ou esperar. */}
+                <span className="shrink-0 text-[12px] text-muted">
+                  {respondeu
+                    ? `${c.itensAtendidos}/${cotacao.itens.length} itens`
+                    : c.status === "RECUSADA"
+                      ? "não vai cotar"
+                      : c.status === "PENDENTE"
+                        ? "não enviado"
+                        : visualizou
+                          ? `viu ${fmtQuando(c.abertoEm)}`
+                          : `enviado ${fmtQuando(c.enviadaEm)}`}
+                </span>
 
                 {editavel && (
-                  <div className="mt-2.5 flex flex-wrap items-center justify-end gap-1.5">
-                    {/* Uma ação principal por cartão. Cinco botões iguais
-                        obrigavam a ler todos antes de agir; aqui a ação que
-                        move a cotação adiante é a única com peso visual, o
-                        apoio fica em contorno e o resto some no menu.
-
-                        Respondido, sobra corrigir: o "Ver no comparativo" que
-                        ficava aqui era de quando o comparativo era outra aba.
-                        Ele está na mesma tela, ao lado — o botão levava a
-                        pessoa para onde ela já estava. */}
-                    {c.status === "RESPONDIDA" ? (
+                  <Menu
+                    trigger={
                       <button
                         type="button"
-                        onClick={() => setRespondendo(c)}
-                        className="cursor-pointer rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
+                        aria-label={`Ações de ${c.supplierNome}`}
+                        aria-haspopup="menu"
+                        className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
                       >
-                        Corrigir preços
+                        <MoreVertical size={15} />
                       </button>
-                    ) : (
-                      cotacao.itens.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => setRespondendo(c)}
-                          className="flex cursor-pointer items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-                        >
-                          <PencilLine size={13} />
-                          Registrar resposta
-                        </button>
-                      )
+                    }
+                  >
+                    {cotacao.itens.length > 0 && (
+                      <MenuItem icon={<PencilLine size={14} />} onClick={() => setRespondendo(c)}>
+                        {respondeu ? "Corrigir preços" : "Registrar resposta"}
+                      </MenuItem>
                     )}
 
                     {c.status === "ENVIADA" && (
-                      <button
-                        type="button"
-                        onClick={() => setReenviando(c)}
-                        className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
-                      >
-                        <RotateCcw size={13} />
+                      <MenuItem icon={<RotateCcw size={14} />} onClick={() => setReenviando(c)}>
                         Reenviar
-                      </button>
+                      </MenuItem>
                     )}
 
-                    {/* Com a proposta na mão o menu SOME: tudo que ele oferece
-                        — copiar mensagem, copiar link, marcar recusa, tirar da
-                        cotação — é conversa de quem ainda está sendo cobrado.
-                        Depois do preço, o trabalho é comparar, e as duas ações
-                        que importam já estão em botão. */}
-                    {c.status !== "RESPONDIDA" && (
-                      <Menu
-                        trigger={
-                          <button
-                            type="button"
-                            aria-label={`Mais ações de ${c.supplierNome}`}
-                            aria-haspopup="menu"
-                            className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-                          >
-                            <MoreVertical size={15} />
-                          </button>
+                    {c.status === "PENDENTE" && cotacao.itens.length > 0 && (
+                      <MenuItem
+                        icon={<Send size={14} />}
+                        disabled={pendente}
+                        onClick={() => setEnviando([c])}
+                      >
+                        Enviar a mensagem
+                      </MenuItem>
+                    )}
+
+                    {/* O texto pronto, com o link dentro — para colar numa
+                        conversa que já começou. */}
+                    {c.status !== "RECUSADA" && (
+                      <MenuItem
+                        icon={<Copy size={14} />}
+                        disabled={pendente}
+                        onClick={() =>
+                          rodar(async () => {
+                            const { mensagem } = await mensagemDoConviteAction(c.id);
+                            if (!(await copiarTexto(mensagem))) {
+                              throw new Error("O navegador bloqueou a cópia. Tente pelo WhatsApp.");
+                            }
+                            setTextoCopiado(c.id);
+                          })
                         }
                       >
-                        {/* O texto pronto, com o link dentro. Era botão na linha
-                            de ações e virou item de menu: quem está cobrando usa
-                            "Reenviar", que abre a central; copiar serve a quem
-                            vai colar numa conversa já começada. */}
-                        {c.status === "ENVIADA" && (
-                          <MenuItem
-                            icon={<Copy size={14} />}
-                            disabled={pendente}
-                            onClick={() =>
-                              rodar(async () => {
-                                const { mensagem } = await mensagemDoConviteAction(c.id);
-                                if (!(await copiarTexto(mensagem))) {
-                                  throw new Error(
-                                    "O navegador bloqueou a cópia. Tente pelo WhatsApp.",
-                                  );
-                                }
-                                setTextoCopiado(c.id);
-                              })
-                            }
-                          >
-                            {textoCopiado === c.id ? "Mensagem copiada" : "Copiar mensagem"}
-                          </MenuItem>
-                        )}
-                        {/* Só o endereço, sem o texto em volta: serve para colar
-                            numa conversa que já começou. */}
-                        {c.status === "ENVIADA" && (
-                          <MenuItem
-                            icon={<LinkIcon size={14} />}
-                            disabled={pendente}
-                            onClick={() =>
-                              rodar(async () => {
-                                const { url } = await linkDoConviteAction(c.id);
-                                if (!(await copiarTexto(url))) {
-                                  throw new Error(
-                                    "O navegador bloqueou a cópia. Abra o link e copie da barra de endereço.",
-                                  );
-                                }
-                                setLinkCopiado(c.id);
-                              })
-                            }
-                          >
-                            {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
-                          </MenuItem>
-                        )}
-                        {c.status === "ENVIADA" && (
-                          <MenuItem
-                            icon={<ThumbsDown size={14} />}
-                            disabled={pendente}
-                            onClick={() => rodar(() => recusarConviteAction(c.id))}
-                          >
-                            {'Marcar "Não vai cotar"'}
-                          </MenuItem>
-                        )}
-                        {/* O menu inteiro já não existe depois da resposta — aqui
-                            sobra a permissão. */}
-                        {podeRemover && (
-                          <MenuItem
-                            danger
-                            icon={<Trash2 size={14} />}
-                            disabled={pendente}
-                            onClick={() => rodar(() => removerConviteAction(c.id))}
-                          >
-                            Remover da cotação
-                          </MenuItem>
-                        )}
-                      </Menu>
+                        {textoCopiado === c.id ? "Mensagem copiada" : "Copiar mensagem"}
+                      </MenuItem>
                     )}
-                  </div>
+
+                    {c.status !== "RECUSADA" && (
+                      <MenuItem
+                        icon={<LinkIcon size={14} />}
+                        disabled={pendente}
+                        onClick={() =>
+                          rodar(async () => {
+                            const { url } = await linkDoConviteAction(c.id);
+                            if (!(await copiarTexto(url))) {
+                              throw new Error(
+                                "O navegador bloqueou a cópia. Abra o link e copie da barra de endereço.",
+                              );
+                            }
+                            setLinkCopiado(c.id);
+                          })
+                        }
+                      >
+                        {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
+                      </MenuItem>
+                    )}
+
+                    {(c.status === "ENVIADA" || c.status === "PENDENTE") && (
+                      <MenuItem
+                        icon={<ThumbsDown size={14} />}
+                        disabled={pendente}
+                        onClick={() => rodar(() => recusarConviteAction(c.id))}
+                      >
+                        {'Marcar "Não vai cotar"'}
+                      </MenuItem>
+                    )}
+
+                    {/* Recusa é o que o COMPRADOR ouviu, e quem digita erra de
+                        linha. Voltar atrás devolve o fornecedor à disputa sem
+                        perder a trilha de envio nem trocar o link que já está
+                        na conversa dele. */}
+                    {c.status === "RECUSADA" && (
+                      <MenuItem
+                        icon={<Undo2 size={14} />}
+                        disabled={pendente}
+                        onClick={() => rodar(() => desfazerRecusaAction(c.id))}
+                      >
+                        {'Desfazer "Não vai cotar"'}
+                      </MenuItem>
+                    )}
+
+                    {podeRemover && (
+                      <MenuItem
+                        danger
+                        icon={<Trash2 size={14} />}
+                        disabled={pendente}
+                        onClick={() => rodar(() => removerConviteAction(c.id))}
+                      >
+                        Remover da cotação
+                      </MenuItem>
+                    )}
+                  </Menu>
                 )}
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       )}
 
-      {/* Na coluna estreita a barra do topo não existe — mas chamar mais um
-          para a disputa continua valendo até a cotação fechar, e sem isso a
-          ação sumia junto com a barra. */}
-      {compacto && editavel && podeConvidar && cotacao.convites.length > 0 && (
-        <button
-          type="button"
-          onClick={() => setConvidando(true)}
-          disabled={disponiveis.length === 0}
-          className="flex cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <UserPlus size={14} />
-          {disponiveis.length === 0 ? "Todos já estão na cotação" : "Adicionar fornecedor"}
-        </button>
+      {ficha && (
+        <FichaFornecedor
+          convite={ficha}
+          totalItens={cotacao.itens.length}
+          onFechar={() => setFicha(null)}
+        />
       )}
 
       {convidando && (
@@ -437,12 +466,12 @@ export function ConvitesCotacao({
         />
       )}
 
-      {enviando && (
+      {enviando && enviando.length > 0 && (
         <EnvioSheet
-          alvos={pendentes}
+          alvos={enviando}
           prazoAtual={cotacao.prazoResposta}
-          onFechar={() => setEnviando(false)}
-          onConcluir={() => setEnviando(false)}
+          onFechar={() => setEnviando(null)}
+          onConcluir={() => setEnviando(null)}
         />
       )}
 
@@ -457,8 +486,218 @@ export function ConvitesCotacao({
       )}
 
       {envios && <EnviosSheet envios={envios} onFechar={() => setEnvios(null)} />}
+    </section>
+  );
+}
+
+// ── Ficha do fornecedor ─────────────────────────────────────
+// O que saiu da linha, atrás do nome: quem é o contato, o que a proposta dele
+// diz, e a trilha inteira de envios com data e hora. É a tela que responde
+// "por que este aqui não respondeu?" — e a resposta quase sempre é que a
+// mensagem foi para o número errado, ou nunca saiu.
+
+function FichaFornecedor({
+  convite: c,
+  totalItens,
+  onFechar,
+}: {
+  convite: ConviteCotacao;
+  totalItens: number;
+  onFechar: () => void;
+}) {
+  const contatoDoConvite = c.contatoId
+    ? (c.contatos.find((x) => x.id === c.contatoId) ?? null)
+    : null;
+  const respondeu = c.status === "RESPONDIDA";
+
+  return (
+    <Sheet open onClose={onFechar} title={c.supplierNome} description={rotulo(c).label} width="md">
+      <div className="flex flex-col gap-5">
+        {/* A logo é o reconhecimento antes da leitura — o comprador sabe de
+            quem é a ficha antes de ler o nome no cabeçalho. Sem logo no
+            cadastro, o avatar cai nas iniciais. */}
+        <div className="flex items-center gap-3 border-b border-line pb-4">
+          <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={44} />
+          <div className="min-w-0">
+            <p className="truncate text-[15px] font-semibold text-ink">{c.supplierNome}</p>
+            <p className="mt-0.5 truncate text-[12px] text-muted">
+              {[c.supplierPraca, rotulo(c).label].filter(Boolean).join(" · ")}
+            </p>
+          </div>
+        </div>
+        {/* Quem recebe. Sem isto, "não respondeu" é um mistério: a cotação
+            pode ter ido para o e-mail de um vendedor que saiu da empresa. */}
+        <Bloco titulo="Contato">
+          {c.contatos.length === 0 && !c.telefone && !c.email ? (
+            <p className="text-[13px] text-muted">
+              Nenhum contato cadastrado — a mensagem sai no telefone da empresa.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {c.contatos.map((x) => (
+                <li key={x.id} className="flex items-start gap-2">
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="text-[13px] font-medium text-ink">{x.nome}</span>
+                      {x.cargo && <span className="text-[11px] text-faint">{x.cargo}</span>}
+                      {contatoDoConvite?.id === x.id && (
+                        <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand">
+                          desta cotação
+                        </span>
+                      )}
+                    </span>
+                    <span className="mt-0.5 flex flex-wrap gap-x-3 text-[12px] text-muted">
+                      {x.telefone && <span className="font-mono">{x.telefone}</span>}
+                      {x.email && <span className="truncate">{x.email}</span>}
+                    </span>
+                  </span>
+                </li>
+              ))}
+              {c.contatos.length === 0 && (
+                <li className="flex flex-wrap gap-x-3 text-[12px] text-muted">
+                  {c.telefone && <span className="font-mono">{c.telefone}</span>}
+                  {c.email && <span className="truncate">{c.email}</span>}
+                </li>
+              )}
+            </ul>
+          )}
+        </Bloco>
+
+        {/* O que o cadastro promete — o que faz a proposta caber ou não. */}
+        {(c.supplierPraca || c.supplierPedidoMinimo !== null || c.supplierPrazoPagamentoDias !== null) && (
+          <Bloco titulo="Cadastro">
+            <dl className="flex flex-col gap-1 text-[13px]">
+              {c.supplierPraca && <Linha rotulo="Praça" valor={c.supplierPraca} />}
+              {c.supplierPedidoMinimo !== null && (
+                <Linha rotulo="Pedido mínimo" valor={fmtMoney(c.supplierPedidoMinimo)} />
+              )}
+              {c.supplierPrazoPagamentoDias !== null && (
+                <Linha rotulo="Prazo de pagamento" valor={`${c.supplierPrazoPagamentoDias} dias`} />
+              )}
+            </dl>
+          </Bloco>
+        )}
+
+        {respondeu && (
+          <Bloco titulo="Proposta">
+            <dl className="flex flex-col gap-1 text-[13px]">
+              <Linha rotulo="Total" valor={fmtMoney(c.total)} />
+              <Linha rotulo="Itens atendidos" valor={`${c.itensAtendidos} de ${totalItens}`} />
+              {c.prazoEntregaDias !== null && (
+                <Linha rotulo="Entrega" valor={`${c.prazoEntregaDias} dias`} />
+              )}
+              {c.condicaoPagamento && (
+                <Linha rotulo="Pagamento" valor={c.condicaoPagamento} />
+              )}
+              {c.frete ? <Linha rotulo="Frete" valor={fmtMoney(c.frete)} /> : null}
+              <Linha rotulo="Respondeu" valor={fmtDataHora(c.respondidaEm)} />
+            </dl>
+            <OrigemDaResposta origem={c.origemResposta} />
+            {c.observacao && (
+              <p className="mt-2 rounded-[var(--radius)] border border-line bg-surface-2 px-3 py-2 text-[12px] text-ink-2">
+                {c.observacao}
+              </p>
+            )}
+          </Bloco>
+        )}
+
+        {c.status === "RECUSADA" && c.observacao && (
+          <Bloco titulo="Motivo da recusa">
+            <p className="text-[13px] text-ink-2">{c.observacao}</p>
+          </Bloco>
+        )}
+
+        {/* A trilha, do mais novo para o mais velho: canal, para quem, quando —
+            e o que a Meta devolveu, quando o disparo foi automático. */}
+        <Bloco titulo={`Envios (${c.envios.length})`}>
+          {c.envios.length === 0 ? (
+            <p className="text-[13px] text-muted">
+              {c.status === "PENDENTE"
+                ? "Ainda não foi enviado — a lista não saiu para este fornecedor."
+                : "Marcado como enviado sem passar pela central de envio."}
+            </p>
+          ) : (
+            <ol className="flex flex-col gap-2.5">
+              {c.envios.map((e) => (
+                <li key={e.id} className="flex items-start gap-2">
+                  {e.canal === "WHATSAPP" ? (
+                    <IconeWhatsApp size={13} className="mt-0.5 shrink-0 text-whatsapp" />
+                  ) : (
+                    <Mail size={13} className="mt-0.5 shrink-0 text-info" />
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="text-[13px] text-ink">
+                        {e.contatoNome ?? e.destino ?? "sem contato"}
+                      </span>
+                      {e.reenvio && <span className="text-[11px] text-faint">reenvio</span>}
+                      {e.automatico && e.sucesso && e.status && (
+                        <span
+                          className={cn(
+                            "text-[11px] font-medium",
+                            e.status === "LIDA"
+                              ? "text-brand"
+                              : e.status === "ENTREGUE"
+                                ? "text-ok"
+                                : "text-faint",
+                          )}
+                        >
+                          {e.status === "LIDA"
+                            ? "lida"
+                            : e.status === "ENTREGUE"
+                              ? "entregue"
+                              : "enviada"}
+                        </span>
+                      )}
+                      {!e.sucesso && <span className="text-[11px] text-accent">falhou</span>}
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-muted">
+                      {fmtDataHora(e.enviadoEm)}
+                      {e.destino && e.contatoNome ? ` · ${e.destino}` : ""}
+                      {e.copias ? ` · cópia: ${e.copias}` : ""}
+                    </span>
+                    {e.erro && <span className="mt-0.5 block text-[11px] text-danger">{e.erro}</span>}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </Bloco>
+      </div>
+    </Sheet>
+  );
+}
+
+function Bloco({ titulo, children }: { titulo: string; children: React.ReactNode }) {
+  return (
+    <section>
+      <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
+        {titulo}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+function Linha({ rotulo: r, valor }: { rotulo: string; valor: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <dt className="text-muted">{r}</dt>
+      <dd className="text-right font-medium text-ink">{valor}</dd>
     </div>
   );
+}
+
+/** Data COM hora: no histórico de envio, "ontem" não diz se deu tempo de responder. */
+function fmtDataHora(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 // ── De onde veio o preço ────────────────────────────────────
@@ -1565,7 +1804,7 @@ export function EnviosSheet({ envios, onFechar }: { envios: Envio[]; onFechar: (
                     rel="noopener noreferrer"
                     className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
                   >
-                    <MessageCircle size={13} />
+                    <IconeWhatsApp size={13} />
                     WhatsApp
                   </a>
                 )}
@@ -1707,51 +1946,6 @@ function Modal({
         )}
       </div>
     </div>
-  );
-}
-
-// ── Histórico de envio ──────────────────────────────────────
-// "Mandei pro João ou pra Maria?" é a pergunta de três dias depois. Duas
-// linhas no cartão respondem sem abrir nada — o resto fica no "mais".
-
-function HistoricoEnvios({
-  envios,
-}: {
-  envios: ConviteCotacao["envios"];
-}) {
-  const [todos, setTodos] = useState(false);
-  const visiveis = todos ? envios : envios.slice(0, 2);
-
-  return (
-    <ul className="mt-1.5 flex flex-col gap-0.5">
-      {visiveis.map((e) => (
-        <li key={e.id} className="flex items-center gap-1.5 text-[11px] text-muted">
-          {e.canal === "WHATSAPP" ? (
-            /* Verde do WhatsApp: no histórico o canal é o que se lê primeiro,
-               e a cor identifica antes do texto. */
-            <MessageCircle size={11} className="shrink-0 text-whatsapp" />
-          ) : (
-            <Mail size={11} className="shrink-0 text-faint" />
-          )}
-          <span className="truncate">
-            {e.contatoNome ?? e.destino ?? "sem contato"}
-            {e.reenvio && " · reenvio"}
-          </span>
-          {!e.sucesso && <span className="shrink-0 text-accent">falhou</span>}
-        </li>
-      ))}
-      {envios.length > 2 && (
-        <li>
-          <button
-            type="button"
-            onClick={() => setTodos((v) => !v)}
-            className="text-[11px] font-medium text-brand transition-colors hover:underline"
-          >
-            {todos ? "ver menos" : `ver os ${envios.length} envios`}
-          </button>
-        </li>
-      )}
-    </ul>
   );
 }
 

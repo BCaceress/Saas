@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { authConfig } from "./auth.config";
 import { getSubdomainFromHost } from "./lib/subdomain";
 import { SUPERFICIE_COOKIE, homeDaSuperficie } from "./lib/superficie";
+import { TEMA_FORCADO_HEADER } from "./lib/tema-forcado";
 
 const { auth } = NextAuth(authConfig);
 
@@ -24,7 +25,18 @@ export default auth((req) => {
   // Vale em qualquer host — o token do link é que diz de qual tenant é a
   // cotação. Sem esta linha, o link colado num grupo de WhatsApp que preserve
   // o subdomínio cairia no gate abaixo e viraria uma tela de login.
-  if (pathname.startsWith("/cotacao/")) return NextResponse.next();
+  //
+  // E o tema dela não é o do operador: quem abre o link não escolheu tema
+  // nenhum, e o cookie `theme` que estiver no browser (o do próprio comprador,
+  // testando o link) deixaria a proposta no escuro para quem só quer ler
+  // preço. O cabeçalho abaixo é lido pelo layout raiz, que fixa
+  // data-theme="light" no <html> — no <html> mesmo, e não num wrapper, para
+  // que fundo da página, scrollbar e barra de status venham claros junto.
+  if (pathname.startsWith("/cotacao/")) {
+    const headers = new Headers(req.headers);
+    headers.set(TEMA_FORCADO_HEADER, "light");
+    return NextResponse.next({ request: { headers } });
+  }
 
   // Domínio raiz: landing + auth. Sem gate.
   if (!sub) return NextResponse.next();

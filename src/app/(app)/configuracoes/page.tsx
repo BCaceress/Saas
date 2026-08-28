@@ -11,6 +11,7 @@ import {
   Warehouse,
   Wallet,
   Bell,
+  MessageCircle,
   MonitorSmartphone,
   ReceiptText,
   Sparkles,
@@ -19,11 +20,15 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
+import { requireActiveTenant } from "@/lib/current-tenant";
+import { temFeature, type Feature } from "@/lib/planos";
 
 const CARDS: {
   href: string;
   icon: LucideIcon;
   tone?: "accent";
+  /** Card de add-on: some para quem não contratou. */
+  feature?: Feature;
   title: string;
   description: string;
 }[] = [
@@ -114,6 +119,13 @@ const CARDS: {
     description: "Escolha quais grupos de alerta aparecem no sino.",
   },
   {
+    href: "/configuracoes/whatsapp",
+    icon: MessageCircle,
+    feature: "compras.whatsapp",
+    title: "WhatsApp",
+    description: "Disparo automático das cotações pelo número da empresa, com status de entrega.",
+  },
+  {
     href: "/configuracoes/usuarios",
     icon: UserCog,
     title: "Usuários",
@@ -121,7 +133,12 @@ const CARDS: {
   },
 ];
 
-export default function ConfiguracoesPage() {
+export default async function ConfiguracoesPage() {
+  // Card de add-on só aparece para quem tem: oferecer a configuração de um
+  // recurso não contratado leva o operador a uma tela que redireciona.
+  const ctx = await requireActiveTenant();
+  const cards = CARDS.filter((c) => !c.feature || temFeature(ctx.tenant, c.feature));
+
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
@@ -131,7 +148,7 @@ export default function ConfiguracoesPage() {
         innerClassName="max-w-none"
       />
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {CARDS.map((c) => (
+        {cards.map((c) => (
           <Link
             key={c.href}
             href={c.href}

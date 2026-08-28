@@ -113,6 +113,14 @@ export type EnvioConvite = {
   sucesso: boolean;
   erro: string | null;
   enviadoEm: string;
+  /**
+   * Saiu pela Cloud API (add-on WhatsApp), sem ninguém abrir o aplicativo.
+   * Muda o que `sucesso` quer dizer: aqui é o aceite da Meta, não a palavra do
+   * operador — e por isso só o automático tem `status`.
+   */
+  automatico: boolean;
+  status: "ENVIADA" | "ENTREGUE" | "LIDA" | "FALHOU" | null;
+  statusEm: string | null;
 };
 
 export type ConviteCotacao = {

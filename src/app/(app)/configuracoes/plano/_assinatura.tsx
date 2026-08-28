@@ -13,6 +13,7 @@ import {
   trocarPlanoAction,
   alternarAddonAction,
 } from "./actions";
+import type { AddonSlug } from "@/lib/planos";
 import type { SubscriptionStatus, TenantStatus } from "@/generated/prisma";
 
 // ============================================================
@@ -211,7 +212,7 @@ export function BotaoAddon({
   quantidade,
   bloqueado,
 }: {
-  slug: "fiscal" | "autoatendimento" | "loja-extra" | "copiloto-ia";
+  slug: AddonSlug;
   contratado: boolean;
   quantidade?: number;
   bloqueado?: boolean;

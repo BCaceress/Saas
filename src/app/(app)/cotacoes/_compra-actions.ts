@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { assertSite, guardAction } from "@/lib/guard";
+import { assertFeature, assertSite, guardAction } from "@/lib/guard";
+import { featureAtiva, mensagemUpgrade } from "@/lib/planos";
 import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { criarPedidoCompra } from "@/lib/estoque";
@@ -12,6 +13,11 @@ import { registrarPrecosDaCotacao } from "@/lib/compras/cotacao-precos";
 import { regrasDaCotacao } from "@/lib/compras/cotacao-regras";
 import { normalizarFaixas, precoNaQuantidade } from "@/lib/compras/escalas";
 import { quantidadeComUnidade, unidadesDosItens } from "@/lib/compras/cotacao-unidades";
+import {
+  numerosPossiveis,
+  parametrosDoTemplate,
+} from "@/lib/compras/cotacao-whatsapp";
+import { canalAtivo, providerDe, WhatsAppProviderError } from "@/lib/whatsapp";
 import { db } from "@/lib/prisma";
 import { enviarEmail } from "@/lib/email";
 import { emailCotacao } from "@/lib/email/templates";
@@ -657,8 +663,14 @@ export async function removerItemAction(id: string) {
 
 const reordenarSchema = z.object({
   quotationId: z.string().min(1),
-  /** Ids na ordem final. Itens fora da lista mantêm o que tinham. */
-  ids: z.array(z.string().min(1)).min(2),
+  /**
+   * Ids na ordem final. Itens fora da lista mantêm o que tinham.
+   *
+   * Uma lista de UM item é ordem válida: desfazer a remoção do último item
+   * manda a sequência inteira de volta, e ela tem um id só. Exigir dois aqui
+   * transformava o "Desfazer" em erro de validação na cara do operador.
+   */
+  ids: z.array(z.string().min(1)).min(1),
 });
 
 /**
@@ -1561,6 +1573,240 @@ export async function confirmarEnvioAction(
   });
 }
 
+// ── Envio automático (add-on WhatsApp) ──────────────────────
+// Aqui o NoHub DEIXA de abrir o WhatsApp do operador e manda ele mesmo, pela
+// Cloud API. Muda o significado de duas coisas:
+//
+//   "enviado" — deixa de ser a palavra do operador e passa a ser o aceite da
+//   Meta. Entregue e lido chegam depois, por webhook (ver
+//   `api/webhooks/whatsapp`), e caem na mesma trilha.
+//
+//   a mensagem — sai por TEMPLATE aprovado, não pelo texto livre do fluxo
+//   manual. O template não carrega a lista de produtos; carrega o link, que é
+//   a lista de verdade. Ver `lib/compras/cotacao-whatsapp`.
+//
+// O fluxo manual continua inteiro ao lado: é o que atende contato sem número,
+// fornecedor que só responde no e-mail e o dia em que a Meta está fora do ar.
+
+export type StatusEnvioAutomatico = {
+  disponivel: boolean;
+  /** Por que não dá para disparar — a folha mostra e segue no manual. */
+  motivo: string | null;
+  /** Número que o fornecedor vê como remetente. */
+  numero: string | null;
+};
+
+/**
+ * A folha pergunta isto ao abrir. Não lança: canal desligado não é erro, é o
+ * estado normal de quem não contratou o add-on — e a resposta é "manda pela
+ * mão", que é o que a tela já sabe fazer.
+ */
+export async function statusEnvioAutomaticoAction(): Promise<StatusEnvioAutomatico> {
+  const ctx = await guardAction("compras.pedir", null, { mesmoSuspenso: true });
+  if (!featureAtiva(ctx.tenant, "compras.whatsapp")) {
+    return { disponivel: false, motivo: mensagemUpgrade("compras.whatsapp"), numero: null };
+  }
+  const cfg = await canalAtivo(ctx.tenant.id);
+  if (!cfg) {
+    return {
+      disponivel: false,
+      motivo: "O disparo automático está desligado. Ligue em Configurações → WhatsApp.",
+      numero: null,
+    };
+  }
+  return { disponivel: true, motivo: null, numero: cfg.numeroExibicao };
+}
+
+const disparoSchema = z.object({
+  alvos: z
+    .array(
+      z.object({
+        conviteId: z.string().min(1),
+        /** Contatos DESTE fornecedor que vão receber. Um disparo cada. */
+        contactIds: z.array(z.string().min(1)).min(1),
+      }),
+    )
+    .min(1),
+  reenvio: z.boolean().default(false),
+});
+
+export type ResultadoDisparo = {
+  conviteId: string;
+  contactId: string;
+  contatoNome: string;
+  enviado: boolean;
+  /** Recado pronto para a tela quando o disparo não saiu. */
+  erro: string | null;
+  /** Não adianta repetir (número sem WhatsApp, template reprovado, token). */
+  permanente: boolean;
+  enviadoEm: string | null;
+};
+
+/**
+ * Dispara a cotação pela Cloud API — um envio por CONTATO, como no manual.
+ *
+ * Falha de um contato não derruba os outros: cada disparo vira uma linha de
+ * trilha com o seu próprio resultado, e a tela mostra quem recebeu e quem não.
+ * Um lote de doze fornecedores que morresse inteiro porque um número está
+ * errado seria pior que o fluxo manual que ele veio substituir.
+ */
+export async function dispararWhatsAppAction(
+  input: z.input<typeof disparoSchema>,
+): Promise<ResultadoDisparo[]> {
+  const d = disparoSchema.parse(input);
+  const ctx = await guardAction("compras.pedir");
+  assertFeature(ctx, "compras.whatsapp");
+
+  return runWithTenant(ctx.tenant.id, async () => {
+    const cfg = await canalAtivo(ctx.tenant.id);
+    if (!cfg) {
+      throw new Error(
+        "O disparo automático está desligado. Ligue em Configurações → WhatsApp ou envie pelo aplicativo.",
+      );
+    }
+    const provider = providerDe(cfg);
+    const userId = ctx.user.id ?? null;
+
+    const convites = await db.quotationSupplier.findMany({
+      where: { id: { in: d.alvos.map((a) => a.conviteId) } },
+      select: {
+        id: true,
+        status: true,
+        quotationId: true,
+        contactId: true,
+        quotation: { select: { id: true, numero: true, status: true, prazoResposta: true } },
+        supplier: {
+          select: {
+            razaoSocial: true,
+            nomeFantasia: true,
+            contacts: {
+              where: { ativo: true },
+              select: { id: true, nome: true, telefone: true },
+            },
+          },
+        },
+      },
+    });
+
+    const resultados: ResultadoDisparo[] = [];
+
+    for (const alvo of d.alvos) {
+      const convite = convites.find((c) => c.id === alvo.conviteId);
+      if (!convite) continue;
+      // Quem já respondeu está fora: remandar a pergunta depois da resposta
+      // convida o fornecedor a mandar um segundo preço para a mesma coisa.
+      if (convite.status === "RESPONDIDA" || convite.status === "RECUSADA") continue;
+
+      const link =
+        (await linkVigente(convite.id))?.url ??
+        (await emitirLinkCotacao(ctx.tenant.id, convite.id, convite.quotation.prazoResposta)).url;
+      const parametros = parametrosDoTemplate({
+        empresa: ctx.tenant.nome,
+        numero: convite.quotation.numero,
+        prazo: convite.quotation.prazoResposta,
+        link,
+      });
+
+      let algumSaiu = false;
+      for (const contactId of alvo.contactIds) {
+        const contato = convite.supplier.contacts.find((c) => c.id === contactId);
+        // Contato de OUTRO fornecedor não recebe esta cotação — mesma checagem
+        // do envio manual, pelo mesmo motivo.
+        if (!contato) continue;
+
+        // Uma grafia principal e, para celular do Brasil, a outra forma do
+        // mesmo número — a Meta conhece contas antigas sem o nono dígito.
+        const [numero, ...alternativos] = numerosPossiveis(contato.telefone);
+        const agora = new Date();
+        let externalId: string | null = null;
+        let erro: string | null = numero
+          ? null
+          : `${contato.nome} não tem WhatsApp cadastrado.`;
+        let permanente = !numero;
+
+        if (numero) {
+          try {
+            const aceito = await provider.enviarTemplate({
+              para: numero,
+              alternativos,
+              template: cfg.templateNome,
+              idioma: cfg.templateIdioma,
+              parametros,
+            });
+            externalId = aceito.externalId;
+          } catch (e) {
+            erro =
+              e instanceof WhatsAppProviderError
+                ? e.message
+                : e instanceof Error
+                  ? e.message
+                  : "Não foi possível enviar pela Meta.";
+            permanente = e instanceof WhatsAppProviderError ? e.permanente : false;
+          }
+        }
+
+        const enviado = externalId !== null;
+        algumSaiu ||= enviado;
+
+        await db.quotationSend.create({
+          data: {
+            tenantId: ctx.tenant.id,
+            quotationSupplierId: convite.id,
+            contactId: contato.id,
+            contatoNome: contato.nome,
+            canal: "WHATSAPP",
+            destino: contato.telefone,
+            reenvio: d.reenvio,
+            automatico: true,
+            sucesso: enviado,
+            erro,
+            externalId,
+            // A Meta aceitou — entregue e lido chegam depois, por webhook.
+            status: enviado ? "ENVIADA" : "FALHOU",
+            statusEm: agora,
+            enviadoEm: agora,
+            enviadoPor: userId,
+          },
+        });
+
+        resultados.push({
+          conviteId: convite.id,
+          contactId: contato.id,
+          contatoNome: contato.nome,
+          enviado,
+          erro,
+          permanente,
+          enviadoEm: enviado ? agora.toISOString() : null,
+        });
+      }
+
+      // O convite só vira ENVIADA se alguma mensagem saiu de fato. Marcar
+      // "enviada" com tudo falhando é a mentira que só aparece três dias
+      // depois, quando ninguém respondeu.
+      if (algumSaiu) {
+        const agora = new Date();
+        await db.quotationSupplier.updateMany({
+          where: { id: convite.id },
+          data: {
+            status: "ENVIADA",
+            enviadaEm: agora,
+            contactId: alvo.contactIds[0] ?? convite.contactId,
+          },
+        });
+        if (convite.quotation.status === "RASCUNHO") {
+          await db.quotation.updateMany({
+            where: { id: convite.quotationId },
+            data: { status: "ABERTA", enviadaEm: agora },
+          });
+        }
+      }
+    }
+
+    ok();
+    return resultados;
+  });
+}
+
 /**
  * Texto pronto do convite (com o link dentro), sem reenviar nada.
  *
@@ -1952,6 +2198,48 @@ export async function recusarConviteAction(conviteId: string, motivo?: string) {
         status: "RECUSADA",
         respondidaEm: new Date(),
         observacao: motivo?.trim() || null,
+      },
+    });
+    ok();
+  });
+}
+
+/**
+ * Desfaz o "Não vai cotar".
+ *
+ * Recusa é palavra do comprador sobre o fornecedor — "ele me disse que não vai
+ * cotar" —, e quem digita erra de cartão. Sem volta, o único conserto era
+ * remover o fornecedor e convidar de novo, o que apaga a trilha de envio e o
+ * link que já está no WhatsApp dele.
+ *
+ * Para onde volta: ENVIADA se a mensagem chegou a sair, PENDENTE se não. É a
+ * mesma conta que o resto da tela faz para saber se há o que cobrar.
+ */
+export async function desfazerRecusaAction(conviteId: string) {
+  return txp("compras.pedir", null, async () => {
+    const convite = await db.quotationSupplier.findFirst({
+      where: { id: conviteId },
+      select: {
+        quotationId: true,
+        status: true,
+        enviadaEm: true,
+        envios: { where: { sucesso: true }, select: { id: true }, take: 1 },
+      },
+    });
+    if (!convite) throw new Error("Convite não encontrado.");
+    if (convite.status !== "RECUSADA") {
+      throw new Error("Este fornecedor não está marcado como “Não vai cotar”.");
+    }
+    await exigirEditavel(convite.quotationId);
+    const saiu = convite.enviadaEm !== null || convite.envios.length > 0;
+    await db.quotationSupplier.updateMany({
+      where: { id: conviteId },
+      data: {
+        status: saiu ? "ENVIADA" : "PENDENTE",
+        // A recusa tinha carimbado hora e motivo; voltando atrás, os dois
+        // saem — senão o cartão continua contando uma resposta que não houve.
+        respondidaEm: null,
+        observacao: null,
       },
     });
     ok();

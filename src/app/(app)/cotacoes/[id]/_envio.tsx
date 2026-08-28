@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -11,9 +11,8 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
-  ExternalLink,
   Mail,
-  MessageCircle,
+  Send,
   UserPlus,
   Users,
 } from "lucide-react";
@@ -22,12 +21,16 @@ import { cn } from "@/lib/utils";
 import { copiarTexto } from "@/lib/clipboard";
 import { maskPhone } from "@/lib/masks";
 import { ContatoSheet } from "@/components/app/contato-fornecedor";
+import { IconeWhatsApp } from "@/components/app/icone-whatsapp";
 import { SupplierAvatar } from "../_ui";
 import type { ConviteCotacao, ContatoConvite } from "../_compra-types";
 import {
   confirmarEnvioAction,
+  dispararWhatsAppAction,
   prepararEnvioAction,
+  statusEnvioAutomaticoAction,
   type EnvioPreparado,
+  type StatusEnvioAutomatico,
 } from "../_compra-actions";
 
 // ── Central de envio da cotação ─────────────────────────────
@@ -44,14 +47,16 @@ import {
 //    mensagem saiu é ele — por isso "enviado" só existe depois da confirmação
 //    explícita, contato por contato.
 //
-// Daí o desenho: uma FILA. Por fornecedor, os contatos escolhidos; por
-// contato, uma ação principal só.
+// Daí o desenho: uma LISTA DE PESSOAS. Por fornecedor, os contatos; por
+// contato, um botão só.
 //
-//   escolher contatos → abrir o app → enviar → confirmar → próximo contato
+//   abrir o app na linha da pessoa → enviar → confirmar → próxima pessoa
 //
-// WhatsApp é conversa individual: cada contato é um disparo, e a fila anda
-// "1 de 3". E-mail tem Para e CC no mesmo envelope: um disparo só, com a
-// cópia registrada na trilha.
+// Os dois canais funcionam igual: um disparo por CONTATO, verde no WhatsApp e
+// azul no e-mail. O e-mail já teve "Para" e "Cópia" no mesmo envelope — o
+// envelope escondia quem tinha recebido de verdade, e cópia carbono nunca foi
+// o que o comprador queria dizer. Só o disparo automático (add-on) volta a
+// marcar contatos: lá o lote inteiro sai num clique.
 //
 // "Enviado" quer dizer "o operador confirmou que mandou". Nunca "o fornecedor
 // respondeu" — são duas colunas diferentes da mesma vida.
@@ -63,12 +68,11 @@ type Feito = { canal: Canal; em: string; copias: string | null };
 
 type Estado = {
   canal: Canal;
-  /** WhatsApp: quem recebe. Cada um é um disparo. */
+  /**
+   * Disparo automático (add-on): quem entra no lote. No envio manual — os dois
+   * canais — não há marcação: cada contato tem o botão da própria linha.
+   */
   selecionados: string[];
-  /** E-mail: o destinatário do campo Para. Um só. */
-  paraId: string | null;
-  /** E-mail: quem entra em cópia. */
-  ccIds: string[];
   /** Confirmados, por contactId. */
   feitos: Record<string, Feito>;
   /** Contato cuja pergunta "você enviou?" está na tela. */
@@ -141,6 +145,30 @@ export function EnvioSheet({
   /** Saída com trabalho pela metade — pergunta antes. */
   const [confirmandoSaida, setConfirmandoSaida] = useState(false);
   /**
+   * Canal automático: `null` enquanto a folha pergunta ao servidor.
+   *
+   * A pergunta é feita aqui, e não recebida por prop, porque a folha abre de
+   * três telas diferentes — enfiar a resposta por quatro camadas de props para
+   * chegar até aqui espalharia uma regra comercial pelo caminho todo.
+   */
+  const [auto, setAuto] = useState<StatusEnvioAutomatico | null>(null);
+  const [disparando, setDisparando] = useState(false);
+
+  useEffect(() => {
+    let vivo = true;
+    void statusEnvioAutomaticoAction()
+      .then((s) => {
+        if (vivo) setAuto(s);
+      })
+      .catch(() => {
+        // Falhou a pergunta: segue no manual, que é o caminho que sempre existe.
+        if (vivo) setAuto({ disponivel: false, motivo: null, numero: null });
+      });
+    return () => {
+      vivo = false;
+    };
+  }, []);
+  /**
    * Fornecedor que acabou de ser fechado. Só ele mostra o "Próximo fornecedor"
    * — repetido em cada card concluído viraria uma coluna de botões idênticos
    * apontando todos para o mesmo lugar.
@@ -185,12 +213,9 @@ export function EnvioSheet({
       }
       const canal: Canal = c.contatos.some(temFone) ? "whatsapp" : "email";
       const wa = sugerido(c.contatos, "whatsapp");
-      const mail = sugerido(c.contatos, "email");
       inicial[c.id] = {
         canal,
         selecionados: wa && !feitos[wa] ? [wa] : [],
-        paraId: mail && !feitos[mail] ? mail : (mail ?? null),
-        ccIds: [],
         feitos,
         perguntando: null,
       };
@@ -220,9 +245,20 @@ export function EnvioSheet({
   function fila(c: ConviteCotacao): ContatoConvite[] {
     const e = estados[c.id];
     const contatos = contatosDe(c);
-    if (canalDe(c) === "email") {
-      const para = contatos.find((x) => x.id === e?.paraId);
-      return para ? [para] : [];
+    const canal = canalDe(c);
+    // Envio manual (todo e-mail, e o WhatsApp sem o add-on) não tem marcação
+    // prévia: cada contato é enviado pelo botão da própria linha. Enquanto
+    // ninguém recebeu, o fornecedor pesa UM envio pendente na conta da folha
+    // (mandar para uma pessoa da empresa é o trabalho); depois do primeiro, a
+    // conta passa a ser quem de fato recebeu — mandar para o segundo contato é
+    // escolha, não pendência.
+    if (canal === "email" || !auto?.disponivel) {
+      const feitos = e?.feitos ?? {};
+      const podem = contatos.filter((x) => serve(x, canal));
+      const recebidos = podem.filter((x) => feitos[x.id]);
+      if (recebidos.length > 0) return recebidos;
+      const primeiro = podem.find((x) => x.principal) ?? podem[0];
+      return primeiro ? [primeiro] : [];
     }
     return contatos.filter((x) => e?.selecionados.includes(x.id));
   }
@@ -242,8 +278,11 @@ export function EnvioSheet({
   );
   const tudoEnviado = totalFila > 0 && totalFeitos === totalFila;
 
-  /** Fornecedor que a fila está esperando — ganha a borda de destaque. */
-  const vezDe = alvos.find((c) => pendentesDe(c).length > 0)?.id ?? null;
+  /** Quantos disparos automáticos ainda cabem — só WhatsApp, só com número. */
+  const pendentesWhats = alvos.reduce(
+    (n, c) => n + (canalDe(c) === "whatsapp" ? pendentesDe(c).filter(temFone).length : 0),
+    0,
+  );
 
   function proximoFornecedor(depoisDe: string): ConviteCotacao | null {
     const i = alvos.findIndex((c) => c.id === depoisDe);
@@ -266,42 +305,52 @@ export function EnvioSheet({
    * dois muda status: quem decide se a mensagem saiu é ele, na pergunta.
    */
   function preparar(c: ConviteCotacao, contato: ContatoConvite, abrirApp: boolean) {
-    const e = estados[c.id];
     const canal = canalDe(c);
     setErro((x) => ({ ...x, [c.id]: null }));
     setTrabalhando(c.id);
+    // A aba nasce AQUI, ainda dentro do clique: depois do await da Server
+    // Action o navegador (celular, principalmente) não vê mais gesto do
+    // usuário e barra o `window.open`. Abrir vazia e trocar o endereço quando
+    // o link chega é o que faz o WhatsApp SEMPRE sair em aba nova, sem tirar
+    // a cotação da tela — voltar do aplicativo é fechar a aba.
+    //
+    // Sem `noopener` nas features: com ele o navegador devolve `null` e não
+    // haveria janela para endereçar. O elo com esta página é cortado logo em
+    // seguida, no `opener = null`.
+    const aba = abrirApp && canal !== "email" ? window.open("", "_blank") : null;
+    if (aba) aba.opener = null;
     start(async () => {
       try {
         const p = await prepararEnvioAction({
           conviteId: c.id,
           canal,
           contactId: contato.id,
-          copiaIds: canal === "email" ? (e?.ccIds ?? []) : [],
+          // Um envelope por PESSOA, também no e-mail: a linha de cada contato
+          // tem o seu botão, e o que sai é endereçado a ele. Cópia carbono
+          // some junto com a marcação que a escolhia.
+          copiaIds: [],
         });
         setPrevia((x) => ({ ...x, [c.id]: p }));
         if (!abrirApp) {
+          aba?.close();
           setVendo(c.id);
           return;
         }
         if (!p.url) {
+          aba?.close();
           setErro((x) => ({ ...x, [c.id]: p.impedimento ?? "Não há para onde enviar." }));
           return;
         }
-        // WhatsApp em aba nova (é web ou app); e-mail troca a navegação, que é
-        // como o `mailto:` acorda o cliente do sistema sem deixar aba órfã.
-        //
-        // O `window.open` acontece DEPOIS do await da Server Action, ou seja,
-        // fora do gesto do usuário: no celular o navegador barra a aba nova e
-        // o WhatsApp simplesmente não abria (no desktop, abria). Sem janela de
-        // volta, a navegação direta faz o mesmo trabalho — o app assume o
-        // link e a página fica no histórico, atrás dele.
+        // E-mail troca a navegação: é como o `mailto:` acorda o cliente do
+        // sistema sem deixar aba órfã. WhatsApp vai para a aba já aberta —
+        // e se o navegador bloqueou até isso, uma segunda tentativa de aba
+        // nova, nunca a navegação desta (que tiraria a fila da tela).
         if (canal === "email") window.location.href = p.url;
-        else {
-          const aba = window.open(p.url, "_blank", "noopener,noreferrer");
-          if (!aba || aba.closed) window.location.href = p.url;
-        }
+        else if (aba && !aba.closed) aba.location.replace(p.url);
+        else window.open(p.url, "_blank", "noopener,noreferrer");
         mexer(c.id, { perguntando: contato.id });
       } catch (err) {
+        aba?.close();
         setErro((x) => ({
           ...x,
           [c.id]: err instanceof Error ? err.message : "Não foi possível preparar o envio.",
@@ -321,18 +370,71 @@ export function EnvioSheet({
     });
   }
 
+  // ── Disparo automático (add-on WhatsApp) ────────────────
+  // Com o canal ligado, a fila muda de natureza: o NoHub manda a mensagem e o
+  // "enviado" passa a ser o aceite da Meta, não a palavra do operador. O fluxo
+  // manual continua inteiro ao lado — é o que atende contato sem número,
+  // fornecedor de e-mail e o dia em que a Meta está fora do ar.
+
+  /** Marca na tela o que a Meta aceitou, sem esperar o servidor de novo. */
+  function marcarFeito(conviteId: string, contactId: string, em: string) {
+    setEstados((s) => ({
+      ...s,
+      [conviteId]: {
+        ...s[conviteId],
+        feitos: { ...s[conviteId].feitos, [contactId]: { canal: "whatsapp", em, copias: null } },
+        perguntando: null,
+      },
+    }));
+  }
+
+  /** Dispara pela API para os contatos escolhidos que ainda não receberam. */
+  function dispararAutomatico(alvosDoDisparo: ConviteCotacao[]) {
+    const lote = alvosDoDisparo
+      .filter((c) => canalDe(c) === "whatsapp")
+      .map((c) => ({
+        conviteId: c.id,
+        contactIds: pendentesDe(c)
+          .filter(temFone)
+          .map((x) => x.id),
+      }))
+      .filter((a) => a.contactIds.length > 0);
+    if (lote.length === 0) return;
+
+    for (const a of lote) setErro((x) => ({ ...x, [a.conviteId]: null }));
+    setDisparando(true);
+    start(async () => {
+      try {
+        const resultados = await dispararWhatsAppAction({ alvos: lote, reenvio });
+        for (const r of resultados) {
+          if (r.enviado && r.enviadoEm) marcarFeito(r.conviteId, r.contactId, r.enviadoEm);
+        }
+        // Erro é por CONTATO, mas o cartão é do fornecedor: junta o que falhou
+        // dele numa linha só, com o nome de quem não recebeu — "falhou" sem
+        // dizer para quem manda o comprador conferir três contatos na mão.
+        const falhas = new Map<string, string[]>();
+        for (const r of resultados) {
+          if (r.enviado) continue;
+          const lista = falhas.get(r.conviteId) ?? [];
+          lista.push(`${r.contatoNome}: ${r.erro ?? "não foi enviado"}`);
+          falhas.set(r.conviteId, lista);
+        }
+        for (const [conviteId, lista] of falhas) {
+          setErro((x) => ({ ...x, [conviteId]: lista.join(" · ") }));
+        }
+      } catch (err) {
+        const texto =
+          err instanceof Error ? err.message : "Não foi possível disparar pelo WhatsApp.";
+        for (const a of lote) setErro((x) => ({ ...x, [a.conviteId]: texto }));
+      } finally {
+        setDisparando(false);
+      }
+    });
+  }
+
   /** O operador confirma que mandou para este contato. Só aqui vira "enviado". */
   function confirmar(c: ConviteCotacao, contato: ContatoConvite) {
-    const e = estados[c.id];
     const canal = canalDe(c);
-    const contatos = contatosDe(c);
-    const copias =
-      canal === "email"
-        ? contatos
-            .filter((x) => e?.ccIds.includes(x.id) && x.id !== contato.id && temMail(x))
-            .map((x) => `${x.nome} <${x.email}>`)
-            .join("; ")
-        : "";
     setErro((x) => ({ ...x, [c.id]: null }));
     setTrabalhando(c.id);
     start(async () => {
@@ -343,7 +445,8 @@ export function EnvioSheet({
           contactId: contato.id,
           contatoNome: contato.nome,
           destino: canal === "email" ? contato.email : contato.telefone,
-          copias: copias || null,
+          // Um envelope por pessoa: não há cópia carbono a registrar.
+          copias: null,
           reenvio,
         });
         setEstados((s) => ({
@@ -352,14 +455,20 @@ export function EnvioSheet({
             ...s[c.id],
             feitos: {
               ...s[c.id].feitos,
-              [contato.id]: { canal, em: enviadoEm, copias: copias || null },
+              [contato.id]: { canal, em: enviadoEm, copias: null },
             },
             perguntando: null,
           },
         }));
         setVendo((v) => (v === c.id ? null : v));
         // Acabou este fornecedor? Ele se recolhe e o caminho segue no próximo.
-        const restam = fila(c).filter((x) => x.id !== contato.id && !estados[c.id]?.feitos[x.id]);
+        // No WhatsApp manual, mandar para UMA pessoa da empresa fecha o
+        // fornecedor: os outros contatos continuam na lista, com o botão de
+        // cada um, mas não seguram a fila.
+        const manual = canal === "whatsapp" && !auto?.disponivel;
+        const restam = manual
+          ? []
+          : fila(c).filter((x) => x.id !== contato.id && !estados[c.id]?.feitos[x.id]);
         if (restam.length === 0) {
           setRecolhidos((r) => ({ ...r, [c.id]: true }));
           setUltimoConcluido(c.id);
@@ -481,6 +590,39 @@ export function EnvioSheet({
 
           {tudoEnviado && <TudoEnviado alvos={ordem} estados={estados} contatosDe={contatosDe} />}
 
+          {/* Com o canal ligado, a fila inteira cabe num clique — e a barra diz
+              de qual número a mensagem sai, porque é o que o fornecedor vai ver
+              chegar. Sem WhatsApp pendente ela some: botão que não tem o que
+              mandar é convite para um clique que não faz nada. */}
+          {auto?.disponivel && !tudoEnviado && pendentesWhats > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius)] border border-brand/40 bg-brand-soft px-3.5 py-3">
+              <p className="flex items-start gap-2 text-[13px] text-ink-2">
+                <IconeWhatsApp size={15} className="mt-0.5 shrink-0 text-brand" />
+                <span>
+                  Disparo automático ligado
+                  {auto.numero ? (
+                    <>
+                      {" "}
+                      — sai de <span className="font-medium text-ink">{auto.numero}</span>
+                    </>
+                  ) : null}
+                  . Cada mensagem é cobrada pela Meta.
+                </span>
+              </p>
+              <button
+                type="button"
+                onClick={() => dispararAutomatico(ordem)}
+                disabled={disparando}
+                className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-[13px] font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Send size={14} />
+                {disparando
+                  ? "Enviando…"
+                  : `Enviar para ${pendentesWhats} ${pendentesWhats === 1 ? "contato" : "contatos"}`}
+              </button>
+            </div>
+          )}
+
           <ul className="flex flex-col gap-2.5">
             {ordem.map((c) => (
               <CartaoFornecedor
@@ -494,7 +636,6 @@ export function EnvioSheet({
                 erro={erro[c.id] ?? null}
                 trabalhando={trabalhando === c.id}
                 destacado={destacado === c.id}
-                vezDele={vezDe === c.id}
                 previa={previa[c.id] ?? null}
                 vendo={vendo === c.id}
                 recolhido={Boolean(recolhidos[c.id])}
@@ -511,6 +652,9 @@ export function EnvioSheet({
                 onRecolher={() => setRecolhidos((r) => ({ ...r, [c.id]: !r[c.id] }))}
                 proximo={proximoFornecedor(c.id)}
                 onIrPara={irPara}
+                automatico={auto?.disponivel ?? false}
+                disparando={disparando}
+                onDisparar={() => dispararAutomatico([c])}
               />
             ))}
           </ul>
@@ -599,8 +743,6 @@ export function EnvioSheet({
                     canal === "whatsapp" && temFone(contato)
                       ? [...new Set([...e.selecionados, contato.id])]
                       : e.selecionados,
-                  paraId:
-                    canal === "email" && temMail(contato) && !e.paraId ? contato.id : e.paraId,
                   perguntando: null,
                 },
               };
@@ -623,7 +765,6 @@ function CartaoFornecedor({
   erro,
   trabalhando,
   destacado,
-  vezDele,
   previa,
   vendo,
   recolhido,
@@ -638,6 +779,9 @@ function CartaoFornecedor({
   onRecolher,
   proximo,
   onIrPara,
+  automatico,
+  disparando,
+  onDisparar,
 }: {
   ref: (el: HTMLLIElement | null) => void;
   convite: ConviteCotacao;
@@ -646,7 +790,6 @@ function CartaoFornecedor({
   erro: string | null;
   trabalhando: boolean;
   destacado: boolean;
-  vezDele: boolean;
   /** Último disparo montado para este fornecedor — mensagem, link, endereço. */
   previa: EnvioPreparado | null;
   vendo: boolean;
@@ -664,6 +807,11 @@ function CartaoFornecedor({
   onRecolher: () => void;
   proximo: ConviteCotacao | null;
   onIrPara: (id: string) => void;
+  /** O canal automático está ligado: o botão principal manda em vez de abrir. */
+  automatico: boolean;
+  disparando: boolean;
+  /** Dispara a fila DESTE fornecedor pela Cloud API. */
+  onDisparar: () => void;
 }) {
   const feitos = e?.feitos ?? {};
   const podeWhats = contatos.some(temFone);
@@ -672,31 +820,49 @@ function CartaoFornecedor({
   // um contato novo entrar ou sair.
   const canal: Canal = podeWhats && podeMail ? (e?.canal ?? "whatsapp") : podeWhats ? "whatsapp" : "email";
 
-  const escolhidos =
-    canal === "email"
-      ? contatos.filter((x) => x.id === e?.paraId)
-      : contatos.filter((x) => e?.selecionados.includes(x.id));
+  /**
+   * Envio um a um: cada contato tem o seu botão na linha, ao lado do destino.
+   *
+   * Marcar-para-depois-enviar era um passo a mais para o caso que sempre
+   * acontece: mandar para UMA pessoa do fornecedor. Quem quer mandar para a
+   * segunda aperta o botão da segunda linha.
+   *
+   * Vale sempre no e-mail (um envelope por pessoa, sem cópia carbono) e no
+   * WhatsApp sem o add-on. Só o disparo automático continua marcando: lá o
+   * lote inteiro sai num clique e a folha precisa saber quem entra nele.
+   */
+  const individual = canal === "email" || !automatico;
+
+  const escolhidos = individual
+    ? contatos.filter((x) => serve(x, canal))
+    : contatos.filter((x) => e?.selecionados.includes(x.id));
   const pendentes = escolhidos.filter((x) => !feitos[x.id]);
   const enviadosAqui = escolhidos.length - pendentes.length;
 
   const semContatos = contatos.length === 0;
-  const concluido = escolhidos.length > 0 && pendentes.length === 0;
-  // A fila do WhatsApp anda de um em um: o botão diz em qual passo está.
+  // No um a um, o fornecedor está resolvido assim que alguém dele recebeu: os
+  // outros contatos continuam à mão, mas não são pendência.
+  const concluido = individual
+    ? enviadosAqui > 0
+    : escolhidos.length > 0 && pendentes.length === 0;
+  // Quem a folha trata como "o próximo": no lote automático é a vez dele; no
+  // um a um é só de quem o texto da prévia fala.
   const alvo = pendentes[0] ?? null;
-  const posicao = alvo ? escolhidos.findIndex((x) => x.id === alvo.id) + 1 : 0;
 
   return (
     <li
       ref={ref}
       className={cn(
         "rounded-[var(--radius-lg)] border transition-colors",
+        // Pendente é pendente: o primeiro da fila não ganha borda de marca por
+        // ser o primeiro — numa lista de oito cinzas, um laranja parado lia
+        // como "este aqui tem alguma coisa". Laranja só no destaque, que dura
+        // um segundo e responde a um clique ("Próximo fornecedor").
         concluido
           ? "border-ok/40 bg-ok-soft/40"
           : destacado
             ? "border-brand bg-brand-soft/40"
-            : vezDele
-              ? "border-brand/40 bg-surface"
-              : "border-line bg-surface",
+            : "border-line bg-surface",
       )}
     >
       {/* Nome e contagem na MESMA linha: são a mesma pergunta ("como está este
@@ -716,7 +882,9 @@ function CartaoFornecedor({
             {semContatos
               ? "sem contatos"
               : escolhidos.length === 0
-                ? "ninguém escolhido"
+                ? individual
+                  ? "sem WhatsApp"
+                  : "ninguém escolhido"
                 : `${enviadosAqui}/${escolhidos.length}`}
           </span>
         </p>
@@ -769,7 +937,7 @@ function CartaoFornecedor({
                 // Verde só quando o botão está apagado: ativo, o fundo é da
                 // marca e o ícone precisa contrastar com ele.
                 icone={
-                  <MessageCircle
+                  <IconeWhatsApp
                     size={13}
                     className={canal === "whatsapp" ? undefined : "text-whatsapp"}
                   />
@@ -782,62 +950,32 @@ function CartaoFornecedor({
                 ativo={canal === "email"}
                 icone={<Mail size={13} />}
                 rotulo="E-mail"
-                titulo="Um envelope, com cópia"
+                titulo="Um e-mail para cada contato"
                 onClick={() => onMexer({ canal: "email", perguntando: null })}
               />
             </div>
           )}
 
-          {canal === "whatsapp" ? (
-            <ListaWhatsApp
-              contatos={contatos}
-              selecionados={e?.selecionados ?? []}
-              feitos={feitos}
-              trabalhando={trabalhando}
-              onAlternar={(id) => {
-                const atual = e?.selecionados ?? [];
-                onMexer({
-                  selecionados: atual.includes(id)
-                    ? atual.filter((x) => x !== id)
-                    : [...atual, id],
-                  perguntando: null,
-                });
-              }}
-              onEnviar={(ct) => {
-                // Disparar por um contato é escolhê-lo: sem entrar na lista, o
-                // "enviado" que vem depois ficaria fora da conta `0/2` e a
-                // fila diria que falta mandar para quem já recebeu.
-                const atual = e?.selecionados ?? [];
-                if (!atual.includes(ct.id)) {
-                  onMexer({ selecionados: [...atual, ct.id], perguntando: null });
-                }
-                onAbrir(ct);
-              }}
-              onCadastrar={onCadastrar}
-            />
-          ) : (
-            <ListaEmail
-              contatos={contatos}
-              paraId={e?.paraId ?? null}
-              ccIds={e?.ccIds ?? []}
-              feitos={feitos}
-              onPara={(id) =>
-                onMexer({
-                  paraId: id,
-                  ccIds: (e?.ccIds ?? []).filter((x) => x !== id),
-                  perguntando: null,
-                })
-              }
-              onCc={(id) => {
-                const atual = e?.ccIds ?? [];
-                onMexer({
-                  ccIds: atual.includes(id) ? atual.filter((x) => x !== id) : [...atual, id],
-                  perguntando: null,
-                });
-              }}
-              onCadastrar={onCadastrar}
-            />
-          )}
+          <ListaContatos
+            canal={canal}
+            contatos={contatos}
+            individual={individual}
+            trabalhando={trabalhando}
+            selecionados={e?.selecionados ?? []}
+            feitos={feitos}
+            onEnviar={onAbrir}
+            onJaEnviei={onConfirmar}
+            onAlternar={(id) => {
+              const atual = e?.selecionados ?? [];
+              onMexer({
+                selecionados: atual.includes(id)
+                  ? atual.filter((x) => x !== id)
+                  : [...atual, id],
+                perguntando: null,
+              });
+            }}
+            onCadastrar={onCadastrar}
+          />
 
           {erro && (
             <p className="flex items-start gap-1.5 text-[12px] text-danger">
@@ -871,14 +1009,11 @@ function CartaoFornecedor({
                     onClick={() => onCopiar(`link:${c.id}`, previa.link!)}
                   />
                 )}
-                {previa.destino && (
-                  <BotaoCopiar
-                    chave={`dest:${c.id}`}
-                    copiado={copiado}
-                    rotulo={canal === "email" ? "Copiar e-mail" : "Copiar número"}
-                    onClick={() => onCopiar(`dest:${c.id}`, previa.destino!)}
-                  />
-                )}
+                {/* Sem "copiar número" aqui: quem abriu a prévia quer conferir
+                    o TEXTO antes de mandar. O destino já está na linha do
+                    contato, e o botão de copiá-lo continua onde resolve
+                    alguma coisa — na saída de emergência, quando o app não
+                    abriu. */}
               </div>
             </div>
           )}
@@ -897,31 +1032,70 @@ function CartaoFornecedor({
           ) : concluido ? (
             <p className="flex items-center gap-1.5 text-[12px] font-medium text-ok">
               <CheckCheck size={13} />
-              Todos os contatos escolhidos foram enviados.
+              {individual && pendentes.length > 0
+                ? `Enviado para ${enviadosAqui} de ${escolhidos.length} contatos — os outros continuam ao lado, se quiser mandar.`
+                : "Todos os contatos escolhidos foram enviados."}
             </p>
           ) : escolhidos.length === 0 ? (
             <p className="flex items-start gap-1.5 text-[12px] text-muted">
               <Users size={13} className="mt-0.5 shrink-0 text-faint" />
-              {canal === "whatsapp"
+              {!individual
                 ? "Marque quem vai receber no WhatsApp."
-                : "Escolha o destinatário do campo Para."}
+                : canal === "email"
+                  ? "Nenhum contato com e-mail cadastrado. Adicione o endereço de quem recebe."
+                  : "Nenhum contato com WhatsApp cadastrado. Adicione o número de quem recebe."}
             </p>
+          ) : individual ? (
+            // No um a um o botão principal do cartão sairia sobrando: a ação
+            // está em cada linha. Fica só o que vale para o fornecedor
+            // inteiro — ler o texto antes de mandar — na esquerda, e a
+            // instrução na ponta oposta, onde os botões de Enviar estão.
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+              <button
+                type="button"
+                onClick={() => alvo && onVer(alvo)}
+                disabled={trabalhando || !alvo}
+                aria-expanded={vendo}
+                className="cursor-pointer rounded-full border border-line px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:border-line-strong hover:bg-surface-2 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {vendo ? "Ocultar mensagem" : "Ver mensagem"}
+              </button>
+              <span className="text-right text-[12px] text-faint">
+                Toque em Enviar na linha de quem vai receber.
+              </span>
+            </div>
           ) : (
             alvo && (
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                {/* Com o canal automático ligado, o botão principal MANDA em vez
+                    de abrir o aplicativo — e o disparo cobre a fila deste
+                    fornecedor de uma vez, que é o ponto do add-on. Abrir o
+                    WhatsApp continua um clique ao lado: é o caminho de quem
+                    quer escrever alguma coisa a mais na conversa. */}
+                {onDisparar ? (
+                  <button
+                    type="button"
+                    onClick={onDisparar}
+                    disabled={trabalhando || disparando}
+                    className="flex cursor-pointer items-center justify-center gap-1.5 rounded-full bg-brand px-4 py-2 text-[13px] font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Send size={14} />
+                    {disparando
+                      ? "Enviando…"
+                      : `Enviar agora · ${escolhidos.length} ${escolhidos.length === 1 ? "contato" : "contatos"}`}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => onAbrir(alvo)}
                   disabled={trabalhando}
-                  className="flex cursor-pointer items-center justify-center gap-1.5 rounded-full bg-brand px-4 py-2 text-[13px] font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-50"
+                  // Dois botões cheios lado a lado não dizem qual é o caminho:
+                  // com o disparo ligado, abrir o aplicativo é a alternativa —
+                  // de quem quer escrever alguma coisa a mais na conversa.
+                  className="flex cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-4 py-2 text-[13px] font-semibold text-ink transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {canal === "email" ? <Mail size={14} /> : <MessageCircle size={14} />}
-                  {trabalhando
-                    ? "Preparando…"
-                    : canal === "email"
-                      ? "Abrir e-mail"
-                      : `Abrir WhatsApp · ${posicao} de ${escolhidos.length}`}
-                  <ExternalLink size={12} className="opacity-70" />
+                  <IconeWhatsApp size={14} />
+                  {trabalhando ? "Preparando…" : "Abrir WhatsApp"}
                 </button>
 
                 <button
@@ -1006,140 +1180,111 @@ function RotuloContatos({
   );
 }
 
-function ListaWhatsApp({
+/**
+ * A lista de contatos do fornecedor — a mesma nos dois canais.
+ *
+ * Era uma lista por canal: o WhatsApp marcava quem recebe, o e-mail escolhia
+ * "Para" e "Cópia". Duas gramáticas para o mesmo gesto ("mandar para o Jorge")
+ * e, no e-mail, um envelope só que escondia quem tinha recebido de fato.
+ * Agora é um botão por pessoa nos dois — o que muda é a cor, o ícone e a
+ * palavra do destino.
+ */
+function ListaContatos({
+  canal,
   contatos,
+  individual,
+  trabalhando,
   selecionados,
   feitos,
-  trabalhando,
   onAlternar,
   onEnviar,
+  onJaEnviei,
   onCadastrar,
 }: {
+  canal: Canal;
   contatos: ContatoConvite[];
+  /** Um botão por linha (manual) em vez de marcar e disparar em lote. */
+  individual: boolean;
+  trabalhando: boolean;
   selecionados: string[];
   feitos: Record<string, Feito>;
-  trabalhando: boolean;
   onAlternar: (id: string) => void;
-  /** Abrir o WhatsApp DESTE contato agora, sem passar pela fila. */
+  /** Abre o WhatsApp ou o cliente de e-mail DESTE contato. */
   onEnviar: (contato: ContatoConvite) => void;
+  /** Mandou por fora (ligou, mandou do celular): registra sem abrir o app. */
+  onJaEnviei: (contato: ContatoConvite) => void;
   /** Cadastrar mais um contato deste fornecedor, sem sair da folha. */
   onCadastrar: () => void;
 }) {
+  const whats = canal === "whatsapp";
+  const app = whats ? "WhatsApp" : "e-mail";
   return (
     <div className="flex flex-col gap-0.5">
-      <RotuloContatos onCadastrar={onCadastrar}>Contatos para envio</RotuloContatos>
+      <RotuloContatos onCadastrar={onCadastrar}>
+        {individual ? "Enviar para" : "Contatos para envio"}
+      </RotuloContatos>
       <ul>
         {contatos.map((ct) => {
           const feito = feitos[ct.id];
-          const podeReceber = temFone(ct);
+          const podeReceber = serve(ct, canal);
           const marcado = selecionados.includes(ct.id);
           return (
             <li key={ct.id}>
               <LinhaContato
                 contato={ct}
-                canal="whatsapp"
+                canal={canal}
                 feito={feito}
                 bloqueado={!podeReceber}
-                marcado={marcado}
-                forma="caixa"
-                onClick={() => podeReceber && !feito && onAlternar(ct.id)}
-                // WhatsApp é conversa individual: o botão na própria linha é o
-                // caminho mais curto entre ver o nome e abrir a conversa dele
-                // — no celular, onde a fila "1 de 3" obriga a marcar, rolar e
-                // procurar o botão principal, é o único que se usa.
-                acao={
-                  podeReceber && !feito
-                    ? { rotulo: `Abrir WhatsApp de ${ct.nome}`, onClick: () => onEnviar(ct) }
-                    : undefined
+                marcado={!individual && marcado}
+                // Sem marcação não há caixa para desenhar: a linha é só o
+                // nome, o destino e o botão que manda para ele.
+                forma={individual ? "livre" : "caixa"}
+                onClick={
+                  individual ? undefined : () => podeReceber && !feito && onAlternar(ct.id)
                 }
-                trabalhando={trabalhando}
+                // Mandou por outro caminho (ligou, mandou do celular) e a
+                // trilha precisa saber. Fica no lugar EXATO onde a marca de
+                // enviado aparece depois — a caixa vazia à esquerda do nome
+                // vira o check verde no mesmo ponto.
+                antes={
+                  individual && podeReceber && !feito ? (
+                    <button
+                      type="button"
+                      onClick={() => onJaEnviei(ct)}
+                      disabled={trabalhando}
+                      title={`Marcar que ${ct.nome} já recebeu, sem abrir o ${app}`}
+                      aria-label={`Marcar que ${ct.nome} já recebeu, sem abrir o ${app}`}
+                      className="grid h-4 w-4 shrink-0 cursor-pointer place-items-center rounded-[4px] border border-line-strong text-faint transition-colors hover:border-ok hover:bg-ok-soft hover:text-ok disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Check size={11} />
+                    </button>
+                  ) : null
+                }
+                acoes={
+                  individual && podeReceber && !feito ? (
+                    <button
+                      type="button"
+                      onClick={() => onEnviar(ct)}
+                      disabled={trabalhando}
+                      // A cor do canal, não a da marca: verde do WhatsApp,
+                      // azul de e-mail. São os únicos botões da folha que
+                      // saem para fora do ERP, e o operador os reconhece pela
+                      // cor antes de ler a palavra.
+                      className={cn(
+                        "flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50",
+                        whats ? "bg-whatsapp text-on-whatsapp" : "bg-info text-on-info",
+                      )}
+                    >
+                      {whats ? <IconeWhatsApp size={12} /> : <Mail size={12} />}
+                      Enviar
+                    </button>
+                  ) : null
+                }
               />
             </li>
           );
         })}
       </ul>
-    </div>
-  );
-}
-
-function ListaEmail({
-  contatos,
-  paraId,
-  ccIds,
-  feitos,
-  onPara,
-  onCc,
-  onCadastrar,
-}: {
-  contatos: ContatoConvite[];
-  paraId: string | null;
-  ccIds: string[];
-  feitos: Record<string, Feito>;
-  onPara: (id: string) => void;
-  onCc: (id: string) => void;
-  /** Cadastrar mais um contato deste fornecedor, sem sair da folha. */
-  onCadastrar: () => void;
-}) {
-  const comEmail = contatos.filter(temMail);
-  const semEmail = contatos.filter((c) => !temMail(c));
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex flex-col gap-0.5">
-        <RotuloContatos onCadastrar={onCadastrar}>Para</RotuloContatos>
-        <ul>
-          {comEmail.map((ct) => (
-            <li key={ct.id}>
-              <LinhaContato
-                contato={ct}
-                canal="email"
-                feito={feitos[ct.id]}
-                bloqueado={false}
-                marcado={paraId === ct.id}
-                forma="ponto"
-                onClick={() => onPara(ct.id)}
-              />
-            </li>
-          ))}
-          {comEmail.length === 0 && (
-            <li className="px-1 py-1 text-[12px] text-accent">
-              Nenhum contato deste fornecedor tem e-mail cadastrado.
-            </li>
-          )}
-        </ul>
-      </div>
-
-      {comEmail.length > 1 && (
-        <div className="flex flex-col gap-0.5">
-          <span className="px-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
-            Cópia
-          </span>
-          <ul>
-            {comEmail
-              .filter((ct) => ct.id !== paraId)
-              .map((ct) => (
-                <li key={ct.id}>
-                  <LinhaContato
-                    contato={ct}
-                    canal="email"
-                    feito={undefined}
-                    bloqueado={false}
-                    marcado={ccIds.includes(ct.id)}
-                    forma="caixa"
-                    onClick={() => onCc(ct.id)}
-                  />
-                </li>
-              ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Quem não tem e-mail continua visível, e o motivo junto: some da lista
-          seria o operador procurando um contato que existe. */}
-      {semEmail.map((ct) => (
-        <p key={ct.id} className="px-1 text-[11px] text-faint">
-          {ct.nome} · e-mail não cadastrado
-        </p>
-      ))}
     </div>
   );
 }
@@ -1152,48 +1297,56 @@ function LinhaContato({
   marcado,
   forma,
   onClick,
-  acao,
-  trabalhando = false,
+  antes,
+  acoes,
 }: {
   contato: ContatoConvite;
   canal: Canal;
   feito: Feito | undefined;
   bloqueado: boolean;
   marcado: boolean;
-  /** Caixa = vários (WhatsApp, CC); ponto = um só (Para). */
-  forma: "caixa" | "ponto";
-  onClick: () => void;
-  /** Disparo direto desta linha, quando o canal tem um (WhatsApp). */
-  acao?: { rotulo: string; onClick: () => void };
-  trabalhando?: boolean;
+  /** Caixa = marcação do lote automático; ponto = escolha única; livre = sem marcação. */
+  forma: "caixa" | "ponto" | "livre";
+  /** Ausente quando a linha não marca ninguém — o botão de ação faz o trabalho. */
+  onClick?: () => void;
+  /** Ocupa o lugar da marca, à esquerda do nome (envio um a um). */
+  antes?: React.ReactNode;
+  /** Botões da ponta direita, depois do número (envio um a um). */
+  acoes?: React.ReactNode;
 }) {
   const dado = canal === "whatsapp" ? foneVisivel(ct) : ct.email;
   // Nome à esquerda, destino à direita, uma linha só. Empilhar nome e telefone
   // dobrava a altura de uma lista que o operador lê de relance para marcar.
   const conteudo = (
     <>
-      <span
-        aria-hidden
-        className={cn(
-          "grid h-4 w-4 shrink-0 place-items-center border",
-          forma === "caixa" ? "rounded-[4px]" : "rounded-full",
-          feito
-            ? "border-ok bg-ok text-on-brand"
-            : marcado && !bloqueado
-              ? "border-brand bg-brand text-on-brand"
-              : "border-line-strong",
-        )}
-      >
-        {feito ? (
-          <Check size={11} />
-        ) : marcado && !bloqueado ? (
-          forma === "caixa" ? (
+      {/* O que ocupa a coluna da esquerda: a marca do canal com fila, ou o
+          botão de "já recebeu" do um a um. Enviado, sempre a marca — o check
+          verde no mesmo ponto onde a caixa estava. */}
+      {antes && !feito ? antes : null}
+      {(forma !== "livre" || feito) && !(antes && !feito) && (
+        <span
+          aria-hidden
+          className={cn(
+            "grid h-4 w-4 shrink-0 place-items-center border",
+            forma === "ponto" ? "rounded-full" : "rounded-[4px]",
+            feito
+              ? "border-ok bg-ok text-on-brand"
+              : marcado && !bloqueado
+                ? "border-brand bg-brand text-on-brand"
+                : "border-line-strong",
+          )}
+        >
+          {feito ? (
             <Check size={11} />
-          ) : (
-            <span className="h-1.5 w-1.5 rounded-full bg-surface" />
-          )
-        ) : null}
-      </span>
+          ) : marcado && !bloqueado ? (
+            forma === "ponto" ? (
+              <span className="h-1.5 w-1.5 rounded-full bg-surface" />
+            ) : (
+              <Check size={11} />
+            )
+          ) : null}
+        </span>
+      )}
 
       <span className="min-w-0 flex-1 truncate text-[13px] text-ink">
         {ct.nome}
@@ -1231,9 +1384,20 @@ function LinhaContato({
     );
   }
 
-  // Marcar e disparar são dois botões IRMÃOS: um dentro do outro é HTML
-  // inválido, e o clique do de dentro subiria para o de fora desmarcando o
-  // contato no mesmo gesto que manda para ele.
+  // Sem marcação (um a um), a linha não é botão: o alvo do clique é a ação da
+  // ponta direita, e uma linha inteira clicável sem efeito só confunde.
+  if (!onClick) {
+    return (
+      <div className="flex items-center gap-2 rounded-[var(--radius-sm)] px-1.5 py-1">
+        {conteudo}
+        {acoes}
+      </div>
+    );
+  }
+
+  // Marcar e agir são botões IRMÃOS: um dentro do outro é HTML inválido, e o
+  // clique do de dentro subiria para o de fora desmarcando o contato no mesmo
+  // gesto que age sobre ele.
   return (
     <div
       className={cn(
@@ -1249,18 +1413,7 @@ function LinhaContato({
       >
         {conteudo}
       </button>
-      {acao && (
-        <button
-          type="button"
-          onClick={acao.onClick}
-          disabled={trabalhando}
-          title={acao.rotulo}
-          aria-label={acao.rotulo}
-          className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full text-whatsapp transition-colors hover:bg-whatsapp/10 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <MessageCircle size={16} />
-        </button>
-      )}
+      {acoes}
     </div>
   );
 }

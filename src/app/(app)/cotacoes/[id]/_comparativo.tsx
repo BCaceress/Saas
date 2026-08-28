@@ -14,6 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { precoNaQuantidade, type LimitesEscala } from "@/lib/compras/escalas";
 import { BottomSheet } from "@/components/mobile/bottom-sheet";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { toast } from "@/components/ui/toast";
 import { EstadoVazio, fmtMoney, fmtPreco, unidadeDaQtd } from "../_catalogo/ui";
 import { SupplierAvatar, Thumb } from "../_ui";
@@ -326,12 +327,73 @@ export function ComparativoCotacao({
     );
   }
 
+  /**
+   * Total do fornecedor na quantidade COTADA, com frete. É a conta das duas
+   * prévias da decisão: elas comparam estratégias, e comparar com a promoção
+   * já levada num dos lados responderia outra pergunta.
+   */
+  function totalBaseDe(c: ConviteCotacao): number {
+    return (
+      cotacao.itens.reduce((acc, i) => {
+        const r = c.respostas.find((x) => x.quotationItemId === i.id);
+        return r?.disponivel ? acc + r.precoUnitario * i.quantidade : acc;
+      }, 0) + (c.frete ?? 0)
+    );
+  }
+
   const totaisCheios = respondidos
     .filter(cobreTudo)
     .map((c) => ({ id: c.id, nome: c.supplierNome, total: totalDe(c) }));
 
   const melhorCheio = totaisCheios.length
     ? totaisCheios.reduce((a, b) => (b.total < a.total ? b : a))
+    : null;
+
+  /**
+   * O que cada estratégia CUSTA, calculado antes de o operador escolher.
+   *
+   * A pergunta "como deseja comprar?" só é respondível com o número ao lado:
+   * dividir entre fornecedores rende mais no papel, mas quanto? Sem a conta, a
+   * escolha vira preferência — e é dinheiro.
+   *
+   * Fretes entram nos dois lados, e é aí que a divisão às vezes perde: três
+   * fornecedores são três fretes.
+   */
+  const previaMelhor = (() => {
+    let total = 0;
+    let itens = 0;
+    const deQuem = new Set<string>();
+    for (const i of cotacao.itens) {
+      const m = melhorPorItem.get(i.id);
+      if (!m) continue;
+      itens += 1;
+      total += m.preco * i.quantidade;
+      deQuem.add(m.conviteId);
+    }
+    for (const id of deQuem) total += respondidos.find((c) => c.id === id)?.frete ?? 0;
+    return { itens, total, fornecedores: deQuem.size };
+  })();
+
+  /** O fornecedor único em avaliação: o escolhido, ou o mais barato que cobre tudo. */
+  const conviteUnico =
+    respondidos.find((c) => c.id === (fornecedorUnico ?? melhorCheio?.id)) ??
+    respondidos[0] ??
+    null;
+
+  const previaUnico = conviteUnico
+    ? {
+        nome: conviteUnico.supplierNome,
+        total: totalBaseDe(conviteUnico),
+        atende: cotacao.itens.filter((i) =>
+          conviteUnico.respostas.some((r) => r.quotationItemId === i.id && r.disponivel),
+        ).length,
+      }
+    : null;
+
+  const resultadoMelhor = `${previaMelhor.itens} ${previaMelhor.itens === 1 ? "item" : "itens"} · ${fmtMoney(previaMelhor.total)}${previaMelhor.fornecedores > 1 ? ` · ${previaMelhor.fornecedores} pedidos` : ""}`;
+
+  const resultadoUnico = previaUnico
+    ? `${previaUnico.nome} · ${fmtMoney(previaUnico.total)}${previaUnico.atende < cotacao.itens.length ? ` · ${previaUnico.atende} de ${cotacao.itens.length} itens` : ""}`
     : null;
 
   const itensEscolhidos = Object.entries(escolhas).filter(([, v]) => v !== null).length;
@@ -458,8 +520,8 @@ export function ComparativoCotacao({
   const rotuloGerar = umPedidoSo
     ? `Gerar pedido para ${pedidosPrevistos[0].nome}`
     : pedidosPrevistos.length > 1
-      ? `Gerar ${pedidosPrevistos.length} pedidos de compra`
-      : "Gerar pedido de compra";
+      ? `Gerar ${pedidosPrevistos.length} pedidos`
+      : "Gerar pedido";
 
   /** Alguém ofereceu promoção por volume neste item? */
   function temPromocaoNoItem(item: ItemCotacao): boolean {
@@ -491,12 +553,6 @@ export function ComparativoCotacao({
         <AlternadorLente lente={lente} onLente={setLente} onNecessidade={zerarQuantidades} />
       )}
 
-      {/* Os três números do totalizador saíram: "cesta escolhida" repetia o
-          rodapé fixo, "melhor fornecedor único" repetia o cabeçalho da coluna
-          vencedora e a economia contra a pior já é a primeira frase da
-          leitura. Sobra a leitura — que é o que a tabela NÃO diz. */}
-      <LeituraDaCotacao resumo={resumo} />
-
       {lente === "oportunidade" && (
         <LenteOportunidade
           itens={cotacao.itens}
@@ -514,24 +570,32 @@ export function ComparativoCotacao({
 
       {lente === "necessidade" && (
         <>
+      {/* A matriz é o elemento principal da tela, e com seis fornecedores ela
+          não cabe na largura de um notebook. Em vez de espremer as colunas até
+          o nome do produto sumir, a tabela ROLA — com a coluna do item e o
+          cabeçalho grudados: quem rola para a direita nunca perde de vista de
+          qual produto e de qual fornecedor é o preço que está lendo. */}
       <div
         className={cn(
-          "overflow-x-auto rounded-[var(--radius-lg)] border border-line bg-surface",
-          // A matriz não volta em NENHUMA largura da superfície mobile: dentro
-          // da casca do /m, 52rem de tabela é rolagem lateral às cegas — que é
-          // exatamente o que o card por produto existe para evitar.
+          "max-h-[70vh] overflow-auto rounded-[var(--radius-lg)] border border-line bg-surface",
           mobile ? "hidden" : "hidden md:block",
         )}
       >
         {/* A largura mínima cresceu junto com a coluna de total: espremida,
             a coluna do item truncava o nome no terceiro caractere. */}
         <table className="w-full min-w-[52rem] text-sm">
-          <thead className="border-b border-line bg-surface-2 text-[11px] uppercase tracking-wide text-faint">
+          <thead className="text-[11px] uppercase tracking-wide text-faint">
             <tr>
               {/* Peso declarado: sem largura, o navegador dá à coluna de texto o
-                  que sobra das colunas de número — e sobra pouco. */}
-              <th className="w-[34%] min-w-[16rem] px-4 py-2 text-left font-medium">Item</th>
-              <th className="px-3 py-2 text-right font-medium">Qtd</th>
+                  que sobra das colunas de número — e sobra pouco.
+                  O canto (item × cabeçalho) precisa de z maior que os dois: é o
+                  único ponto onde as duas âncoras se cruzam. */}
+              <th className="sticky top-0 left-0 z-30 w-[34%] min-w-[16rem] border-b border-line bg-surface-2 px-4 py-2 text-left font-medium">
+                Item
+              </th>
+              <th className="sticky top-0 z-20 border-b border-line bg-surface-2 px-3 py-2 text-right font-medium">
+                Qtd
+              </th>
               {/* Cabeçalho enxuto: quem é e por quanto fecha. O troféu diz o
                   resto — quatro linhas de altura por coluna empurravam a
                   primeira linha de preço para fora da tela. */}
@@ -551,8 +615,12 @@ export function ComparativoCotacao({
                         : `${c.supplierNome} — cotou só ${atende} de ${cotacao.itens.length} itens`
                     }
                     className={cn(
-                      "px-3 py-2 text-right align-top font-medium",
-                      eleito ? "bg-brand-soft" : melhorGeral && "bg-ok-soft/40",
+                      "sticky top-0 z-20 border-b border-line px-3 py-2 text-right align-top font-medium",
+                      eleito
+                        ? "bg-brand-soft"
+                        : melhorGeral
+                          ? "bg-ok-soft"
+                          : "bg-surface-2",
                     )}
                   >
                     <span className="flex flex-col items-end gap-0.5">
@@ -588,10 +656,6 @@ export function ComparativoCotacao({
                   </th>
                 );
               })}
-              {/* O total da linha saiu de dentro das células: ele pertence a
-                  UMA coluna — a escolhida —, e repetido em cada fornecedor era
-                  o mesmo número dito N vezes. */}
-              <th className="px-4 py-2 text-right font-medium">Total do item</th>
             </tr>
           </thead>
 
@@ -604,21 +668,24 @@ export function ComparativoCotacao({
                 .map((c) => precoDe(item, c))
                 .filter((x): x is number => x !== null);
               const marcasDivergem = marcasDivergemNoItem(item.id);
-              const conviteEscolhido = escolhas[item.id];
-              const precoEscolhido = conviteEscolhido
-                ? (precoDe(item, respondidos.find((c) => c.id === conviteEscolhido)!) ?? null)
-                : null;
-
               return (
                 <tr
                   key={item.id}
                   // Zebra em vez de pintar cada célula: a faixa separa as
                   // linhas sem competir com a cor que marca a escolha.
-                  className={linha % 2 === 1 ? "bg-surface-2/40" : undefined}
+                  className={linha % 2 === 1 ? "bg-surface-2" : undefined}
                 >
                   {/* Foto no ITEM, e só nele: é onde ela trabalha — o operador
-                      reconhece o produto pelo rótulo antes de ler o nome. */}
-                  <td className="px-4 py-2">
+                      reconhece o produto pelo rótulo antes de ler o nome.
+                      Fixa na rolagem horizontal: precisa de fundo OPACO próprio
+                      (o zebrado do <tr> é translúcido e deixaria os preços
+                      passarem por baixo). */}
+                  <td
+                    className={cn(
+                      "sticky left-0 z-10 px-4 py-2",
+                      linha % 2 === 1 ? "bg-surface-2" : "bg-surface",
+                    )}
+                  >
                     <span className="flex items-center gap-2">
                       <Thumb url={item.imagemUrl} nome={item.descricao} size={28} />
                       <span className="min-w-0 flex-1">
@@ -776,21 +843,19 @@ export function ComparativoCotacao({
                     );
                   })}
 
-                  <td className="px-4 py-2 text-right">
-                    {precoEscolhido === null ? (
-                      <span className="text-[12px] text-faint">—</span>
-                    ) : (
-                      <span className="font-mono text-[13px] font-semibold tabular-nums text-ink">
-                        {fmtMoney(precoEscolhido * quantidadeDe(item))}
-                      </span>
-                    )}
-                  </td>
                 </tr>
               );
             })}
           </tbody>
 
         </table>
+      </div>
+
+      {/* Legenda da matriz, em UMA linha: a conclusão à vista, a lista atrás de
+          um clique. Aqui embaixo ela é rodapé de tabela; no topo, como cartão
+          aberto, empurrava a comparação para fora da primeira dobra. */}
+      <div className={cn(mobile ? "hidden" : "hidden md:block")}>
+        <LeituraDaCotacao resumo={resumo} />
       </div>
 
       {/* Celular: um produto por vez. */}
@@ -875,6 +940,29 @@ export function ComparativoCotacao({
         </>
       )}
 
+      {/* A DECISÃO, depois da comparação: a pergunta "como deseja comprar?" só
+          faz sentido para quem já viu os preços. Cada opção vem com o que ela
+          custa, senão o operador escolhe no escuro e descobre a consequência
+          no rodapé. No celular ela continua na folha do rodapé — em 390px uma
+          seção a mais entre a lista e o botão é meia tela de rolagem. */}
+      {!mobile && podePedir && !decidida && respondidos.length > 0 && (
+        <section
+          aria-label="Como deseja comprar"
+          className="rounded-[var(--radius-lg)] border border-line-strong bg-surface px-4 py-3"
+        >
+          <EstrategiaCompra
+            modo={modo}
+            respondidos={respondidos}
+            totalItens={cotacao.itens.length}
+            fornecedorUnico={fornecedorUnico}
+            resultadoMelhor={resultadoMelhor}
+            resultadoUnico={resultadoUnico}
+            onMelhorPreco={aplicarMelhorPreco}
+            onFornecedor={aplicarFornecedor}
+          />
+        </section>
+      )}
+
       {erro && <p className="text-[13px] text-danger">{erro}</p>}
       {aviso && (
         <p className="rounded-[var(--radius)] border border-line bg-accent-soft px-3.5 py-2 text-[13px] text-accent">
@@ -893,17 +981,22 @@ export function ComparativoCotacao({
               : undefined
           }
           className={cn(
-            "sticky z-20 flex flex-col rounded-[var(--radius-lg)] border border-line bg-surface shadow-[var(--shadow-float)]",
-            mobile ? "gap-2 px-3 py-2.5" : "bottom-0 gap-2.5 px-4 py-3",
+            // Flutuante, como a barra de ações das Configurações: descolada da
+            // borda, com fundo translúcido e desfoque — colada em bottom-0 ela
+            // parecia o fim da página e sumia dentro do conteúdo.
+            "sticky z-20 flex flex-col rounded-[var(--radius-lg)] border border-line-strong bg-surface/95 shadow-[var(--shadow-float)] backdrop-blur",
+            mobile ? "gap-2 px-3 py-2.5" : "bottom-4 gap-2.5 px-4 py-3",
           )}
         >
-          {/* Escolher a estratégia e fechar a compra são o mesmo gesto, e agora
-              moram no mesmo lugar: o operador decide "de quem" e "gerar" sem
-              subir a tela de volta.
+          {/* O rodapé fixo tem UMA função: mostrar o que a escolha soma e
+              fechar a compra. A pergunta "como deseja comprar?" subiu para uma
+              seção logo abaixo da comparação, que é onde ela é respondível —
+              aqui dentro ela obrigava a decidir olhando para o rodapé, não
+              para os preços.
 
-              No celular a escolha da estratégia desce para uma folha: as duas
-              opções, a fila de fornecedores e o parágrafo somavam quase metade
-              de uma tela de 390px em cima de onde a compra fecha. */}
+              No celular a estratégia continua numa folha: as duas opções, a
+              fila de fornecedores e o parágrafo somavam quase metade de uma
+              tela de 390px em cima de onde a compra fecha. */}
           {mobile ? (
             <>
               <button
@@ -943,51 +1036,54 @@ export function ComparativoCotacao({
             </>
           ) : (
             <>
-              {respondidos.length > 0 && (
-                <EstrategiaCompra
-                  modo={modo}
-                  respondidos={respondidos}
-                  totalItens={cotacao.itens.length}
-                  fornecedorUnico={fornecedorUnico}
-                  onMelhorPreco={aplicarMelhorPreco}
-                  onFornecedor={aplicarFornecedor}
-                />
-              )}
-
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-2.5">
-                <p className="text-[13px] text-muted">
-                  {itensEscolhidos === 0
-                    ? "Escolha de quem comprar cada item."
-                    : `${itensEscolhidos} ${itensEscolhidos === 1 ? "item escolhido" : "itens escolhidos"}${
-                        modo === "fornecedor" && nomeFornecedorUnico
-                          ? ` de ${nomeFornecedorUnico}`
-                          : ""
-                      }${foraDoFornecedor > 0 ? ` · ${foraDoFornecedor} sem cotação dele` : ""}${
-                        comPromocao > 0 ? ` · ${comPromocao} acima do cotado por promoção` : ""
-                      } · `}
-                  {itensEscolhidos > 0 && (
-                    <span className="font-mono text-[15px] font-semibold tabular-nums text-ink">
-                      {fmtMoney(totalEscolhido)}
-                    </span>
-                  )}
-                  {/* O que dividir a compra rende contra fechar tudo com o mais
-                      barato. Zero não vira selo: dizer "economia de R$ 0,00" só
-                      ensina o operador a ignorar o rótulo. */}
-                  {economiaDividindo > 0.005 && (
-                    <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-ok-soft px-2 py-0.5 text-[12px] font-medium text-ok">
-                      <TrendingDown size={12} />
-                      Economia estimada{" "}
-                      <span className="font-mono font-semibold tabular-nums">
-                        {fmtMoney(economiaDividindo)}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                {/* O rodapé REPETE a decisão em uma linha — o botão não pode
+                    ser uma ação solta no fim da página: quem chega aqui rolando
+                    precisa ler o que vai comprar antes de gerar. */}
+                <div className="min-w-0">
+                  <p className="flex flex-wrap items-baseline gap-x-2">
+                    <span className="text-[13px] font-medium text-ink">{rotuloModo}</span>
+                    {itensEscolhidos > 0 && (
+                      <span className="font-mono text-[17px] font-semibold tabular-nums text-ink">
+                        {fmtMoney(totalEscolhido)}
                       </span>
-                    </span>
-                  )}
-                </p>
+                    )}
+                    {/* O que dividir a compra rende contra fechar tudo com o
+                        mais barato. Zero não vira selo: "economia de R$ 0,00"
+                        só ensina o operador a ignorar o rótulo. */}
+                    {economiaDividindo > 0.005 && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-ok-soft px-2 py-0.5 text-[12px] font-medium text-ok">
+                        <TrendingDown size={12} />
+                        economia {fmtMoney(economiaDividindo)}
+                      </span>
+                    )}
+                  </p>
+                  <p className="mt-0.5 text-[12px] text-muted">
+                    {itensEscolhidos === 0
+                      ? "Escolha de quem comprar cada item."
+                      : [
+                          `${itensEscolhidos}/${cotacao.itens.length} itens`,
+                          pedidosPrevistos.length > 1
+                            ? `${pedidosPrevistos.length} pedidos`
+                            : pedidosPrevistos.length === 1
+                              ? pedidosPrevistos[0].nome
+                              : null,
+                          foraDoFornecedor > 0 ? `${foraDoFornecedor} sem cotação dele` : null,
+                          comPromocao > 0 ? `${comPromocao} acima do cotado` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                  </p>
+                </div>
+                {/* Gerar pedido é irreversível e cria documento do lado de fora:
+                    no desktop também passa pela conferência, com o que cada
+                    fornecedor vai receber. */}
                 <button
                   type="button"
-                  onClick={gerar}
+                  onClick={() => setConfirmando(true)}
                   disabled={pendente || itensEscolhidos === 0}
-                  className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
+                  aria-haspopup="dialog"
+                  className="shrink-0 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
                 >
                   {pendente ? "Gerando…" : rotuloGerar}
                 </button>
@@ -1019,6 +1115,8 @@ export function ComparativoCotacao({
             respondidos={respondidos}
             totalItens={cotacao.itens.length}
             fornecedorUnico={fornecedorUnico}
+            resultadoMelhor={resultadoMelhor}
+            resultadoUnico={resultadoUnico}
             onMelhorPreco={aplicarMelhorPreco}
             onFornecedor={aplicarFornecedor}
             comTitulo={false}
@@ -1026,7 +1124,67 @@ export function ComparativoCotacao({
         </BottomSheet>
       )}
 
-      {/* ── Folha: conferência antes de gerar ─────────────── */}
+      {/* ── Conferência antes de gerar (desktop) ──────────── */}
+      {!mobile && confirmando && (
+        <ConfirmDialog
+          tone="brand"
+          title={umPedidoSo ? "Gerar pedido de compra" : `Gerar ${pedidosPrevistos.length} pedidos de compra`}
+          confirmLabel={pendente ? "Gerando…" : umPedidoSo ? "Confirmar e enviar" : "Confirmar e enviar todos"}
+          cancelLabel="Voltar"
+          pending={pendente}
+          onCancel={() => setConfirmando(false)}
+          onConfirm={gerar}
+          description={
+            <>
+              <ul className="flex flex-col gap-1.5">
+                {pedidosPrevistos.map((x) => (
+                  <li
+                    key={x.id}
+                    className="flex items-center gap-2.5 rounded-[var(--radius)] border border-line px-3 py-2"
+                  >
+                    <SupplierAvatar nome={x.nome} logoUrl={x.logoUrl} size={22} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-medium text-ink">
+                        {x.nome}
+                      </span>
+                      <span className="block text-[11px] text-muted">
+                        {x.itens} {x.itens === 1 ? "item" : "itens"}
+                      </span>
+                    </span>
+                    <span className="shrink-0 font-mono text-[13px] font-semibold tabular-nums text-ink">
+                      {fmtMoney(x.total)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+
+              {(foraDoFornecedor > 0 || comPromocao > 0) && (
+                <ul className="mt-2.5 flex flex-col gap-1 text-[12px] text-accent">
+                  {foraDoFornecedor > 0 && (
+                    <li>
+                      {foraDoFornecedor} {foraDoFornecedor === 1 ? "item fica" : "itens ficam"} de
+                      fora — o fornecedor escolhido não cotou.
+                    </li>
+                  )}
+                  {comPromocao > 0 && (
+                    <li>
+                      {comPromocao} {comPromocao === 1 ? "item sai" : "itens saem"} acima da
+                      quantidade cotada, por promoção de volume.
+                    </li>
+                  )}
+                </ul>
+              )}
+
+              <p className="mt-2.5">
+                Os pedidos são criados e enviados aos fornecedores. A partir daí a cotação fica
+                decidida.
+              </p>
+            </>
+          }
+        />
+      )}
+
+      {/* ── Folha: conferência antes de gerar (celular) ───── */}
       {mobile && podePedir && !decidida && (
         <BottomSheet
           open={confirmando}
@@ -1188,6 +1346,8 @@ function EstrategiaCompra({
   respondidos,
   totalItens,
   fornecedorUnico,
+  resultadoMelhor,
+  resultadoUnico,
   onMelhorPreco,
   onFornecedor,
   comTitulo = true,
@@ -1196,6 +1356,9 @@ function EstrategiaCompra({
   respondidos: ConviteCotacao[];
   totalItens: number;
   fornecedorUnico: string | null;
+  /** O que cada caminho custa — a consequência da escolha, ao lado dela. */
+  resultadoMelhor: string;
+  resultadoUnico: string | null;
   onMelhorPreco: () => void;
   onFornecedor: (conviteId: string) => void;
   /** Dentro da folha o título já é o cabeçalho dela — repetido, vira eco. */
@@ -1204,20 +1367,24 @@ function EstrategiaCompra({
   return (
     <div className="flex flex-col gap-2">
       {comTitulo && (
-        <span className="text-[12px] font-medium text-ink">Como deseja comprar?</span>
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">
+          Como deseja comprar?
+        </span>
       )}
 
       <div role="radiogroup" aria-label="Como deseja comprar" className="grid gap-2 sm:grid-cols-2">
         <OpcaoCompra
           ativo={modo === "melhor"}
           titulo="Melhor preço por item"
-          descricao="Divide os itens entre fornecedores para chegar no menor custo."
+          descricao="Dividir a compra entre fornecedores para obter o menor custo."
+          resultado={resultadoMelhor}
           onClick={onMelhorPreco}
         />
         <OpcaoCompra
           ativo={modo === "fornecedor"}
           titulo="Um único fornecedor"
-          descricao="Compra tudo de um só — uma entrega, um mínimo, uma conversa."
+          descricao="Comprar tudo de um fornecedor para simplificar a entrega e o pedido."
+          resultado={resultadoUnico}
           onClick={() => onFornecedor(fornecedorUnico ?? respondidos[0].id)}
         />
       </div>
@@ -1274,11 +1441,14 @@ function OpcaoCompra({
   ativo,
   titulo,
   descricao,
+  resultado,
   onClick,
 }: {
   ativo: boolean;
   titulo: string;
   descricao: string;
+  /** Quanto custa seguir por aqui. Null quando não há conta a fazer. */
+  resultado?: string | null;
   onClick: () => void;
 }) {
   return (
@@ -1318,6 +1488,18 @@ function OpcaoCompra({
         <span className="mt-0.5 block text-[11px] leading-snug text-muted">
           {descricao}
         </span>
+        {/* A consequência da escolha, em número. Sem ela as duas opções são
+            duas frases igualmente razoáveis e o operador chuta. */}
+        {resultado && (
+          <span
+            className={cn(
+              "mt-1 block font-mono text-[12px] font-semibold tabular-nums",
+              ativo ? "text-brand" : "text-ink",
+            )}
+          >
+            {resultado}
+          </span>
+        )}
       </span>
     </button>
   );

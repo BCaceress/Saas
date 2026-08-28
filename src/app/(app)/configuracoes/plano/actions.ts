@@ -11,7 +11,15 @@ import {
 } from "@/lib/assinatura";
 import { requireAdmin } from "@/lib/current-tenant";
 import { logErro } from "@/lib/log";
-import { ADDONS, PLANOS, ehAddonSlug, limitesDe, planoAtendeOuSuperior } from "@/lib/planos";
+import {
+  ADDONS,
+  ADDONS_SLUGS,
+  PLANOS,
+  ehAddonSlug,
+  limitesDe,
+  planoAtendeOuSuperior,
+  type AddonSlug,
+} from "@/lib/planos";
 import { basePrisma, db } from "@/lib/prisma";
 import { runWithTenant } from "@/lib/tenant-context";
 
@@ -82,7 +90,8 @@ export async function trocarPlanoAction(input: z.input<typeof planoSchema>) {
 }
 
 const addonSchema = z.object({
-  slug: z.enum(["fiscal", "autoatendimento", "loja-extra", "copiloto-ia"]),
+  // Da fonte única: add-on novo em `lib/planos` já entra aqui, sem lista paralela.
+  slug: z.enum(ADDONS_SLUGS as [AddonSlug, ...AddonSlug[]]),
   contratar: z.boolean(),
   /** Só para "loja-extra": quantas lojas além das do plano. */
   quantidade: z.coerce.number().int().min(0).max(50).optional(),

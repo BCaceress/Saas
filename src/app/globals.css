@@ -55,6 +55,9 @@
   --danger: #dc2626;
   --danger-soft: #fde4e4;
   --info: #2563eb;
+  /* Texto sobre o azul cheio (botão "Enviar" do e-mail). No escuro o azul
+     clareia e branco em cima dele fica ilegível — vai o azul-tinta. */
+  --on-info: #ffffff;
   --info-soft: #e5edfc;
   --violet: #7c3aed;
   --violet-soft: #f3edfe;
@@ -63,6 +66,9 @@
      WhatsApp. Serve para o operador reconhecer o canal de relance, sem
      confundir com o verde de "enviado". */
   --whatsapp: #1da851;
+  /* Texto sobre o verde cheio. Branco no claro; no escuro o verde clareia e
+     branco em cima dele fica ilegível — vai o verde-escuro da própria marca. */
+  --on-whatsapp: #ffffff;
 
   /* Níveis de fidelização — cores fora da escala laranja (metal/gema real) */
   --tier-gold: #a16207;
@@ -124,12 +130,14 @@
     --danger: #f87171;
     --danger-soft: #2a1414;
     --info: #60a5fa;
+    --on-info: #0a1c33;
     --info-soft: #14213a;
     --violet: #a78bfa;
     --violet-soft: #241a38;
 
     /* Clareado para o fundo escuro: o verde oficial afunda no preto. */
     --whatsapp: #3ddc84;
+    --on-whatsapp: #07301a;
 
     --tier-gold: #eab308;
     --tier-gold-soft: #3f2d05;
@@ -173,9 +181,15 @@
   --danger: #f87171;
   --danger-soft: #2a1414;
   --info: #60a5fa;
+  --on-info: #0a1c33;
   --info-soft: #14213a;
   --violet: #a78bfa;
   --violet-soft: #241a38;
+
+  /* Faltava no escuro manual: sem isto o verde oficial afundava no fundo
+     preto, ao contrário do que o escuro do sistema já fazia. */
+  --whatsapp: #3ddc84;
+  --on-whatsapp: #07301a;
 
   --tier-gold: #eab308;
   --tier-gold-soft: #3f2d05;
@@ -218,8 +232,10 @@
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
   --color-info: var(--info);
+  --color-on-info: var(--on-info);
   --color-info-soft: var(--info-soft);
   --color-whatsapp: var(--whatsapp);
+  --color-on-whatsapp: var(--on-whatsapp);
   --color-violet: var(--violet);
   --color-violet-soft: var(--violet-soft);
 

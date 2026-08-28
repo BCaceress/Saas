@@ -260,6 +260,9 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
               sucesso: true,
               erro: true,
               enviadoEm: true,
+              automatico: true,
+              status: true,
+              statusEm: true,
             },
           },
           responses: {
@@ -411,6 +414,9 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
         sucesso: e.sucesso,
         erro: e.erro,
         enviadoEm: e.enviadoEm.toISOString(),
+        automatico: e.automatico,
+        status: e.status,
+        statusEm: e.statusEm?.toISOString() ?? null,
       })),
       abertoEm: sinais.get(s.id)?.abertoEm?.toISOString() ?? null,
       // Só existe origem quando existe proposta. Link respondido = o próprio

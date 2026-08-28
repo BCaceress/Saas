@@ -24,6 +24,7 @@ export type Feature =
   | "rota"
   // Gestão
   | "compras.recebimento" // pedido → recebimento → entrada (fluxo completo)
+  | "compras.whatsapp" // cotação sai sozinha pelo WhatsApp, com status de entrega
   | "crm.fidelizacao" // níveis, cupom automático, cliente em risco
   | "equipe.perfis" // perfis por loja além do administrador
   // Análise
@@ -124,6 +125,7 @@ export const FEATURE_LABEL: Record<Feature, string> = {
   comodato: "Comodato de ativos",
   rota: "Rota de reposição",
   "compras.recebimento": "Recebimento e entrada por pedido",
+  "compras.whatsapp": "Disparo automático de cotação no WhatsApp",
   "crm.fidelizacao": "Fidelização e cupons",
   "equipe.perfis": "Perfis de acesso por loja",
   "relatorios.avancados": "Curva ABC, giro e histórico",
@@ -146,7 +148,12 @@ export function planoMinimo(feature: Feature): Plan | null {
 
 // ── Add-ons ─────────────────────────────────────────────────
 
-export type AddonSlug = "fiscal" | "autoatendimento" | "loja-extra" | "copiloto-ia";
+export type AddonSlug =
+  | "fiscal"
+  | "autoatendimento"
+  | "loja-extra"
+  | "copiloto-ia"
+  | "whatsapp-api";
 
 export type AddonDef = {
   nome: string;
@@ -193,6 +200,18 @@ export const ADDONS: Record<AddonSlug, AddonDef> = {
     preco: 49,
     feature: "ia.copiloto",
     requerPlano: "OURO", // pressupõe operação com relatórios avançados já em uso
+  },
+  "whatsapp-api": {
+    nome: "Disparo automático no WhatsApp",
+    descricao:
+      "A cotação sai para todos os fornecedores de uma vez, sem abrir o WhatsApp contato por contato, e o status de entrega e leitura volta sozinho. Cada disparo é cobrado pela Meta por mensagem, à parte da mensalidade.",
+    // Placeholder — TODO: precificar antes de vender. O custo variável é da
+    // Meta (mensagem utility, centavos por disparo) e cai sobre o operador.
+    preco: 149,
+    feature: "compras.whatsapp",
+    // Só no topo: exige número dedicado, verificação da empresa na Meta e
+    // template aprovado — montagem que não se pede a quem está começando.
+    requerPlano: "DIAMANTE",
   },
 };
 

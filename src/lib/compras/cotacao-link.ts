@@ -1,6 +1,7 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
 import { basePrisma, db } from "@/lib/prisma";
+import { maskCnpj } from "@/lib/masks";
 import { runWithTenant } from "@/lib/tenant-context";
 import { rootUrl } from "@/lib/urls";
 import { rotuloEmbalagem } from "@/lib/compras/cotacao-unidades";
@@ -159,6 +160,10 @@ export type CotacaoPublica = {
   /** Logo do mercado que pediu a cotação — quem recebe o link precisa
    *  reconhecer o cliente antes de digitar preço. */
   empresaLogoUrl: string | null;
+  /** CNPJ de quem pede, já mascarado — a prova de que o link é de uma empresa. */
+  empresaCnpj: string | null;
+  /** Endereço em UMA linha ("Rua X, 120 — Curitiba/PR"); null se não cadastrado. */
+  empresaEndereco: string | null;
   numero: string;
   titulo: string;
   prazoResposta: string | null;
@@ -192,6 +197,23 @@ export type LinkResolvido =
 
 const n = (v: unknown) => Number(v ?? 0);
 
+/**
+ * Endereço da empresa em uma linha só — "Rua das Flores, 120 — Curitiba/PR".
+ * Cadastro incompleto não vira linha quebrada: cada pedaço que falta some, e
+ * se não sobrar nada o bloco inteiro não aparece.
+ */
+function enderecoEmLinha(t: {
+  rua: string | null;
+  numero: string | null;
+  cidade: string | null;
+  estado: string | null;
+}): string | null {
+  const logradouro = [t.rua, t.numero].filter(Boolean).join(", ");
+  const praca = [t.cidade, t.estado].filter(Boolean).join("/");
+  const partes = [logradouro, praca].filter(Boolean);
+  return partes.length ? partes.join(" — ") : null;
+}
+
 /** Motivo em linguagem de gente para cada status que não aceita mais resposta. */
 const MOTIVO_FECHADA: Record<string, string> = {
   RASCUNHO: "Esta cotação ainda não foi enviada.",
@@ -213,7 +235,19 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
       tenantId: true,
       quotationSupplierId: true,
       expiraEm: true,
-      tenant: { select: { nome: true, logoUrl: true } },
+      tenant: {
+        select: {
+          nome: true,
+          logoUrl: true,
+          // Identidade de quem pede: o vendedor confere CNPJ e endereço antes
+          // de digitar preço num link que chegou por WhatsApp.
+          cnpj: true,
+          rua: true,
+          numero: true,
+          cidade: true,
+          estado: true,
+        },
+      },
     },
   });
   if (!link) return { estado: "invalido" };
@@ -353,6 +387,8 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
         token,
         empresa,
         empresaLogoUrl: link.tenant.logoUrl,
+        empresaCnpj: link.tenant.cnpj ? maskCnpj(link.tenant.cnpj) : null,
+        empresaEndereco: enderecoEmLinha(link.tenant),
         numero,
         titulo: convite.quotation.titulo,
         prazoResposta: convite.quotation.prazoResposta?.toISOString() ?? null,

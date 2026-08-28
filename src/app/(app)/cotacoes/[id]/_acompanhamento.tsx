@@ -1,8 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { CalendarClock, Clock, Inbox, Send } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Inbox, Send } from "lucide-react";
 import type { ConviteCotacao, CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
 import type { ResumoCotacao } from "@/lib/compras/cotacao-resumo";
 import { ItensCotacao } from "./_itens";
@@ -16,7 +14,12 @@ import { ComparativoCotacao } from "./_comparativo";
 //
 // Agora é uma tela só, na ordem da pergunta que o comprador faz ao abrir:
 //
-//   como está isso? → quanto custa de cada um? → quem falta responder?
+//   quem respondeu? → por quanto? → o que eu decido? → que pedido sai daqui?
+//
+// A faixa de fornecedores é uma LINHA por convidado, colada no topo da matriz:
+// ela dá o estado (voltou, viu, sumiu) e as ações; a matriz dá o preço. Quem
+// separa as duas obriga o comprador a guardar de cabeça quem faltava enquanto
+// lê a tabela.
 //
 // A lista de itens NÃO tem bloco próprio: o comparativo já é ela, linha por
 // linha. Ela só reaparece antes da primeira resposta, dentro do estado vazio —
@@ -52,56 +55,35 @@ export function AcompanhamentoCotacao({
   const aguardando = cotacao.convites.filter((c) => c.status === "ENVIADA");
   const recusados = cotacao.convites.filter((c) => c.status === "RECUSADA");
   const decidida = cotacao.status === "DECIDIDA";
-  const unidades = cotacao.itens.reduce((n, i) => n + i.quantidade, 0);
 
   return (
     <div className="flex flex-col gap-4">
-      <Andamento
-        respondidos={respondidos.length}
-        aguardando={aguardando}
-        recusados={recusados.length}
-        totalItens={cotacao.itens.length}
-        unidades={unidades}
-        prazo={cotacao.prazoResposta}
-        decidida={decidida}
-        onCobrar={podePedir && !decidida ? () => onCobrar(aguardando) : undefined}
+      {/* 1. QUEM ESTÁ NA DISPUTA — faixa compacta, colada na matriz. Ela
+             responde "quem já voltou e o que faço com quem não voltou"; a
+             matriz logo abaixo responde "por quanto". Separadas por meia
+             tela, as duas perguntas viravam duas telas. */}
+      <ConvitesCotacao
+        cotacao={cotacao}
+        fornecedores={fornecedores}
+        editavel={editavel}
+        podeConvidar={podeConvidar}
+        podeRemover={podeRemover}
       />
 
-      {/* 70/30 só a partir de `xl`. O comparativo é uma matriz de itens ×
-          fornecedores: abaixo disso ele fica mais legível ocupando a largura
-          inteira, com a coluna de acompanhamento embaixo. */}
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-10">
-        <div className="order-2 xl:order-1 xl:col-span-7">
-          {respondidos.length === 0 ? (
-            <SemRespostas
-              cotacao={cotacao}
-              enviados={aguardando.length}
-              recusados={recusados.length}
-              itensEditaveis={itensEditaveis}
-              itensTravados={itensTravados}
-              usaMinimo={usaMinimo}
-              onCobrar={podePedir && !decidida ? () => onCobrar(aguardando) : undefined}
-            />
-          ) : (
-            <ComparativoCotacao
-              cotacao={cotacao}
-              resumo={resumo}
-              podePedir={podePedir}
-            />
-          )}
-        </div>
-
-        <div className="order-1 xl:order-2 xl:col-span-3">
-          <ConvitesCotacao
-            cotacao={cotacao}
-            fornecedores={fornecedores}
-            editavel={editavel}
-            podeConvidar={podeConvidar}
-            podeRemover={podeRemover}
-            compacto
-          />
-        </div>
-      </div>
+      {/* 2. COMPARAÇÃO E DECISÃO — o corpo da tela. */}
+      {respondidos.length === 0 ? (
+        <SemRespostas
+          cotacao={cotacao}
+          enviados={aguardando.length}
+          recusados={recusados.length}
+          itensEditaveis={itensEditaveis}
+          itensTravados={itensTravados}
+          usaMinimo={usaMinimo}
+          onCobrar={podePedir && !decidida ? () => onCobrar(aguardando) : undefined}
+        />
+      ) : (
+        <ComparativoCotacao cotacao={cotacao} resumo={resumo} podePedir={podePedir} />
+      )}
 
       {/* A barra "Itens da cotação" que ficava aqui saiu: o comparativo JÁ é a
           lista de itens — foto, nome, SKU, quantidade e unidade, linha por
@@ -109,135 +91,9 @@ export function AcompanhamentoCotacao({
 
           O único momento em que a lista faz falta é antes da primeira
           resposta, quando não existe tabela — e é exatamente onde ela está
-          agora, dentro do estado vazio. O tamanho da compra ("5 itens · 8
-          unidades") subiu para a faixa de andamento, que é o que ela de fato
-          informava sem precisar abrir. */}
+          agora, dentro do estado vazio. */}
     </div>
   );
-}
-
-// ── Faixa de andamento ──────────────────────────────────────
-// A linha que o comprador lê ao abrir a tela: quantos responderam, quantos
-// faltam e quanto tempo resta. Ficava dentro do comparativo, misturada com a
-// tabela; aqui ela é o cabeçalho do momento da cotação.
-//
-// Cobrar quem não respondeu sai daqui — e a compra pode estar sendo fechada
-// antes de a melhor proposta chegar, então o aviso não pode ser mudo. Duas
-// saídas, as duas legítimas: esperar, ou cobrar agora.
-
-function Andamento({
-  respondidos,
-  aguardando,
-  recusados,
-  totalItens,
-  unidades,
-  prazo,
-  decidida,
-  onCobrar,
-}: {
-  respondidos: number;
-  aguardando: ConviteCotacao[];
-  recusados: number;
-  /** O TAMANHO da compra — era o que a barra recolhida informava de fato. */
-  totalItens: number;
-  unidades: number;
-  prazo: string | null;
-  decidida: boolean;
-  onCobrar?: () => void;
-}) {
-  /** O operador já disse que vai esperar — o convite para cobrar some. */
-  const [quieto, setQuieto] = useState(false);
-  const dias = diasAte(prazo);
-
-  return (
-    <section
-      aria-label="Andamento da cotação"
-      className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-2.5"
-    >
-      <p className="flex flex-wrap items-baseline gap-x-2 text-[13px] text-ink">
-        <span className="font-semibold">
-          {respondidos} {respondidos === 1 ? "proposta recebida" : "propostas recebidas"}
-        </span>
-        {aguardando.length > 0 && (
-          <span className="text-[12px] text-muted">
-            · {aguardando.length} {aguardando.length === 1 ? "aguardando" : "aguardando"}
-          </span>
-        )}
-        {recusados > 0 && (
-          <span className="text-[12px] text-muted">
-            · {recusados} {recusados === 1 ? "recusou cotar" : "recusaram cotar"}
-          </span>
-        )}
-        <span className="text-[12px] text-faint">
-          · {totalItens} {totalItens === 1 ? "item" : "itens"} ·{" "}
-          {unidades.toLocaleString("pt-BR", { maximumFractionDigits: 3 })}{" "}
-          {unidades === 1 ? "unidade" : "unidades"}
-        </span>
-      </p>
-
-      <div className="flex flex-wrap items-center gap-2">
-        {prazo && (
-          <span
-            className={cn(
-              "flex items-center gap-1.5 text-[12px]",
-              // Vencido ou vencendo hoje é informação de ação, não de leitura.
-              dias !== null && dias < 0
-                ? "text-danger"
-                : dias !== null && dias <= 1
-                  ? "text-accent"
-                  : "text-muted",
-            )}
-          >
-            <CalendarClock size={13} className="shrink-0" />
-            {rotuloPrazo(prazo, dias)}
-          </span>
-        )}
-
-        {/* Cobrar só faz sentido enquanto alguém deve resposta e a compra não
-            foi fechada. Depois disso o botão seria um convite a incomodar
-            fornecedor por nada. */}
-        {onCobrar && aguardando.length > 0 && !decidida && !quieto && (
-          <>
-            <button
-              type="button"
-              onClick={onCobrar}
-              className="flex cursor-pointer items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-            >
-              <Send size={13} />
-              Cobrar {aguardando.length}
-            </button>
-            <button
-              type="button"
-              onClick={() => setQuieto(true)}
-              className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
-            >
-              <Clock size={13} />
-              Aguardar
-            </button>
-          </>
-        )}
-      </div>
-    </section>
-  );
-}
-
-/** Dias inteiros até o prazo. Negativo = já passou. */
-function diasAte(prazo: string | null): number | null {
-  if (!prazo) return null;
-  const alvo = new Date(prazo);
-  const hoje = new Date();
-  alvo.setHours(23, 59, 59, 999);
-  hoje.setHours(0, 0, 0, 0);
-  return Math.round((alvo.getTime() - hoje.getTime()) / 864e5) - 1;
-}
-
-function rotuloPrazo(prazo: string, dias: number | null): string {
-  const data = new Date(prazo).toLocaleDateString("pt-BR");
-  if (dias === null) return `Responder até ${data}`;
-  if (dias < 0) return `Prazo venceu em ${data}`;
-  if (dias === 0) return `Responder até hoje (${data})`;
-  if (dias === 1) return `Responder até amanhã (${data})`;
-  return `Responder até ${data} · faltam ${dias} dias`;
 }
 
 // ── Ainda sem proposta ──────────────────────────────────────

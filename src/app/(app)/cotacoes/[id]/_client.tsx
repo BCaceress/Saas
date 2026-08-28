@@ -3,8 +3,19 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ArrowUpRight, Ban, CheckCheck, Lock, Trash2, Unlock } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  Ban,
+  CalendarClock,
+  CheckCheck,
+  Lock,
+  MoreHorizontal,
+  Trash2,
+  Unlock,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import type { CotacaoAnterior, CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
 import {
   cancelarCotacaoAction,
@@ -347,62 +358,67 @@ function Cabecalho({
                 cotacao.titulo
               )}
             </h2>
-            <p className="mt-0.5 truncate text-[13px] text-muted">
-              {rascunho ? (
-                "Confira as informações, itens e fornecedores antes de criar a cotação."
-              ) : (
-                <>
-                  {multiSite && `Entrega em ${cotacao.siteNome}`}
-                  {multiSite && prazo && " · "}
-                  {prazo && `Resposta até ${prazo}`}
-                  {cotacao.status === "ABERTA" &&
-                    ` · ${andamento(cotacao.convites.length, respondidos)}`}
-                </>
-              )}
-            </p>
+
+            {rascunho ? (
+              <p className="mt-0.5 truncate text-[13px] text-muted">
+                Confira as informações, itens e fornecedores antes de criar a cotação.
+              </p>
+            ) : (
+              /* Andamento e prazo são as duas perguntas do topo — "quanto já
+                 voltou" e "quanto tempo resta". Ficavam numa frase corrida com
+                 a loja, todas no mesmo cinza: o prazo vencido lia igual ao
+                 nome da filial. Agora o andamento tem barra e o prazo tem cor
+                 quando vira ação. */
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-muted">
+                {cotacao.convites.length > 0 && (
+                  <span className="flex items-center gap-2">
+                    <span
+                      aria-hidden
+                      className="h-1 w-16 overflow-hidden rounded-full bg-surface-2"
+                    >
+                      <span
+                        className="block h-full rounded-full bg-ok transition-[width]"
+                        style={{
+                          width: `${Math.round((respondidos / cotacao.convites.length) * 100)}%`,
+                        }}
+                      />
+                    </span>
+                    {andamento(cotacao.convites.length, respondidos)}
+                  </span>
+                )}
+
+                {prazo && (
+                  <span
+                    className={cn(
+                      "flex items-center gap-1.5",
+                      diasAte(cotacao.prazoResposta) !== null &&
+                        diasAte(cotacao.prazoResposta)! < 0
+                        ? "text-danger"
+                        : diasAte(cotacao.prazoResposta) !== null &&
+                            diasAte(cotacao.prazoResposta)! <= 1
+                          ? "text-accent"
+                          : undefined,
+                    )}
+                  >
+                    <CalendarClock size={13} className="shrink-0" />
+                    {rotuloPrazo(prazo, diasAte(cotacao.prazoResposta))}
+                  </span>
+                )}
+
+                {multiSite && <span>Entrega em {cotacao.siteNome}</span>}
+              </div>
+            )}
           </div>
         </div>
 
+        {/* ENCERRAR e CANCELAR não são o objetivo de quem abre esta tela — são
+            saídas de emergência, e como botões no topo competiam com a decisão
+            de compra, que é a ação de verdade e mora no rodapé da comparação.
+            Foram para o menu. O único botão que sobra é o da cotação já
+            decidida, quando o trabalho aqui acabou e o próximo passo é o
+            pedido. */}
         {podePedir && (
           <div className="flex shrink-0 flex-wrap items-center gap-2">
-            {cotacao.status === "ABERTA" && (
-              <button
-                type="button"
-                onClick={() => setConfirmar("encerrar")}
-                disabled={pendente}
-                className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
-              >
-                <Lock size={14} />
-                Encerrar
-              </button>
-            )}
-            {cotacao.status === "ENCERRADA" && (
-              <button
-                type="button"
-                onClick={() => setConfirmar("reabrir")}
-                disabled={pendente}
-                className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
-              >
-                <Unlock size={14} />
-                Reabrir
-              </button>
-            )}
-            {/* Rascunho apaga; enviada em diante, cancela. São ações
-                diferentes e o rótulo diz qual é — "Cancelar" numa cotação que
-                nunca saiu prometia um rastro que não faz falta a ninguém. */}
-            {(cotacao.status === "RASCUNHO" ||
-              cotacao.status === "ABERTA" ||
-              cotacao.status === "ENCERRADA") && (
-              <button
-                type="button"
-                onClick={() => setConfirmar(rascunho ? "excluir" : "cancelar")}
-                disabled={pendente}
-                className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:border-danger hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {rascunho ? <Trash2 size={14} /> : <Ban size={14} />}
-                {rascunho ? "Excluir rascunho" : "Cancelar"}
-              </button>
-            )}
             {cotacao.status === "DECIDIDA" && (
               <Link
                 href="/pedidos"
@@ -411,6 +427,45 @@ function Cabecalho({
                 <CheckCheck size={14} />
                 Ver pedidos gerados
               </Link>
+            )}
+
+            {(cotacao.status === "RASCUNHO" ||
+              cotacao.status === "ABERTA" ||
+              cotacao.status === "ENCERRADA") && (
+              <Menu
+                trigger={
+                  <button
+                    type="button"
+                    aria-label="Mais ações da cotação"
+                    aria-haspopup="menu"
+                    disabled={pendente}
+                    className="grid h-10 w-10 cursor-pointer place-items-center rounded-full border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50"
+                  >
+                    <MoreHorizontal size={17} />
+                  </button>
+                }
+              >
+                {cotacao.status === "ABERTA" && (
+                  <MenuItem icon={<Lock size={14} />} onClick={() => setConfirmar("encerrar")}>
+                    Encerrar cotação
+                  </MenuItem>
+                )}
+                {cotacao.status === "ENCERRADA" && (
+                  <MenuItem icon={<Unlock size={14} />} onClick={() => setConfirmar("reabrir")}>
+                    Reabrir cotação
+                  </MenuItem>
+                )}
+                {/* Rascunho apaga; enviada em diante, cancela. São ações
+                    diferentes e o rótulo diz qual é — "Cancelar" numa cotação
+                    que nunca saiu prometia um rastro que não faz falta. */}
+                <MenuItem
+                  danger
+                  icon={rascunho ? <Trash2 size={14} /> : <Ban size={14} />}
+                  onClick={() => setConfirmar(rascunho ? "excluir" : "cancelar")}
+                >
+                  {rascunho ? "Excluir rascunho" : "Cancelar cotação"}
+                </MenuItem>
+              </Menu>
             )}
           </div>
         )}
@@ -441,6 +496,25 @@ function Cabecalho({
       )}
     </div>
   );
+}
+
+/** Dias inteiros até o prazo. Negativo = já passou. */
+function diasAte(prazo: string | null): number | null {
+  if (!prazo) return null;
+  const alvo = new Date(prazo);
+  const hoje = new Date();
+  alvo.setHours(23, 59, 59, 999);
+  hoje.setHours(0, 0, 0, 0);
+  return Math.round((alvo.getTime() - hoje.getTime()) / 864e5) - 1;
+}
+
+/** "faltam 3 dias" diz mais que a data — a data sozinha vira conta de cabeça. */
+function rotuloPrazo(data: string, dias: number | null): string {
+  if (dias === null) return `Resposta até ${data}`;
+  if (dias < 0) return `Prazo venceu em ${data}`;
+  if (dias === 0) return `Responder até hoje (${data})`;
+  if (dias === 1) return `Responder até amanhã (${data})`;
+  return `Resposta até ${data} · faltam ${dias} dias`;
 }
 
 // ── Confirmação de mudança de estado ────────────────────────

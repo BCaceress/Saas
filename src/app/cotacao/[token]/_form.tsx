@@ -66,6 +66,13 @@ import { recusarPeloLinkAction, responderPeloLinkAction } from "./actions";
 //    as linhas é o que ajuda.
 // ============================================================
 
+// A grade do computador vive dos MESMOS trilhos no cabeçalho e em cada linha —
+// se as duas listas de colunas divergirem, o título deixa de ficar em cima do
+// campo. Elas encolhem no tablet (768px, onde a grade começa) e abrem no
+// desktop: colunas em `rem` fixo espremiam o nome do produto a nada em 800px.
+const COLUNAS_GRADE =
+  "md:grid-cols-[minmax(0,1fr)_8rem_10.5rem_7rem] lg:grid-cols-[minmax(0,1fr)_10rem_12rem_8.5rem] xl:grid-cols-[minmax(0,1fr)_12rem_13rem_9rem]";
+
 const fmtQtd = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 
 const fmtMoeda = (v: number) =>
@@ -114,13 +121,18 @@ const CampoPreco = forwardRef<
 });
 
 /** Dias que faltam para o prazo — vira a etiqueta de urgência do cabeçalho. */
-function faltam(iso: string | null): { texto: string; urgente: boolean } | null {
+function faltam(
+  iso: string | null,
+): { etiqueta: string; vencido: boolean } | null {
   if (!iso) return null;
   const dias = Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000);
-  if (dias < 0) return { texto: "prazo vencido", urgente: true };
-  if (dias === 0) return { texto: "último dia", urgente: true };
-  if (dias === 1) return { texto: "falta 1 dia", urgente: true };
-  return { texto: `faltam ${dias} dias`, urgente: dias <= 2 };
+  // Perto do fim, data é conta de cabeça: "responder até 30 de agosto" faz o
+  // vendedor procurar o calendário, "até amanhã" não. Longe, a data é a única
+  // informação útil — ninguém conta 9 dias de cabeça.
+  if (dias < 0) return { etiqueta: "Prazo encerrado", vencido: true };
+  if (dias === 0) return { etiqueta: "Responder até hoje", vencido: false };
+  if (dias === 1) return { etiqueta: "Responder até amanhã", vencido: false };
+  return { etiqueta: `Responder até ${fmtData(iso)}`, vencido: false };
 }
 
 type Situacao = "tem" | "nao";
@@ -231,7 +243,6 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
     (l) => l.situacao === "nao" || paraNumero(l.preco) !== null,
   ).length;
   const faltantes = linhas.length - respondidos;
-  const progresso = linhas.length === 0 ? 0 : Math.round((respondidos / linhas.length) * 100);
 
   /** Abre a confirmação — só depois de checar o que impediria o envio. */
   function revisar() {
@@ -322,7 +333,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
         <button
           type="button"
           onClick={() => setEnviado(false)}
-          className="rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+          className="rounded-full border border-line-strong px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
         >
           Corrigir resposta
         </button>
@@ -333,15 +344,8 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   const prazo = faltam(cotacao.prazoResposta);
 
   return (
-    <main className="mx-auto max-w-[88rem] px-4 pt-5 pb-44 sm:px-6 md:pb-32">
-      <Cabecalho
-        cotacao={cotacao}
-        jaRespondeu={jaRespondeu}
-        prazo={prazo}
-        respondidos={respondidos}
-        totalLinhas={linhas.length}
-        progresso={progresso}
-      />
+    <main className="mx-auto w-full max-w-[84rem] px-4 pt-5 pb-44 sm:px-6 md:pb-32 xl:px-10">
+      <Cabecalho cotacao={cotacao} jaRespondeu={jaRespondeu} prazo={prazo} />
 
       {/* Celular: um cartão por produto. */}
       <section className="mt-5 flex flex-col gap-3 md:hidden">
@@ -358,17 +362,22 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
 
       {/* Computador: grade com foto — aqui a comparação entre linhas ajuda. */}
       <section className="mt-6 hidden md:block">
-        <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line">
-          {/* O cabeçalho fala genérico ("Preço pedido") porque o rótulo exato
+        <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line-strong">
+          {/* O cabeçalho fala genérico ("Seu preço") porque o rótulo exato
               muda de linha para linha — caixa numa, unidade na outra. O nome
               certo mora dentro da célula, colado no campo que ele preenche. */}
-          <div className="grid grid-cols-[minmax(0,1fr)_12rem_13rem_9rem] gap-4 border-b border-line bg-surface-2 px-4 py-2.5 text-[11px] font-semibold tracking-wide text-faint uppercase">
+          <div
+            className={cn(
+              "grid gap-4 border-b border-line-strong bg-surface-2 px-4 py-2.5 text-[11px] font-semibold tracking-wide text-muted uppercase",
+              COLUNAS_GRADE,
+            )}
+          >
             <span>Produto</span>
             <span>Quantidade pedida</span>
-            <span className="text-right">Preço pedido</span>
+            <span className="text-right">Seu preço</span>
             <span className="text-right">Tem?</span>
           </div>
-          <ul className="divide-y divide-line">
+          <ul className="divide-y divide-line-strong">
             {cotacao.itens.map((item, indice) => (
               <LinhaItem
                 key={item.id}
@@ -385,14 +394,14 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
         </div>
       </section>
 
-      {/* Condições da proposta inteira */}
-      <section className="mt-6 rounded-[var(--radius-lg)] border border-line p-4 sm:p-5">
-        <h2 className="font-display text-base font-semibold text-ink">Condições da proposta</h2>
+      {/* Condições comerciais — valem para a proposta inteira */}
+      <section className="mt-6 rounded-[var(--radius-lg)] border border-line-strong p-4 sm:p-5">
+        <h2 className="font-display text-base font-semibold text-ink">Condições comerciais</h2>
         <p className="mt-0.5 text-[13px] text-muted">
-          Valem para a cotação toda. Deixe em branco o que não se aplica.
+          Informe prazo de entrega, pagamento e frete. Deixe em branco o que não se aplica.
         </p>
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <Field label="Entrega em (dias)" htmlFor="prazo">
+          <Field label="Prazo de entrega (em dias)" htmlFor="prazo">
             <Input
               id="prazo"
               inputMode="numeric"
@@ -402,7 +411,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
               className="text-base md:text-sm"
             />
           </Field>
-          <Field label="Pagamento" htmlFor="condicao">
+          <Field label="Prazo de pagamento (em dias)" htmlFor="condicao">
             <Input
               id="condicao"
               placeholder="28 dias"
@@ -432,7 +441,7 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
       {/* Recusa: quem não vai cotar avisa em um toque, e o comprador para de esperar. */}
       <section className="pt-5">
         {recusando ? (
-          <div className="flex flex-col gap-3 rounded-[var(--radius)] border border-line bg-surface-2 p-4">
+          <div className="flex flex-col gap-3 rounded-[var(--radius)] border border-line-strong bg-surface-2 p-4">
             <p className="text-sm text-ink-2">Não vai cotar desta vez?</p>
             <Input
               placeholder="Motivo (opcional)"
@@ -488,8 +497,8 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
 
       {/* Barra fixa: o total e o botão acompanham a rolagem — em lista de 30
           itens, botão no rodapé é botão que ninguém acha. */}
-      <div className="fixed inset-x-0 bottom-0 border-t border-line bg-surface/95 backdrop-blur">
-        <div className="mx-auto flex max-w-[88rem] items-center gap-3 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
+      <div className="fixed inset-x-0 bottom-0 border-t border-line-strong bg-surface/95 backdrop-blur">
+        <div className="mx-auto flex max-w-[84rem] items-center gap-3 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 xl:px-10">
           <div className="min-w-0 flex-1">
             <p className="font-mono text-lg font-semibold text-ink">{fmtMoeda(total)}</p>
             <p className="text-xs text-muted">
@@ -506,11 +515,14 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
             aria-busy={acao === "enviar"}
           >
             {acao === "enviar" ? <Girando /> : <Send className="size-4" aria-hidden />}
-            {acao === "enviar" ? "Enviando…" : jaRespondeu ? "Reenviar" : "Enviar cotação"}
+            {acao === "enviar" ? "Enviando…" : jaRespondeu ? "Reenviar" : "Enviar proposta"}
           </Button>
         </div>
         {erro && (
-          <p className="mx-auto max-w-[88rem] px-4 pb-3 text-sm text-danger sm:px-6" role="alert">
+          <p
+            className="mx-auto max-w-[84rem] px-4 pb-3 text-sm text-danger sm:px-6 xl:px-10"
+            role="alert"
+          >
             {erro}
           </p>
         )}
@@ -520,51 +532,87 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
 }
 
 // ── Cabeçalho ───────────────────────────────────────────────
-// Quem pede, o que pede, até quando — e o quanto já foi respondido. A barra de
-// progresso existe porque a dúvida do fornecedor no meio de uma lista de 30 é
-// sempre "falta muito?".
+// Quem pede, o que pede, até quando. O andamento ("12 de 30 respondidos" e a
+// barra) saiu: era placar de conferência, não ajuda de quem digita — a barra
+// fixa embaixo já diz o que falta, no lugar onde ele vai apertar enviar.
 
 function Cabecalho({
   cotacao,
   jaRespondeu,
   prazo,
-  respondidos,
-  totalLinhas,
-  progresso,
 }: {
   cotacao: CotacaoPublica;
   jaRespondeu: boolean;
-  prazo: { texto: string; urgente: boolean } | null;
-  respondidos: number;
-  totalLinhas: number;
-  progresso: number;
+  prazo: { etiqueta: string; vencido: boolean } | null;
 }) {
   return (
-    <header className="flex flex-col gap-3 border-b border-line pb-5">
+    <header className="flex flex-col gap-3 border-b border-line-strong pb-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <span className="flex min-w-0 items-center gap-2">
+        {/* A marca de quem pede é o primeiro sinal de que o link é de verdade —
+            quem recebe um link por WhatsApp decide em um segundo se aquilo é
+            golpe. Logo grande o suficiente para ser reconhecida de relance. */}
+        <span className="flex min-w-0 items-center gap-3">
           {cotacao.empresaLogoUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={cotacao.empresaLogoUrl}
               alt=""
-              width={28}
-              height={28}
+              width={64}
+              height={64}
               decoding="async"
-              className="size-7 shrink-0 rounded-md border border-line bg-surface object-contain p-0.5"
+              className="size-12 shrink-0 rounded-lg border border-line-strong bg-surface object-contain p-1 sm:size-14"
             />
           ) : (
-            <span className="grid size-7 shrink-0 place-items-center rounded-md border border-line bg-surface-2 text-muted">
-              <Store className="size-3.5" aria-hidden />
+            <span className="grid size-12 shrink-0 place-items-center rounded-lg border border-line-strong bg-surface-2 text-muted sm:size-14">
+              <Store className="size-6" aria-hidden />
             </span>
           )}
-          <span className="truncate text-sm font-semibold text-ink">{cotacao.empresa}</span>
+          <span className="min-w-0">
+            <span className="block truncate text-xl font-semibold text-ink sm:text-2xl">
+              {cotacao.empresa}
+            </span>
+            {/* CNPJ e endereço: quem recebe um link por WhatsApp decide em um
+                segundo se aquilo é golpe, e nome de loja qualquer um escreve.
+                Vai em uma linha só, no menor tipo da tela — é conferência, não
+                leitura, e no celular ela trunca em vez de sumir. */}
+            {(cotacao.empresaCnpj || cotacao.empresaEndereco) && (
+              <span className="mt-0.5 block truncate text-[11px] text-faint">
+                {cotacao.empresaCnpj && (
+                  <span className="font-mono">CNPJ {cotacao.empresaCnpj}</span>
+                )}
+                {cotacao.empresaCnpj && cotacao.empresaEndereco && " · "}
+                {cotacao.empresaEndereco}
+              </span>
+            )}
+          </span>
         </span>
         <span className="font-mono text-[12px] text-muted">{cotacao.numero}</span>
       </div>
 
       <div>
-        <h1 className="font-display text-2xl font-semibold text-ink">{cotacao.titulo}</h1>
+        {/* Título e prazo dividem a linha: são "o que é isto" e "até quando",
+            as duas perguntas que a pessoa faz na mesma olhada. O prazo vai à
+            direita, longe do título, para não competir com ele na leitura —
+            e volta para baixo no celular, onde não cabem os dois lado a lado. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <h1 className="font-display text-2xl font-semibold text-ink sm:text-3xl">
+            {cotacao.titulo}
+          </h1>
+          {cotacao.prazoResposta && (
+            <p
+              className={cn(
+                "inline-flex w-fit shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-medium",
+                // O prazo é sempre aviso, nunca informação fria: âmbar enquanto
+                // dá tempo, vermelho depois que a data passou — aí não é mais
+                // urgência, é atraso.
+                prazo?.vencido ? "bg-danger-soft text-danger" : "bg-accent-soft text-accent",
+              )}
+            >
+              <CalendarClock className="size-3.5" aria-hidden />
+              {prazo?.etiqueta}
+            </p>
+          )}
+        </div>
         <p className="mt-1 text-sm text-muted">
           Olá, {primeiroNome(cotacao.contato) ?? cotacao.fornecedor}. Informe seus
           preços abaixo.
@@ -574,49 +622,8 @@ function Cabecalho({
         </p>
       </div>
 
-      {/* Prazo e andamento dividem a linha: são as duas perguntas de quem
-          abre a página ("até quando?" e "falta muito?"), e juntas ocupam uma
-          faixa em vez de duas. A urgência continua na cor, não em mais texto. */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        {cotacao.prazoResposta ? (
-          <p
-            className={cn(
-              "inline-flex w-fit items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-medium",
-              prazo?.urgente ? "bg-accent-soft text-accent" : "bg-surface-2 text-ink-2",
-            )}
-          >
-            <CalendarClock className="size-3.5" aria-hidden />
-            Responder até {fmtData(cotacao.prazoResposta)}
-          </p>
-        ) : (
-          <span />
-        )}
-        {/* Andamento é conferência de escritório: no celular ele empurra a
-            primeira linha para fora da tela sem ajudar quem só quer digitar. */}
-        <span className="hidden shrink-0 text-[13px] font-medium text-muted tabular-nums md:inline">
-          {respondidos} de {totalLinhas} respondidos
-        </span>
-      </div>
-
-      <div
-        className="hidden h-1.5 overflow-hidden rounded-full bg-surface-2 md:block"
-        role="progressbar"
-        aria-valuenow={progresso}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label="Itens respondidos"
-      >
-        <div
-          className={cn(
-            "h-full rounded-full transition-all",
-            progresso === 100 ? "bg-ok" : "bg-brand",
-          )}
-          style={{ width: `${progresso}%` }}
-        />
-      </div>
-
       {cotacao.observacao && (
-        <p className="rounded-[var(--radius)] border border-line bg-surface-2 px-3.5 py-2.5 text-sm text-ink-2">
+        <p className="rounded-[var(--radius)] border border-line-strong bg-surface-2 px-3.5 py-2.5 text-sm text-ink-2">
           {cotacao.observacao}
         </p>
       )}
@@ -653,16 +660,16 @@ function NaoTenho({
       aria-label={`Não tenho ${descricao}`}
       onClick={onAlternar}
       className={cn(
-        "tap inline-flex min-h-11 items-center justify-center gap-1.5 rounded-[var(--radius)] border px-3 text-[13px] font-medium transition-colors",
+        // Sem caixa: é a exceção da linha, não um segundo botão de ação. Só
+        // texto com ícone — marcado, ganha peso e a cor de "fora do pedido".
+        "tap inline-flex min-h-11 items-center justify-center gap-1.5 rounded-[var(--radius)] px-2 text-[13px] transition-colors",
         "focus-visible:ring-1 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
-        marcado
-          ? "border-line-strong bg-surface-2 text-ink-2"
-          : "border-line-strong bg-surface text-muted hover:text-ink",
+        marcado ? "font-medium text-ink-2" : "text-faint hover:text-ink",
         className,
       )}
     >
       <Ban className="size-4 shrink-0" aria-hidden />
-      {marcado ? "Não tenho" : "Não tenho"}
+      Não tenho
     </button>
   );
 }
@@ -677,23 +684,27 @@ function quantidadePedida(item: ItemPublico): { numero: string; unidade: string 
   };
 }
 
-/** Código de barras da linha — a única forma de o vendedor conferir o item. */
+/**
+ * Código de barras da linha — a única forma de o vendedor conferir o item.
+ *
+ * UM código só: o DA EMBALAGEM PEDIDA. Mostrar os dois (unidade e caixa) com o
+ * tipo escrito ao lado transformava a linha do produto num pequeno formulário
+ * de leitura, e o vendedor ainda tinha de decidir qual dos dois valia. Se o
+ * pedido é em caixa, o código é o da caixa; se é na unidade, o da unidade. Sem
+ * rótulo de tipo: a coluna da quantidade já diz em que embalagem é o pedido.
+ */
+function codigoPedido(item: ItemPublico): string | null {
+  if (item.embalagem.fator > 1) return item.eanEmbalagem ?? item.ean;
+  return item.ean ?? null;
+}
+
 function Codigos({ item, className }: { item: ItemPublico; className?: string }) {
-  if (!item.ean && !item.eanEmbalagem) return null;
+  const codigo = codigoPedido(item);
+  if (!codigo) return null;
   return (
-    <p className={cn("flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-faint", className)}>
+    <p className={cn("flex items-center gap-1.5 text-[11px] text-faint", className)}>
       <Barcode className="size-3.5 shrink-0" aria-hidden />
-      {item.ean && (
-        <span className="font-mono">
-          <span className="font-sans">un.</span> {item.ean}
-        </span>
-      )}
-      {item.eanEmbalagem && (
-        <span className="font-mono">
-          <span className="font-sans">{item.embalagem.nome.toLowerCase()}</span>{" "}
-          {item.eanEmbalagem}
-        </span>
-      )}
+      <span className="truncate font-mono">{codigo}</span>
     </p>
   );
 }
@@ -829,7 +840,7 @@ const CartaoItem = memo(function CartaoItem({
     <article
       className={cn(
         "rounded-[var(--radius-lg)] border bg-surface p-4 transition-colors",
-        indisponivel ? "border-line bg-surface-2/60" : "border-line",
+        indisponivel ? "border-line-strong bg-surface-2/60" : "border-line-strong",
       )}
     >
       <h2 className="text-[15px] font-semibold text-ink">{item.descricao}</h2>
@@ -850,17 +861,14 @@ const CartaoItem = memo(function CartaoItem({
           fica ao lado, num alvo só. */}
       <div className="mt-3 flex items-end gap-2">
         {!indisponivel && (
-          <Field
-            label={rotuloPreco(item.embalagem)}
-            htmlFor={`preco-${item.id}`}
-            className="min-w-0 flex-1"
-          >
+          <div className="min-w-0 flex-1">
             <CampoPreco
               id={`preco-${item.id}`}
+              rotulo={`${rotuloPreco(item.embalagem)} de ${item.descricao}`}
               valor={linha.preco}
               onValor={(v) => onAlterar(item.id, { preco: v })}
             />
-          </Field>
+          </div>
         )}
         <NaoTenho
           marcado={indisponivel}
@@ -915,7 +923,8 @@ const LinhaItem = memo(function LinhaItem({
         // A escala é uma segunda faixa da MESMA linha (`grid-rows` implícito):
         // fosse um `<li>` à parte, o zebrado e a borda separariam a promoção do
         // produto a que ela pertence.
-        "grid grid-cols-[minmax(0,1fr)_12rem_13rem_9rem] items-center gap-x-4 px-4 py-3",
+        "grid items-center gap-x-4 px-4 py-3",
+        COLUNAS_GRADE,
         indisponivel && "bg-surface-2/50",
       )}
     >
@@ -931,10 +940,10 @@ const LinhaItem = memo(function LinhaItem({
             // tela, e a decodificação sai da thread que atende a digitação.
             loading="lazy"
             decoding="async"
-            className="size-12 shrink-0 rounded-lg border border-line bg-surface object-cover"
+            className="size-12 shrink-0 rounded-lg border border-line-strong bg-surface object-cover"
           />
         ) : (
-          <span className="grid size-12 shrink-0 place-items-center rounded-lg border border-line bg-surface-2 text-faint">
+          <span className="grid size-12 shrink-0 place-items-center rounded-lg border border-line-strong bg-surface-2 text-faint">
             <Package className="size-5" aria-hidden />
           </span>
         )}
@@ -960,9 +969,6 @@ const LinhaItem = memo(function LinhaItem({
           <span className="text-[13px] text-faint">não cotado</span>
         ) : (
           <>
-            <span className="mb-1 block text-[11px] font-medium text-muted">
-              {rotuloPrecoCurto(item.embalagem)}
-            </span>
             <CampoPreco
               ref={(el) => onRegistrarPreco(indice, el)}
               rotulo={`${rotuloPreco(item.embalagem)} de ${item.descricao}`}
@@ -1049,7 +1055,7 @@ function ConfirmarEnvio({
         aria-labelledby="confirmar-titulo"
         aria-busy={enviando}
         onClick={(e) => e.stopPropagation()}
-        className="folha-in w-full max-w-md rounded-t-[var(--radius-xl)] border border-line bg-surface p-5 sm:rounded-[var(--radius-xl)]"
+        className="folha-in w-full max-w-md rounded-t-[var(--radius-xl)] border border-line-strong bg-surface p-5 sm:rounded-[var(--radius-xl)]"
       >
         <h2 id="confirmar-titulo" className="font-display text-lg font-semibold text-ink">
           Confirmar envio
