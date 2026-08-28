@@ -1,5 +1,5 @@
 import { db } from "@/lib/prisma";
-import { sinaisDosLinks } from "@/lib/compras/cotacao-link";
+import { sinaisDosLinks, type SinalDoLink } from "@/lib/compras/cotacao-link";
 import { coberturaDeFornecedores } from "@/lib/fornecedores/historico";
 import { consumoPorProduto } from "@/lib/estoque-giro";
 import type { LimitesEscala } from "@/lib/compras/escalas";
@@ -289,7 +289,7 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
   // Giro e validade só interessam quando a cotação pede escala — são duas
   // varreduras de tabela grande, e cobrá-las de toda cotação encareceria a
   // tela para quem nunca vai abrir a segunda lente.
-  const [produtos, embalagens, estoques, consumo, validades] = await Promise.all([
+  const [produtos, embalagens, estoques, consumo, validades, sinais] = await Promise.all([
     productIds.length
       ? db.product.findMany({
           where: { id: { in: productIds } },
@@ -314,6 +314,13 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
       ? consumoPorProduto(tenant.periodoMediaDias, { productIds, siteId: c.siteId })
       : Promise.resolve(new Map<string, number>()),
     c.pedeEscala ? validadeTipicaPorProduto(productIds) : Promise.resolve(new Map<string, number>()),
+    // Quem abriu o link já é informação: o comprador para de cobrar quem está
+    // preenchendo e cobra quem nem olhou. Roda JUNTO com o resto — em rascunho
+    // nem existe link para consultar, e sozinha ela custava uma ida ao banco
+    // (latência do Neon) depois de todas as outras já terem voltado.
+    c.status === "RASCUNHO"
+      ? Promise.resolve(new Map<string, SinalDoLink>())
+      : sinaisDosLinks(c.suppliers.map((s) => s.id)),
   ]);
   const porProduto = new Map(produtos.map((p) => [p.id, p]));
   const porEmbalagem = new Map(embalagens.map((p) => [p.id, { nome: p.nome, fatorConversao: n(p.fatorConversao) }]));
@@ -363,9 +370,6 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
 
   const quantidades = new Map(itens.map((i) => [i.id, i.quantidade]));
 
-  // Quem abriu o link já é informação: o comprador para de cobrar quem está
-  // preenchendo e cobra quem nem olhou.
-  const sinais = await sinaisDosLinks(c.suppliers.map((s) => s.id));
 
   const convites: ConviteCotacao[] = c.suppliers.map((s) => {
     const respostas = s.responses.map((r) => ({

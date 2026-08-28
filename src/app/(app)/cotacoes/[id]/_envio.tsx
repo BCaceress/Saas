@@ -23,8 +23,7 @@ import { copiarTexto } from "@/lib/clipboard";
 import { maskPhone } from "@/lib/masks";
 import { ContatoSheet } from "@/components/app/contato-fornecedor";
 import { SupplierAvatar } from "../_ui";
-import { fmtQtdEmbalagem } from "../_catalogo/ui";
-import type { CotacaoDetalhe, ConviteCotacao, ContatoConvite } from "../_compra-types";
+import type { ConviteCotacao, ContatoConvite } from "../_compra-types";
 import {
   confirmarEnvioAction,
   prepararEnvioAction,
@@ -109,7 +108,6 @@ function sugerido(contatos: ContatoConvite[], canal: Canal): string | null {
 
 export function EnvioSheet({
   alvos,
-  itens,
   reenvio = false,
   prazoAtual,
   onFechar,
@@ -117,8 +115,6 @@ export function EnvioSheet({
 }: {
   /** Convites que vão receber agora. */
   alvos: ConviteCotacao[];
-  /** O que está sendo perguntado — conferido aqui, antes de sair. */
-  itens: CotacaoDetalhe["itens"];
   /** Reenvio: quem já recebeu volta para a fila com um link novo. */
   reenvio?: boolean;
   prazoAtual: string | null;
@@ -410,7 +406,7 @@ export function EnvioSheet({
         description={
           reenvio
             ? "Mande de novo para quem ainda não respondeu. O link antigo deixa de valer."
-            : "Envie a solicitação para cada contato pelo canal escolhido."
+            : "Envie a cotação aos fornecedores pelo canal escolhido."
         }
         footer={
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -427,7 +423,7 @@ export function EnvioSheet({
                 <>
                   <span className="font-mono tabular-nums">{totalFeitos}</span> de{" "}
                   <span className="font-mono tabular-nums">{totalFila}</span>{" "}
-                  {totalFila === 1 ? "contato enviado" : "contatos enviados"}
+                  {totalFila === 1 ? "envio realizado" : "envios realizados"}
                 </>
               )}
             </p>
@@ -451,11 +447,11 @@ export function EnvioSheet({
           </div>
         }
       >
+        {/* Nem barra de progresso nem prévia da lista: a contagem de envios
+            já vive no rodapé, presa à tela, e o que vai na cotação foi
+            conferido na tela anterior. Aqui o trabalho é um só — mandar para
+            cada contato —, e a fila de fornecedores é que precisa da altura. */}
         <div className="flex flex-col gap-4">
-          <Progresso feitos={totalFeitos} total={totalFila} />
-
-          <ItensQueVao itens={itens} />
-
           {reenvio && prazoAtual && (
             <p className="flex items-start gap-2 rounded-[var(--radius)] border border-line bg-surface-2 px-3 py-2 text-[12px] text-ink-2">
               <CalendarClock size={13} className="mt-0.5 shrink-0 text-faint" />
@@ -614,51 +610,6 @@ export function EnvioSheet({
         />
       )}
     </>
-  );
-}
-
-// ── O que está sendo perguntado ─────────────────────────────
-// A mensagem só aparece em "Ver mensagem", fornecedor por fornecedor — e é lá
-// que a lista está. Antes do primeiro disparo, o operador não tinha onde
-// conferir o que vai sair. A quantidade nunca vem sozinha: "2" pode ser duas
-// garrafas ou duas caixas de doze, e é o preço disso que o fornecedor cota.
-
-/** Itens que a folha mostra antes de pedir "ver todos". */
-const PREVIA_ITENS = 4;
-
-function ItensQueVao({ itens }: { itens: CotacaoDetalhe["itens"] }) {
-  const [aberto, setAberto] = useState(false);
-  if (itens.length === 0) return null;
-
-  const mostrados = aberto ? itens : itens.slice(0, PREVIA_ITENS);
-  const restantes = itens.length - mostrados.length;
-
-  return (
-    <div className="rounded-[var(--radius)] border border-line bg-surface-2">
-      <p className="px-3 pt-2.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
-        O que vai na cotação · {itens.length} {itens.length === 1 ? "item" : "itens"}
-      </p>
-      <ul className="flex flex-col px-3 py-1.5">
-        {mostrados.map((i) => (
-          <li key={i.id} className="flex items-baseline gap-2 py-0.5 text-[12px]">
-            <span className="min-w-0 flex-1 truncate text-ink-2">{i.descricao}</span>
-            <span className="shrink-0 font-mono tabular-nums text-ink">
-              {fmtQtdEmbalagem(i.quantidade, i.embalagemNome)}
-            </span>
-          </li>
-        ))}
-      </ul>
-      {(restantes > 0 || aberto) && (
-        <button
-          type="button"
-          onClick={() => setAberto((v) => !v)}
-          aria-expanded={aberto}
-          className="w-full cursor-pointer rounded-b-[var(--radius)] border-t border-line px-3 py-1.5 text-[12px] font-medium text-brand transition-colors hover:bg-surface"
-        >
-          {aberto ? "Ver menos" : `Ver os outros ${restantes}`}
-        </button>
-      )}
-    </div>
   );
 }
 
@@ -862,6 +813,7 @@ function CartaoFornecedor({
                 }
                 onAbrir(ct);
               }}
+              onCadastrar={onCadastrar}
             />
           ) : (
             <ListaEmail
@@ -883,16 +835,9 @@ function CartaoFornecedor({
                   perguntando: null,
                 });
               }}
+              onCadastrar={onCadastrar}
             />
           )}
-
-          <button
-            type="button"
-            onClick={onCadastrar}
-            className="cursor-pointer self-start rounded-[var(--radius-sm)] px-1.5 text-left text-[12px] font-medium text-brand transition-colors hover:underline"
-          >
-            + Adicionar contato
-          </button>
 
           {erro && (
             <p className="flex items-start gap-1.5 text-[12px] text-danger">
@@ -1026,6 +971,41 @@ function CartaoFornecedor({
 
 // ── Listas de contato ───────────────────────────────────────
 
+/**
+ * Rótulo da lista, com o "cadastrar contato" na ponta direita da mesma linha.
+ *
+ * Solto embaixo da lista, o botão competia com a ação principal do cartão —
+ * "abrir WhatsApp" e "adicionar contato" com o mesmo peso, um em cima do
+ * outro. Aqui ele é o que é: a saída para quando falta gente na lista, à
+ * margem, na altura do título que ele completa.
+ */
+function RotuloContatos({
+  children,
+  onCadastrar,
+}: {
+  children: React.ReactNode;
+  onCadastrar?: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 px-1.5">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-faint">
+        {children}
+      </span>
+      {onCadastrar && (
+        <button
+          type="button"
+          onClick={onCadastrar}
+          title="Cadastrar um contato deste fornecedor"
+          className="-mr-1 flex shrink-0 cursor-pointer items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-brand"
+        >
+          <UserPlus size={12} aria-hidden />
+          Adicionar
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ListaWhatsApp({
   contatos,
   selecionados,
@@ -1033,6 +1013,7 @@ function ListaWhatsApp({
   trabalhando,
   onAlternar,
   onEnviar,
+  onCadastrar,
 }: {
   contatos: ContatoConvite[];
   selecionados: string[];
@@ -1041,12 +1022,12 @@ function ListaWhatsApp({
   onAlternar: (id: string) => void;
   /** Abrir o WhatsApp DESTE contato agora, sem passar pela fila. */
   onEnviar: (contato: ContatoConvite) => void;
+  /** Cadastrar mais um contato deste fornecedor, sem sair da folha. */
+  onCadastrar: () => void;
 }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="px-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
-        Contatos para envio
-      </span>
+      <RotuloContatos onCadastrar={onCadastrar}>Contatos para envio</RotuloContatos>
       <ul>
         {contatos.map((ct) => {
           const feito = feitos[ct.id];
@@ -1088,6 +1069,7 @@ function ListaEmail({
   feitos,
   onPara,
   onCc,
+  onCadastrar,
 }: {
   contatos: ContatoConvite[];
   paraId: string | null;
@@ -1095,15 +1077,15 @@ function ListaEmail({
   feitos: Record<string, Feito>;
   onPara: (id: string) => void;
   onCc: (id: string) => void;
+  /** Cadastrar mais um contato deste fornecedor, sem sair da folha. */
+  onCadastrar: () => void;
 }) {
   const comEmail = contatos.filter(temMail);
   const semEmail = contatos.filter((c) => !temMail(c));
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-col gap-0.5">
-        <span className="px-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
-          Para
-        </span>
+        <RotuloContatos onCadastrar={onCadastrar}>Para</RotuloContatos>
         <ul>
           {comEmail.map((ct) => (
             <li key={ct.id}>
@@ -1394,37 +1376,6 @@ function BotaoCopiar({
       {feito ? <Check size={11} /> : <Copy size={11} />}
       {feito ? "Copiado" : rotulo}
     </button>
-  );
-}
-
-// ── Progresso ───────────────────────────────────────────────
-
-function Progresso({ feitos, total }: { feitos: number; total: number }) {
-  const pct = total === 0 ? 0 : Math.round((feitos / total) * 100);
-  return (
-    <div className="flex flex-col gap-1.5">
-      <p className="text-[13px] font-medium text-ink">
-        <span className="font-mono tabular-nums">{feitos}</span> de{" "}
-        <span className="font-mono tabular-nums">{total}</span>{" "}
-        {total === 1 ? "contato enviado" : "contatos enviados"}
-      </p>
-      <div
-        role="progressbar"
-        aria-valuenow={feitos}
-        aria-valuemin={0}
-        aria-valuemax={total}
-        aria-label="Contatos já enviados"
-        className="h-1.5 overflow-hidden rounded-full bg-surface-2"
-      >
-        <div
-          className={cn(
-            "h-full rounded-full transition-[width] duration-300",
-            feitos === total && total > 0 ? "bg-ok" : "bg-brand",
-          )}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-    </div>
   );
 }
 

@@ -678,6 +678,39 @@ body:has([data-app-shell]) {
   animation: fade-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* Item que acabou de entrar numa lista (cotação, pedido).
+   A linha nasce achatada e abre empurrando as de baixo: quem digita trinta
+   produtos seguidos precisa VER onde o que acabou de digitar foi parar, sem
+   procurar. Um pulso de fundo âmbar por cima, que apaga sozinho, marca o
+   lugar. Curto: a próxima busca já está sendo digitada. */
+@keyframes linha-entra {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+    background-color: var(--brand-soft);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(0);
+    background-color: var(--brand-soft);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    background-color: transparent;
+  }
+}
+/* Sem `both` de propósito: com fill-mode a linha ficaria presa no último
+   quadro (fundo transparente) e o hover da lista deixaria de pintar. */
+.linha-entra {
+  animation: linha-entra 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .linha-entra {
+    animation: none;
+  }
+}
+
 /* Toast: entrada deslizando do topo */
 @keyframes toast-in {
   from {

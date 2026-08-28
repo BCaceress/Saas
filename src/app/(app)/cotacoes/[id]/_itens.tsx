@@ -4,7 +4,6 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import {
   Plus,
   Trash2,
-  Pencil,
   PackageSearch,
   Check,
   ChevronDown,
@@ -13,6 +12,7 @@ import {
   Info,
   Loader2,
   Lock,
+  Undo2,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -52,10 +52,15 @@ function useListaItens(cotacao: CotacaoDetalhe) {
   const [editando, setEditando] = useState<string | null>(null);
   /** Recado sem gravidade ("já estava na lista, somei") — não é erro. */
   const [aviso, setAviso] = useState<string | null>(null);
-  // Remover é a única ação da linha que não se desfaz — numa lista de 30 itens
-  // o alvo do clique é pequeno e o vizinho de baixo sobe no lugar. Pergunta
-  // antes, com o nome do item na frase, para o "sim" ser sobre o item certo.
-  const [aRemover, setARemover] = useState<Item | null>(null);
+  /**
+   * Último item tirado da lista, guardado para voltar atrás.
+   *
+   * Antes cada remoção abria um modal de confirmação. Numa lista de trinta
+   * itens montada às pressas, isso é um clique a mais trinta vezes para
+   * proteger de um erro que se conserta em um — tirar o item errado custa
+   * reconhecer o nome e clicar "Desfazer", e a linha volta no mesmo lugar.
+   */
+  const [desfazivel, setDesfazivel] = useState<{ item: Item; indice: number } | null>(null);
 
   // Lista OTIMISTA: o item aparece no clique e a gravação corre atrás. Esperar
   // a Server Action mais o `router.refresh()` (a página inteira voltando do
@@ -140,9 +145,54 @@ function useListaItens(cotacao: CotacaoDetalhe) {
   }
 
   function remover(item: Item) {
-    setARemover(null);
+    setAviso(null);
+    setDesfazivel({ item, indice: itens.findIndex((i) => i.id === item.id) });
     setItens((atual) => atual.filter((i) => i.id !== item.id));
     rodar(() => removerItemAction(item.id));
+  }
+
+  /**
+   * Devolve à lista o último item removido, na posição em que ele estava.
+   *
+   * No banco não há o que "restaurar" — a linha foi apagada, então isto é uma
+   * inclusão nova com os mesmos dados, seguida da reordenação que a põe de
+   * volta no lugar. Para quem olha, é a mesma linha voltando.
+   */
+  function restaurar() {
+    const alvo = desfazivel;
+    if (!alvo) return;
+    setDesfazivel(null);
+    const provisorio = `novo:${alvo.item.descricao}:${Date.now()}`;
+    const posicao = Math.max(0, Math.min(alvo.indice, itens.length));
+    setItens((atual) => {
+      const nova = [...atual];
+      nova.splice(posicao, 0, { ...alvo.item, id: provisorio });
+      return nova;
+    });
+    startTransition(async () => {
+      try {
+        const criado = await adicionarItemAction({
+          quotationId: cotacao.id,
+          productId: alvo.item.productId,
+          packagingId: alvo.item.packagingId,
+          descricao: alvo.item.descricao,
+          quantidade: alvo.item.quantidade,
+        });
+        // A inclusão entra no fim da lista do banco: a ordem só volta ao que
+        // era depois de mandar a sequência inteira.
+        const ids = itens
+          .filter((i) => i.id !== provisorio)
+          .map((i) => i.id);
+        ids.splice(posicao, 0, criado.id);
+        if (!ids.some((id) => id.startsWith("novo:"))) {
+          await reordenarItensAction({ quotationId: cotacao.id, ids });
+        }
+        router.refresh();
+      } catch (e) {
+        setItens((atual) => atual.filter((i) => i.id !== provisorio));
+        setErro(e instanceof Error ? e.message : "Não foi possível devolver o item.");
+      }
+    });
   }
 
   function mudarQuantidade(item: Item, quantidade: number) {
@@ -182,8 +232,9 @@ function useListaItens(cotacao: CotacaoDetalhe) {
     setAviso,
     editando,
     setEditando,
-    aRemover,
-    setARemover,
+    desfazivel,
+    restaurar,
+    dispensarDesfazer: () => setDesfazivel(null),
     buscaRef,
     adicionar,
     remover,
@@ -216,8 +267,9 @@ export function ItensCotacao({
     aviso,
     editando,
     setEditando,
-    aRemover,
-    setARemover,
+    desfazivel,
+    restaurar,
+    dispensarDesfazer,
     buscaRef,
     adicionar,
     remover,
@@ -246,6 +298,14 @@ export function ItensCotacao({
         </p>
       )}
 
+      {desfazivel && (
+        <FaixaDesfazer
+          descricao={desfazivel.item.descricao}
+          onDesfazer={restaurar}
+          onDispensar={dispensarDesfazer}
+        />
+      )}
+
       {/* A trava aparece ANTES da lista, no lugar onde o formulário estaria:
           é a resposta para "cadê o campo de adicionar item?". */}
       {travado && (
@@ -272,20 +332,12 @@ export function ItensCotacao({
           pendente={pendente}
           onEditar={setEditando}
           onSalvar={mudarQuantidade}
-          onRemover={setARemover}
+          onRemover={remover}
           onMover={mover}
           className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface"
         />
       )}
 
-      {aRemover && (
-        <ConfirmarRemocao
-          item={aRemover}
-          pendente={pendente}
-          onCancelar={() => setARemover(null)}
-          onConfirmar={() => remover(aRemover)}
-        />
-      )}
     </div>
   );
 }
@@ -333,7 +385,15 @@ function ListaItens({
         <li
           key={item.id}
           className={cn(
-            "px-4 py-3",
+            // Faixa de hover: numa lista de trinta linhas ela é o que diz qual
+            // delas o clique de "remover" vai atingir. Linha baixa de
+            // propósito: quanto mais itens cabem na tela, menos rolagem entre
+            // o que se está digitando e o que já foi digitado.
+            "px-4 py-1.5 transition-colors hover:bg-surface-2",
+            // Só a linha recém-digitada (ainda com id provisório) anima. Quando
+            // o servidor devolve o id de verdade a classe sai, e a animação
+            // não se repete a cada `router.refresh()`.
+            item.id.startsWith("novo:") && "linha-entra",
             ocultarDoMobileApos !== null &&
               ocultarDoMobileApos !== undefined &&
               i >= ocultarDoMobileApos &&
@@ -348,7 +408,7 @@ function ListaItens({
               onSalvar={(quantidade) => onSalvar(item, quantidade)}
             />
           ) : (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2.5">
               {/* Ordem antes da foto: mexer na posição da linha é ação sobre a
                   LISTA, não sobre o produto — fica na margem, onde a coluna de
                   setas se lê de cima a baixo, longe de editar e remover. */}
@@ -377,11 +437,13 @@ function ListaItens({
                 </div>
               )}
 
-              <Thumb url={item.imagemUrl} nome={item.descricao} size={36} />
+              <Thumb url={item.imagemUrl} nome={item.descricao} size={30} />
 
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-ink">{item.descricao}</p>
-                <p className="mt-0.5 flex flex-wrap items-center gap-x-2 truncate text-[12px] text-muted">
+                <p className="truncate text-[13px] font-medium leading-snug text-ink">
+                  {item.descricao}
+                </p>
+                <p className="flex flex-wrap items-center gap-x-2 truncate text-[11px] leading-snug text-muted">
                   {item.sku ? (
                     <span className="font-mono text-[11px] text-faint">{item.sku}</span>
                   ) : (
@@ -413,34 +475,60 @@ function ListaItens({
 
               {/* Número sozinho não diz nada: 2 pode ser duas garrafas ou
                   duas caixas de doze, e o fornecedor cota o que estiver
-                  escrito aqui. */}
-              <span className="shrink-0 text-right">
-                <span className="block font-mono text-[15px] font-semibold tabular-nums text-ink">
-                  {fmtQtd(item.quantidade)}
+                  escrito aqui.
+
+                  Largura fixa: os números de todas as linhas caem na mesma
+                  coluna, e a lista se lê de cima a baixo como uma conta. A
+                  embalagem ("Caixa c/ 12") cabe inteira ao lado do número —
+                  cortada, ela deixa de ser a informação que separa 2 garrafas
+                  de 2 caixas.
+
+                  Quantidade se troca com DUPLO CLIQUE no próprio número: o
+                  lápis que existia aqui era um alvo de 32px numa lista de
+                  trinta linhas, para mudar o único campo que a linha tem. O
+                  tracejado sob o número é o convite; o teclado abre no Enter,
+                  porque duplo clique não existe para quem navega por Tab. */}
+              {editavel ? (
+                <button
+                  type="button"
+                  onDoubleClick={() => onEditar(item.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onEditar(item.id);
+                    }
+                  }}
+                  title="Duplo clique para alterar a quantidade"
+                  aria-label={`Quantidade de ${item.descricao}: ${fmtQtd(item.quantidade)} ${unidadeDaQtd(item.quantidade, item.embalagemNome)}. Alterar`}
+                  className="group/qtd w-44 shrink-0 cursor-pointer rounded-[var(--radius-sm)] px-2 py-0.5 text-right transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                >
+                  <span className="block font-mono text-[14px] font-semibold leading-snug tabular-nums text-ink underline decoration-line-strong decoration-dotted decoration-from-font underline-offset-2 transition-colors group-hover/qtd:decoration-brand">
+                    {fmtQtd(item.quantidade)}
+                  </span>
+                  <span className="block text-[11px] leading-snug text-faint">
+                    {unidadeDaQtd(item.quantidade, item.embalagemNome)}
+                  </span>
+                </button>
+              ) : (
+                <span className="w-44 shrink-0 px-2 py-0.5 text-right">
+                  <span className="block font-mono text-[14px] font-semibold leading-snug tabular-nums text-ink">
+                    {fmtQtd(item.quantidade)}
+                  </span>
+                  <span className="block text-[11px] leading-snug text-faint">
+                    {unidadeDaQtd(item.quantidade, item.embalagemNome)}
+                  </span>
                 </span>
-                <span className="block text-[11px] text-faint">
-                  {unidadeDaQtd(item.quantidade, item.embalagemNome)}
-                </span>
-              </span>
+              )}
 
               {editavel && (
                 <div className="flex shrink-0 items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => onEditar(item.id)}
-                    title="Editar"
-                    aria-label={`Editar ${item.descricao}`}
-                    className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-                  >
-                    <Pencil size={15} />
-                  </button>
                   <button
                     type="button"
                     onClick={() => onRemover(item)}
                     disabled={pendente}
                     title="Remover"
                     aria-label={`Remover ${item.descricao}`}
-                    className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-danger-soft hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
+                    className="grid h-7 w-7 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-danger-soft hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Trash2 size={15} />
                   </button>
@@ -470,6 +558,7 @@ export function ItensDaCotacaoCard({
   usaMinimo,
   anterior,
   alerta,
+  onMontarLista,
 }: {
   cotacao: CotacaoDetalhe;
   editavel: boolean;
@@ -479,6 +568,12 @@ export function ItensDaCotacaoCard({
   anterior?: CotacaoAnterior | null;
   /** Validação da revisão ("Adicione pelo menos um item."). */
   alerta?: string | null;
+  /**
+   * O operador parou de conferir e foi montar a lista (cursor no campo de
+   * busca). A página usa isso para recolher as condições e dar a altura da
+   * tela a quem está digitando.
+   */
+  onMontarLista?: () => void;
 }) {
   const router = useRouter();
   const {
@@ -488,8 +583,9 @@ export function ItensDaCotacaoCard({
     aviso,
     editando,
     setEditando,
-    aRemover,
-    setARemover,
+    desfazivel,
+    restaurar,
+    dispensarDesfazer,
     buscaRef,
     adicionar,
     remover,
@@ -579,6 +675,7 @@ export function ItensDaCotacaoCard({
             onAdicionar={adicionar}
             pendente={pendente}
             buscaRef={buscaRef}
+            onFocoNaBusca={onMontarLista}
           />
         )}
 
@@ -600,6 +697,14 @@ export function ItensDaCotacaoCard({
             <Info size={13} className="mt-0.5 shrink-0 text-brand" />
             {aviso}
           </p>
+        )}
+
+        {desfazivel && (
+          <FaixaDesfazer
+            descricao={desfazivel.item.descricao}
+            onDesfazer={restaurar}
+            onDispensar={dispensarDesfazer}
+          />
         )}
 
         {itens.length === 0 ? (
@@ -636,7 +741,7 @@ export function ItensDaCotacaoCard({
               pendente={pendente}
               onEditar={setEditando}
               onSalvar={mudarQuantidade}
-              onRemover={setARemover}
+              onRemover={remover}
               // Com a lista recortada no celular, subir/descer moveria contra
               // linhas que a pessoa não está vendo. Reordenar só com tudo à vista.
               onMover={temPreviaMobile ? undefined : mover}
@@ -658,74 +763,7 @@ export function ItensDaCotacaoCard({
         )}
       </div>
 
-      {aRemover && (
-        <ConfirmarRemocao
-          item={aRemover}
-          pendente={pendente}
-          onCancelar={() => setARemover(null)}
-          onConfirmar={() => remover(aRemover)}
-        />
-      )}
     </section>
-  );
-}
-
-// ── Tirar item da lista ─────────────────────────────────────
-
-function ConfirmarRemocao({
-  item,
-  pendente,
-  onCancelar,
-  onConfirmar,
-}: {
-  item: CotacaoDetalhe["itens"][number];
-  pendente: boolean;
-  onCancelar: () => void;
-  onConfirmar: () => void;
-}) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-ink/30 p-0 sm:items-center sm:p-4"
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onCancelar();
-      }}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="remover-item-titulo"
-        className="w-full max-w-md rounded-t-[var(--radius-xl)] border border-line bg-surface p-5 shadow-[var(--shadow-float)] sm:rounded-[var(--radius-xl)]"
-      >
-        <h2
-          id="remover-item-titulo"
-          className="font-display text-[17px] font-semibold text-ink"
-        >
-          Tirar item da lista
-        </h2>
-        <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
-          <span className="font-medium text-ink">{item.descricao}</span> sai da cotação —
-          o fornecedor não vai ver esse item. Para voltar atrás, é só adicionar de novo.
-        </p>
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancelar}
-            className="rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-          >
-            Manter
-          </button>
-          <button
-            type="button"
-            autoFocus
-            onClick={onConfirmar}
-            disabled={pendente}
-            className="rounded-full bg-danger px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:opacity-90 disabled:opacity-50"
-          >
-            Tirar da lista
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -739,12 +777,15 @@ function NovoItem({
   onAdicionar,
   pendente,
   buscaRef,
+  onFocoNaBusca,
 }: {
   /** Loja de destino — o saldo mostrado é o da prateleira que vai receber. */
   siteId: string;
   onAdicionar: (item: Omit<CotacaoDetalhe["itens"][number], "id">) => void;
   pendente: boolean;
   buscaRef: React.RefObject<HTMLInputElement | null>;
+  /** Cursor entrou na busca: quem está montando a lista pediu a tela. */
+  onFocoNaBusca?: () => void;
 }) {
   const [busca, setBusca] = useState("");
   const [escolhido, setEscolhido] = useState<ProdutoCotacao | null>(null);
@@ -795,19 +836,6 @@ function NovoItem({
   }, [ativo, listaAberta]);
 
   const qtd = Number(quantidade.replace(",", ".")) || 0;
-  /** Embalagem selecionada — null enquanto o pedido é na unidade. */
-  const embalagemEscolhida = embalagens.find((e) => e.id === packagingId) ?? null;
-  /** O rótulo que a lista vai mostrar depois de salvar, mostrado já aqui. */
-  const unidadePedida = embalagemEscolhida
-    ? rotuloEmbalagemPedida(embalagemEscolhida.nome, embalagemEscolhida.fator)
-    : "Unidade";
-  /**
-   * O que falta para o mínimo vem em UNIDADES; comprado em caixa, vira caixas
-   * (arredondando para cima — meia caixa ninguém pede).
-   */
-  const sugeridoNaEmbalagem = embalagemEscolhida
-    ? Math.ceil((escolhido?.sugerido ?? 0) / embalagemEscolhida.fator)
-    : (escolhido?.sugerido ?? 0);
   const podeSalvar =
     qtd > 0 && (escolhido !== null || descricaoLivre.trim().length >= 2) && !pendente;
 
@@ -878,22 +906,35 @@ function NovoItem({
   }
 
   return (
-    <div className="rounded-[var(--radius-lg)] border border-line bg-surface p-4">
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_11rem_7rem_auto] md:items-end">
+    // Fundo próprio: dentro de um card branco, uma caixa branca com borda fina
+    // some — e é justamente aqui que o operador digita a lista inteira.
+    <div className="rounded-[var(--radius-lg)] border border-line bg-surface-2 p-3">
+      <div className="grid gap-2.5 md:grid-cols-[minmax(0,1fr)_15rem_7.5rem_auto] md:items-end">
         <div className="relative flex flex-col gap-1">
-          <span className="text-[12px] font-medium text-ink-2">Produto</span>
+          {/* O que falta para o mínimo é a razão de o campo já vir preenchido —
+              fica na linha do rótulo, onde não empurra os campos para fora do
+              alinhamento de baixo. */}
+          <span className="flex items-baseline justify-between gap-2 text-[12px] font-medium text-ink-2">
+            Produto
+            {escolhido && escolhido.sugerido > 0 && (
+              <span className="truncate font-normal text-faint">
+                faltam {fmtQtd(escolhido.sugerido)} un. para o mínimo
+              </span>
+            )}
+          </span>
           {/* A busca vai ao servidor: sem sinal de que ela está correndo, a
               espera parece campo quebrado e a pessoa digita por cima. */}
           {buscando && (
             <Loader2
               size={15}
               aria-hidden
-              className="pointer-events-none absolute right-3 top-[1.9rem] motion-safe:animate-spin text-muted"
+              className="pointer-events-none absolute right-3 top-[1.7rem] motion-safe:animate-spin text-muted"
             />
           )}
           <input
             ref={buscaRef}
             value={busca}
+            onFocus={onFocoNaBusca}
             onChange={(e) => {
               setBusca(e.target.value);
               setEscolhido(null);
@@ -936,8 +977,8 @@ function NovoItem({
               listaAberta && ativo >= 0 ? `sugestao-${sugestoes[ativo].id}` : undefined
             }
             aria-busy={buscando || undefined}
-            placeholder="Busque por nome ou SKU (mín. 3 letras)"
-            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 pr-9 text-base text-ink sm:text-sm"
+            placeholder="Nome, SKU ou código de barras (mín. 3 caracteres)"
+            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-1.5 pr-9 text-base text-ink sm:text-sm"
           />
 
           {/* Primeira busca, nada na tela ainda: o painel de "Procurando…"
@@ -1006,7 +1047,7 @@ function NovoItem({
             value={packagingId}
             onChange={(e) => setPackagingId(e.target.value)}
             disabled={!escolhido}
-            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink disabled:opacity-50"
+            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-1.5 text-sm text-ink disabled:opacity-50"
           >
             <option value="">Unidade (1 un.)</option>
             {embalagens.map((e) => (
@@ -1032,40 +1073,15 @@ function NovoItem({
               }
             }}
             inputMode="decimal"
-            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-right font-mono text-sm tabular-nums text-ink"
+            className="rounded-[var(--radius)] border border-line bg-surface px-3 py-1.5 text-right font-mono text-sm tabular-nums text-ink"
           />
-          {/* A pergunta que o campo não respondia: "2 do quê?" — e, pedindo em
-              caixa, quantas unidades isso dá, que é a conta que o operador
-              faria de cabeça para saber se cabe na prateleira. */}
-          {escolhido && (
-            <span className="text-[11px] font-medium text-ink-2">
-              {unidadeDaQtd(qtd || 1, unidadePedida)}
-              {embalagemEscolhida && qtd > 0 && (
-                <span className="font-normal text-faint">
-                  {" "}
-                  · {fmtQtd(qtd * embalagemEscolhida.fator)} un.
-                </span>
-              )}
-            </span>
-          )}
-          {/* O campo já vinha preenchido com o que falta para o mínimo, mas em
-              silêncio: número que aparece sozinho parece defeito. Dizer de onde
-              veio transforma mágica em informação — e deixa claro que dá para
-              trocar. */}
-          {escolhido && escolhido.sugerido > 0 && (
-            <span className="text-[11px] text-faint">
-              sugerido {fmtQtd(sugeridoNaEmbalagem)}{" "}
-              {unidadeDaQtd(sugeridoNaEmbalagem, unidadePedida)} — faltam{" "}
-              {fmtQtd(escolhido.sugerido)} un. para o mínimo
-            </span>
-          )}
         </label>
 
         <button
           type="button"
           onClick={salvar}
           disabled={!podeSalvar}
-          className="flex h-[38px] items-center justify-center gap-1.5 rounded-full bg-brand px-4 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
+          className="flex h-[34px] items-center justify-center gap-1.5 rounded-full bg-brand px-4 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
         >
           <Plus size={15} />
           Adicionar
@@ -1081,7 +1097,7 @@ function NovoItem({
             value={descricaoLivre}
             onChange={(e) => setDescricaoLivre(e.target.value)}
             placeholder="Ex.: Cerveja pilsen lata 350ml, caixa com 12"
-            className="rounded-[var(--radius)] border border-dashed border-line bg-surface px-3 py-2 text-sm text-ink"
+            className="rounded-[var(--radius)] border border-dashed border-line bg-surface px-3 py-1.5 text-sm text-ink"
           />
           <span className="text-[11px] text-faint">
             Item fora do catálogo entra na cotação, mas não vira pedido sozinho — vincule a
@@ -1162,5 +1178,47 @@ function LinhaEdicao({
         </button>
       </div>
     </div>
+  );
+}
+
+// ── Tirar item da lista ─────────────────────────────────────
+// Remover é um clique só, e a rede de segurança vem depois dele: a faixa diz
+// o que saiu e devolve a linha ao lugar. Perguntar antes, item por item, era
+// pagar trinta confirmações para evitar um erro que se conserta em uma.
+
+function FaixaDesfazer({
+  descricao,
+  onDesfazer,
+  onDispensar,
+}: {
+  descricao: string;
+  onDesfazer: () => void;
+  onDispensar: () => void;
+}) {
+  return (
+    <p
+      aria-live="polite"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[var(--radius)] border border-line bg-surface-2 px-3 py-2 text-[12px] text-ink-2"
+    >
+      <Undo2 size={13} aria-hidden className="shrink-0 text-muted" />
+      <span className="min-w-0 flex-1 truncate">
+        <span className="font-medium text-ink">{descricao}</span> saiu da lista.
+      </span>
+      <button
+        type="button"
+        onClick={onDesfazer}
+        className="shrink-0 cursor-pointer font-medium text-brand underline-offset-2 hover:underline"
+      >
+        Desfazer
+      </button>
+      <button
+        type="button"
+        onClick={onDispensar}
+        aria-label="Dispensar aviso"
+        className="grid h-5 w-5 shrink-0 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-surface hover:text-ink"
+      >
+        <X size={12} />
+      </button>
+    </p>
   );
 }

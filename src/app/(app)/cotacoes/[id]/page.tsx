@@ -22,19 +22,29 @@ export default async function CotacaoPage({
   const ctx = await requireActiveTenant();
 
   const dados = await withTenant(ctx, async () => {
+    // As lojas não dependem da cotação: a consulta parte JUNTO com ela, em vez
+    // de esperar na fila. São duas idas ao banco no tempo de uma.
+    const sitesPromise = listSites();
     const cotacao = await loadCotacao(id, ctx.tenant);
-    if (!cotacao) return null;
-    const [fornecedores, sites, referencias, anterior] = await Promise.all([
+    if (!cotacao) {
+      // Consumida mesmo sem uso: promessa órfã vira "unhandled rejection".
+      await sitesPromise.catch(() => []);
+      return null;
+    }
+    const [fornecedores, sites, referencias, anterior, pedidos] = await Promise.all([
       loadFornecedoresOpcao(
         cotacao.itens.map((i) => i.productId).filter((id): id is string => !!id),
       ),
-      listSites(),
-      loadReferenciasPreco(cotacao),
+      sitesPromise,
+      // Referência de preço alimenta o resumo do comparativo, que só existe
+      // depois de a cotação sair. Em rascunho é uma varredura de histórico
+      // para uma tela que ninguém vai ver.
+      cotacao.status === "RASCUNHO" ? Promise.resolve({}) : loadReferenciasPreco(cotacao),
       // Molde para o estado vazio — só faz sentido enquanto a lista está vazia.
       cotacao.itens.length === 0 ? loadUltimaCotacaoComItens(id) : Promise.resolve(null),
+      // Só depois de decidida existem pedidos: antes disso não há o que apontar.
+      cotacao.status === "DECIDIDA" ? pedidosDaCotacao(id) : Promise.resolve([]),
     ]);
-    // Só depois de decidida existem pedidos: antes disso não há o que apontar.
-    const pedidos = cotacao.status === "DECIDIDA" ? await pedidosDaCotacao(id) : [];
 
     return {
       cotacao,

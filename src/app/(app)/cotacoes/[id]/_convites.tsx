@@ -20,6 +20,7 @@ import {
   Loader2,
   Plus,
   Share2,
+  Undo2,
   UserPlus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -144,7 +145,7 @@ export function ConvitesCotacao({
               className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
             >
               <Users size={15} />
-              Convidar fornecedores
+              Adicionar fornecedores
             </button>
           )}
 
@@ -189,7 +190,7 @@ export function ConvitesCotacao({
                 onClick={() => setConvidando(true)}
                 className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
               >
-                Convidar fornecedores
+                Adicionar fornecedores
               </button>
             ) : undefined
           }
@@ -401,7 +402,7 @@ export function ConvitesCotacao({
           className="flex cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <UserPlus size={14} />
-          {disponiveis.length === 0 ? "Todos já estão na cotação" : "Convidar fornecedor"}
+          {disponiveis.length === 0 ? "Todos já estão na cotação" : "Adicionar fornecedor"}
         </button>
       )}
 
@@ -439,7 +440,6 @@ export function ConvitesCotacao({
       {enviando && (
         <EnvioSheet
           alvos={pendentes}
-          itens={cotacao.itens}
           prazoAtual={cotacao.prazoResposta}
           onFechar={() => setEnviando(false)}
           onConcluir={() => setEnviando(false)}
@@ -449,7 +449,6 @@ export function ConvitesCotacao({
       {reenviando && (
         <EnvioSheet
           alvos={reenviando === "todos" ? aguardando : [reenviando]}
-          itens={cotacao.itens}
           reenvio
           prazoAtual={cotacao.prazoResposta}
           onFechar={() => setReenviando(null)}
@@ -514,7 +513,7 @@ function ConvidarSheet({
     .sort((a, b) => b.jaForneceu - a.jaForneceu || a.nome.localeCompare(b.nome, "pt-BR"));
 
   return (
-    <Modal titulo="Convidar fornecedores" onFechar={onFechar}>
+    <Modal titulo="Adicionar fornecedores" onFechar={onFechar}>
       <input
         value={busca}
         onChange={(e) => setBusca(e.target.value)}
@@ -579,7 +578,7 @@ function ConvidarSheet({
           disabled={pendente || selecionados.length === 0}
           className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
         >
-          Convidar {selecionados.length > 0 && `(${selecionados.length})`}
+          Adicionar {selecionados.length > 0 && `(${selecionados.length})`}
         </button>
       </div>
     </Modal>
@@ -592,40 +591,26 @@ function ConvidarSheet({
 // Cada linha responde com o nome fantasia, a praça e as condições do cadastro
 // — e o que não cabe nessa pergunta ficou no passo "Fornecedores".
 
-/**
- * A cesta prevista não chega ao pedido mínimo deste fornecedor. Só vale a pena
- * dizer enquanto a cotação está sendo montada: depois de enviada, quem recusa
- * por valor mínimo é o próprio fornecedor, e já se perdeu a semana.
- */
-function abaixoDoMinimo(c: ConviteCotacao, previsto: number): boolean {
-  return (
-    c.status === "PENDENTE" &&
-    c.supplierPedidoMinimo !== null &&
-    previsto > 0 &&
-    previsto < c.supplierPedidoMinimo
-  );
-}
-
 export function FornecedoresDaCotacaoCard({
   cotacao,
   fornecedores,
   podeConvidar,
   podeRemover,
-  previsto,
   alerta,
+  onEscolherFornecedor,
 }: {
   cotacao: CotacaoDetalhe;
   fornecedores: FornecedorOpcao[];
   podeConvidar: boolean;
   podeRemover: boolean;
-  /**
-   * Quanto a cesta deve custar pelo custo já conhecido. Serve para confrontar
-   * o pedido mínimo de cada fornecedor ANTES de a cotação sair — descobrir
-   * isso pela resposta dele é uma semana perdida.
-   */
-  previsto: number;
   /** Validação da revisão ("Selecione pelo menos um fornecedor."). */
   alerta?: string | null;
+  /**
+   * A folha de escolher fornecedor vai abrir. A página usa isso para recolher
+   * as condições — o painel cobre a tela e o card atrás dele não serve a
+   * ninguém.
+   */
+  onEscolherFornecedor?: () => void;
 }) {
   const router = useRouter();
   const [pendente, startTransition] = useTransition();
@@ -633,11 +618,36 @@ export function FornecedoresDaCotacaoCard({
   const [convidando, setConvidando] = useState(false);
   /** Fornecedor que vai ganhar um contato agora, sem sair da revisão. */
   const [cadastrandoContato, setCadastrandoContato] = useState<ConviteCotacao | null>(null);
-  /** Tirar da cotação também pergunta antes — o alvo aqui é pequeno. */
-  const [aRemover, setARemover] = useState<ConviteCotacao | null>(null);
+  /**
+   * Tirar da cotação sai na hora e a faixa de "Desfazer" segura o erro.
+   *
+   * O modal que perguntava antes custava dois cliques e uma leitura para uma
+   * ação que, desfeita, é um convite novo — e a lista aqui é montada
+   * escolhendo e desescolhendo fornecedor. `saindo` esconde a linha antes de
+   * o servidor responder; `desfazivel` guarda quem saiu para poder voltar.
+   */
+  const [saindo, setSaindo] = useState<string[]>([]);
+  const [desfazivel, setDesfazivel] = useState<ConviteCotacao | null>(null);
 
-  const jaConvidados = new Set(cotacao.convites.map((c) => c.supplierId));
+  const convites = cotacao.convites.filter((c) => !saindo.includes(c.id));
+  const jaConvidados = new Set(convites.map((c) => c.supplierId));
   const disponiveis = fornecedores.filter((f) => !jaConvidados.has(f.id));
+
+  function tirar(c: ConviteCotacao) {
+    setSaindo((atual) => [...atual, c.id]);
+    setDesfazivel(c);
+    rodar(() => removerConviteAction(c.id));
+  }
+
+  /** Convida de novo quem acabou de sair — o convite é novo, o efeito é voltar. */
+  function devolver() {
+    const alvo = desfazivel;
+    if (!alvo) return;
+    setDesfazivel(null);
+    rodar(() =>
+      convidarFornecedoresAction({ quotationId: cotacao.id, supplierIds: [alvo.supplierId] }),
+    );
+  }
 
   function rodar(fn: () => Promise<unknown>) {
     setErro(null);
@@ -672,8 +682,8 @@ export function FornecedoresDaCotacaoCard({
             Fornecedores
           </h3>
           <p className="mt-0.5 flex items-center gap-1.5 text-[12px] text-muted">
-            {cotacao.convites.length}{" "}
-            {cotacao.convites.length === 1 ? "selecionado" : "selecionados"}
+            {convites.length}{" "}
+            {convites.length === 1 ? "selecionado" : "selecionados"}
             {pendente && (
               <span aria-live="polite" className="flex items-center gap-1 text-faint">
                 <Loader2 size={11} aria-hidden className="motion-safe:animate-spin" />
@@ -688,14 +698,43 @@ export function FornecedoresDaCotacaoCard({
         {alerta && <p className="text-[13px] font-medium text-danger">{alerta}</p>}
         {erro && <p className="text-[13px] text-danger">{erro}</p>}
 
-        {cotacao.convites.length === 0 ? (
+        {/* A rede de segurança da remoção: quem saiu, e o caminho de volta. */}
+        {desfazivel && (
+          <p
+            aria-live="polite"
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[var(--radius)] border border-line bg-surface-2 px-3 py-2 text-[12px] text-ink-2"
+          >
+            <Undo2 size={13} aria-hidden className="shrink-0 text-muted" />
+            <span className="min-w-0 flex-1 truncate">
+              <span className="font-medium text-ink">{desfazivel.supplierNome}</span> saiu da
+              cotação.
+            </span>
+            <button
+              type="button"
+              onClick={devolver}
+              className="shrink-0 cursor-pointer font-medium text-brand underline-offset-2 hover:underline"
+            >
+              Desfazer
+            </button>
+            <button
+              type="button"
+              onClick={() => setDesfazivel(null)}
+              aria-label="Dispensar aviso"
+              className="grid h-5 w-5 shrink-0 cursor-pointer place-items-center rounded-full text-faint transition-colors hover:bg-surface hover:text-ink"
+            >
+              <X size={12} />
+            </button>
+          </p>
+        )}
+
+        {convites.length === 0 ? (
           <p className="rounded-[var(--radius)] border border-dashed border-line px-3 py-6 text-center text-[13px] text-muted">
-            Ninguém foi convidado ainda. Escolha de quem você quer o preço.
+            Nenhum fornecedor na cotação. Escolha de quem você quer o preço.
           </p>
         ) : (
           <>
             <ul className="flex flex-col gap-2">
-            {cotacao.convites.map((c) => {
+            {convites.map((c) => {
               // A cotação vai para uma PESSOA. Sem telefone nem e-mail de
               // ninguém, este fornecedor não recebe nada — e o lugar de dizer
               // isso é a linha dele, não um aviso no rodapé que não diz qual.
@@ -730,9 +769,10 @@ export function FornecedoresDaCotacaoCard({
                         Sem contato — cadastrar vendedor
                       </button>
                     )}
-                    {/* Condições do cadastro: pedido mínimo e prazo. Duas
-                        linhas de texto que evitam uma cotação inteira perdida
-                        num fornecedor que não atende esse tamanho de compra. */}
+                    {/* Condições do cadastro: pedido mínimo e prazo, numa
+                        linha só. É o que o comprador confere antes de mandar a
+                        lista — quem não atende esse tamanho de compra ou esse
+                        prazo se descobre aqui, não pela resposta que não vem. */}
                     {(c.supplierPedidoMinimo !== null ||
                       c.supplierPrazoPagamentoDias !== null) && (
                       <p className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-faint">
@@ -748,16 +788,11 @@ export function FornecedoresDaCotacaoCard({
                         )}
                       </p>
                     )}
-                    {abaixoDoMinimo(c, previsto) && (
-                      <p className="mt-1 text-[11px] font-medium text-accent">
-                        A cesta prevista ({fmtMoney(previsto)}) não alcança o pedido mínimo.
-                      </p>
-                    )}
                   </div>
                   {podeRemover && (
                     <button
                       type="button"
-                      onClick={() => setARemover(c)}
+                      onClick={() => tirar(c)}
                       disabled={pendente}
                       aria-label={`Tirar ${c.supplierNome} da cotação`}
                       title="Tirar da cotação"
@@ -776,7 +811,10 @@ export function FornecedoresDaCotacaoCard({
         {podeConvidar && (
           <button
             type="button"
-            onClick={() => setConvidando(true)}
+            onClick={() => {
+              onEscolherFornecedor?.();
+              setConvidando(true);
+            }}
             disabled={disponiveis.length === 0}
             className="flex cursor-pointer items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -796,37 +834,6 @@ export function FornecedoresDaCotacaoCard({
           router.refresh();
         }}
       />
-
-      {aRemover && (
-        <Modal titulo="Tirar da cotação" onFechar={() => setARemover(null)}>
-          <p className="text-[13px] leading-relaxed text-muted">
-            <span className="font-medium text-ink">{aRemover.supplierNome}</span> sai da cotação e
-            não vai receber a lista. Para voltar atrás, é só convidar de novo.
-          </p>
-          <div className="mt-5 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setARemover(null)}
-              className="cursor-pointer rounded-full border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
-            >
-              Manter
-            </button>
-            <button
-              type="button"
-              autoFocus
-              onClick={() => {
-                const alvo = aRemover;
-                setARemover(null);
-                rodar(() => removerConviteAction(alvo.id));
-              }}
-              disabled={pendente}
-              className="cursor-pointer rounded-full bg-danger px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Tirar da cotação
-            </button>
-          </div>
-        </Modal>
-      )}
 
       {convidando && (
         <ConvidarSheet

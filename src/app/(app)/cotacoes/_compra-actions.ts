@@ -449,6 +449,10 @@ export async function buscarProdutosCotacaoAction(
           { nome: { contains: d.termo, mode: "insensitive" } },
           { sku: { contains: d.termo, mode: "insensitive" } },
           { ean: { contains: d.termo } },
+          // O código bipado costuma ser o da CAIXA, não o da unidade: sem
+          // olhar o EAN das embalagens, o leitor do depósito não acha o
+          // produto que está com a mão.
+          { packagings: { some: { ean: { contains: d.termo } } } },
         ],
       },
       orderBy: { nome: "asc" },

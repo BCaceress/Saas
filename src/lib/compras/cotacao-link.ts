@@ -94,9 +94,16 @@ export async function linkVigente(
  * áudio, uma foto ou um telefonema. Nulo com resposta gravada = digitada aqui
  * dentro, e isso muda o quanto se confia no número.
  */
+/** O que o link já contou sobre o fornecedor: se abriu, se respondeu, até quando vale. */
+export type SinalDoLink = {
+  abertoEm: Date | null;
+  respondidoEm: Date | null;
+  expiraEm: Date;
+};
+
 export async function sinaisDosLinks(
   quotationSupplierIds: string[],
-): Promise<Map<string, { abertoEm: Date | null; respondidoEm: Date | null; expiraEm: Date }>> {
+): Promise<Map<string, SinalDoLink>> {
   if (quotationSupplierIds.length === 0) return new Map();
   const links = await basePrisma.quotationLink.findMany({
     where: { quotationSupplierId: { in: quotationSupplierIds } },
