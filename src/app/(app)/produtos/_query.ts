@@ -4,6 +4,7 @@ import { db, basePrisma, comTenant } from "@/lib/prisma";
 import { requireTenantId, runWithTenant } from "@/lib/tenant-context";
 import { derive, type DeriveComponent } from "@/lib/derive";
 import { margem } from "@/lib/utils";
+import { alternativasPorTrechoDeCodigo } from "@/lib/produto-codigo";
 import { PRODUCT_INCLUDE, toProductRow, invalidarOpcoesFormulario } from "./_data";
 import {
   SEM_MARCA,
@@ -60,9 +61,9 @@ export function whereDoFiltro(f: ProdutoFiltro): Prisma.ProductWhereInput {
       OR: [
         { nome: { contains: termo, mode: "insensitive" } },
         { sku: { contains: termo, mode: "insensitive" } },
-        { ean: { contains: termo } },
-        // O operador bipa o fardo tanto quanto a unidade.
-        { packagings: { some: { ean: { contains: termo } } } },
+        // O principal, os apelidos de outras marcas e o fardo: o operador bipa
+        // os três e a lista tem de achar nos três.
+        ...alternativasPorTrechoDeCodigo(termo),
       ],
     });
   }
@@ -90,7 +91,10 @@ export function whereDoFiltro(f: ProdutoFiltro): Prisma.ProductWhereInput {
   else if (f.status === "inativos") and.push({ ativo: false });
 
   if (f.flags.semImagem) and.push({ imagemUrl: null });
-  if (f.flags.semEan) and.push({ ean: null });
+  // "Sem código de barras" é não ter NENHUM — nem o espelho nem apelido. Só
+  // olhar `ean` listaria como pendência o produto que tem três códigos e por
+  // algum motivo perdeu o principal.
+  if (f.flags.semEan) and.push({ ean: null, barcodes: { none: {} } });
   if (f.flags.semFiscal) and.push({ fiscalProfileId: null });
   if (f.flags.online) and.push({ vendeOnline: true });
   if (f.flags.maiorIdade) and.push({ restricaoIdade: true });
@@ -445,15 +449,21 @@ export function carregarOpcoesFiltro(tenantId: string): Promise<OpcoesFiltroDado
 
 async function consultarOpcoesFiltro(): Promise<OpcoesFiltroDados> {
   const [categories, brands, sites, tags] = await Promise.all([
+    // Aqui, ao contrário do formulário, a INATIVA aparece — marcada.
+    //
+    // É justamente nela que está o trabalho: "inativei Bebidas, agora preciso
+    // achar os 14 produtos dela para mover antes de excluir". Esconder do
+    // filtro deixaria esses produtos inalcançáveis pela barra, e o diálogo de
+    // bloqueio manda exatamente para cá.
     db.category.findMany({
-      orderBy: { nome: "asc" },
+      orderBy: [{ ativo: "desc" }, { nome: "asc" }],
       select: {
         id: true,
         nome: true,
+        ativo: true,
         subcategories: {
-          where: { ativo: true },
-          orderBy: { nome: "asc" },
-          select: { id: true, nome: true },
+          orderBy: [{ ativo: "desc" }, { nome: "asc" }],
+          select: { id: true, nome: true, ativo: true },
         },
       },
     }),
@@ -467,13 +477,16 @@ async function consultarOpcoesFiltro(): Promise<OpcoesFiltroDados> {
   ]);
 
   return {
-    categoryOpts: categories.map((c) => ({ id: c.id, nome: c.nome })),
+    categoryOpts: categories.map((c) => ({ id: c.id, nome: c.nome, ativo: c.ativo })),
     subOpts: categories.flatMap((c) =>
       c.subcategories.map((s) => ({
         id: s.id,
         nome: s.nome,
         categoriaNome: c.nome,
         categoryId: c.id,
+        // Efetiva: subcategoria ativa dentro de categoria inativa também está
+        // fora de uso, e o filtro tem de contar a mesma história que o cadastro.
+        ativo: c.ativo && s.ativo,
       })),
     ),
     brandOpts: brands,

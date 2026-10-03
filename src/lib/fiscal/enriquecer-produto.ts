@@ -3,6 +3,7 @@ import { db } from "@/lib/prisma";
 import { custoDoItem } from "./custo";
 import { fatorDaNota } from "./fator";
 import { nomeDaEmbalagem } from "./embalagem-nome";
+import { casaPorCodigo } from "./vinculo";
 import { resolverPerfilDaNota } from "./perfil-do-xml";
 
 // ============================================================
@@ -72,6 +73,7 @@ export async function enriquecerProdutoComNota(input: {
     select: {
       id: true,
       ean: true,
+      barcodes: { select: { codigo: true, principal: true } },
       custo: true,
       gtinTributavel: true,
       unidadeTributavel: true,
@@ -132,10 +134,39 @@ export async function enriquecerProdutoComNota(input: {
   // ── Campos do produto ──────────────────────────────────────
   const dadosProduto: Record<string, unknown> = {};
 
-  // GTIN de unidade (fator 1) é o EAN do produto; o de caixa não é — colar um
-  // DUN de fardo no campo do produto faria o PDV bipar a caixa como unidade.
-  if (!produto.ean && item.gtin && fator === 1) {
-    dadosProduto.ean = item.gtin;
+  // GTIN de unidade (fator 1) é código de barras do produto; o de caixa não é —
+  // colar um DUN de fardo aqui faria o PDV bipar a caixa como unidade.
+  //
+  // Código NOVO de unidade entra como APELIDO, não substitui o que existe: é
+  // exatamente a promessa que a tela de recebimento faz na divergência
+  // GTIN_NOVO ("ao relacionar, ele entra como código do produto"), e é o caso do
+  // açúcar que chega da União numa nota e da Caravelas na outra. O primeiro
+  // código de um produto sem nenhum nasce principal.
+  const jaTemEsteCodigo = casaPorCodigo(
+    {
+      ean: produto.ean,
+      codigos: produto.barcodes,
+      packagings: produto.packagings.map((pk) => ({
+        id: pk.id,
+        ean: pk.ean,
+        fatorConversao: Number(pk.fatorConversao),
+      })),
+    },
+    item.gtin,
+  );
+  if (item.gtin && fator === 1 && !jaTemEsteCodigo) {
+    const temPrincipal = !!produto.ean || produto.barcodes.some((b) => b.principal);
+    await db.productBarcode.create({
+      data: {
+        tenantId,
+        productId,
+        codigo: item.gtin,
+        principal: !temPrincipal,
+      },
+    });
+    // O espelho só muda quando era ele que estava vazio — um apelido novo não
+    // pode trocar o código que vai na etiqueta.
+    if (!temPrincipal) dadosProduto.ean = item.gtin;
     preenchidos.push("código de barras");
   }
 

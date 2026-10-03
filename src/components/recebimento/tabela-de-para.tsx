@@ -118,6 +118,8 @@ export type ItemDePara = {
   productImagemUrl: string | null;
   /** Código de barras do produto — para saber se o da nota é novo. */
   productEan: string | null;
+  /** Os outros códigos que já bipam neste produto (outras marcas). */
+  productCodigos: { codigo: string }[];
   /** NCM que vale hoje no cadastro (perfil do produto ou da subcategoria). */
   productNcm: string | null;
   /** Dono atual do GTIN da linha, quando não é o produto relacionado. */
@@ -201,6 +203,7 @@ export function divergenciasDaLinha(i: ItemDePara) {
           id: i.productId,
           nome: i.productNome ?? "este produto",
           ean: i.productEan,
+          codigos: i.productCodigos,
           ncm: i.productNcm,
           custoMedio: i.productCustoMedio ?? 0,
           packagings: i.productEmbalagens.map((e) => ({
@@ -222,6 +225,9 @@ function ondeEncaixaOGtin(i: ItemDePara): string {
     return `${i.donoDoGtin.onde} de ${i.donoDoGtin.nome}`;
   }
   if (i.productEan && i.productEan === i.gtin) return "código do produto";
+  // Apelido já cadastrado: o açúcar da Caravelas num produto que nasceu com o
+  // código da União. É "código do produto" igual — não é novidade nenhuma.
+  if (i.productCodigos.some((c) => c.codigo === i.gtin)) return "código do produto";
   const emb = i.productEmbalagens.find((e) => e.ean === i.gtin);
   if (emb) return `embalagem “${emb.nome}”`;
   return "ainda não está no cadastro";

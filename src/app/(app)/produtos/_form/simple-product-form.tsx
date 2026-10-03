@@ -13,6 +13,7 @@ import {
   Trash2,
   Plus,
   CornerDownLeft,
+  ArrowUp,
   TrendingUp,
   TrendingDown,
   Truck,
@@ -84,8 +85,20 @@ const NOME_MAX = 50;
 
 /** Linha da embalagem de compra: caixa com 12, fardo com 6, engradado com 24. */
 type PkLinha = { nome: string; ean: string; fator: string };
+/**
+ * Linha da lista de códigos de barras. `rotulo` é o que o operador escreve
+ * para se achar ("União", "balança") — etiqueta, não marca nem fornecedor.
+ */
+type CodLinha = { codigo: string; rotulo: string };
+/**
+ * A linha 0 mantém o id `ean` de sempre: `resetForNext`, o atalho de teclado e
+ * o "salvar e cadastrar próximo" apontam para ele desde antes da lista existir.
+ */
+const idDoCodigo = (i: number) => (i === 0 ? "ean" : `cod-${i}`);
 /** Âncora da gaveta — o formulário precisa abri-la para apontar erro lá dentro. */
 const MAIS_ID = "mais-configuracoes";
+/** Gaveta das embalagens de compra — o aviso do código de barras aponta pra cá. */
+const EMBALAGENS_ID = "embalagens-compra";
 
 // ── Peças de UI ────────────────────────────────────────────
 
@@ -213,7 +226,31 @@ export function SimpleProductForm({
   const [itemParaVincular, setItemParaVincular] = useState(prefill?.itemId ?? null);
 
   // Identidade
-  const [ean, setEan] = useState(product?.ean ?? prefill?.ean ?? "");
+  //
+  // Códigos de barras são uma LISTA, não um campo: o mesmo "açúcar 1 kg" chega
+  // com o código da União numa semana e da Caravelas na outra, e são um produto
+  // só na prateleira. A linha 0 é a principal (etiqueta e cEAN da NFC-e).
+  //
+  // `ean` continua existindo como atalho para a linha 0 — assim o leitor de
+  // rajada, o enriquecimento, o rascunho e a checagem de duplicado seguem
+  // mexendo num string, como sempre fizeram.
+  const [codigos, setCodigos] = useState<CodLinha[]>(() => {
+    const doProduto = (product?.codigos ?? []).map((c) => ({
+      codigo: c.codigo,
+      rotulo: c.rotulo ?? "",
+    }));
+    if (doProduto.length) return doProduto;
+    return [{ codigo: product?.ean ?? prefill?.ean ?? "", rotulo: "" }];
+  });
+  const ean = codigos[0]?.codigo ?? "";
+  function setEan(v: string) {
+    setCodigos((prev) =>
+      prev.length
+        ? [{ ...prev[0], codigo: v }, ...prev.slice(1)]
+        : [{ codigo: v, rotulo: "" }],
+    );
+  }
+  const [codShake, setCodShake] = useState<number | null>(null);
   const [nome, setNome] = useState(product?.nome ?? prefill?.nome ?? "");
   const [sku, setSku] = useState(product?.sku ?? "");
   const [marca, setMarca] = useState(product?.marca ?? prefill?.marca ?? "");
@@ -225,15 +262,80 @@ export function SimpleProductForm({
   const [showImgUrl, setShowImgUrl] = useState(false);
   // SKU some atrás de um link — 95% do cadastro nunca mexe (gera sozinho ao salvar).
   const [showSku, setShowSku] = useState(mode === "edit" || !!product?.sku);
-  const [eanTaken, setEanTaken] = useState<{
-    id?: string;
-    nome: string;
-    sku: string;
-  } | null>(null);
+  // Dono de cada código, CHAVEADO PELO CÓDIGO e não pelo índice da linha:
+  // remover a linha 1 não pode fazer o aviso da linha 2 escorregar de lugar.
+  const [tomados, setTomados] = useState<
+    Record<string, { id?: string; nome: string; sku: string }>
+  >({});
+  const eanTaken = tomados[onlyDigits(ean)] ?? null;
   const [eanShake, setEanShake] = useState(false);
   /** Campos que o operador já visitou — habilita o aviso inline no blur. */
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const touch = (k: string) => setTouched((t) => ({ ...t, [k]: true }));
+
+  // ── Lista de códigos de barras ──────────────────────────
+  function adicionarCodigo() {
+    setCodigos((prev) => [...prev, { codigo: "", rotulo: "" }]);
+    // O foco vai para a linha nova: quem clicou em "outro código" já tem o
+    // produto na mão e quer bipar, não caçar o campo.
+    requestAnimationFrame(() => focusById(idDoCodigo(codigos.length)));
+  }
+  function mudarCodigo(i: number, patch: Partial<CodLinha>) {
+    setCodigos((prev) => prev.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
+  }
+  function removerCodigo(i: number) {
+    // Nunca fica sem linha: a lista vazia esconderia o campo de código inteiro,
+    // e o próximo cadastro começaria sem lugar para bipar.
+    setCodigos((prev) =>
+      prev.length <= 1 ? [{ codigo: "", rotulo: "" }] : prev.filter((_, idx) => idx !== i),
+    );
+  }
+  /** Principal é a linha 0 — "tornar principal" é mover para o topo. */
+  function tornarPrincipal(i: number) {
+    setCodigos((prev) => {
+      if (i <= 0 || i >= prev.length) return prev;
+      const copia = [...prev];
+      const [linha] = copia.splice(i, 1);
+      return [linha, ...copia];
+    });
+  }
+  /**
+   * Checa dono de um código avulso (linha extra). A linha principal tem o seu
+   * próprio caminho (`onEanBlur`), que também dispara o enriquecimento.
+   */
+  async function conferirDono(codigoRaw: string) {
+    const codigo = onlyDigits(codigoRaw);
+    if (!codigo) return;
+    try {
+      // O próprio produto em edição não conta como conflito.
+      const r = await checkEanTaken(codigo, product?.id);
+      setTomados((prev) => {
+        const proximo = { ...prev };
+        if (r.taken) proximo[codigo] = { id: r.id, nome: r.nome!, sku: r.sku! };
+        else delete proximo[codigo];
+        return proximo;
+      });
+    } catch {
+      /* silencioso — não bloqueia o cadastro */
+    }
+  }
+  /**
+   * Leva o operador de "código de barras" para "embalagens de compra" — a
+   * confusão que custa caro. Abre a gaveta, cria a linha se não houver nenhuma
+   * e põe o foco: mandar a pessoa "procurar embaixo" não resolve nada.
+   */
+  function irParaEmbalagens() {
+    const d = document.getElementById(EMBALAGENS_ID) as HTMLDetailsElement | null;
+    if (d) d.open = true;
+    if (!packagings.length) setPackagings([{ nome: "", ean: "", fator: "" }]);
+    requestAnimationFrame(() => focusField("pk-nome-0"));
+  }
+  /** Mesmo código em duas linhas: a segunda é que pisca. */
+  function repetidoNaLista(i: number): boolean {
+    const d = onlyDigits(codigos[i]?.codigo ?? "");
+    if (!d) return false;
+    return codigos.findIndex((c) => onlyDigits(c.codigo) === d) !== i;
+  }
 
   // Só depois de identificar o produto o resto da tela aparece — prefill do
   // encarte já identifica, então pula direto pro resto.
@@ -478,6 +580,12 @@ export function SimpleProductForm({
     return () => clearTimeout(t);
   }, [eanShake]);
 
+  useEffect(() => {
+    if (codShake == null) return;
+    const t = setTimeout(() => setCodShake(null), 400);
+    return () => clearTimeout(t);
+  }, [codShake]);
+
   /**
    * "Mais configurações" nasce fechado — mas o Salvar pode reclamar de um campo
    * lá dentro. Sem abrir a gaveta antes, o foco iria para um elemento oculto e
@@ -543,6 +651,7 @@ export function SimpleProductForm({
 
   const snapshot = {
     ean,
+    codigos,
     nome,
     sku,
     marca,
@@ -585,7 +694,10 @@ export function SimpleProductForm({
   function retomarRascunho() {
     if (!draft) return;
     const d = draft as Partial<typeof snapshot>;
-    setEan(d.ean ?? "");
+    // Rascunho gravado antes da lista existir só tem `ean` — vira a linha 0.
+    setCodigos(
+      d.codigos?.length ? d.codigos : [{ codigo: d.ean ?? "", rotulo: "" }],
+    );
     setNome(d.nome ?? "");
     setSku(d.sku ?? "");
     setShowSku(!!d.sku);
@@ -635,11 +747,14 @@ export function SimpleProductForm({
   // ── Ações ───────────────────────────────────────────────
   async function buscarEan(codigoRaw?: string) {
     const codigo = codigoRaw ?? ean;
-    if (onlyDigits(codigo).length < 8) {
+    // Só a BUSCA exige GTIN: Cosmos e LLM respondem por código cadastrado na
+    // GS1, e código interno de balança não existe para eles. Gravar sem GTIN é
+    // livre — o campo não tem comprimento mínimo.
+    if (gtinValido(codigo) === null) {
       setEanShake(true);
       toast.error(
-        "Código de barras inválido",
-        "Escaneie de novo ou digite ao menos 8 dígitos.",
+        "Busca automática indisponível",
+        "Ela funciona com EAN/GTIN (8, 12, 13 ou 14 dígitos). Preencha o nome à mão.",
       );
       return;
     }
@@ -710,8 +825,10 @@ export function SimpleProductForm({
    */
   const scan = useRef({ inicio: 0, ultima: 0, timer: 0 });
   function onEanChange(v: string) {
-    setEan(v);
-    if (eanTaken) setEanTaken(null);
+    // Só dígitos, comprimento livre: código de barras é número, e o que não é
+    // número nunca bipa. Filtrar aqui evita o espaço colado do leitor antigo e
+    // a letra que escapa do teclado numérico do celular.
+    setEan(onlyDigits(v));
 
     const agora = performance.now();
     const st = scan.current;
@@ -722,19 +839,18 @@ export function SimpleProductForm({
     const digitos = onlyDigits(v);
     const emRajada = agora - st.inicio < 600 && digitos.length >= 8;
     if (!emRajada || enriching) return;
+    // Rajada de código que não é GTIN (interno de balança, etiqueta da loja):
+    // não há catálogo externo para consultar, mas saber se o código já tem dono
+    // continua valendo. Sem esta guarda o bipe virava um toast de erro.
+    if (gtinValido(digitos) === null) {
+      st.timer = window.setTimeout(() => conferirDono(digitos), 150);
+      return;
+    }
     st.timer = window.setTimeout(() => buscarEan(v), 150);
   }
 
   async function onEanBlur() {
-    if (onlyDigits(ean).length < 8) return setEanTaken(null);
-    try {
-      const r = await checkEanTaken(ean);
-      setEanTaken(
-        r.taken ? { id: r.id, nome: r.nome!, sku: r.sku! } : null,
-      );
-    } catch {
-      /* silencioso — não bloqueia o cadastro */
-    }
+    await conferirDono(ean);
   }
 
   async function criarSubcategoria(nomeSub: string, categoryId: string) {
@@ -801,7 +917,7 @@ export function SimpleProductForm({
   }
 
   function resetForNext() {
-    setEan("");
+    setCodigos([{ codigo: "", rotulo: "" }]);
     setNome("");
     setSku("");
     setMarca("");
@@ -812,7 +928,7 @@ export function SimpleProductForm({
     setShowSku(false);
     setQuerInicial(null);
     setInicial("");
-    setEanTaken(null);
+    setTomados({});
     setFoundCard(null);
     setNaoEncontrado(false);
     setError(undefined);
@@ -847,6 +963,24 @@ export function SimpleProductForm({
       focusField("preco");
       return;
     }
+
+    // Linha repetida é erro do dedo, não intenção: o servidor recusaria o
+    // cadastro inteiro por isso. Avisa aqui, antes de gastar a gravação.
+    const repetida = codigos.findIndex((_, i) => repetidoNaLista(i));
+    if (repetida >= 0) {
+      setCodShake(repetida);
+      setError("O mesmo código de barras está em duas linhas.");
+      focusField(idDoCodigo(repetida));
+      return;
+    }
+
+    const barras = codigos
+      .map((c, i) => ({
+        codigo: onlyDigits(c.codigo),
+        rotulo: c.rotulo.trim() || undefined,
+        principal: i === 0,
+      }))
+      .filter((c) => c.codigo);
 
     const embalagens = packagings
       .filter((p) => p.nome.trim() && (n(p.fator) ?? 0) > 0)
@@ -892,7 +1026,10 @@ export function SimpleProductForm({
       ...preservado,
       tipo: "SIMPLES" as const,
       sku: sku.trim() || undefined,
-      ean: ean || undefined,
+      // `ean` vai junto como espelho da linha 0; `codigos` é a lista de verdade
+      // e manda quando as duas chegam (ver `principalDosCodigos`).
+      ean: onlyDigits(ean) || undefined,
+      codigos: barras,
       nome,
       subcategoryId,
       marcaNome: marca || undefined,
@@ -1112,12 +1249,24 @@ export function SimpleProductForm({
                   <div className="grid min-w-0 flex-1 grid-cols-1 items-start gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-12">
                     {/* Código de barras. Primeiro campo porque quase todo cadastro
                         começa com um bipe — mas é CAMPO, não portão: quem não tem
-                        código segue direto para o nome. */}
-                    <Field
-                      label="Código de barras"
-                      htmlFor="ean"
-                      className="xl:col-span-3"
-                    >
+                        código segue direto para o nome.
+
+                        É LISTA, e nasce com uma linha só: o cadastro de quem tem
+                        um código fica idêntico ao que sempre foi, e quem precisa
+                        de três clica uma vez. */}
+                    <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2 xl:col-span-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <Label htmlFor={idDoCodigo(0)}>
+                          {codigos.length > 1 ? "Códigos de barras" : "Código de barras"}
+                        </Label>
+                        <button
+                          type="button"
+                          onClick={adicionarCodigo}
+                          className="flex shrink-0 items-center gap-1 text-[11px] text-muted underline-offset-2 hover:text-ink hover:underline"
+                        >
+                          <Plus size={11} /> outro código
+                        </button>
+                      </div>
                       <div className="relative">
                         <ScanBarcode
                           size={17}
@@ -1137,13 +1286,13 @@ export function SimpleProductForm({
                           onChange={(e) =>
                             mode === "new"
                               ? onEanChange(e.target.value)
-                              : setEan(e.target.value)
+                              : setEan(onlyDigits(e.target.value))
                           }
                           onBlur={onEanBlur}
                           onKeyDown={(e) => {
                             if (e.key !== "Enter") return;
                             e.preventDefault();
-                            if (mode === "new" && onlyDigits(ean).length >= 8) buscarEan();
+                            if (mode === "new" && gtinValido(ean) !== null) buscarEan();
                             else focusById("nome");
                           }}
                           disabled={enriching}
@@ -1160,7 +1309,9 @@ export function SimpleProductForm({
                           <button
                             type="button"
                             onClick={() => buscarEan()}
-                            disabled={enriching || onlyDigits(ean).length < 8}
+                            // Só GTIN tem catálogo externo. Código interno de
+                            // balança grava normalmente — só não tem o que buscar.
+                            disabled={enriching || gtinValido(ean) === null}
                             title="Buscar dados do produto"
                             aria-label="Buscar dados do produto"
                             className="absolute top-1/2 right-1.5 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-[var(--radius-sm)] text-brand-strong transition-colors hover:bg-brand-soft disabled:cursor-not-allowed disabled:text-faint disabled:hover:bg-transparent"
@@ -1178,7 +1329,110 @@ export function SimpleProductForm({
                           </div>
                         )}
                       </div>
-                    </Field>
+
+                      {/* Linhas extras. Sem enriquecimento de propósito: o nome
+                          e a categoria já foram decididos pelo código principal,
+                          e um segundo bipe não pode reescrever o cadastro. */}
+                      {codigos.slice(1).map((linha, idx) => {
+                        const i = idx + 1;
+                        const digitos = onlyDigits(linha.codigo);
+                        const dono = tomados[digitos];
+                        const repetido = repetidoNaLista(i);
+                        return (
+                          <div key={i} className="flex flex-col gap-1">
+                            <div className="flex items-center gap-1.5">
+                              <div className="relative min-w-0 flex-1">
+                                <ScanBarcode
+                                  size={15}
+                                  aria-hidden
+                                  className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted"
+                                />
+                                <Input
+                                  id={idDoCodigo(i)}
+                                  value={linha.codigo}
+                                  onChange={(e) =>
+                                    mudarCodigo(i, { codigo: onlyDigits(e.target.value) })
+                                  }
+                                  onBlur={() => conferirDono(linha.codigo)}
+                                  onKeyDown={(e) => {
+                                    if (e.key !== "Enter") return;
+                                    e.preventDefault();
+                                    focusById(`rotulo-${i}`);
+                                  }}
+                                  placeholder="Outro código"
+                                  inputMode="numeric"
+                                  aria-label={`Código de barras ${i + 1}`}
+                                  className={cn(
+                                    "pl-9 font-mono tracking-wide placeholder:font-sans placeholder:tracking-normal",
+                                    (codShake === i || repetido) && "border-danger",
+                                    codShake === i && "shake-x",
+                                  )}
+                                />
+                              </div>
+                              <Input
+                                id={`rotulo-${i}`}
+                                value={linha.rotulo}
+                                onChange={(e) => mudarCodigo(i, { rotulo: e.target.value })}
+                                maxLength={24}
+                                placeholder="Marca (opcional)"
+                                aria-label={`Marca do código ${i + 1}`}
+                                className="w-28 shrink-0 sm:w-32"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => tornarPrincipal(i)}
+                                title="Usar na etiqueta e na nota"
+                                aria-label={`Tornar o código ${i + 1} o principal`}
+                                className="grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+                              >
+                                <ArrowUp size={15} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => removerCodigo(i)}
+                                title="Remover este código"
+                                aria-label={`Remover o código ${i + 1}`}
+                                className="grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] text-muted transition-colors hover:bg-danger-soft hover:text-danger"
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </div>
+                            {(repetido || dono || gtinValido(linha.codigo) === false) && (
+                              <p
+                                role="status"
+                                aria-live="polite"
+                                className="flex flex-wrap items-center gap-x-1.5 text-xs text-warn"
+                              >
+                                <AlertCircle size={12} className="shrink-0" />
+                                {repetido
+                                  ? "Esse código já está em outra linha."
+                                  : dono
+                                    ? `Já é de "${dono.nome}" (${dono.sku}).`
+                                    : "O dígito verificador não fecha — confira antes de salvar."}
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {/* A confusão que custa caro não é código errado: é código
+                          de FARDO digitado aqui. O saldo passa a entrar dividido
+                          por 12 e ninguém descobre até o inventário não fechar. */}
+                      <p className="text-xs text-muted">
+                        {codigos.length > 1
+                          ? "Mesma unidade, marcas diferentes — um preço e um saldo. O primeiro vai na etiqueta."
+                          : "Vende a mesma coisa com código de outra marca? Some aqui."}{" "}
+                        Código de fardo ou caixa vai em{" "}
+                        <button
+                          type="button"
+                          onClick={irParaEmbalagens}
+                          className="underline underline-offset-2 hover:text-ink"
+                        >
+                          Embalagens de compra
+                        </button>
+                        .
+                      </p>
+                    </div>
 
                     <Field
                       label="Nome do produto"
@@ -1202,7 +1456,7 @@ export function SimpleProductForm({
                           </span>
                         ) : undefined
                       }
-                      className="min-w-0 xl:col-span-9"
+                      className="min-w-0 xl:col-span-8"
                     >
                       <Input
                         id="nome"
@@ -1727,7 +1981,7 @@ export function SimpleProductForm({
                   Recolhido de propósito: na esmagadora maioria dos cadastros
                   isto chega assinado no XML da primeira nota. Existe para quem
                   tem o fardo na mão agora e quer que ele bipe hoje. */}
-              <details className="group border-t border-line">
+              <details id={EMBALAGENS_ID} className="group border-t border-line">
                 <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-4 text-sm text-muted transition-colors hover:text-ink-2 sm:px-6 [&::-webkit-details-marker]:hidden">
                   <ChevronRight
                     size={14}

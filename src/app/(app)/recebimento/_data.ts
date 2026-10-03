@@ -362,6 +362,7 @@ export async function carregarRecebimento(
       productImagemUrl: p?.imagemUrl ?? null,
       productCustoMedio: p?.custoMedio ?? null,
       productEan: p?.ean ?? null,
+      productCodigos: p?.codigos ?? [],
       productNcm: p?.ncm ?? null,
       productEmbalagens: (p?.embalagens ?? []).map((e) => ({
         id: e.id,
@@ -522,6 +523,8 @@ type ProdutoView = {
   conteudoPorUnidade: number | null;
   /** Base do alerta de custo fora da curva na tabela de de-para. */
   custoMedio: number;
+  /** Apelidos de código: mesma unidade, marcas diferentes. */
+  codigos: { codigo: string }[];
   /** NCM que vale hoje: o do perfil do produto ou o herdado da subcategoria. */
   ncm: string | null;
   embalagens: EmbalagemView[];
@@ -537,6 +540,7 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
       nome: true,
       sku: true,
       ean: true,
+      barcodes: { select: { codigo: true } },
       imagemUrl: true,
       unidadeBase: true,
       conteudoPorUnidade: true,
@@ -558,6 +562,7 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
         conteudoPorUnidade:
           p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
         custoMedio: Number(p.custoMedio),
+        codigos: p.barcodes,
         // O perfil do produto manda; sem ele vale o padrão da subcategoria, que
         // é o que a emissão usa. Comparar com a nota só faz sentido contra o
         // NCM que valeria hoje.
@@ -594,10 +599,19 @@ async function donosDosCodigos(gtins: (string | null)[]): Promise<Map<string, Do
   const mapa = new Map<string, DonoDeCodigo>();
   if (codigos.length === 0) return mapa;
 
-  const [produtos, embalagens] = await Promise.all([
+  const [produtos, apelidos, embalagens] = await Promise.all([
     db.product.findMany({
       where: { ean: { in: codigos }, ativo: true },
       select: { id: true, nome: true, sku: true, ean: true },
+    }),
+    // Apelidos de código: mesma unidade, outra marca. Terceira consulta e não
+    // uma terceira volta por linha — mesma razão do comentário acima.
+    db.productBarcode.findMany({
+      where: { codigo: { in: codigos }, product: { ativo: true } },
+      select: {
+        codigo: true,
+        product: { select: { id: true, nome: true, sku: true } },
+      },
     }),
     db.productPackaging.findMany({
       where: { ean: { in: codigos } },
@@ -618,6 +632,16 @@ async function donosDosCodigos(gtins: (string | null)[]): Promise<Map<string, Do
       onde: `a embalagem “${e.nome}”`,
     });
   }
+  // Apelido depois da embalagem e antes do espelho: a mesma ordem de
+  // `donoDoCodigo`, para a tela e a busca dizerem a mesma coisa.
+  for (const a of apelidos) {
+    mapa.set(a.codigo, {
+      productId: a.product.id,
+      nome: a.product.nome,
+      sku: a.product.sku,
+      onde: "o produto",
+    });
+  }
   for (const p of produtos) {
     if (!p.ean) continue;
     mapa.set(p.ean, { productId: p.id, nome: p.nome, sku: p.sku, onde: "o produto" });
@@ -633,7 +657,11 @@ export type SubcategoriaCadastro = { id: string; nome: string; categoriaNome: st
  */
 export async function listarSubcategoriasParaCadastro(): Promise<SubcategoriaCadastro[]> {
   const subcategorias = await db.subcategory.findMany({
-    where: { ativo: true },
+    // Disponibilidade efetiva: subcategoria ativa dentro de categoria inativa
+    // também está fora de uso. Sem o segundo filtro, o cadastro rápido do
+    // recebimento era a porta dos fundos para classificar produto numa
+    // categoria que o operador tirou do ar.
+    where: { ativo: true, category: { ativo: true } },
     select: { id: true, nome: true, category: { select: { nome: true } } },
     orderBy: [{ category: { nome: "asc" } }, { nome: "asc" }],
   });

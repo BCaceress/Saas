@@ -26,8 +26,20 @@ export type CodigoLido =
 export const PREFIXO_PEDIDO = "nohub://pc/";
 
 const CHAVE_RE = /^\d{44}$/;
-/** EAN-8, UPC-12, EAN-13, DUN-14. Códigos internos de balança também caem aqui. */
-const EAN_RE = /^\d{8}$|^\d{12,14}$/;
+/**
+ * Qualquer código numérico de 4 a 20 dígitos.
+ *
+ * Deliberadamente LARGO, e não a lista de comprimentos de GTIN (8/12/13/14):
+ * código interno de balança tem 4 ou 7 dígitos, etiqueta própria de mercadinho
+ * tem o que o dono quis, e os dois precisam bipar como código de barras. Quando
+ * o comprimento era travado em GTIN, esses códigos caíam em `texto` e sumiam da
+ * busca por código.
+ *
+ * Teto de 20 para não engolir a chave de 44 (testada antes, de qualquer jeito)
+ * nem um número colado por acidente. Piso de 4 porque abaixo disso a busca por
+ * trecho casaria meio catálogo.
+ */
+const EAN_RE = /^\d{4,20}$/;
 
 /**
  * A URL de consulta da NFC-e traz a chave em `p=` (44 dígitos + campos

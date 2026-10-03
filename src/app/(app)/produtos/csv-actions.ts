@@ -40,8 +40,9 @@ type SubComCategoria = {
   id: string;
   nome: string;
   skuPrefix: string;
+  ativo: boolean;
   defaultFiscalProfileId: string | null;
-  category: { id: string; nome: string; skuPrefix: string };
+  category: { id: string; nome: string; skuPrefix: string; ativo: boolean };
 };
 
 /**
@@ -90,6 +91,7 @@ export async function commitImport(
       fiscais,
       site,
       eansUsados,
+      eansEspelho,
       skusUsados,
     ] = await Promise.all([
       db.subcategory.findMany({
@@ -97,8 +99,9 @@ export async function commitImport(
           id: true,
           nome: true,
           skuPrefix: true,
+          ativo: true,
           defaultFiscalProfileId: true,
-          category: { select: { id: true, nome: true, skuPrefix: true } },
+          category: { select: { id: true, nome: true, skuPrefix: true, ativo: true } },
         },
       }),
       db.category.findMany({ select: { id: true, nome: true } }),
@@ -110,6 +113,19 @@ export async function commitImport(
         select: { id: true, nome: true, ncm: true },
       }),
       getOrCreateDefaultSite(tid),
+      // Também contra os APELIDOS de código: a planilha pode trazer o código
+      // da Caravelas, que já está cadastrado como segundo código do mesmo
+      // açúcar. Sem olhar aqui, a importação criaria um produto duplicado e a
+      // gravação quebraria no `@@unique([tenantId, codigo])`.
+      eansArquivo.length
+        ? db.productBarcode.findMany({
+            where: { codigo: { in: eansArquivo } },
+            select: { codigo: true },
+          })
+        : Promise.resolve([]),
+      // E o espelho `Product.ean` também: produto legado cujo EAN o backfill
+      // recusou (dois produtos com o mesmo código) não tem linha na tabela e
+      // ficaria invisível para a checagem acima.
       eansArquivo.length
         ? db.product.findMany({
             where: { ean: { in: eansArquivo } },
@@ -134,7 +150,11 @@ export async function commitImport(
     const brandCache = new Map(brands.map((b) => [b.nomeNormalizado, b.id]));
     // Guarda o que já foi visto no banco E no próprio arquivo — a segunda linha
     // com o mesmo código de barras é tão duplicata quanto a que já estava lá.
-    const eansVistos = new Set(eansUsados.map((p) => p.ean!).filter(Boolean));
+    const eansVistos = new Set(
+      [...eansUsados.map((b) => b.codigo), ...eansEspelho.map((p) => p.ean)].filter(
+        (c): c is string => Boolean(c),
+      ),
+    );
     const skusVistos = new Set(skusUsados.map((p) => p.sku));
 
     function acharSub(key: string): SubComCategoria | undefined {
@@ -163,8 +183,9 @@ export async function commitImport(
           id: true,
           nome: true,
           skuPrefix: true,
+          ativo: true,
           defaultFiscalProfileId: true,
-          category: { select: { id: true, nome: true, skuPrefix: true } },
+          category: { select: { id: true, nome: true, skuPrefix: true, ativo: true } },
         },
       });
       if (!criada) throw new Error("Falha ao criar a subcategoria.");
@@ -232,6 +253,19 @@ export async function commitImport(
       let sub: SubComCategoria | undefined = chaveSub
         ? acharSub(chaveSub)
         : undefined;
+      // Casa com a INATIVA de propósito, e avisa.
+      //
+      // Ignorá-la seria pior: `createSubcategory` recusa nome repetido, então a
+      // linha quebraria com "já existe «Cervejas»" sem o operador entender por
+      // quê — ou, pior, nasceria uma segunda "Cervejas" na categoria. Importar
+      // e dizer em voz alta é o único caminho que não mente.
+      if (sub && (!sub.ativo || !sub.category.ativo)) {
+        aviso(
+          !sub.category.ativo
+            ? `A categoria "${sub.category.nome}" está inativa — o produto entrou em "${sub.nome}" mesmo assim. Reative a categoria para ele aparecer nas escolhas.`
+            : `A subcategoria "${sub.nome}" está inativa — o produto entrou nela mesmo assim. Reative para ela voltar às escolhas.`,
+        );
+      }
       if (chaveSub && !sub) {
         const nomeCat = (row.categoria ?? "").trim();
         if (!opts.criarFaltantes) {
@@ -266,7 +300,10 @@ export async function commitImport(
           aviso(
             `Código de barras "${eanBruto}" veio em notação científica (a planilha o tratou como número) — produto criado sem código. Formate a coluna como texto e importe de novo.`,
           );
-        } else if (!lido.ean || lido.ean.length < 8 || lido.ean.length > 14) {
+        } else if (!lido.ean || lido.ean.length > 20) {
+          // Sem piso de comprimento: código interno de balança tem 4 ou 7
+          // dígitos e é o código de verdade daquele produto. O teto de 20 só
+          // barra célula com número colado por acidente.
           aviso(
             `Código de barras "${eanBruto}" inválido — produto criado sem código.`,
           );
@@ -402,6 +439,14 @@ export async function commitImport(
             larguraCm: parseNumero(row.larguraCm),
             comprimentoCm: parseNumero(row.comprimentoCm),
             descricaoOnline: row.descricaoOnline?.trim() || null,
+
+            // Código de barras também na tabela, não só no espelho `ean`: é ela
+            // que o operador vê e edita na tela, e produto importado tem de
+            // nascer com a mesma estrutura do cadastrado à mão. A planilha traz
+            // um código por linha — os apelidos vêm depois, no cadastro.
+            ...(ean
+              ? { barcodes: { create: [{ tenantId: tid, codigo: ean, principal: true }] } }
+              : {}),
 
             stocks: {
               create: [

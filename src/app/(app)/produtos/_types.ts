@@ -19,6 +19,8 @@ export type ProductRow = {
   tipo: ProductType;
   nome: string;
   sku: string;
+  /** Espelho do código principal — mantido por compatibilidade. A lista de
+   *  verdade é `codigos`. */
   ean: string | null;
   imagemUrl: string | null;
   marca: string | null;
@@ -65,6 +67,8 @@ export type ProductRow = {
   /** COMBO/receita: disponibilidade derivada dos componentes (null = usa estoque próprio). */
   disponibilidadeDerivada: number | null;
   salesChannels: SalesChannelItem[];
+  /** Todos os códigos que bipam neste produto, principal primeiro. */
+  codigos: ProductBarcodeItem[];
   packagings: ProductPackagingItem[];
   fornecedores: { id: string; nome: string; isPrincipal: boolean }[];
   /** Saldo por loja/local de armazenagem (§3: cada Stock é um site × produto). */
@@ -81,6 +85,18 @@ export type ProductLocationStock = {
   locationAtivo: boolean | null;
   fechado: number;
   aberto: number;
+};
+
+/**
+ * Código de barras da UNIDADE DE VENDA (fator 1).
+ *
+ * Mesmo açúcar de 1 kg, marcas diferentes: um produto, um preço, vários bipes.
+ * `rotulo` é só para o operador se achar na lista — não é marca nem fornecedor.
+ */
+export type ProductBarcodeItem = {
+  codigo: string;
+  rotulo: string | null;
+  principal: boolean;
 };
 
 /** Embalagem de compra de um produto (ex.: fardo de 6 unidades com EAN próprio). */
@@ -153,10 +169,23 @@ export type SiteOpt = { id: string; nome: string };
 
 export type BrandOpt = { id: string; nome: string };
 export type CategoryOpt = { id: string; nome: string };
-/** Opção enxuta pro filtro de categoria da listagem. */
-export type CategoryFilterOpt = { id: string; nome: string };
+/**
+ * Opção do filtro de categoria da listagem.
+ *
+ * `ativo` viaja porque o filtro MOSTRA a inativa (é nela que está o trabalho de
+ * mover produtos antes de excluir) — mas marcada, para não parecer escolha
+ * normal. O formulário de produto, ao contrário, nem a recebe.
+ */
+export type CategoryFilterOpt = { id: string; nome: string; ativo: boolean };
 /** Opção enxuta pro filtro de subcategoria da listagem (não carrega skuPrefix/defaults do form). */
-export type SubcategoryFilterOpt = { id: string; nome: string; categoriaNome: string; categoryId: string };
+export type SubcategoryFilterOpt = {
+  id: string;
+  nome: string;
+  categoriaNome: string;
+  categoryId: string;
+  /** Disponibilidade EFETIVA: `cat.ativo && sub.ativo`. */
+  ativo: boolean;
+};
 export type SubcategoryOpt = {
   id: string;
   nome: string;
@@ -170,7 +199,18 @@ export type CategoryNode = {
   id: string;
   nome: string;
   skuPrefix: string;
-  subcategorias: { id: string; nome: string; skuPrefix: string; ativo: boolean }[];
+  ativo: boolean;
+  subcategorias: {
+    id: string;
+    nome: string;
+    skuPrefix: string;
+    /** O que o operador marcou NESTA subcategoria. */
+    ativo: boolean;
+    /** `cat.ativo && sub.ativo` — o que vale na hora de classificar produto. */
+    disponivel: boolean;
+    defaultStorageType: StorageType | null;
+    defaultFiscalProfileId: string | null;
+  }[];
 };
 export type StorageOpt = {
   id: string;

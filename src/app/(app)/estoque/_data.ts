@@ -4,6 +4,7 @@ import type { Prisma, StorageType } from "@/generated/prisma";
 import { Decimal } from "@/generated/prisma/runtime/library";
 import type { TipoItemPedido, MotivoBonificacao } from "@/lib/estoque";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
+import { alternativasPorTrechoDeCodigo } from "@/lib/produto-codigo";
 
 const n = (v: Decimal | null | undefined) => (v == null ? 0 : Number(v));
 
@@ -587,7 +588,7 @@ export async function loadMovimentacoes(
         OR: [
           { nome: { contains: q, mode: "insensitive" } },
           { sku: { contains: q, mode: "insensitive" } },
-          { ean: { contains: q } },
+          ...alternativasPorTrechoDeCodigo(q),
         ],
       },
       select: { id: true },
@@ -1003,7 +1004,7 @@ async function produtosDoTermo(termo: string | null | undefined): Promise<string
       OR: [
         { nome: { contains: t, mode: "insensitive" } },
         { sku: { contains: t, mode: "insensitive" } },
-        { ean: { contains: t } },
+        ...alternativasPorTrechoDeCodigo(t),
       ],
     },
     select: { id: true },
@@ -1808,9 +1809,18 @@ async function hidratarInventarios(invs: InventarioRaw[]): Promise<InventarioVie
   });
 }
 
-/** Categorias para o formulário de inventário — leve, carregada de cara com a página. */
+/**
+ * Categorias para o formulário de inventário — leve, carregada de cara com a
+ * página.
+ *
+ * Só as ativas: aqui se programa contagem NOVA. Inventário já criado com uma
+ * categoria que depois foi inativada continua mostrando a dele (vem do próprio
+ * registro, não desta lista) — e é justamente por isso que essa categoria nunca
+ * poderá ser excluída.
+ */
 export async function loadInventarioCategorias() {
   return db.category.findMany({
+    where: { ativo: true },
     orderBy: { nome: "asc" },
     select: { id: true, nome: true },
   });

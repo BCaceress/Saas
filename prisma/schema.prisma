@@ -820,7 +820,21 @@ model Category {
   id        String @id @default(cuid())
   tenantId  String
   nome      String
+  /// Entra no SKU gravado do produto ("BEB-CER-6489"). IMUTÁVEL depois de
+  /// criada: `Product.sku` é string, não é derivada, então mudar o prefixo faria
+  /// os SKUs novos discordarem das etiquetas de prateleira já impressas.
   skuPrefix String // "BEB"
+  /// Inativa sai das escolhas NOVAS e continua no histórico.
+  ///
+  /// Existe porque categoria classifica o passado, não só o catálogo de hoje:
+  /// inventário fechado com escopo "Bebidas", relatório do ano anterior, SKU na
+  /// prateleira. Excluir reescreveria isso — então excluir é privilégio do que
+  /// nunca foi usado, e inativar é a saída de todos os outros casos.
+  ///
+  /// Disponibilidade da subcategoria é DERIVADA (`cat.ativo && sub.ativo`), não
+  /// escrita em cascata: assim reativar a categoria não ressuscita a
+  /// subcategoria que o operador havia inativado à mão.
+  ativo     Boolean @default(true)
 
   tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   subcategories Subcategory[]
@@ -1194,6 +1208,7 @@ model Product {
 
   stocks          Stock[]
   lots            StockLot[]
+  barcodes        ProductBarcode[]
   packagings      ProductPackaging[]
   components      ProductComponent[]      @relation("ParentProduct")
   usedInRecipes   ProductComponent[]      @relation("ComponentProduct")
@@ -1301,6 +1316,44 @@ model Stock {
   @@index([tenantId])
   @@index([siteId])
   @@index([locationId])
+}
+
+/// Códigos de barras do produto NA UNIDADE DE VENDA — fator 1, sempre.
+///
+/// Existe porque "açúcar 1 kg" é UM produto na prateleira e UM preço no caixa,
+/// mas chega com o código da União numa semana e da Caravelas na outra. Sem
+/// isto o operador tem três cadastros do mesmo açúcar, três saldos e três
+/// preços para manter sincronizados à mão.
+///
+/// NÃO é variação comercial (removida em 26/08/2026, não reintroduzir): não
+/// carrega preço, custo, saldo nem fornecedor. É APELIDO de código — o bipe
+/// aponta para o mesmo produto, e nada mais.
+///
+/// NÃO é embalagem: código de fardo/caixa vive em `ProductPackaging`, porque
+/// ali o fator de conversão muda o saldo. Aqui o fator é 1 por definição.
+///
+/// `@@unique([tenantId, codigo])` é a regra "um código, um dono" valendo no
+/// banco. Antes ela só existia em código (`assertCodigosLivres`), e código
+/// esquecido num caminho novo fazia o PDV escolher um produto ao acaso.
+model ProductBarcode {
+  id        String  @id @default(cuid())
+  tenantId  String
+  productId String
+  codigo    String
+  /// Rótulo livre para o operador se achar na lista ("União", "balança").
+  /// É etiqueta, não entidade: não vira marca nem fornecedor.
+  rotulo    String?
+  /// O que vai na etiqueta impressa e no cEAN da NFC-e quando não há registro
+  /// do código bipado. Um por produto.
+  principal Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, codigo])
+  @@index([tenantId])
+  @@index([productId])
 }
 
 model ProductPackaging {
@@ -2262,6 +2315,13 @@ model SaleItem {
   precoUnitario Decimal @db.Decimal(10, 2)
   desconto      Decimal @default(0) @db.Decimal(10, 2)
   total         Decimal @db.Decimal(12, 2)
+  /// Código que o caixa realmente bipou (ver `ProductBarcode`).
+  ///
+  /// O cEAN da NFC-e tem de ser o código do item ENTREGUE. Com um produto
+  /// respondendo por várias marcas, emitir sempre o código principal põe na
+  /// nota um GTIN que não é o do pacote que saiu da loja. Nulo = venda digitada
+  /// ou por busca, e aí a emissão volta ao principal.
+  codigoBarras  String?
 
   // PERSONALIZADO: componentes escolhidos no PDV — guiam a baixa de estoque.
   selectedComponentIds String[] @default([])

@@ -6,6 +6,11 @@ import { guardAction } from "@/lib/guard";
 import { runWithTenant } from "@/lib/tenant-context";
 import { getActiveSiteId } from "@/lib/sites";
 import { onlyDigits } from "@/lib/normalize";
+import { gtinValido } from "@/lib/codigo-lido";
+import {
+  alternativasPorCodigo,
+  alternativasPorTrechoDeCodigo,
+} from "@/lib/produto-codigo";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { getCosmosByEan, CosmosError } from "@/lib/cosmos";
 import {
@@ -68,8 +73,7 @@ export async function buscarPorCodigoAction(codigoRaw: string): Promise<Resultad
       where: {
         ativo: true,
         OR: [
-          ...(digitos ? [{ ean: digitos }] : []),
-          { ean: codigo },
+          ...alternativasPorCodigo(codigo),
           { sku: { equals: codigo, mode: "insensitive" as const } },
         ],
       },
@@ -77,10 +81,12 @@ export async function buscarPorCodigoAction(codigoRaw: string): Promise<Resultad
     })) as ProdutoCru | null;
 
     if (porUnidade) {
-      const casouPor =
-        porUnidade.ean && (porUnidade.ean === digitos || porUnidade.ean === codigo)
-          ? "ean"
-          : "sku";
+      // Casou por código de barras se bateu com o principal OU com um apelido
+      // (mesma unidade, outra marca). Só o que não é código nenhum é SKU.
+      const porCodigo = [porUnidade.ean, ...porUnidade.barcodes.map((b) => b.codigo)]
+        .filter(Boolean)
+        .some((c) => c === digitos || c === codigo);
+      const casouPor = porCodigo ? "ean" : "sku";
       return {
         tipo: "achou" as const,
         ficha: await montarFicha(porUnidade, {
@@ -142,6 +148,9 @@ export async function buscarPorNomeAction(termoRaw: string): Promise<ProdutoResu
         OR: [
           { nome: { contains: termo, mode: "insensitive" } },
           { sku: { contains: termo, mode: "insensitive" } },
+          // Trecho de código também: no corredor a pessoa digita os últimos
+          // dígitos quando a etiqueta está rasgada e o leitor não pega.
+          ...alternativasPorTrechoDeCodigo(termo),
         ],
       },
       select: { id: true, nome: true, sku: true, ean: true, imagemUrl: true },
@@ -163,7 +172,10 @@ export async function consultarEanExternoAction(eanRaw: string): Promise<Consult
   await guardAction("produto.ver", null, { mesmoSuspenso: true });
 
   const ean = onlyDigits(eanRaw);
-  if (ean.length < 8) return { ok: false, erro: "Código de barras inválido." };
+  // Cosmos responde por GTIN cadastrado na GS1. Código interno da loja não
+  // existe lá — gastar a consulta para ouvir "não encontrado" é desperdício.
+  if (gtinValido(ean) === null)
+    return { ok: false, erro: "A consulta externa só funciona com EAN/GTIN." };
 
   try {
     const r = await getCosmosByEan(ean);

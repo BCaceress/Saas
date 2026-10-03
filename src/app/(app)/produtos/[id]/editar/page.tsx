@@ -3,6 +3,7 @@ import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
+import { codigosParaExibir } from "@/lib/produto-codigo";
 import { FormProduto } from "../../_form/despachante";
 import { loadProductFormOptions, loadComponentCandidates } from "../../_data";
 import type { ProductRow, ComboData, ReceitaData, RecipeType, SelectionType } from "../../_types";
@@ -251,6 +252,10 @@ export default async function EditarProdutoPage({
             supplier: { select: { razaoSocial: true, nomeFantasia: true } },
           },
         },
+        barcodes: {
+          orderBy: [{ principal: "desc" }, { createdAt: "asc" }],
+          select: { codigo: true, rotulo: true, principal: true },
+        },
         packagings: {
           orderBy: { isCompraDefault: "desc" },
           select: { id: true, nome: true, ean: true, fatorConversao: true },
@@ -266,6 +271,7 @@ export default async function EditarProdutoPage({
       nome: p.nome,
       sku: p.sku,
       ean: p.ean,
+      codigos: codigosParaExibir(p),
       imagemUrl: p.imagemUrl,
       marca: p.brand?.nome ?? null,
       brandId: p.brandId,

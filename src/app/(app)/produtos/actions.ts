@@ -9,8 +9,14 @@ import { runWithTenant } from "@/lib/tenant-context";
 import { normalizeBrand, normalizeSkuPrefix, onlyDigits } from "@/lib/normalize";
 import { getOrCreateDefaultSite } from "@/lib/sites";
 import { generateSku } from "@/lib/sku";
+import { gtinValido } from "@/lib/codigo-lido";
+import {
+  alternativasPorCodigo,
+  alternativasPorTrechoDeCodigo,
+} from "@/lib/produto-codigo";
 import { getCosmosByEan, CosmosError } from "@/lib/cosmos";
 import { completeJson, llmConfigured } from "@/lib/llm";
+import { renomearValorDeFiltro } from "@/lib/relatorios/renomear-valor-filtro";
 import {
   PRODUCT_INCLUDE,
   toProductRow,
@@ -77,7 +83,7 @@ export async function searchProducts(queryRaw: string): Promise<ProductRow[]> {
         OR: [
           { nome: { contains: term, mode: "insensitive" } },
           { sku: { contains: term, mode: "insensitive" } },
-          { ean: { contains: term, mode: "insensitive" } },
+          ...alternativasPorTrechoDeCodigo(term),
         ],
       },
       orderBy: { nome: "asc" },
@@ -214,7 +220,55 @@ export async function createSubcategory(input: {
   });
 }
 
-export async function updateSubcategory(input: { id: string; nome: string }) {
+/**
+ * Renomeia a categoria.
+ *
+ * SÓ o nome. `skuPrefix` é imutável: `Product.sku` é string GRAVADA
+ * ("BEB-CER-6489"), não derivada, então trocar o prefixo faria os SKUs novos
+ * discordarem das etiquetas de prateleira, planilhas e notas que já saíram com
+ * o antigo. O prefixo aparece na tela travado, com o motivo.
+ */
+export async function updateCategory(input: { id: string; nome: string }) {
+  return tx(async (tid) => {
+    const nome = input.nome.trim();
+    if (nome.length < 2) throw new Error("Informe o nome da categoria.");
+    const atual = await db.category.findFirst({ where: { id: input.id } });
+    if (!atual) throw new Error("Categoria não encontrada.");
+    // `createCategory` deduplica por nome; sem a mesma checagem aqui, dava para
+    // criar duas "Bebidas" renomeando uma delas.
+    const dup = await db.category.findFirst({
+      where: { nome: { equals: nome, mode: "insensitive" }, id: { not: input.id } },
+      select: { nome: true },
+    });
+    if (dup) throw new Error(`Já existe a categoria «${dup.nome}».`);
+
+    await db.category.update({ where: { id: input.id }, data: { nome } });
+
+    // Relatório salvo filtra categoria por NOME (ver `renomearValorDeFiltro`):
+    // sem este ajuste o modelo passaria a vir VAZIO, sem erro, e o operador
+    // concluiria que não vendeu nada no mês.
+    const modelosAjustados =
+      atual.nome === nome ? 0 : await renomearValorDeFiltro("categoria", atual.nome, nome);
+
+    okOpcoes(tid);
+    return { modelosAjustados };
+  });
+}
+
+export async function setCategoryActive(id: string, ativo: boolean) {
+  return tx(async (tid) => {
+    await db.category.update({ where: { id }, data: { ativo } });
+    okOpcoes(tid);
+  });
+}
+
+export async function updateSubcategory(input: {
+  id: string;
+  nome: string;
+  /** Ausente = não toca. `null` = limpa. */
+  defaultStorageType?: StorageType | null;
+  defaultFiscalProfileId?: string | null;
+}) {
   return tx(async (tid) => {
     const nome = input.nome.trim();
     if (nome.length < 2) throw new Error("Informe o nome da subcategoria.");
@@ -228,7 +282,20 @@ export async function updateSubcategory(input: { id: string; nome: string }) {
       },
     });
     if (dup) throw new Error(`Já existe a subcategoria «${dup.nome}» nesta categoria.`);
-    await db.subcategory.update({ where: { id: input.id }, data: { nome } });
+    await db.subcategory.update({
+      where: { id: input.id },
+      data: {
+        nome,
+        // Antes estes dois só podiam ser definidos na CRIAÇÃO: errou a
+        // armazenagem padrão, não consertava mais.
+        ...(input.defaultStorageType !== undefined
+          ? { defaultStorageType: input.defaultStorageType }
+          : {}),
+        ...(input.defaultFiscalProfileId !== undefined
+          ? { defaultFiscalProfileId: input.defaultFiscalProfileId }
+          : {}),
+      },
+    });
     okOpcoes(tid);
   });
 }
@@ -236,6 +303,134 @@ export async function updateSubcategory(input: { id: string; nome: string }) {
 export async function setSubcategoryActive(id: string, ativo: boolean) {
   return tx(async (tid) => {
     await db.subcategory.update({ where: { id }, data: { ativo } });
+    okOpcoes(tid);
+  });
+}
+
+// ── Excluir categoria / subcategoria ───────────────────────
+//
+// Regra: excluir é privilégio do que NUNCA foi usado. O resto inativa.
+//
+// Categoria e subcategoria classificam o HISTÓRICO, não só o catálogo de hoje:
+// inventário fechado com escopo "Bebidas", relatório do ano passado, SKU já
+// impresso na etiqueta da prateleira. Apagar reescreveria o passado.
+//
+// E a mensagem de bloqueio não pode ser só "não é possível": tem de entregar a
+// lista de trabalho. Por isso cada motivo carrega a CONTAGEM e o LINK para a
+// tela onde o operador resolve — na listagem de produtos ele seleciona tudo e
+// troca a subcategoria de uma vez na edição em lote.
+
+export type MotivoBloqueio = {
+  tipo: "produtos" | "subcategorias" | "inventarios";
+  quantidade: number;
+  /** Frase pronta: muda com o número ("1 produto" × "14 produtos"). */
+  texto: string;
+  /** Lista de trabalho. `null` quando não há o que ajustar. */
+  href: string | null;
+};
+
+export type Dependencias = {
+  podeExcluir: boolean;
+  /**
+   * `true` = nunca vai poder, porque o vínculo é histórico e não se altera.
+   * A tela some com o "ajuste e volte" nesse caso: mandar o operador numa
+   * tarefa impossível é pior que dizer não.
+   */
+  definitivo: boolean;
+  motivos: MotivoBloqueio[];
+};
+
+const plural = (n: number, um: string, muitos: string) =>
+  `${n} ${n === 1 ? um : muitos}`;
+
+export async function dependenciasDaSubcategoria(id: string): Promise<Dependencias> {
+  return tx(async () => {
+    const produtos = await db.product.count({ where: { subcategoryId: id } });
+    if (produtos === 0) return { podeExcluir: true, definitivo: false, motivos: [] };
+    return {
+      podeExcluir: false,
+      definitivo: false,
+      motivos: [
+        {
+          tipo: "produtos",
+          quantidade: produtos,
+          texto: `${plural(produtos, "produto está", "produtos estão")} nesta subcategoria.`,
+          href: `/produtos?sub=${id}`,
+        },
+      ],
+    };
+  });
+}
+
+export async function dependenciasDaCategoria(id: string): Promise<Dependencias> {
+  return tx(async () => {
+    // Subcategoria INATIVA também conta: continua sendo linha no banco com FK
+    // para a categoria, e o Postgres recusaria o delete de qualquer jeito.
+    const [subcategorias, produtos, inventarios] = await Promise.all([
+      db.subcategory.count({ where: { categoryId: id } }),
+      db.product.count({ where: { subcategory: { categoryId: id } } }),
+      db.inventory.count({ where: { categoryId: id } }),
+    ]);
+
+    const motivos: MotivoBloqueio[] = [];
+    if (inventarios > 0) {
+      motivos.push({
+        tipo: "inventarios",
+        quantidade: inventarios,
+        texto: `É o escopo de ${plural(inventarios, "inventário", "inventários")}, e inventário não se altera depois de criado.`,
+        href: `/estoque/inventarios`,
+      });
+    }
+    if (produtos > 0) {
+      motivos.push({
+        tipo: "produtos",
+        quantidade: produtos,
+        texto: `${plural(produtos, "produto está", "produtos estão")} em subcategorias dela.`,
+        href: `/produtos?sub=cat:${id}`,
+      });
+    }
+    if (subcategorias > 0) {
+      motivos.push({
+        tipo: "subcategorias",
+        quantidade: subcategorias,
+        texto: `Tem ${plural(subcategorias, "subcategoria", "subcategorias")} dentro.`,
+        href: null,
+      });
+    }
+
+    return {
+      podeExcluir: motivos.length === 0,
+      // Inventário é documento: não há "ajuste e volte" possível.
+      definitivo: inventarios > 0,
+      motivos,
+    };
+  });
+}
+
+export async function deleteSubcategory(id: string) {
+  return tx(async (tid) => {
+    // Recheca no servidor: a tela pode ter sido aberta antes de alguém
+    // cadastrar um produto aqui, e o aviso que ela mostrou está velho.
+    const dep = await dependenciasDaSubcategoria(id);
+    if (!dep.podeExcluir) {
+      throw new Error(
+        `Não dá para excluir: ${dep.motivos[0]?.texto ?? "há vínculos."} Inative em vez de excluir.`,
+      );
+    }
+    await db.subcategory.deleteMany({ where: { id } });
+    okOpcoes(tid);
+  });
+}
+
+export async function deleteCategory(id: string) {
+  return tx(async (tid) => {
+    const dep = await dependenciasDaCategoria(id);
+    if (!dep.podeExcluir) {
+      throw new Error(
+        `Não dá para excluir: ${dep.motivos[0]?.texto ?? "há vínculos."} Inative em vez de excluir.`,
+      );
+    }
+    await db.category.deleteMany({ where: { id } });
     okOpcoes(tid);
   });
 }
@@ -513,8 +708,8 @@ async function syncSuppliers(
  * recebimento somar saldo no produto errado, e ninguém descobre pela tela: só
  * pelo inventário que não fecha.
  *
- * Varre os três lugares onde um código vive (produto, embalagem de compra e
- * variação comercial), porque o leitor não sabe a diferença entre eles.
+ * Varre os lugares onde um código vive (produto, apelido de código e embalagem
+ * de compra), porque o leitor não sabe a diferença entre eles.
  */
 async function assertCodigosLivres(
   codigos: (string | null | undefined)[],
@@ -537,10 +732,14 @@ async function assertCodigosLivres(
   }
 
   const fora = exceptProductId ? { not: exceptProductId } : undefined;
-  const [produto, embalagem] = await Promise.all([
+  const [produto, apelido, embalagem] = await Promise.all([
     db.product.findFirst({
       where: { ean: { in: limpos }, ...(fora ? { id: fora } : {}) },
       select: { nome: true, sku: true, ean: true },
+    }),
+    db.productBarcode.findFirst({
+      where: { codigo: { in: limpos }, ...(fora ? { productId: fora } : {}) },
+      select: { codigo: true, product: { select: { nome: true, sku: true } } },
     }),
     db.productPackaging.findFirst({
       where: { ean: { in: limpos }, ...(fora ? { productId: fora } : {}) },
@@ -553,11 +752,152 @@ async function assertCodigosLivres(
       `O código de barras ${produto.ean} já é de "${produto.nome}" (${produto.sku}).`,
     );
   }
+  if (apelido) {
+    throw new Error(
+      `O código de barras ${apelido.codigo} já é de "${apelido.product.nome}" (${apelido.product.sku}).`,
+    );
+  }
   if (embalagem) {
     throw new Error(
       `O código de barras ${embalagem.ean} já é da embalagem "${embalagem.nome}" de "${embalagem.product.nome}" (${embalagem.product.sku}).`,
     );
   }
+}
+
+// ── Códigos de barras do produto ───────────────────────────
+//
+// Um produto, vários bipes: "açúcar 1 kg" é uma linha na prateleira e um preço
+// no caixa, mas chega com o código da União numa semana e da Caravelas na
+// outra. Ver `ProductBarcode` no schema para o que isto NÃO é (não é variação
+// comercial, não é embalagem).
+//
+// `Product.ean` segue como ESPELHO do principal — derivado, nunca fonte. Só
+// estas funções escrevem nele.
+
+/** Linha da lista de códigos de barras vinda do formulário. */
+export type CodigoLinhaInput = {
+  codigo: string;
+  rotulo?: string | null;
+  principal?: boolean;
+};
+
+const codigoLinhaSchema = z.object({
+  codigo: z.string(),
+  rotulo: z.string().optional().nullable(),
+  principal: z.boolean().optional(),
+});
+
+type CodigoLinha = { codigo: string; rotulo: string | null; principal: boolean };
+
+/**
+ * Limpa a lista crua: só dígitos, sem vazio, sem repetido, exatamente um
+ * principal.
+ *
+ * O COMPRIMENTO É LIVRE de propósito. Código interno de balança tem 4 ou 7
+ * dígitos e tem de bipar igual a um EAN-13; exigir 8 aqui transformaria meio
+ * mercadinho em "cadastro sem código". Quem confere dígito verificador é
+ * `gtinValido` — e isso é aviso de tela, não trava de gravação.
+ */
+function normalizarCodigos(linhas: CodigoLinhaInput[]): CodigoLinha[] {
+  const vistos = new Set<string>();
+  const limpas: CodigoLinha[] = [];
+  for (const l of linhas) {
+    const codigo = onlyDigits(l.codigo ?? "");
+    if (!codigo || vistos.has(codigo)) continue;
+    vistos.add(codigo);
+    limpas.push({
+      codigo,
+      rotulo: l.rotulo?.trim() || null,
+      principal: !!l.principal,
+    });
+  }
+  if (!limpas.length) return [];
+  // Nenhum marcado (ou dois): o primeiro da lista decide. Nunca sai daqui sem
+  // principal — é ele que vai na etiqueta e no espelho `Product.ean`.
+  const i0 = limpas.findIndex((l) => l.principal);
+  const escolhido = i0 < 0 ? 0 : i0;
+  return limpas.map((l, i) => ({ ...l, principal: i === escolhido }));
+}
+
+/**
+ * Código que vai no espelho `Product.ean`.
+ *
+ * Calculado ANTES do create/update porque é a mesma escrita do produto — não
+ * dá para esperar a sincronização da tabela para só então voltar e corrigir o
+ * espelho.
+ */
+function principalDosCodigos(
+  linhas: CodigoLinhaInput[] | undefined,
+  eanLegado?: string | null,
+): string | null {
+  if (linhas) return normalizarCodigos(linhas).find((l) => l.principal)?.codigo ?? null;
+  return (eanLegado ? onlyDigits(eanLegado) : "") || null;
+}
+
+/**
+ * Deixa `ProductBarcode` igual à lista pedida, preservando os ids do que
+ * continua existindo.
+ *
+ * Dois modos:
+ *
+ * - `linhas` definida (formulário de produto simples) — substitui a lista
+ *   inteira. O que saiu da tela sai do banco.
+ * - `linhas` undefined (formulário de combo/receita, criação pelo recebimento)
+ *   — MODO ESPELHO: o chamador só conhece um código. Troca o principal e não
+ *   encosta nos apelidos que o operador cadastrou na tela de produto simples.
+ *   Sem isto, corrigir o nome de um combo apagaria códigos em silêncio.
+ */
+async function sincronizarCodigos(
+  tid: string,
+  productId: string,
+  linhas: CodigoLinhaInput[] | undefined,
+  eanLegado?: string | null,
+) {
+  const atuais = await db.productBarcode.findMany({
+    where: { productId },
+    select: { id: true, codigo: true, rotulo: true, principal: true },
+  });
+
+  let alvo: CodigoLinha[];
+  if (linhas) {
+    alvo = normalizarCodigos(linhas);
+  } else {
+    const principal = eanLegado ? onlyDigits(eanLegado) : "";
+    const antigo = atuais.find((a) => a.codigo === principal);
+    alvo = normalizarCodigos([
+      ...(principal
+        ? [{ codigo: principal, rotulo: antigo?.rotulo ?? null, principal: true }]
+        : []),
+      // O principal anterior sai junto com o `ean` que ele espelhava; os
+      // apelidos ficam.
+      ...atuais
+        .filter((a) => a.codigo !== principal && !a.principal)
+        .map((a) => ({ codigo: a.codigo, rotulo: a.rotulo, principal: false })),
+    ]);
+  }
+
+  const porCodigo = new Map(atuais.map((a) => [a.codigo, a.id]));
+  const alvoCodigos = new Set(alvo.map((l) => l.codigo));
+  const remover = atuais.filter((a) => !alvoCodigos.has(a.codigo)).map((a) => a.id);
+
+  // Apaga antes de criar: o código pode ter trocado de linha na tela, e o
+  // `@@unique([tenantId, codigo])` não perdoa os dois existindo ao mesmo tempo.
+  if (remover.length) {
+    await db.productBarcode.deleteMany({ where: { id: { in: remover } } });
+  }
+  await Promise.all(
+    alvo.map((l) => {
+      const id = porCodigo.get(l.codigo);
+      return id
+        ? db.productBarcode.updateMany({
+            where: { id },
+            data: { rotulo: l.rotulo, principal: l.principal },
+          })
+        : db.productBarcode.create({
+            data: { tenantId: tid, productId, ...l },
+          });
+    }),
+  );
 }
 
 /**
@@ -643,7 +983,12 @@ async function syncPackagings(
 const productSchema = z.object({
   tipo: z.enum(["SIMPLES", "INSUMO"]).default("SIMPLES"),
   sku: z.string().optional(),
+  /// Espelho do código principal. Continua aceito sozinho: o formulário de
+  /// combo/receita e a criação pelo recebimento só conhecem um código.
   ean: z.string().optional(),
+  /// Lista completa de códigos da unidade de venda. Ausente = modo espelho
+  /// (ver `sincronizarCodigos`); presente = substitui a lista inteira.
+  codigos: z.array(codigoLinhaSchema).optional(),
   nome: z.string().min(2, "Informe o nome do produto."),
   subcategoryId: z.string().min(1, "Escolha a subcategoria."),
   brandId: z.string().optional().nullable(),
@@ -746,6 +1091,7 @@ export async function createProduct(input: ProductInput) {
     if (skuVal && skuConflict) throw new Error(`SKU "${skuVal}" já está em uso.`);
     await assertCodigosLivres([
       d.ean,
+      ...(d.codigos ?? []).map((c) => c.codigo),
       ...(d.packagings ?? []).map((pk) => pk.ean),
     ]);
     const sku = skuVal ?? (await generateSku(sub.category.skuPrefix, sub.skuPrefix));
@@ -754,7 +1100,7 @@ export async function createProduct(input: ProductInput) {
       data: {
         tenantId: tid,
         tipo: d.tipo,
-        ean: d.ean ? onlyDigits(d.ean) : null,
+        ean: principalDosCodigos(d.codigos, d.ean),
         nome: d.nome.trim(),
         sku,
         subcategoryId: d.subcategoryId,
@@ -797,6 +1143,7 @@ export async function createProduct(input: ProductInput) {
     await Promise.all([
       d.tags?.length ? attachTags(tid, product.id, d.tags) : Promise.resolve(),
       syncSalesChannels(tid, product.id, d.salesChannels),
+      sincronizarCodigos(tid, product.id, d.codigos, d.ean),
       syncPackagings(tid, product.id, d.packagings),
       syncSuppliers(tid, product.id, resolveFornecedores(d), d.custoFornecedor),
     ]);
@@ -819,7 +1166,11 @@ export async function updateProduct(id: string, input: ProductInput) {
     ]);
     if (skuVal && skuConflict) throw new Error(`SKU "${skuVal}" já está em uso.`);
     await assertCodigosLivres(
-      [d.ean, ...(d.packagings ?? []).map((pk) => pk.ean)],
+      [
+        d.ean,
+        ...(d.codigos ?? []).map((c) => c.codigo),
+        ...(d.packagings ?? []).map((pk) => pk.ean),
+      ],
       id,
     );
     const skuData = skuVal ? { sku: skuVal } : {};
@@ -828,7 +1179,7 @@ export async function updateProduct(id: string, input: ProductInput) {
       where: { id },
       data: {
         ...skuData,
-        ean: d.ean ? onlyDigits(d.ean) : null,
+        ean: principalDosCodigos(d.codigos, d.ean),
         nome: d.nome.trim(),
         subcategoryId: d.subcategoryId,
         brandId,
@@ -868,6 +1219,7 @@ export async function updateProduct(id: string, input: ProductInput) {
         },
       }),
       syncSalesChannels(tid, id, d.salesChannels),
+      sincronizarCodigos(tid, id, d.codigos, d.ean),
       syncPackagings(tid, id, d.packagings),
       syncSuppliers(tid, id, resolveFornecedores(d), d.custoFornecedor),
     ]);
@@ -1838,16 +2190,35 @@ export type EanSuggestion = {
  * Checagem leve de EAN já cadastrado — usada no on-blur do formulário para
  * avisar cedo, sem disparar o enriquecimento externo.
  */
+/**
+ * Produto que já responde por este código — em qualquer um dos lugares onde um
+ * código vive (ver `alternativasPorCodigo`).
+ */
+async function produtoPorCodigo(codigo: string, exceptId?: string) {
+  const alternativas = alternativasPorCodigo(codigo);
+  if (!alternativas.length) return null;
+  return db.product.findFirst({
+    where: { OR: alternativas, ...(exceptId ? { id: { not: exceptId } } : {}) },
+    select: { id: true, nome: true, sku: true },
+  });
+}
+
 export async function checkEanTaken(
   eanRaw: string,
+  /**
+   * Produto em edição — fica de fora da busca.
+   *
+   * Sem isto, abrir um produto e sair do campo de código acusava "já existe um
+   * produto com esse código" apontando para ele mesmo. O operador conferia o
+   * aviso, não achava erro nenhum, e aprendia a ignorar o aviso — que é
+   * justamente o que não pode acontecer com este.
+   */
+  exceptId?: string,
 ): Promise<{ taken: boolean; id?: string; nome?: string; sku?: string }> {
   return tx(async () => {
-    const ean = onlyDigits(eanRaw);
-    if (ean.length < 8) return { taken: false };
-    const existente = await db.product.findFirst({
-      where: { ean },
-      select: { id: true, nome: true, sku: true },
-    });
+    // Sem piso de comprimento: código interno de 4 dígitos pode estar tomado
+    // igual, e deixar de avisar só adia a descoberta para o caixa.
+    const existente = await produtoPorCodigo(eanRaw, exceptId);
     return existente
       ? { taken: true, id: existente.id, nome: existente.nome, sku: existente.sku }
       : { taken: false };
@@ -1932,19 +2303,21 @@ export async function sugerirMargemSubcategoria(
 export async function enrichEan(eanRaw: string): Promise<EanSuggestion> {
   return tx(async () => {
     const ean = onlyDigits(eanRaw);
-    if (ean.length < 8)
+    // Aqui o comprimento AINDA importa, e só aqui: Cosmos e LLM respondem por
+    // GTIN cadastrado na GS1. Código interno de balança não existe para eles —
+    // consultar seria gastar cota para ouvir "não encontrado". Gravar esse
+    // código, porém, é livre (ver `normalizarCodigos`).
+    if (gtinValido(ean) === null)
       return {
         encontrado: false,
         fonte: "nenhuma",
         motivo: "invalido",
-        erro: "Código de barras inválido. Precisa ter ao menos 8 dígitos.",
+        erro:
+          "A busca automática só funciona com EAN/GTIN (8, 12, 13 ou 14 dígitos). Preencha à mão.",
       };
 
-    // Antes de consultar fora: já existe produto com esse EAN neste tenant?
-    const existente = await db.product.findFirst({
-      where: { ean },
-      select: { id: true, nome: true, sku: true },
-    });
+    // Antes de consultar fora: já existe produto com esse código neste tenant?
+    const existente = await produtoPorCodigo(ean);
     if (existente)
       return {
         encontrado: false,
@@ -2004,7 +2377,10 @@ export async function enrichEan(eanRaw: string): Promise<EanSuggestion> {
     if (!llmConfigured()) return base;
 
     const [subs, brands] = await Promise.all([
+      // Só o que ainda classifica coisa nova: oferecer subcategoria inativa ao
+      // LLM é pedir que ele sugira uma gaveta que o operador fechou.
       db.subcategory.findMany({
+        where: { ativo: true, category: { ativo: true } },
         select: { id: true, nome: true, category: { select: { nome: true } } },
       }),
       db.brand.findMany({ select: { nome: true } }),

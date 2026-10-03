@@ -7,6 +7,10 @@ import type { Permissao } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { criarPedidoCompra } from "@/lib/estoque";
 import { db } from "@/lib/prisma";
+import {
+  alternativasPorCodigo,
+  alternativasPorTrechoDeCodigo,
+} from "@/lib/produto-codigo";
 import { listarEventos } from "@/lib/compras/eventos";
 import { loadHistoricoCompraProduto } from "../cotacoes/_data";
 import { loadComprasFormOptions } from "../estoque/_data";
@@ -334,7 +338,7 @@ export async function buscarProdutosRecebimentoAction(termo: string): Promise<Pr
         OR: [
           { nome: { contains: q, mode: "insensitive" } },
           { sku: { contains: q, mode: "insensitive" } },
-          { ean: { contains: q } },
+          ...alternativasPorTrechoDeCodigo(q),
         ],
       },
       select: selectProdutoRecebimento,
@@ -358,7 +362,15 @@ export async function buscarProdutoPorCodigoAction(codigo: string): Promise<{
   if (!c) return null;
   return tx(async () => {
     const porEan = await db.product.findFirst({
-      where: { ativo: true, OR: [{ ean: c }, { sku: { equals: c, mode: "insensitive" } }] },
+      where: {
+        ativo: true,
+        OR: [
+          // Só a UNIDADE aqui: a embalagem é tentada depois, de propósito, para
+          // o bipe do fardo trazer o `packagingId` e multiplicar o fator.
+          ...alternativasPorCodigo(c),
+          { sku: { equals: c, mode: "insensitive" } },
+        ],
+      },
       select: selectProdutoRecebimento,
     });
     if (porEan) return { produto: serialProduto(porEan), packagingId: null };

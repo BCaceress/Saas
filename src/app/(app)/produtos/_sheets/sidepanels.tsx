@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   Plus,
   Search,
@@ -10,6 +11,9 @@ import {
   Pencil,
   Archive,
   ArchiveRestore,
+  Trash2,
+  AlertTriangle,
+  ArrowRight,
 } from "lucide-react";
 import { Sheet, Modal } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
@@ -23,9 +27,16 @@ import {
   createBrand,
   updateBrand,
   createCategory,
+  updateCategory,
+  setCategoryActive,
+  deleteCategory,
+  dependenciasDaCategoria,
   createSubcategory,
   updateSubcategory,
   setSubcategoryActive,
+  deleteSubcategory,
+  dependenciasDaSubcategoria,
+  type Dependencias,
   createStorageLocation,
   createSupplier,
   updateSupplier,
@@ -34,6 +45,7 @@ import {
 import type {
   BrandOpt,
   CategoryNode,
+  FiscalOpt,
   StorageOpt,
   SupplierRow,
 } from "../_types";
@@ -256,32 +268,53 @@ export function BrandSheet({
 }
 
 // ── Categorias / subcategorias ─────────────────────────────
-type SubModal =
-  | {
-      mode: "new";
-      categoryId: string;
-      categoriaNome: string;
-      subId?: undefined;
-      nome: string;
-    }
-  | {
-      mode: "edit";
-      categoryId: string;
-      categoriaNome: string;
-      subId: string;
-      nome: string;
-    };
+type SubModal = {
+  mode: "new" | "edit";
+  categoryId: string;
+  categoriaNome: string;
+  /** Só no modo "edit". */
+  subId?: string;
+  nome: string;
+  /** Prefixo gravado — exibido travado (entra no SKU, não muda). */
+  skuPrefix?: string;
+  defaultStorageType: StorageType | null;
+  defaultFiscalProfileId: string | null;
+};
+
+/** Edição de categoria: só o nome muda. O prefixo aparece, travado. */
+type CatModal = { id: string; nome: string; skuPrefix: string };
+
+/**
+ * Exclusão pedida, com o resultado da checagem de vínculos.
+ *
+ * `dep: null` = ainda consultando. O diálogo abre já nesse estado em vez de
+ * esperar: a contagem leva uma ida ao banco, e abrir só depois faz o clique
+ * parecer perdido.
+ */
+type Exclusao = {
+  tipo: "categoria" | "subcategoria";
+  id: string;
+  nome: string;
+  /** Já está inativa? Então não oferece "inativar em vez de excluir". */
+  inativa: boolean;
+  dep: Dependencias | null;
+};
+
+const LABEL_TIPO = { categoria: "categoria", subcategoria: "subcategoria" } as const;
 
 export function CategorySheet({
   open,
   onClose,
   tree,
+  fiscalOpts = [],
   carregando,
   onChanged,
 }: {
   open: boolean;
   onClose: () => void;
   tree: CategoryNode[];
+  /** Perfis fiscais — alimentam o padrão da subcategoria na edição. */
+  fiscalOpts?: FiscalOpt[];
   /** Árvore ainda em voo: mostra placeholder no lugar da lista. */
   carregando?: boolean;
   /** Recarrega a árvore de categorias (fonte fica fora do RSC — `router.refresh()` não alcança). */
@@ -301,6 +334,10 @@ export function CategorySheet({
   const [openCat, setOpenCat] = useState<string | null>(null);
   const [modal, setModal] = useState<SubModal | null>(null);
   const [modalError, setModalError] = useState<string>();
+  const [catModal, setCatModal] = useState<CatModal | null>(null);
+  const [catModalError, setCatModalError] = useState<string>();
+  const [exclusao, setExclusao] = useState<Exclusao | null>(null);
+  const [excluindo, setExcluindo] = useState(false);
 
   function toggle(id: string) {
     setOpenCat((cur) => (cur === id ? null : id));
@@ -330,13 +367,20 @@ export function CategorySheet({
     setModalError(undefined);
     setSavingSub(true);
     try {
-      if (modal.mode === "edit") {
-        await updateSubcategory({ id: modal.subId, nome: modal.nome });
+      if (modal.mode === "edit" && modal.subId) {
+        await updateSubcategory({
+          id: modal.subId,
+          nome: modal.nome,
+          defaultStorageType: modal.defaultStorageType,
+          defaultFiscalProfileId: modal.defaultFiscalProfileId,
+        });
         toast.success("Subcategoria atualizada", `«${modal.nome}» salva.`);
       } else {
         await createSubcategory({
           categoryId: modal.categoryId,
           nome: modal.nome,
+          defaultStorageType: modal.defaultStorageType,
+          defaultFiscalProfileId: modal.defaultFiscalProfileId,
         });
         setOpenCat(modal.categoryId);
         toast.success("Subcategoria criada", `«${modal.nome}» adicionada.`);
@@ -363,6 +407,100 @@ export function CategorySheet({
     } finally {
       setTogglingId(null);
     }
+  }
+
+  async function saveCat() {
+    if (!catModal || savingCat) return;
+    setCatModalError(undefined);
+    setSavingCat(true);
+    try {
+      const r = await updateCategory({ id: catModal.id, nome: catModal.nome });
+      setCatModal(null);
+      refresh();
+      onChanged();
+      toast.success(
+        "Categoria renomeada",
+        // O ajuste dos modelos salvos é silencioso por natureza (eles passariam
+        // a vir vazios); dizer quantos foram corrigidos é o que transforma isso
+        // em informação em vez de mágica.
+        r.modelosAjustados > 0
+          ? `«${catModal.nome}» salva. Ajustei ${r.modelosAjustados} ${r.modelosAjustados === 1 ? "relatório salvo que filtrava" : "relatórios salvos que filtravam"} pelo nome antigo.`
+          : `«${catModal.nome}» salva.`,
+      );
+    } catch (e) {
+      setCatModalError(e instanceof Error ? e.message : "Falha ao salvar.");
+    } finally {
+      setSavingCat(false);
+    }
+  }
+
+  async function toggleCatActive(id: string, ativo: boolean) {
+    setTogglingId(id);
+    try {
+      await setCategoryActive(id, ativo);
+      refresh();
+      onChanged();
+      toast.success(
+        ativo ? "Categoria reativada" : "Categoria inativada",
+        ativo
+          ? undefined
+          : "Sai das escolhas novas. As subcategorias dela seguem como estão.",
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha.");
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
+  /** Abre o diálogo JÁ e consulta os vínculos em seguida. */
+  function pedirExclusao(
+    tipo: Exclusao["tipo"],
+    id: string,
+    nome: string,
+    inativa: boolean,
+  ) {
+    setExclusao({ tipo, id, nome, inativa, dep: null });
+    const consulta =
+      tipo === "categoria" ? dependenciasDaCategoria(id) : dependenciasDaSubcategoria(id);
+    consulta
+      .then((dep) => setExclusao((cur) => (cur && cur.id === id ? { ...cur, dep } : cur)))
+      .catch(() => {
+        setExclusao(null);
+        toast.error("Não deu para conferir os vínculos", "Tente de novo.");
+      });
+  }
+
+  async function confirmarExclusao() {
+    if (!exclusao || excluindo) return;
+    setExcluindo(true);
+    try {
+      if (exclusao.tipo === "categoria") await deleteCategory(exclusao.id);
+      else await deleteSubcategory(exclusao.id);
+      setExclusao(null);
+      refresh();
+      onChanged();
+      toast.success(
+        exclusao.tipo === "categoria" ? "Categoria excluída" : "Subcategoria excluída",
+        `«${exclusao.nome}» saiu do cadastro.`,
+      );
+    } catch (e) {
+      // O servidor reconfere: a tela pode ter sido aberta antes de alguém
+      // cadastrar um produto aqui.
+      toast.error("Não deu para excluir", e instanceof Error ? e.message : "Tente de novo.");
+      setExclusao(null);
+    } finally {
+      setExcluindo(false);
+    }
+  }
+
+  /** Saída do diálogo de bloqueio: inativa em vez de excluir. */
+  async function inativarDoDialogo() {
+    if (!exclusao) return;
+    const { tipo, id } = exclusao;
+    setExclusao(null);
+    if (tipo === "categoria") await toggleCatActive(id, false);
+    else await toggleActive(id, false);
   }
 
   return (
@@ -417,7 +555,10 @@ export function CategorySheet({
                       isOpen && "rotate-90",
                     )}
                   />
-                  <span className="flex-1">{c.nome}</span>
+                  <span className={cn("flex-1", !c.ativo && "text-faint line-through")}>
+                    {c.nome}
+                  </span>
+                  {!c.ativo && <Badge>Inativa</Badge>}
                   <span className="text-xs text-faint">
                     {c.subcategorias.length} subcat.
                   </span>
@@ -444,10 +585,35 @@ export function CategorySheet({
                         categoryId: c.id,
                         categoriaNome: c.nome,
                         nome: "",
+                        defaultStorageType: null,
+                        defaultFiscalProfileId: null,
                       });
                     }}
                   >
                     Nova subcategoria
+                  </MenuItem>
+                  <MenuItem
+                    icon={<Pencil size={15} />}
+                    onClick={() => {
+                      setCatModalError(undefined);
+                      setCatModal({ id: c.id, nome: c.nome, skuPrefix: c.skuPrefix });
+                    }}
+                  >
+                    Renomear
+                  </MenuItem>
+                  <MenuItem
+                    icon={c.ativo ? <Archive size={15} /> : <ArchiveRestore size={15} />}
+                    onClick={() => toggleCatActive(c.id, !c.ativo)}
+                    disabled={togglingId === c.id}
+                  >
+                    {c.ativo ? "Inativar" : "Reativar"}
+                  </MenuItem>
+                  <MenuItem
+                    icon={<Trash2 size={15} />}
+                    danger
+                    onClick={() => pedirExclusao("categoria", c.id, c.nome, !c.ativo)}
+                  >
+                    Excluir
                   </MenuItem>
                 </Menu>
               </div>
@@ -464,15 +630,24 @@ export function CategorySheet({
                         key={s.id}
                         className="flex items-center gap-2 px-3 py-2.5"
                       >
+                        {/* Riscado = o operador inativou ESTA subcategoria.
+                            Apagado sem risco = ela está ativa, mas a categoria
+                            acima não — a distinção importa porque reativar a
+                            categoria devolve esta, e desriscar a outra não. */}
                         <span
                           className={cn(
                             "flex-1 text-sm text-ink-2",
-                            !s.ativo && "text-faint line-through",
+                            !s.disponivel && "text-faint",
+                            !s.ativo && "line-through",
                           )}
                         >
                           {s.nome}
                         </span>
-                        {!s.ativo && <Badge>Inativa</Badge>}
+                        {!s.ativo ? (
+                          <Badge>Inativa</Badge>
+                        ) : !s.disponivel ? (
+                          <Badge>Categoria inativa</Badge>
+                        ) : null}
                         <Menu
                           align="end"
                           trigger={
@@ -495,6 +670,9 @@ export function CategorySheet({
                                 categoriaNome: c.nome,
                                 subId: s.id,
                                 nome: s.nome,
+                                skuPrefix: s.skuPrefix,
+                                defaultStorageType: s.defaultStorageType,
+                                defaultFiscalProfileId: s.defaultFiscalProfileId,
                               });
                             }}
                           >
@@ -512,6 +690,15 @@ export function CategorySheet({
                             disabled={togglingId === s.id}
                           >
                             {s.ativo ? "Inativar" : "Reativar"}
+                          </MenuItem>
+                          <MenuItem
+                            icon={<Trash2 size={15} />}
+                            danger
+                            onClick={() =>
+                              pedirExclusao("subcategoria", s.id, s.nome, !s.ativo)
+                            }
+                          >
+                            Excluir
                           </MenuItem>
                         </Menu>
                       </li>
@@ -550,25 +737,268 @@ export function CategorySheet({
           </div>
         }
       >
-        <Field
-          label="Nome"
-          htmlFor="sub-nome"
-          hint="Não pode repetir na mesma categoria."
-        >
-          <Input
-            id="sub-nome"
-            autoFocus
-            value={modal?.nome ?? ""}
-            onChange={(e) =>
-              setModal((m) => (m ? { ...m, nome: e.target.value } : m))
-            }
-            onKeyDown={(e) => e.key === "Enter" && saveSub()}
-            placeholder="Ex.: Cervejas"
-          />
-        </Field>
+        <div className="flex flex-col gap-4">
+          <Field
+            label="Nome"
+            htmlFor="sub-nome"
+            hint="Não pode repetir na mesma categoria."
+          >
+            <Input
+              id="sub-nome"
+              autoFocus
+              value={modal?.nome ?? ""}
+              onChange={(e) =>
+                setModal((m) => (m ? { ...m, nome: e.target.value } : m))
+              }
+              onKeyDown={(e) => e.key === "Enter" && saveSub()}
+              placeholder="Ex.: Cervejas"
+            />
+          </Field>
+
+          {modal?.skuPrefix && <PrefixoTravado prefixo={modal.skuPrefix} />}
+
+          {/* Os dois padrões só podiam ser escolhidos na CRIAÇÃO: errou a
+              armazenagem, não consertava mais. São sugestões para o cadastro
+              novo — produto já cadastrado não é tocado. */}
+          <Field
+            label="Armazenagem sugerida"
+            htmlFor="sub-storage"
+            hint="Preenchida no cadastro de produto novo desta subcategoria."
+          >
+            <Select
+              id="sub-storage"
+              value={modal?.defaultStorageType ?? ""}
+              onChange={(e) =>
+                setModal((m) =>
+                  m
+                    ? {
+                        ...m,
+                        defaultStorageType: (e.target.value || null) as StorageType | null,
+                      }
+                    : m,
+                )
+              }
+            >
+              <option value="">Sem sugestão</option>
+              {(["AMBIENTE", "REFRIGERADO", "CONGELADO"] as StorageType[]).map((t) => (
+                <option key={t} value={t}>
+                  {STORAGE_LABEL[t]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
+          {fiscalOpts.length > 0 && (
+            <Field
+              label="Perfil fiscal padrão"
+              htmlFor="sub-fiscal"
+              hint="Herdado pelo produto que não define o seu."
+            >
+              <Select
+                id="sub-fiscal"
+                value={modal?.defaultFiscalProfileId ?? ""}
+                onChange={(e) =>
+                  setModal((m) =>
+                    m ? { ...m, defaultFiscalProfileId: e.target.value || null } : m,
+                  )
+                }
+              >
+                <option value="">Sem perfil padrão</option>
+                {fiscalOpts.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.nome}
+                    {f.ncm ? ` · NCM ${f.ncm}` : ""}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+        </div>
         {modalError && <p className="mt-2 text-sm text-danger">{modalError}</p>}
       </Modal>
+
+      {/* ── Renomear categoria ── */}
+      <Modal
+        open={!!catModal}
+        onClose={() => setCatModal(null)}
+        title="Renomear categoria"
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button variant="ghost" onClick={() => setCatModal(null)} disabled={savingCat}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={saveCat}
+              disabled={savingCat || !catModal || catModal.nome.trim().length < 2}
+            >
+              {savingCat ? "Salvando…" : "Salvar"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <Field label="Nome" htmlFor="cat-nome">
+            <Input
+              id="cat-nome"
+              autoFocus
+              value={catModal?.nome ?? ""}
+              onChange={(e) => setCatModal((m) => (m ? { ...m, nome: e.target.value } : m))}
+              onKeyDown={(e) => e.key === "Enter" && saveCat()}
+              placeholder="Ex.: Bebidas"
+            />
+          </Field>
+          {catModal && <PrefixoTravado prefixo={catModal.skuPrefix} />}
+          <p className="text-xs text-muted">
+            Relatórios salvos que filtram por esta categoria são ajustados para o
+            nome novo automaticamente.
+          </p>
+        </div>
+        {catModalError && <p className="mt-2 text-sm text-danger">{catModalError}</p>}
+      </Modal>
+
+      <DialogoExclusao
+        exclusao={exclusao}
+        excluindo={excluindo}
+        onClose={() => setExclusao(null)}
+        onConfirmar={confirmarExclusao}
+        onInativar={inativarDoDialogo}
+      />
     </Sheet>
+  );
+}
+
+/**
+ * Prefixo do SKU, exibido e travado.
+ *
+ * Mostrar em vez de esconder porque o operador reconhece o prefixo nas
+ * etiquetas e vai procurá-lo aqui. Travado porque `Product.sku` é string
+ * GRAVADA ("BEB-CER-6489"), não derivada: mudar o prefixo faria os SKUs novos
+ * discordarem das etiquetas de prateleira, planilhas e notas já emitidas.
+ */
+function PrefixoTravado({ prefixo }: { prefixo: string }) {
+  return (
+    <div className="flex items-start gap-3 rounded-[var(--radius-sm)] border border-line bg-surface-2/40 px-3 py-2.5">
+      <span className="font-mono text-sm font-medium text-ink">{prefixo}</span>
+      <span className="min-w-0 flex-1 text-xs text-muted">
+        Prefixo usado nos SKUs já gerados. Não muda — os códigos impressos nas
+        etiquetas continuariam com o antigo.
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Exclusão de categoria/subcategoria.
+ *
+ * Três telas num diálogo, porque são três respostas diferentes e misturá-las
+ * produziria o genérico "não é possível excluir":
+ *
+ *  1. sem vínculo  → confirma e exclui;
+ *  2. com vínculo ajustável → mostra a CONTAGEM, o LINK para a lista de
+ *     trabalho e o atalho para inativar;
+ *  3. com vínculo histórico (inventário) → diz que nunca vai dar, e some com o
+ *     "ajuste e volte". Mandar o operador numa tarefa impossível é pior que
+ *     dizer não.
+ */
+function DialogoExclusao({
+  exclusao,
+  excluindo,
+  onClose,
+  onConfirmar,
+  onInativar,
+}: {
+  exclusao: Exclusao | null;
+  excluindo: boolean;
+  onClose: () => void;
+  onConfirmar: () => void;
+  onInativar: () => void;
+}) {
+  const dep = exclusao?.dep ?? null;
+  const carregando = !!exclusao && dep === null;
+  const livre = !!dep?.podeExcluir;
+  const tipo = exclusao ? LABEL_TIPO[exclusao.tipo] : "";
+
+  return (
+    <Modal
+      open={!!exclusao}
+      onClose={onClose}
+      title={livre ? `Excluir ${tipo}?` : `Não dá para excluir «${exclusao?.nome ?? ""}»`}
+      footer={
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={excluindo}>
+            {livre ? "Cancelar" : "Fechar"}
+          </Button>
+          {/* Inativar é a saída real na prática — fica ao lado do "fechar", não
+              escondido num menu depois de o operador já ter desistido. */}
+          {!carregando && !livre && !exclusao?.inativa && (
+            <Button variant="secondary" onClick={onInativar}>
+              Inativar em vez de excluir
+            </Button>
+          )}
+          {livre && (
+            <Button variant="danger" onClick={onConfirmar} disabled={excluindo}>
+              {excluindo ? "Excluindo…" : "Excluir"}
+            </Button>
+          )}
+        </div>
+      }
+    >
+      {carregando && <p className="text-sm text-muted">Conferindo os vínculos…</p>}
+
+      {!carregando && livre && (
+        <p className="text-sm text-ink-2">
+          «{exclusao?.nome}» não está em uso em nenhum produto
+          {exclusao?.tipo === "categoria" ? ", subcategoria ou inventário" : ""}. A
+          exclusão é definitiva.
+        </p>
+      )}
+
+      {!carregando && !livre && dep && (
+        <div className="flex flex-col gap-3">
+          <ul className="flex flex-col gap-2.5">
+            {dep.motivos.map((m) => (
+              <li key={m.tipo} className="flex items-start gap-2.5 text-sm">
+                <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warn" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-ink-2">{m.texto}</p>
+                  {m.href && (
+                    <Link
+                      href={m.href}
+                      className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand-strong underline-offset-2 hover:underline"
+                    >
+                      {m.tipo === "produtos"
+                        ? `Ver ${m.quantidade === 1 ? "o produto" : `os ${m.quantidade} produtos`}`
+                        : "Ver os inventários"}
+                      <ArrowRight size={12} />
+                    </Link>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+
+          {/* A dica muda com o motivo. "Use a edição em lote" numa categoria
+              sem produto nenhum mandaria o operador a uma tela vazia. */}
+          {dep.definitivo ? (
+            <p className="text-xs text-muted">
+              Inventário não se altera depois de criado, então esta categoria não
+              poderá ser excluída. Inative para tirá-la das escolhas — o histórico
+              continua intacto.
+            </p>
+          ) : dep.motivos.some((m) => m.tipo === "produtos") ? (
+            <p className="text-xs text-muted">
+              Na listagem de produtos, selecione todos e use a edição em lote para
+              trocar a subcategoria de uma vez. Depois volte aqui.
+            </p>
+          ) : (
+            <p className="text-xs text-muted">
+              Exclua as subcategorias primeiro — elas estão listadas abaixo da
+              categoria, neste painel.
+            </p>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 

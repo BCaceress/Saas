@@ -42,7 +42,16 @@ export async function carregarIndice(supplierId: string): Promise<IndiceProdutos
   const [produtos, mapas, vinculos] = await Promise.all([
     db.product.findMany({
       where: { ativo: true },
-      select: { id: true, ean: true, sku: true, nome: true },
+      // `barcodes` junto do espelho: a tabela do fornecedor traz o código da
+      // marca que ELE vende, que pode ser o apelido e não o principal. Sem isto
+      // o item chegava "sem produto" e caía na fila de de-para à mão.
+      select: {
+        id: true,
+        ean: true,
+        barcodes: { select: { codigo: true } },
+        sku: true,
+        nome: true,
+      },
     }),
     db.supplierItemMap.findMany({
       where: { supplierId },
@@ -61,6 +70,7 @@ export async function carregarIndice(supplierId: string): Promise<IndiceProdutos
 
   for (const p of produtos) {
     if (p.ean) porEan.set(onlyDigits(p.ean), p.id);
+    for (const b of p.barcodes) porEan.set(onlyDigits(b.codigo), p.id);
     porSku.set(p.sku.toUpperCase(), p.id);
     // Nome repetido não desempata sozinho — o primeiro fica e o resto é
     // ignorado de propósito, para não casar produto errado no escuro.

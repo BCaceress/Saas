@@ -67,6 +67,11 @@ export type ProdutoParaDivergencia = {
   id: string;
   nome: string;
   ean: string | null;
+  /**
+   * Apelidos de código (ver `ProductBarcode`). Sem eles, a nota da Caravelas
+   * acusaria "código de barras novo" num código que o cadastro já tem.
+   */
+  codigos?: { codigo: string }[];
   /** NCM do perfil fiscal do produto (ou o herdado da subcategoria). */
   ncm: string | null;
   custoMedio: number;
@@ -182,7 +187,17 @@ export function divergenciasDoItem(
         severidade: "INFORMATIVA",
         precisaConfirmar: false,
         titulo: "Código de barras novo",
-        detalhe: `${item.gtin} ainda não está no cadastro de ${produto.nome}. Ao relacionar, ele entra ${item.fatorConversao > 1 ? "como código da embalagem de compra" : "como código do produto"}.`,
+        // Fator > 1 é fardo; fator 1 num produto que JÁ tem código é a mesma
+        // unidade com outra marca — e aí o código entra somando, não trocando.
+        // Dizer "como código do produto" ali faria o operador achar que o
+        // código antigo ia parar de bipar.
+        detalhe: `${item.gtin} ainda não está no cadastro de ${produto.nome}. Ao relacionar, ele entra ${
+          item.fatorConversao > 1
+            ? "como código da embalagem de compra"
+            : produto.ean || (produto.codigos ?? []).length > 0
+              ? "como mais um código do produto (os atuais continuam bipando)"
+              : "como código do produto"
+        }.`,
       });
     }
   }

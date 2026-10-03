@@ -283,7 +283,7 @@ export function PdvClient({
         return (
           p.nome.toLowerCase().includes(q) ||
           p.sku.toLowerCase().includes(q) ||
-          (p.ean ?? "").includes(q)
+          p.codigos.some((c) => c.includes(q))
         );
       })
       .slice(0, 8);
@@ -336,6 +336,8 @@ export function PdvClient({
     precoUnit?: number,
     detalhe: string | null = null,
     confirmado = false,
+    /** Código bipado, quando o item entrou por bipe (vai ao cEAN da NFC-e). */
+    codigoBarras: string | null = null,
   ) {
     if (!caixaOk) {
       setSheetOpen(true);
@@ -384,7 +386,20 @@ export function PdvClient({
       const ex = prev.find((i) => i.key === key);
       if (ex)
         return prev.map((i) =>
-          i.key === key ? { ...i, quantidade: i.quantidade + qty } : i,
+          i.key === key
+            ? {
+                ...i,
+                quantidade: i.quantidade + qty,
+                // Linha MISTA (bipou União e depois Caravelas no mesmo item):
+                // nenhum dos dois códigos representa a linha inteira, então
+                // zera e a emissão volta ao principal do cadastro. Separar em
+                // duas linhas daria duas linhas idênticas na tela do caixa.
+                codigoBarras:
+                  i.codigoBarras === (codigoBarras ?? i.codigoBarras)
+                    ? i.codigoBarras
+                    : null,
+              }
+            : i,
         );
       return [
         ...prev,
@@ -398,6 +413,7 @@ export function PdvClient({
           quantidade: qty,
           restricaoIdade: p.restricaoIdade,
           imagemUrl: p.imagemUrl,
+          codigoBarras,
           selecoes,
           detalhe,
         },
@@ -418,12 +434,12 @@ export function PdvClient({
     }
   }
 
-  function escolher(p: ProdutoVenda, qty = 1) {
+  function escolher(p: ProdutoVenda, qty = 1, codigoBarras: string | null = null) {
     if (p.tipo === "PERSONALIZADO") {
       setPdvModal(p);
       setBusca("");
     } else {
-      addItem(p, p.variants[0]?.id ?? null, qty);
+      addItem(p, p.variants[0]?.id ?? null, qty, [], undefined, null, false, codigoBarras);
     }
   }
 
@@ -461,13 +477,18 @@ export function PdvClient({
   function onBuscaEnter() {
     const { qty, termo } = parseMultiplicador(busca);
     if (!termo) return;
-    const exato = produtos.find(
-      (p) => p.ean === termo || p.sku.toLowerCase() === termo.toLowerCase(),
-    );
+    // Casa contra TODOS os códigos do produto, não só o principal: o açúcar da
+    // Caravelas tem de vender pelo mesmo produto e pelo mesmo preço do da União.
+    const porCodigo = produtos.find((p) => p.codigos.includes(termo));
+    const exato =
+      porCodigo ??
+      produtos.find((p) => p.sku.toLowerCase() === termo.toLowerCase());
     const alvo = exato ?? filtrados[hi] ?? filtrados[0] ?? null;
     if (!alvo) return;
     // O controle de estoque (bloquear/confirmar/ignorar) é decidido em addItem.
-    escolher(alvo, qty);
+    // Só guarda o código quando foi ELE que casou — item achado por nome não
+    // tem código bipado, e inventar um poria GTIN errado na nota.
+    escolher(alvo, qty, porCodigo ? termo : null);
   }
 
   function onBuscaKeyDown(e: React.KeyboardEvent) {
@@ -505,6 +526,7 @@ export function PdvClient({
             quantidade: i.quantidade,
             restricaoIdade: i.restricaoIdade,
             imagemUrl: i.imagemUrl,
+            codigoBarras: i.codigoBarras,
             selecoes: i.selecoes,
             detalhe: i.detalhe,
           };
@@ -613,6 +635,7 @@ export function PdvClient({
           items: cart.map((i) => ({
             productId: i.productId,
             variantId: i.variantId,
+            codigoBarras: i.codigoBarras ?? null,
             quantidade: i.quantidade,
             selecoes: i.selecoes,
           })),
@@ -650,6 +673,7 @@ export function PdvClient({
           const items = cart.map((i) => ({
             productId: i.productId,
             variantId: i.variantId,
+            codigoBarras: i.codigoBarras ?? null,
             quantidade: i.quantidade,
             selecoes: i.selecoes,
           }));
@@ -712,6 +736,7 @@ export function PdvClient({
     const items = cart.map((i) => ({
       productId: i.productId,
       variantId: i.variantId,
+      codigoBarras: i.codigoBarras ?? null,
       quantidade: i.quantidade,
       selecoes: i.selecoes,
     }));
@@ -809,6 +834,7 @@ export function PdvClient({
     const items = cart.map((i) => ({
       productId: i.productId,
       variantId: i.variantId,
+      codigoBarras: i.codigoBarras ?? null,
       quantidade: i.quantidade,
       selecoes: i.selecoes,
     }));
@@ -956,15 +982,19 @@ export function PdvClient({
                 setBusca(v);
                 setHi(0);
                 // Leitor de código de barras: adiciona sozinho assim que o valor
-                // casar exatamente com um EAN (sem Enter/clique). Só dispara se
-                // nenhum outro EAN começar por esse (evita disparar num prefixo).
+                // casar exatamente com um código (sem Enter/clique). Só dispara
+                // se nenhum OUTRO código começar por esse — senão o bipe de um
+                // código curto venderia na metade da digitação de um mais longo.
+                //
+                // Piso de 4 dígitos, não 8: código interno de balança é curto e
+                // tem de bipar igual. A guarda de ambiguidade é que protege.
                 const { qty, termo } = parseMultiplicador(v);
-                if (/^\d{8,14}$/.test(termo)) {
-                  const prod = produtos.find((p) => p.ean === termo);
-                  const ambiguo = produtos.some(
-                    (p) => p.ean && p.ean !== termo && p.ean.startsWith(termo),
+                if (/^\d{4,14}$/.test(termo)) {
+                  const prod = produtos.find((p) => p.codigos.includes(termo));
+                  const ambiguo = produtos.some((p) =>
+                    p.codigos.some((c) => c !== termo && c.startsWith(termo)),
                   );
-                  if (prod && !ambiguo) escolher(prod, qty);
+                  if (prod && !ambiguo) escolher(prod, qty, termo);
                 }
               }}
               onKeyDown={onBuscaKeyDown}

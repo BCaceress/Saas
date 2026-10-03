@@ -830,16 +830,20 @@ export function ProdutosClient(props: {
                     é clicável.
                     Negrito na categoria e recuo com espaço inseparável (o navegador
                     engole espaço comum dentro de <option>). */}
+                {/* Inativa aparece com o sufixo "(inativa)": é por este filtro
+                    que o operador acha os produtos que precisa mover antes de
+                    excluir, e o diálogo de bloqueio manda para cá. Esconder
+                    deixaria esses produtos inalcançáveis pela barra. */}
                 {categoryOpts.map((c) => (
                   <Fragment key={c.id}>
                     <option value={`cat:${c.id}`} className="font-semibold" style={{ fontWeight: 600 }}>
-                      {c.nome}
+                      {c.nome}{c.ativo ? "" : " (inativa)"}
                     </option>
                     {subOpts
                       .filter((s) => s.categoryId === c.id)
                       .map((s) => (
                         <option key={s.id} value={s.id} style={{ fontWeight: 400 }}>
-                          {"    "}{s.nome}
+                          {"    "}{s.nome}{s.ativo ? "" : " (inativa)"}
                         </option>
                       ))}
                   </Fragment>
@@ -1358,6 +1362,7 @@ export function ProdutosClient(props: {
                 open
                 onClose={fecharSheet}
                 tree={extras?.categoryTree ?? LISTA_VAZIA}
+                fiscalOpts={extras?.fiscalOpts}
                 carregando={!extras}
                 onChanged={() => getGerenciarExtras().then(setExtras)}
               />

@@ -19,6 +19,11 @@ export type ItemParaVinculo = ItemComTributavel & {
 
 export type ProdutoParaVinculo = {
   ean: string | null;
+  /**
+   * Apelidos de código: mesma unidade, marcas diferentes (ver `ProductBarcode`).
+   * Opcional porque alguns chamadores só têm o espelho `ean` em mão.
+   */
+  codigos?: { codigo: string }[];
   packagings: { id: string; ean: string | null; fatorConversao: number }[];
 };
 
@@ -52,7 +57,11 @@ export function inferirVinculo(produto: ProdutoParaVinculo, item: ItemParaVincul
 /** O código de barras da nota é de alguma coisa deste produto? */
 export function casaPorCodigo(produto: ProdutoParaVinculo, gtin: string | null): boolean {
   if (!gtin) return false;
-  return produto.ean === gtin || produto.packagings.some((pk) => pk.ean === gtin);
+  return (
+    produto.ean === gtin ||
+    (produto.codigos ?? []).some((c) => c.codigo === gtin) ||
+    produto.packagings.some((pk) => pk.ean === gtin)
+  );
 }
 
 /**

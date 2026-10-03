@@ -127,6 +127,9 @@ const SELECT_FICHA = {
   nome: true,
   sku: true,
   ean: true,
+  // Apelidos de código: o mesmo açúcar com o código de outra marca. Sem isto a
+  // ficha diria "casou por SKU" num bipe que casou por código de barras.
+  barcodes: { select: { codigo: true, rotulo: true, principal: true } },
   imagemUrl: true,
   unidadeBase: true,
   ativo: true,
@@ -158,6 +161,7 @@ type ProdutoCru = {
   nome: string;
   sku: string;
   ean: string | null;
+  barcodes: Array<{ codigo: string; rotulo: string | null; principal: boolean }>;
   imagemUrl: string | null;
   unidadeBase: string;
   ativo: boolean;

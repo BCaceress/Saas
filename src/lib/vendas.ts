@@ -3,6 +3,7 @@ import { basePrisma, comTenant } from "./prisma";
 import { aplicarMovimento, registrarProducao } from "./estoque";
 import { emitirHookFiscal } from "./fiscal";
 import { defaultPaymentMethods } from "./presets";
+import { onlyDigits } from "./normalize";
 import type { PaymentMethod } from "@/generated/prisma";
 
 // ============================================================
@@ -84,6 +85,15 @@ export type NovoItemVenda = {
   variantId?: string | null;
   quantidade: number;
   desconto?: number;
+  /**
+   * Código de barras que o caixa bipou para chegar neste produto.
+   *
+   * Um produto pode responder por vários códigos (mesmo açúcar de 1 kg, marcas
+   * diferentes — ver `ProductBarcode`). O cEAN da NFC-e tem de ser o GTIN do
+   * pacote ENTREGUE, então o código bipado viaja junto até a emissão. Ausente
+   * em venda digitada ou escolhida na busca, e aí a emissão usa o principal.
+   */
+  codigoBarras?: string | null;
   /** PERSONALIZADO: componentes escolhidos no PDV (guiam preço e baixa). */
   selecoes?: string[];
 };
@@ -171,6 +181,7 @@ async function resolverItensVenda(tenantId: string, items: NovoItemVenda[]) {
     return {
       productId: i.productId,
       variantId: i.variantId ?? null,
+      codigoBarras: onlyDigits(i.codigoBarras ?? "") || null,
       quantidade: i.quantidade,
       precoUnitario: preco,
       desconto,

@@ -668,8 +668,18 @@ export function parseEan(bruto?: string): EanLido {
     if (preenchido) return { ean: preenchido, ajustado: true };
   }
 
-  // Nada fecha: grava como veio, mas avisa — pode ser código interno da loja.
-  return { ean: digitosCru, ajustado: false, problema: "digito" };
+  // Nada fecha: grava como veio.
+  //
+  // Só acusa dígito verificador quando o comprimento É de GTIN — aí a conta
+  // devia fechar e não fechou. Código de 4 ou 7 dígitos é código interno da
+  // loja (balança, etiqueta própria): não tem dígito verificador para conferir,
+  // e chamá-lo de inválido mandaria o operador caçar um erro que não existe.
+  const comprimentoDeGtin = TAMANHOS_GTIN.includes(digitosCru.length);
+  return {
+    ean: digitosCru,
+    ajustado: false,
+    ...(comprimentoDeGtin ? { problema: "digito" as const } : {}),
+  };
 }
 
 /** UN/ML/G — `null` quando o valor não é reconhecido (vira aviso na importação). */

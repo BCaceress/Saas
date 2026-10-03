@@ -68,6 +68,7 @@ export async function sugestoesDaNota(inboundId: string): Promise<SugestaoDePara
 
       const produto = {
         ean: p.ean,
+        codigos: p.codigos,
         packagings: p.embalagens.map((e) => ({
           id: e.id,
           ean: e.ean,

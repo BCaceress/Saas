@@ -2,6 +2,7 @@ import { unstable_cache, revalidateTag } from "next/cache";
 import { db } from "@/lib/prisma";
 import { runWithTenant } from "@/lib/tenant-context";
 import { derive, type DeriveComponent } from "@/lib/derive";
+import { codigosParaExibir } from "@/lib/produto-codigo";
 import type { Prisma } from "@/generated/prisma";
 import type {
   BrandOpt,
@@ -29,6 +30,9 @@ export const PRODUCT_INCLUDE = {
       location: { select: { nome: true, tipo: true, ativo: true } },
     },
   },
+  // Principal primeiro, depois ordem de cadastro: a lista na tela tem de sair
+  // na mesma ordem em que o operador a montou.
+  barcodes: { orderBy: [{ principal: "desc" }, { createdAt: "asc" }] },
   packagings: { orderBy: { nome: "asc" } },
   suppliers: {
     include: { supplier: { select: { razaoSocial: true, nomeFantasia: true } } },
@@ -106,6 +110,9 @@ export function toProductRow(p: ProductWithRelations): ProductRow {
     custoFornecedor: dec(principal?.custoFornecedor),
     disponibilidadeDerivada,
     salesChannels: [],
+    // `codigosParaExibir` cobre o legado: produto cujo EAN o backfill recusou
+    // (duplicado entre dois produtos) continua mostrando o código que tem.
+    codigos: codigosParaExibir(p),
     packagings: p.packagings.map((pk) => ({
       id: pk.id,
       nome: pk.nome,
@@ -139,9 +146,11 @@ export function toProductRow(p: ProductWithRelations): ProductRow {
  */
 export async function loadGerenciarExtras() {
   const [categories, locations, suppliers, sites, fiscalProfiles] = await Promise.all([
+    // Painel de gerenciamento mostra TUDO, inativa inclusive — é onde ela se
+    // reativa ou se exclui. Inativa desce para o fim: a lista viva fica no topo.
     db.category.findMany({
-      orderBy: { nome: "asc" },
-      include: { subcategories: { orderBy: { nome: "asc" } } },
+      orderBy: [{ ativo: "desc" }, { nome: "asc" }],
+      include: { subcategories: { orderBy: [{ ativo: "desc" }, { nome: "asc" }] } },
     }),
     db.storageLocation.findMany({
       where: { ativo: true },
@@ -162,11 +171,19 @@ export async function loadGerenciarExtras() {
     id: c.id,
     nome: c.nome,
     skuPrefix: c.skuPrefix,
+    ativo: c.ativo,
     subcategorias: c.subcategories.map((s) => ({
       id: s.id,
       nome: s.nome,
       skuPrefix: s.skuPrefix,
       ativo: s.ativo,
+      // Disponibilidade EFETIVA, derivada e não escrita em cascata: a
+      // subcategoria de uma categoria inativa não aparece em escolha nova,
+      // mas `ativo` dela fica como estava. Assim reativar a categoria não
+      // ressuscita o que o operador havia inativado à mão.
+      disponivel: c.ativo && s.ativo,
+      defaultStorageType: s.defaultStorageType,
+      defaultFiscalProfileId: s.defaultFiscalProfileId,
     })),
   }));
 
@@ -268,7 +285,12 @@ export function loadProductFormOptions(tenantId: string): Promise<ProductFormOpt
 
 async function consultarProductFormOptions(): Promise<ProductFormOptions> {
   const [categories, brands, locations, suppliers, fiscalProfiles] = await Promise.all([
+    // Formulário de produto: só o que ainda classifica coisa nova. Categoria
+    // inativa fora, e com ela as subcategorias dela — é a disponibilidade
+    // efetiva (`cat.ativo && sub.ativo`) aplicada no SQL. Sem o filtro na
+    // categoria, o cadastro oferecia "Cerveja" dentro de uma "Bebidas" morta.
     db.category.findMany({
+      where: { ativo: true },
       orderBy: { nome: "asc" },
       select: {
         id: true,

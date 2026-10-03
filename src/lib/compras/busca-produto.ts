@@ -1,6 +1,10 @@
 import "server-only";
 import { db } from "@/lib/prisma";
 import { onlyDigits } from "@/lib/normalize";
+import {
+  alternativasComEmbalagem,
+  alternativasPorCodigo,
+} from "@/lib/produto-codigo";
 import { ordenarPorRelevancia, tokensDaBusca } from "./busca-produto-rank";
 import type { Prisma } from "@/generated/prisma";
 
@@ -34,6 +38,8 @@ export type ProdutoBuscado = {
   unidadeBase: string;
   /** Quanto cabe numa unidade fechada, na `unidadeBase` (1000 ml na garrafa). */
   conteudoPorUnidade: number | null;
+  /** Códigos da unidade de venda — o principal e os apelidos de outras marcas. */
+  codigos: { codigo: string }[];
   embalagens: { id: string; nome: string; ean: string | null; fator: number }[];
   /**
    * Saldo FECHADO — garrafas, latas, caixas inteiras. É o que responde "é este
@@ -87,18 +93,20 @@ export async function buscarProdutosParaRelacionar(
     });
   }
 
-  // Código de barras digitado — do produto ou de uma embalagem dele.
-  if (digitos.length >= 8) {
-    alternativas.push({ ean: digitos });
-    alternativas.push({ packagings: { some: { ean: digitos } } });
+  // Código de barras digitado — principal, apelido (mesma unidade, outra
+  // marca) ou DUN de uma embalagem dele.
+  //
+  // Piso de 4 e não de 8: código interno de balança é curto e precisa casar
+  // igual. Abaixo disso o OR casaria metade do catálogo.
+  if (digitos.length >= 4) {
+    alternativas.push(...alternativasComEmbalagem(digitos));
   }
 
   // O GTIN do item da nota entra como candidato mesmo quando o operador está
   // digitando outra coisa: é o palpite mais forte que existe, e some da lista
   // se o texto digitado não tiver nada a ver.
   if (gtin) {
-    alternativas.push({ ean: gtin });
-    alternativas.push({ packagings: { some: { ean: gtin } } });
+    alternativas.push(...alternativasComEmbalagem(gtin));
   }
 
   const produtos = await db.product.findMany({
@@ -112,6 +120,9 @@ export async function buscarProdutosParaRelacionar(
       custoMedio: true,
       unidadeBase: true,
       conteudoPorUnidade: true,
+      // Apelidos de código: sem eles o ranqueamento daria 0 ponto a um bipe
+      // que casou exato, e o produto certo cairia fora do LIMIT.
+      barcodes: { select: { codigo: true } },
       packagings: { select: { id: true, nome: true, ean: true, fatorConversao: true } },
     },
     take: CANDIDATOS,
@@ -126,6 +137,7 @@ export async function buscarProdutosParaRelacionar(
     custoMedio: Number(p.custoMedio ?? 0),
     unidadeBase: p.unidadeBase,
     conteudoPorUnidade: p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
+    codigos: p.barcodes,
     embalagens: p.packagings.map((e) => ({
       id: e.id,
       nome: e.nome,
@@ -163,16 +175,18 @@ export async function produtosJaFornecidos(
   return produtosPorId(ids, { supplierId, siteId: opts.siteId ?? null });
 }
 
-/** Quem já é dono deste código de barras — produto, embalagem ou variação. */
+/** Quem já é dono deste código de barras — o produto ou uma embalagem dele. */
 export async function donoDoCodigo(
   gtin: string,
 ): Promise<{ productId: string; nome: string; sku: string; onde: string } | null> {
   const codigo = onlyDigits(gtin);
-  if (codigo.length < 8) return null;
+  // Sem piso de comprimento: código interno da loja tem dono igual, e deixar
+  // de avisar só adia a descoberta para a hora de bipar.
+  if (!codigo) return null;
 
   const [produto, embalagem] = await Promise.all([
     db.product.findFirst({
-      where: { ean: codigo, ativo: true },
+      where: { ativo: true, OR: alternativasPorCodigo(codigo) },
       select: { id: true, nome: true, sku: true },
     }),
     db.productPackaging.findFirst({
@@ -211,6 +225,9 @@ async function produtosPorId(
       custoMedio: true,
       unidadeBase: true,
       conteudoPorUnidade: true,
+      // Apelidos de código: sem eles o ranqueamento daria 0 ponto a um bipe
+      // que casou exato, e o produto certo cairia fora do LIMIT.
+      barcodes: { select: { codigo: true } },
       packagings: { select: { id: true, nome: true, ean: true, fatorConversao: true } },
     },
   });
@@ -230,6 +247,7 @@ async function produtosPorId(
       custoMedio: Number(p.custoMedio ?? 0),
       unidadeBase: p.unidadeBase,
       conteudoPorUnidade: p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
+      codigos: p.barcodes,
       embalagens: p.packagings.map((e) => ({
         id: e.id,
         nome: e.nome,

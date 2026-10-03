@@ -63,6 +63,12 @@ const itemSchema = z.object({
   variantId: z.string().optional().nullable(),
   quantidade: z.number().positive(),
   desconto: z.number().nonnegative().optional(),
+  /**
+   * Código bipado para chegar neste item. Vai para o cEAN da NFC-e: com um
+   * produto respondendo por várias marcas, o GTIN da nota tem de ser o do
+   * pacote entregue. Ausente em item digitado ou escolhido na busca.
+   */
+  codigoBarras: z.string().optional().nullable(),
   /** PERSONALIZADO: componentes escolhidos no PDV (guiam preço e baixa). */
   selecoes: z.array(z.string()).optional().default([]),
 });
@@ -668,6 +674,8 @@ export type VendaTotemDetalhe = {
     quantidade: number;
     restricaoIdade: boolean;
     imagemUrl: string | null;
+    /** Código bipado no totem — segue até o cEAN da NFC-e. */
+    codigoBarras: string | null;
     selecoes: string[];
     /** PERSONALIZADO: rótulo das escolhas ("Vodka, Gelo, Limão") — a "receita". */
     detalhe: string | null;
@@ -691,6 +699,10 @@ export async function carregarVendaTotemAction(saleId: string): Promise<VendaTot
             variantId: true,
             quantidade: true,
             precoUnitario: true,
+            // Ida e volta obrigatória: `receberVendaTotem` regrava os itens com
+            // o que o caixa manda. Sem trazer o código bipado no totem, receber
+            // a venda apagaria o cEAN certo da nota.
+            codigoBarras: true,
             selectedComponentIds: true,
           },
         },
@@ -741,6 +753,7 @@ export async function carregarVendaTotemAction(saleId: string): Promise<VendaTot
         quantidade: num(i.quantidade),
         restricaoIdade: prodMap.get(i.productId)?.restricaoIdade ?? false,
         imagemUrl: prodMap.get(i.productId)?.imagemUrl ?? null,
+        codigoBarras: i.codigoBarras,
         selecoes: i.selectedComponentIds,
         detalhe:
           i.selectedComponentIds.map((id) => compMap.get(id) ?? null).filter(Boolean).join(", ") ||

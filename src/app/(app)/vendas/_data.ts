@@ -35,6 +35,13 @@ export type ProdutoVenda = {
   nome: string;
   sku: string;
   ean: string | null;
+  /**
+   * TODOS os códigos que bipam neste produto — o principal e os apelidos de
+   * outras marcas (ver `ProductBarcode`). O caixa casa o bipe contra esta
+   * lista, não contra `ean`: o açúcar da Caravelas tem de vender pelo mesmo
+   * produto e pelo mesmo preço do da União.
+   */
+  codigos: string[];
   tipo: string;
   preco: number;
   restricaoIdade: boolean;
@@ -70,6 +77,7 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
       nome: true,
       sku: true,
       ean: true,
+      barcodes: { select: { codigo: true } },
       tipo: true,
       precoVenda: true,
       restricaoIdade: true,
@@ -141,6 +149,8 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
       nome: p.nome,
       sku: p.sku,
       ean: p.ean,
+      // `Set` porque o espelho `ean` costuma repetir o principal da tabela.
+      codigos: [...new Set([p.ean, ...p.barcodes.map((b) => b.codigo)].filter(Boolean))] as string[],
       tipo: p.tipo,
       preco: promos.get(p.id) ?? num(p.precoVenda),
       restricaoIdade: p.restricaoIdade,

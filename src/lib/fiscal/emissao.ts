@@ -98,6 +98,10 @@ export async function enfileirarNfceDaVenda(
         items: {
           select: {
             productId: true,
+            // O código que o caixa bipou. Com um produto respondendo por várias
+            // marcas (ver `ProductBarcode`), o cEAN tem de ser o do pacote que
+            // SAIU da loja — e não o principal do cadastro.
+            codigoBarras: true,
             quantidade: true,
             precoUnitario: true,
             desconto: true,
@@ -266,7 +270,11 @@ export async function enfileirarNfceDaVenda(
               productId: item.productId,
               codigo: p?.sku ?? item.productId,
               descricao: p?.nome ?? "Produto",
-              gtin: p?.gtinTributavel ?? p?.ean ?? null,
+              // Ordem: o GTIN tributável (quando a unidade tributada difere),
+              // depois o CÓDIGO BIPADO, e só então o principal do cadastro.
+              // Pôr o principal numa venda de outra marca é declarar na nota um
+              // GTIN que não é o do produto entregue.
+              gtin: p?.gtinTributavel ?? item.codigoBarras ?? p?.ean ?? null,
               ncm: perfil?.ncm ?? "",
               cest: perfil?.cest ?? null,
               // 5102 = venda de mercadoria adquirida de terceiros, dentro do

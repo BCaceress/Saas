@@ -1,5 +1,6 @@
 import "server-only";
 import { db } from "@/lib/prisma";
+import { alternativasPorCodigo } from "@/lib/produto-codigo";
 import { registrarEntrada, type EntradaItem } from "@/lib/estoque";
 import {
   parseNotaXml,
@@ -136,8 +137,10 @@ async function resolverItem(
       };
     }
 
+    // Também pelos apelidos de código: a nota da Caravelas traz o GTIN da
+    // Caravelas, e o produto é o mesmo "açúcar 1 kg" do cadastro.
     const produto = await db.product.findFirst({
-      where: { ean: item.gtin, ativo: true },
+      where: { ativo: true, OR: alternativasPorCodigo(item.gtin) },
       select: { id: true },
     });
     // EAN de unidade numa linha vendida em caixa: quem desempata é o qTrib.

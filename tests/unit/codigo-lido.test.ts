@@ -70,9 +70,19 @@ describe("classificarCodigo", () => {
       tipo: "texto",
       valor: "REF-COCA-2L",
     });
-    // 9 dígitos não é EAN de nenhum tamanho válido.
-    expect(classificarCodigo("123456789").tipo).toBe("texto");
     expect(classificarCodigo("   ")).toEqual({ tipo: "texto", valor: "" });
+    // Três dígitos é curto demais: a busca por trecho casaria meio catálogo.
+    expect(classificarCodigo("123").tipo).toBe("texto");
+  });
+
+  it("código numérico de comprimento livre é código de barras", () => {
+    // O comprimento deixou de ser lista de GTIN (8/12/13/14). Código interno de
+    // balança e etiqueta própria de mercadinho têm o tamanho que o dono quis, e
+    // precisam bipar igual — quando isto era travado, caíam em `texto` e
+    // desapareciam da busca por código.
+    for (const codigo of ["4471", "1234567", "123456789", "12345678901234567890"]) {
+      expect(classificarCodigo(codigo)).toEqual({ tipo: "ean", valor: codigo });
+    }
   });
 
   it("ida e volta do código do pedido", () => {

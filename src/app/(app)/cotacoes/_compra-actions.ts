@@ -19,6 +19,10 @@ import {
 } from "@/lib/compras/cotacao-whatsapp";
 import { canalAtivo, providerDe, WhatsAppProviderError } from "@/lib/whatsapp";
 import { db } from "@/lib/prisma";
+import {
+  alternativasPorCodigo,
+  alternativasPorTrechoDeCodigo,
+} from "@/lib/produto-codigo";
 import { enviarEmail } from "@/lib/email";
 import { emailCotacao } from "@/lib/email/templates";
 import { getActiveSiteId, listSites } from "@/lib/sites";
@@ -505,11 +509,10 @@ export async function buscarProdutosCotacaoAction(
         OR: [
           { nome: { contains: d.termo, mode: "insensitive" } },
           { sku: { contains: d.termo, mode: "insensitive" } },
-          { ean: { contains: d.termo } },
-          // O código bipado costuma ser o da CAIXA, não o da unidade: sem
-          // olhar o EAN das embalagens, o leitor do depósito não acha o
-          // produto que está com a mão.
-          { packagings: { some: { ean: { contains: d.termo } } } },
+          // Cobre os três lugares onde um código vive: o principal, os apelidos
+          // (mesma unidade, outra marca) e o DUN da caixa/fardo — quem bipa no
+          // depósito costuma ter a embalagem na mão, não a unidade.
+          ...alternativasPorTrechoDeCodigo(d.termo),
         ],
       },
       orderBy: { nome: "asc" },
@@ -555,7 +558,7 @@ export async function buscarProdutoPorCodigoCotacaoAction(
     // Unidade, SKU e, por último, o EAN da caixa/fardo — quem bipa no depósito
     // costuma ter a embalagem na mão, não a unidade.
     const direto = await db.product.findFirst({
-      where: { ativo: true, OR: [{ ean: limpo }, { sku: limpo }] },
+      where: { ativo: true, OR: [...alternativasPorCodigo(limpo), { sku: limpo }] },
       select,
     });
     if (direto) return (await montarProdutos([direto]))[0] ?? null;

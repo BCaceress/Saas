@@ -15,6 +15,8 @@ export type ProdutoRanqueavel = {
   nome: string;
   sku: string;
   ean: string | null;
+  /** Apelidos de código: mesma unidade, marcas diferentes. */
+  codigos?: { codigo: string }[];
   embalagens: { ean: string | null }[];
 };
 
@@ -51,14 +53,17 @@ export function pontuarProduto(
   const nome = limpo(p.nome);
   const sku = limpo(p.sku);
   const digitos = onlyDigits(termo);
-  const codigos = [p.ean, ...p.embalagens.map((e) => e.ean)].filter(
-    (c): c is string => Boolean(c),
-  );
+  const codigos = [
+    p.ean,
+    ...(p.codigos ?? []).map((c) => c.codigo),
+    ...p.embalagens.map((e) => e.ean),
+  ].filter((c): c is string => Boolean(c));
 
   let pontos = 0;
 
   // 1. Código de barras — do que foi digitado ou do item que veio na nota.
-  if (digitos.length >= 8 && codigos.includes(digitos)) pontos += 1000;
+  //    Piso de 4: código interno de balança é curto e identifica igual.
+  if (digitos.length >= 4 && codigos.includes(digitos)) pontos += 1000;
   if (gtinDaNota && codigos.includes(gtinDaNota)) pontos += 800;
 
   // 2. SKU exato (e prefixo de SKU, que é como o operador digita na correria).

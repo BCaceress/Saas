@@ -174,6 +174,7 @@ function vinculoDoProduto(p: ProdutoBuscado, item: ItemDeNota) {
   return inferirVinculo(
     {
       ean: p.ean,
+      codigos: p.codigos,
       packagings: p.embalagens.map((e) => ({
         id: e.id,
         ean: e.ean,
@@ -760,6 +761,7 @@ const Resultado = React.forwardRef<
   const casa = casaPorCodigo(
     {
       ean: p.ean,
+      codigos: p.codigos,
       packagings: p.embalagens.map((e) => ({
         id: e.id,
         ean: e.ean,

@@ -15,6 +15,15 @@ export type CartItem = {
   quantidade: number;
   restricaoIdade: boolean;
   imagemUrl: string | null;
+  /**
+   * Código bipado para chegar neste item, quando houve bipe.
+   *
+   * Vai até o cEAN da NFC-e: um produto pode responder por vários códigos
+   * (mesmo açúcar, marcas diferentes — ver `ProductBarcode`), e a nota tem de
+   * declarar o GTIN do pacote que o cliente levou. Null = item escolhido na
+   * busca ou no cartão de produto.
+   */
+  codigoBarras?: string | null;
   selecoes: string[];
   /** PERSONALIZADO: rótulo das escolhas ("Vodka, Gelo, Limão") — a "receita". */
   detalhe: string | null;
