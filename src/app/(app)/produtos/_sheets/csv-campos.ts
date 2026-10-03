@@ -68,11 +68,31 @@ export type GrupoKey =
 export const GRUPOS: { key: GrupoKey; label: string; desc: string }[] = [
   { key: "identificacao", label: "Identificação", desc: "Quem é o produto." },
   { key: "preco", label: "Preço", desc: "Quanto custa e por quanto sai." },
-  { key: "compra", label: "Compra", desc: "De quem você compra e em que embalagem." },
-  { key: "uso", label: "Utilização", desc: "Vende a unidade, rende dose, ou os dois." },
-  { key: "estoque", label: "Estoque", desc: "Saldo de partida e metas de reposição." },
-  { key: "fiscal", label: "Fiscal", desc: "Perfil tributário e dados por item." },
-  { key: "online", label: "Loja online", desc: "Peso, medidas e descrição para venda online." },
+  {
+    key: "compra",
+    label: "Compra",
+    desc: "De quem você compra e em que embalagem.",
+  },
+  {
+    key: "uso",
+    label: "Utilização",
+    desc: "Vende a unidade, rende dose, ou os dois.",
+  },
+  {
+    key: "estoque",
+    label: "Estoque",
+    desc: "Saldo de partida e metas de reposição.",
+  },
+  {
+    key: "fiscal",
+    label: "Fiscal",
+    desc: "Perfil tributário e dados por item.",
+  },
+  {
+    key: "online",
+    label: "Loja online",
+    desc: "Peso, medidas e descrição para venda online.",
+  },
 ];
 
 export type CampoCsv = {
@@ -108,9 +128,17 @@ export const CAMPOS: CampoCsv[] = [
     key: "subcategoria",
     label: "Subcategoria",
     grupo: "identificacao",
-    formato: "prefixo (CER) ou nome (Cervejas) — deixe vazio para importar sem subcategoria",
+    formato:
+      "prefixo (CER) ou nome (Cervejas) — deixe vazio para importar sem subcategoria",
     exemplo: ["Cervejas", "Destilados", ""],
-    aliases: ["subcategoria", "sub categoria", "categoria", "tipo", "secao", "grupo"],
+    aliases: [
+      "subcategoria",
+      "sub categoria",
+      "categoria",
+      "tipo",
+      "secao",
+      "grupo",
+    ],
   },
   {
     key: "categoria",
@@ -118,7 +146,12 @@ export const CAMPOS: CampoCsv[] = [
     grupo: "identificacao",
     formato: "só usada para criar a subcategoria que faltar",
     exemplo: ["Bebidas", "Bebidas", "Bebidas"],
-    aliases: ["categoria pai", "categoria principal", "departamento", "familia"],
+    aliases: [
+      "categoria pai",
+      "categoria principal",
+      "departamento",
+      "familia",
+    ],
   },
   {
     key: "marca",
@@ -196,7 +229,11 @@ export const CAMPOS: CampoCsv[] = [
     grupo: "compra",
     avancado: true,
     exemplo: ["", "", ""],
-    aliases: ["codigo no fornecedor", "cod fornecedor", "referencia fornecedor"],
+    aliases: [
+      "codigo no fornecedor",
+      "cod fornecedor",
+      "referencia fornecedor",
+    ],
   },
   {
     key: "embalagem",
@@ -212,7 +249,13 @@ export const CAMPOS: CampoCsv[] = [
     grupo: "compra",
     formato: "quantas unidades vêm na caixa/fardo",
     exemplo: ["24", "", "6"],
-    aliases: ["unidades por", "fator", "qtd embalagem", "por caixa", "conversao"],
+    aliases: [
+      "unidades por",
+      "fator",
+      "qtd embalagem",
+      "por caixa",
+      "conversao",
+    ],
   },
   {
     key: "embalagemEan",
@@ -271,7 +314,14 @@ export const CAMPOS: CampoCsv[] = [
     label: "Estoque inicial",
     grupo: "estoque",
     exemplo: ["48", "6", "24"],
-    aliases: ["estoque inicial", "inicial", "saldo", "quantidade", "qtd", "estoque"],
+    aliases: [
+      "estoque inicial",
+      "inicial",
+      "saldo",
+      "quantidade",
+      "qtd",
+      "estoque",
+    ],
   },
   {
     key: "estoqueMinimo",
@@ -403,7 +453,9 @@ export const CAMPOS: CampoCsv[] = [
 ];
 
 /** Campos obrigatórios — usados na prévia para marcar a linha que será pulada. */
-export const OBRIGATORIOS = CAMPOS.filter((c) => c.obrigatorio).map((c) => c.key);
+export const OBRIGATORIOS = CAMPOS.filter((c) => c.obrigatorio).map(
+  (c) => c.key,
+);
 
 /**
  * Campos que a empresa enxerga: quem controla por giro não preenche mínimo nem
@@ -436,7 +488,9 @@ export function templateCsv(campos: CampoCsv[]): string {
   const linhas: string[][] = [campos.map((c) => c.key as string)];
   for (let i = 0; i < 3; i++) linhas.push(campos.map((c) => c.exemplo[i]));
   // BOM: sem ele o Excel come os acentos do cabeçalho.
-  return "﻿" + linhas.map((l) => l.map(escapar).join(SEP)).join("\r\n") + "\r\n";
+  return (
+    "﻿" + linhas.map((l) => l.map(escapar).join(SEP)).join("\r\n") + "\r\n"
+  );
 }
 
 // ── Auto-mapeamento ──────────────────────────────────────────
@@ -448,13 +502,19 @@ const chave = (s: string) => semAcento(s).replace(/[^a-z0-9]/g, "");
  * (quem baixou o modelo acerta 100%), depois apelidos. Uma coluna só serve a um
  * campo — senão "custo" rouba a coluna "custo fornecedor".
  */
-export function autoMapear(headers: string[], campos: CampoCsv[]): Record<string, string> {
+export function autoMapear(
+  headers: string[],
+  campos: CampoCsv[],
+): Record<string, string> {
   const map: Record<string, string> = {};
   const usados = new Set<string>();
 
   for (const c of campos) {
     const alvo = chave(c.key);
-    const hit = headers.find((h) => !usados.has(h) && (chave(h) === alvo || chave(h) === chave(c.label)));
+    const hit = headers.find(
+      (h) =>
+        !usados.has(h) && (chave(h) === alvo || chave(h) === chave(c.label)),
+    );
     if (hit) {
       map[c.key] = hit;
       usados.add(hit);
@@ -492,7 +552,18 @@ export function parseNumero(v?: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-const SIM = ["sim", "s", "true", "1", "x", "v", "verdadeiro", "y", "yes", "ativo"];
+const SIM = [
+  "sim",
+  "s",
+  "true",
+  "1",
+  "x",
+  "v",
+  "verdadeiro",
+  "y",
+  "yes",
+  "ativo",
+];
 const NAO = ["nao", "n", "false", "0", "f", "no", "inativo", "-"];
 
 /** Sim/não em qualquer grafia que planilha produz. Valor estranho cai no padrão. */

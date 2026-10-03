@@ -3,7 +3,14 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Papa from "papaparse";
-import { Upload, Download, CheckCircle2, AlertTriangle, Info, ChevronRight } from "lucide-react";
+import {
+  Upload,
+  Download,
+  CheckCircle2,
+  AlertTriangle,
+  Info,
+  ChevronRight,
+} from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
@@ -50,7 +57,10 @@ export function CsvSheet({
 
   // No mapeamento aparecem todos os campos que a empresa usa — se a planilha
   // trouxe a coluna, ela tem onde encaixar.
-  const campos = useMemo(() => camposVisiveis(policy, { completo: true }), [policy]);
+  const campos = useMemo(
+    () => camposVisiveis(policy, { completo: true }),
+    [policy],
+  );
   const basicos = useMemo(() => camposVisiveis(policy), [policy]);
 
   function onFile(file: File) {
@@ -102,7 +112,8 @@ export function CsvSheet({
         raw.length > 0 && !result ? (
           <div className="flex items-center justify-between gap-3">
             <span className="text-sm text-muted">
-              {validas} de {raw.length} linhas prontas · {mapeados.length} campos mapeados
+              {validas} de {raw.length} linhas prontas · {mapeados.length}{" "}
+              campos mapeados
             </span>
             <Button onClick={importar} disabled={pending || validas === 0}>
               {pending ? "Importando…" : `Importar ${validas} produtos`}
@@ -129,34 +140,49 @@ export function CsvSheet({
           </label>
 
           <div className="rounded-[var(--radius)] border border-line p-4">
-            <p className="text-sm font-medium text-ink">Não tem planilha ainda?</p>
+            <p className="text-sm font-medium text-ink">
+              Não tem planilha ainda?
+            </p>
             <p className="mt-1 text-xs text-muted">
-              Baixe um modelo já preenchido com três exemplos. O básico cobre o dia a dia; o
-              completo traz todos os campos aceitos (fiscal por item, medidas, SKU próprio).
+              Baixe um modelo já preenchido com três exemplos. O básico cobre o
+              dia a dia; o completo traz todos os campos aceitos (fiscal por
+              item, medidas, SKU próprio).
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button
                 variant="secondary"
-                onClick={() => baixar(templateCsv(basicos), "modelo-produtos-nohub.csv")}
+                onClick={() =>
+                  baixar(templateCsv(basicos), "modelo-produtos-nohub.csv")
+                }
                 className="gap-1.5"
               >
                 <Download size={15} /> Modelo básico
-                <span className="text-xs text-muted">({basicos.length} colunas)</span>
+                <span className="text-xs text-muted">
+                  ({basicos.length} colunas)
+                </span>
               </Button>
               <Button
                 variant="ghost"
-                onClick={() => baixar(templateCsv(campos), "modelo-produtos-nohub-completo.csv")}
+                onClick={() =>
+                  baixar(
+                    templateCsv(campos),
+                    "modelo-produtos-nohub-completo.csv",
+                  )
+                }
                 className="gap-1.5"
               >
                 <Download size={15} /> Modelo completo
-                <span className="text-xs text-muted">({campos.length} colunas)</span>
+                <span className="text-xs text-muted">
+                  ({campos.length} colunas)
+                </span>
               </Button>
             </div>
           </div>
 
           <p className="text-xs text-muted">
-            Obrigatório: <span className="font-medium text-ink-2">nome</span>. A subcategoria
-            é opcional. Números em formato brasileiro (7,90). Sim/não aceita sim, não, 1, 0, x.
+            Obrigatório: <span className="font-medium text-ink-2">nome</span>. A
+            subcategoria é opcional. Números em formato brasileiro (7,90).
+            Sim/não aceita sim, não, 1, 0, x.
           </p>
         </div>
       )}
@@ -180,8 +206,12 @@ export function CsvSheet({
                       size={14}
                       className="shrink-0 text-faint transition-transform group-open:rotate-90"
                     />
-                    <span className="text-[13.5px] font-medium text-ink">{g.label}</span>
-                    <span className="truncate text-xs text-muted">{g.desc}</span>
+                    <span className="text-[13.5px] font-medium text-ink">
+                      {g.label}
+                    </span>
+                    <span className="truncate text-xs text-muted">
+                      {g.desc}
+                    </span>
                     <span className="ml-auto shrink-0 font-mono text-[11px] text-muted">
                       {qtd}/{doGrupo.length}
                     </span>
@@ -193,7 +223,9 @@ export function CsvSheet({
                         campo={c}
                         headers={headers}
                         valor={mapping[c.key] ?? ""}
-                        onChange={(v) => setMapping((m) => ({ ...m, [c.key]: v }))}
+                        onChange={(v) =>
+                          setMapping((m) => ({ ...m, [c.key]: v }))
+                        }
                       />
                     ))}
                   </div>
@@ -214,8 +246,9 @@ export function CsvSheet({
                 Criar categorias e subcategorias que não existirem
               </span>
               <span className="block text-xs text-muted">
-                A linha precisa trazer também a coluna <code className="font-mono">categoria</code>.
-                Sem isso, produto de subcategoria desconhecida é recusado.
+                A linha precisa trazer também a coluna{" "}
+                <code className="font-mono">categoria</code>. Sem isso, produto
+                de subcategoria desconhecida é recusado.
               </span>
             </span>
           </label>
@@ -227,7 +260,10 @@ export function CsvSheet({
                 <thead className="bg-surface-2 text-faint">
                   <tr>
                     {mapeados.map((c) => (
-                      <th key={c.key} className="whitespace-nowrap px-2 py-1.5 font-medium">
+                      <th
+                        key={c.key}
+                        className="whitespace-nowrap px-2 py-1.5 font-medium"
+                      >
                         {c.label}
                       </th>
                     ))}
@@ -237,9 +273,15 @@ export function CsvSheet({
                   {mapped.slice(0, 6).map((r, i) => {
                     const invalida = !r.nome?.trim();
                     return (
-                      <tr key={i} className={invalida ? "bg-danger-soft" : undefined}>
+                      <tr
+                        key={i}
+                        className={invalida ? "bg-danger-soft" : undefined}
+                      >
                         {mapeados.map((c) => (
-                          <td key={c.key} className="whitespace-nowrap px-2 py-1.5 text-ink-2">
+                          <td
+                            key={c.key}
+                            className="whitespace-nowrap px-2 py-1.5 text-ink-2"
+                          >
                             {r[c.key]?.trim() || "—"}
                           </td>
                         ))}
@@ -250,9 +292,9 @@ export function CsvSheet({
               </table>
             </div>
             <p className="mt-2 text-xs text-muted">
-              Linhas em vermelho sem nome serão puladas. A subcategoria pode ficar vazia.
-              Produto com código de barras já cadastrado também é recusado — a importação só cria,
-              nunca sobrescreve.
+              Linhas em vermelho sem nome serão puladas. A subcategoria pode
+              ficar vazia. Produto com código de barras já cadastrado também é
+              recusado — a importação só cria, nunca sobrescreve.
             </p>
           </div>
         </div>
@@ -316,7 +358,9 @@ function CampoMap({
           </option>
         ))}
       </Select>
-      {campo.formato && <span className="text-[11px] text-muted">{campo.formato}</span>}
+      {campo.formato && (
+        <span className="text-[11px] text-muted">{campo.formato}</span>
+      )}
     </label>
   );
 }

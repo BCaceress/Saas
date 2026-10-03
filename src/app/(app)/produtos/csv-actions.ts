@@ -5,10 +5,21 @@ import { db } from "@/lib/prisma";
 import { guardAction } from "@/lib/guard";
 import { assertCabeProduto } from "@/lib/limites";
 import { runWithTenant } from "@/lib/tenant-context";
-import { normalizeBrand, normalizeSkuPrefix, onlyDigits, semAcento } from "@/lib/normalize";
+import {
+  normalizeBrand,
+  normalizeSkuPrefix,
+  onlyDigits,
+  semAcento,
+} from "@/lib/normalize";
 import { getOrCreateDefaultSite } from "@/lib/sites";
 import { generateSku } from "@/lib/sku";
-import { parseBool, parseEan, parseNumero, parseUnidade, type CsvRow } from "./_sheets/csv-campos";
+import {
+  parseBool,
+  parseEan,
+  parseNumero,
+  parseUnidade,
+  type CsvRow,
+} from "./_sheets/csv-campos";
 import { createCategory, createSubcategory } from "./actions";
 import { invalidarOpcoesFiltro } from "./_query";
 
@@ -64,36 +75,54 @@ export async function commitImport(
       ),
     ];
     const skusArquivo = [
-      ...new Set(rows.map((r) => (r.sku ?? "").trim().toUpperCase()).filter(Boolean)),
+      ...new Set(
+        rows.map((r) => (r.sku ?? "").trim().toUpperCase()).filter(Boolean),
+      ),
     ];
 
     // Tudo que a planilha pode referenciar entra em memória de uma vez — 500
     // linhas × 6 consultas cada seria meia hora de round-trip ao Neon.
-    const [subs, cats, brands, suppliers, fiscais, site, eansUsados, skusUsados] =
-      await Promise.all([
-        db.subcategory.findMany({
-          select: {
-            id: true,
-            nome: true,
-            skuPrefix: true,
-            defaultFiscalProfileId: true,
-            category: { select: { id: true, nome: true, skuPrefix: true } },
-          },
-        }),
-        db.category.findMany({ select: { id: true, nome: true } }),
-        db.brand.findMany({ select: { id: true, nomeNormalizado: true } }),
-        db.supplier.findMany({
-          select: { id: true, cnpj: true, razaoSocial: true, nomeFantasia: true },
-        }),
-        db.fiscalProfile.findMany({ select: { id: true, nome: true, ncm: true } }),
-        getOrCreateDefaultSite(tid),
-        eansArquivo.length
-          ? db.product.findMany({ where: { ean: { in: eansArquivo } }, select: { ean: true } })
-          : Promise.resolve([]),
-        skusArquivo.length
-          ? db.product.findMany({ where: { sku: { in: skusArquivo } }, select: { sku: true } })
-          : Promise.resolve([]),
-      ]);
+    const [
+      subs,
+      cats,
+      brands,
+      suppliers,
+      fiscais,
+      site,
+      eansUsados,
+      skusUsados,
+    ] = await Promise.all([
+      db.subcategory.findMany({
+        select: {
+          id: true,
+          nome: true,
+          skuPrefix: true,
+          defaultFiscalProfileId: true,
+          category: { select: { id: true, nome: true, skuPrefix: true } },
+        },
+      }),
+      db.category.findMany({ select: { id: true, nome: true } }),
+      db.brand.findMany({ select: { id: true, nomeNormalizado: true } }),
+      db.supplier.findMany({
+        select: { id: true, cnpj: true, razaoSocial: true, nomeFantasia: true },
+      }),
+      db.fiscalProfile.findMany({
+        select: { id: true, nome: true, ncm: true },
+      }),
+      getOrCreateDefaultSite(tid),
+      eansArquivo.length
+        ? db.product.findMany({
+            where: { ean: { in: eansArquivo } },
+            select: { ean: true },
+          })
+        : Promise.resolve([]),
+      skusArquivo.length
+        ? db.product.findMany({
+            where: { sku: { in: skusArquivo } },
+            select: { sku: true },
+          })
+        : Promise.resolve([]),
+    ]);
 
     const locais = await db.storageLocation.findMany({
       where: { siteId: site.id },
@@ -117,11 +146,15 @@ export async function commitImport(
     }
 
     /** Cria categoria (se preciso) + subcategoria e devolve já com a categoria junto. */
-    async function criarSub(nomeSub: string, nomeCat: string): Promise<SubComCategoria> {
+    async function criarSub(
+      nomeSub: string,
+      nomeCat: string,
+    ): Promise<SubComCategoria> {
       const cat =
         listaCats.find((c) => semAcento(c.nome) === semAcento(nomeCat)) ??
         (await createCategory(nomeCat));
-      if (!listaCats.some((c) => c.id === cat.id)) listaCats.push({ id: cat.id, nome: cat.nome });
+      if (!listaCats.some((c) => c.id === cat.id))
+        listaCats.push({ id: cat.id, nome: cat.nome });
 
       const id = await createSubcategory({ categoryId: cat.id, nome: nomeSub });
       const criada = await db.subcategory.findFirst({
@@ -143,10 +176,14 @@ export async function commitImport(
       const norm = normalizeBrand(marca);
       const cached = brandCache.get(norm);
       if (cached) return cached;
-      const existente = await db.brand.findFirst({ where: { nomeNormalizado: norm } });
+      const existente = await db.brand.findFirst({
+        where: { nomeNormalizado: norm },
+      });
       const b =
         existente ??
-        (await db.brand.create({ data: { tenantId: tid, nome: marca, nomeNormalizado: norm } }));
+        (await db.brand.create({
+          data: { tenantId: tid, nome: marca, nomeNormalizado: norm },
+        }));
       brandCache.set(norm, b.id);
       return b.id;
     }
@@ -154,12 +191,16 @@ export async function commitImport(
     function acharFornecedor(valor: string) {
       const digitos = onlyDigits(valor);
       if (digitos.length === 14) {
-        const porCnpj = suppliers.find((s) => onlyDigits(s.cnpj ?? "") === digitos);
+        const porCnpj = suppliers.find(
+          (s) => onlyDigits(s.cnpj ?? "") === digitos,
+        );
         if (porCnpj) return porCnpj;
       }
       const alvo = semAcento(valor);
       return suppliers.find(
-        (s) => semAcento(s.razaoSocial) === alvo || semAcento(s.nomeFantasia ?? "") === alvo,
+        (s) =>
+          semAcento(s.razaoSocial) === alvo ||
+          semAcento(s.nomeFantasia ?? "") === alvo,
       );
     }
 
@@ -168,7 +209,9 @@ export async function commitImport(
       const digitos = onlyDigits(valor);
       return (
         fiscais.find((f) => semAcento(f.nome) === alvo) ??
-        (digitos.length >= 6 ? fiscais.find((f) => onlyDigits(f.ncm) === digitos) : undefined)
+        (digitos.length >= 6
+          ? fiscais.find((f) => onlyDigits(f.ncm) === digitos)
+          : undefined)
       );
     }
 
@@ -186,7 +229,9 @@ export async function commitImport(
 
       // ── Subcategoria (opcional) ─────────────────────────────
       const chaveSub = (row.subcategoria ?? "").trim();
-      let sub: SubComCategoria | undefined = chaveSub ? acharSub(chaveSub) : undefined;
+      let sub: SubComCategoria | undefined = chaveSub
+        ? acharSub(chaveSub)
+        : undefined;
       if (chaveSub && !sub) {
         const nomeCat = (row.categoria ?? "").trim();
         if (!opts.criarFaltantes) {
@@ -194,14 +239,20 @@ export async function commitImport(
           continue;
         }
         if (!nomeCat) {
-          erro(`Subcategoria "${chaveSub}" não existe e a linha não traz a categoria dela.`);
+          erro(
+            `Subcategoria "${chaveSub}" não existe e a linha não traz a categoria dela.`,
+          );
           continue;
         }
         try {
           sub = await criarSub(chaveSub, nomeCat);
           aviso(`Subcategoria "${sub.nome}" criada em "${nomeCat}".`);
         } catch (e) {
-          erro(e instanceof Error ? e.message : `Não foi possível criar "${chaveSub}".`);
+          erro(
+            e instanceof Error
+              ? e.message
+              : `Não foi possível criar "${chaveSub}".`,
+          );
           continue;
         }
       }
@@ -216,15 +267,20 @@ export async function commitImport(
             `Código de barras "${eanBruto}" veio em notação científica (a planilha o tratou como número) — produto criado sem código. Formate a coluna como texto e importe de novo.`,
           );
         } else if (!lido.ean || lido.ean.length < 8 || lido.ean.length > 14) {
-          aviso(`Código de barras "${eanBruto}" inválido — produto criado sem código.`);
+          aviso(
+            `Código de barras "${eanBruto}" inválido — produto criado sem código.`,
+          );
         } else if (eansVistos.has(lido.ean)) {
           erro(`Código de barras ${lido.ean} já cadastrado.`);
           continue;
         } else {
           ean = lido.ean;
-          if (lido.ajustado) aviso(`Código de barras "${eanBruto}" corrigido para ${ean}.`);
+          if (lido.ajustado)
+            aviso(`Código de barras "${eanBruto}" corrigido para ${ean}.`);
           if (lido.problema === "digito") {
-            aviso(`Código de barras ${ean} tem dígito verificador inválido — confira o cadastro.`);
+            aviso(
+              `Código de barras ${ean} tem dígito verificador inválido — confira o cadastro.`,
+            );
           }
         }
       }
@@ -237,7 +293,8 @@ export async function commitImport(
 
       // ── Utilização ──────────────────────────────────────────
       const unidade = parseUnidade(row.unidadeBase);
-      if (unidade === null) aviso(`Unidade "${row.unidadeBase}" desconhecida — usei UN.`);
+      if (unidade === null)
+        aviso(`Unidade "${row.unidadeBase}" desconhecida — usei UN.`);
       const fracionavel = parseBool(row.fracionavel, false);
       let vendaUnidade = parseBool(row.vendaUnidade, true);
       if (!vendaUnidade && !fracionavel) {
@@ -247,7 +304,9 @@ export async function commitImport(
       const conteudo = parseNumero(row.conteudoPorUnidade);
       const dose = parseNumero(row.dosePadrao);
       if (fracionavel && !conteudo) {
-        aviso("Produto fracionável sem conteúdo por unidade — o rendimento em doses fica em branco.");
+        aviso(
+          "Produto fracionável sem conteúdo por unidade — o rendimento em doses fica em branco.",
+        );
       }
 
       // ── Vínculos opcionais ──────────────────────────────────
@@ -260,7 +319,10 @@ export async function commitImport(
       if (fornecedor) {
         const s = acharFornecedor(fornecedor);
         if (s) fornecedorId = s.id;
-        else aviso(`Fornecedor "${fornecedor}" não encontrado — produto criado sem fornecedor.`);
+        else
+          aviso(
+            `Fornecedor "${fornecedor}" não encontrado — produto criado sem fornecedor.`,
+          );
       }
 
       let fiscalProfileId: string | null = sub?.defaultFiscalProfileId ?? null;
@@ -268,7 +330,10 @@ export async function commitImport(
       if (perfil) {
         const f = acharFiscal(perfil);
         if (f) fiscalProfileId = f.id;
-        else aviso(`Perfil fiscal "${perfil}" não encontrado — usei o padrão da subcategoria.`);
+        else
+          aviso(
+            `Perfil fiscal "${perfil}" não encontrado — usei o padrão da subcategoria.`,
+          );
       }
 
       let locationId: string | null = null;
@@ -276,7 +341,10 @@ export async function commitImport(
       if (local) {
         const l = locais.find((x) => semAcento(x.nome) === semAcento(local));
         if (l) locationId = l.id;
-        else aviso(`Localização "${local}" não encontrada — produto criado sem local.`);
+        else
+          aviso(
+            `Localização "${local}" não encontrada — produto criado sem local.`,
+          );
       }
 
       // ── Embalagem de compra ─────────────────────────────────
@@ -284,14 +352,20 @@ export async function commitImport(
       const fator = parseNumero(row.embalagemFator);
       const temEmbalagem = !!embalagem && !!fator && fator > 0;
       if (embalagem && !temEmbalagem) {
-        aviso(`Embalagem "${embalagem}" sem quantidade de unidades — ignorada.`);
+        aviso(
+          `Embalagem "${embalagem}" sem quantidade de unidades — ignorada.`,
+        );
       }
 
       const peso = parseNumero(row.pesoGramas);
 
       try {
         const sku =
-          skuInformado || (await generateSku(sub?.category.skuPrefix ?? "PRO", sub?.skuPrefix ?? "GER"));
+          skuInformado ||
+          (await generateSku(
+            sub?.category.skuPrefix ?? "PRO",
+            sub?.skuPrefix ?? "GER",
+          ));
 
         const product = await db.product.create({
           data: {
@@ -317,7 +391,8 @@ export async function commitImport(
             fiscalProfileId,
             restricaoIdade: parseBool(row.restricaoIdade, false),
             gtinTributavel: row.gtinTributavel?.trim() || null,
-            unidadeTributavel: row.unidadeTributavel?.trim().toUpperCase() || null,
+            unidadeTributavel:
+              row.unidadeTributavel?.trim().toUpperCase() || null,
             fatorConversaoTrib: parseNumero(row.fatorConversaoTrib),
             codigoAnp: row.codigoAnp?.trim() || null,
 

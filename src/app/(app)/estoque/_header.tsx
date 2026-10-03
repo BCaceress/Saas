@@ -30,7 +30,11 @@ import { PageHeader } from "@/components/app/page-header";
 import { navIcon } from "@/components/app/nav-config";
 import { Sheet } from "@/components/ui/sheet";
 import { Menu, MenuItem } from "@/components/ui/menu";
-import { NovaEntradaForm, MOTIVO_OPTIONS, type Motivo } from "./entradas/nova/_client";
+import {
+  NovaEntradaForm,
+  MOTIVO_OPTIONS,
+  type Motivo,
+} from "./entradas/nova/_client";
 import { TransferenciaForm } from "./transferencias/_client";
 import { PedidoFormSheet } from "../pedidos/_pedidos";
 
@@ -48,7 +52,13 @@ function LoadingPanel() {
   );
 }
 
-function EntradaPanel({ motivo, onClose }: { motivo: Motivo; onClose: () => void }) {
+function EntradaPanel({
+  motivo,
+  onClose,
+}: {
+  motivo: Motivo;
+  onClose: () => void;
+}) {
   const router = useRouter();
   type Data = Awaited<ReturnType<typeof fetchEntradaFormDataAction>>;
   const [data, setData] = useState<Data | null>(null);
@@ -109,7 +119,8 @@ const ENTRADA_ICON: Record<Motivo, React.ElementType> = {
 };
 
 const ENTRADA_DESC: Record<Motivo, string> = {
-  COMPRA_SEM_PEDIDO: "Mercadoria comprada que chegou sem pedido — vira documento e conta a pagar.",
+  COMPRA_SEM_PEDIDO:
+    "Mercadoria comprada que chegou sem pedido — vira documento e conta a pagar.",
   BONIFICACAO: "Registrar produtos recebidos sem custo.",
   BRINDE: "Cortesia do fornecedor, fora da negociação de compra.",
   AMOSTRA: "Degustação ou teste enviado pelo fornecedor.",
@@ -117,13 +128,35 @@ const ENTRADA_DESC: Record<Motivo, string> = {
   ESTOQUE_INICIAL: "Informar os saldos existentes na implantação.",
 };
 
-export const ENTRADA_SHEET_META: Record<Motivo, { title: string; description: string }> = {
-  COMPRA_SEM_PEDIDO: { title: "Nova entrada manual", description: "Mercadoria comprada que chegou sem pedido no sistema." },
-  BONIFICACAO: { title: "Nova bonificação", description: "Registre produtos recebidos sem custo." },
-  BRINDE: { title: "Entrada de brinde", description: "Cortesia do fornecedor — entra no saldo sem custo." },
-  AMOSTRA: { title: "Entrada de amostra", description: "Degustação ou teste enviado pelo fornecedor." },
-  TROCA: { title: "Entrada por troca", description: "Reposição do que o fornecedor trocou." },
-  ESTOQUE_INICIAL: { title: "Definir estoque inicial", description: "Informe as quantidades existentes antes de iniciar o controle pelo sistema." },
+export const ENTRADA_SHEET_META: Record<
+  Motivo,
+  { title: string; description: string }
+> = {
+  COMPRA_SEM_PEDIDO: {
+    title: "Nova entrada manual",
+    description: "Mercadoria comprada que chegou sem pedido no sistema.",
+  },
+  BONIFICACAO: {
+    title: "Nova bonificação",
+    description: "Registre produtos recebidos sem custo.",
+  },
+  BRINDE: {
+    title: "Entrada de brinde",
+    description: "Cortesia do fornecedor — entra no saldo sem custo.",
+  },
+  AMOSTRA: {
+    title: "Entrada de amostra",
+    description: "Degustação ou teste enviado pelo fornecedor.",
+  },
+  TROCA: {
+    title: "Entrada por troca",
+    description: "Reposição do que o fornecedor trocou.",
+  },
+  ESTOQUE_INICIAL: {
+    title: "Definir estoque inicial",
+    description:
+      "Informe as quantidades existentes antes de iniciar o controle pelo sistema.",
+  },
 };
 
 // Duas famílias, e a diferença importa: COMPRA_SEM_PEDIDO é mercadoria que
@@ -133,7 +166,12 @@ export const ENTRADA_SHEET_META: Record<Motivo, { title: string; description: st
 //
 // Bonificação avulsa continua fora: nasce vinculada a um pedido (aba Pedidos →
 // recebimento/bonificação). Estoque inicial é só da implantação.
-type EntradaAcao = { id: EntradaPanelId; label: string; desc: string; icon: React.ElementType };
+type EntradaAcao = {
+  id: EntradaPanelId;
+  label: string;
+  desc: string;
+  icon: React.ElementType;
+};
 
 const acaoDe = (m: { value: Motivo; label: string }): EntradaAcao => ({
   id: `entrada:${m.value}` as EntradaPanelId,
@@ -150,8 +188,13 @@ const ENTRADA_SEM_CUSTO: EntradaAcao[] = MOTIVO_OPTIONS.filter(
   (m) => m.value === "BRINDE" || m.value === "AMOSTRA" || m.value === "TROCA",
 ).map(acaoDe);
 
-
-function PedidoPanel({ onClose, empresa }: { onClose: () => void; empresa: string }) {
+function PedidoPanel({
+  onClose,
+  empresa,
+}: {
+  onClose: () => void;
+  empresa: string;
+}) {
   const router = useRouter();
   type Data = Awaited<ReturnType<typeof loadComprasFormOptionsAction>>;
   const [data, setData] = useState<Data | null>(null);
@@ -212,10 +255,17 @@ export function EstoqueHeader({
 
   // Inventários e Movimentações têm cabeçalho próprio (PageHeader com voltar)
   // — o header geral de Estoque não aparece nessas rotas.
-  if (pathname.startsWith("/estoque/inventarios") || pathname.startsWith("/estoque/movimentacoes") || pathname.startsWith("/estoque/validade")) return null;
+  if (
+    pathname.startsWith("/estoque/inventarios") ||
+    pathname.startsWith("/estoque/movimentacoes") ||
+    pathname.startsWith("/estoque/validade")
+  )
+    return null;
 
   const activeSite = sites.find((s) => s.id === activeSiteId) ?? sites[0];
-  const entradaMotivo = panel?.startsWith("entrada:") ? (panel.split(":")[1] as Motivo) : null;
+  const entradaMotivo = panel?.startsWith("entrada:")
+    ? (panel.split(":")[1] as Motivo)
+    : null;
   const entradaMeta = entradaMotivo ? ENTRADA_SHEET_META[entradaMotivo] : null;
 
   const distribui = topologia !== "LOCAL";
@@ -253,117 +303,166 @@ export function EstoqueHeader({
           className="pb-3"
           actions={
             <>
-          {/* Opção B — régua ativa como contexto da tela, ao lado da loja.
+              {/* Opção B — régua ativa como contexto da tela, ao lado da loja.
               Só na lista de saldos: nas outras rotas de Estoque a régua não
               muda nada do que está na tela. */}
-          {pathname === "/estoque" && <EstrategiaChip policy={policy} variant="chip" className="mr-1" />}
+              {pathname === "/estoque" && (
+                <EstrategiaChip
+                  policy={policy}
+                  variant="chip"
+                  className="mr-1"
+                />
+              )}
 
-          {/* Movimentações, Validade e Inventários saíram daqui: viraram itens
+              {/* Movimentações, Validade e Inventários saíram daqui: viraram itens
               da gaveta "Estoque" no menu lateral. O cabeçalho fica só com o
               que é ação (criar movimentação) e contexto (loja ativa). */}
 
-          {/* Nova movimentação — menu de ações disponíveis */}
-          <Menu
-            align="end"
-            className="w-80"
-            trigger={
-              <button
-                type="button"
-                className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+              {/* Nova movimentação — menu de ações disponíveis */}
+              <Menu
+                align="end"
+                className="w-80"
+                trigger={
+                  <button
+                    type="button"
+                    className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+                  >
+                    <Plus size={15} />
+                    <span>Nova movimentação</span>
+                    <ChevronDown size={13} className="opacity-80" />
+                  </button>
+                }
               >
-                <Plus size={15} />
-                <span>Nova movimentação</span>
-                <ChevronDown size={13} className="opacity-80" />
-              </button>
-            }
-          >
-            <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
-              Compra
-            </p>
-            {ENTRADA_COMPRA.map((a) => (
-              <MenuItem key={a.id} icon={<a.icon size={16} />} onClick={() => setPanel(a.id)}>
-                <span className="block text-sm font-medium text-ink">{a.label}</span>
-                <span className="block text-xs text-muted">{a.desc}</span>
-              </MenuItem>
-            ))}
-            <MenuItem icon={<ShoppingBag size={16} />} onClick={() => setPanel("pedido")}>
-              <span className="block text-sm font-medium text-ink">Pedido de compra</span>
-              <span className="block text-xs text-muted">Criar um pedido para um fornecedor.</span>
-            </MenuItem>
-
-            <div className="my-1 h-px bg-line" />
-            <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
-              Entrada sem custo
-            </p>
-            {ENTRADA_SEM_CUSTO.map((a) => (
-              <MenuItem key={a.id} icon={<a.icon size={16} />} onClick={() => setPanel(a.id)}>
-                <span className="block text-sm font-medium text-ink">{a.label}</span>
-                <span className="block text-xs text-muted">{a.desc}</span>
-              </MenuItem>
-            ))}
-
-            <div className="my-1 h-px bg-line" />
-            <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
-              Saída
-            </p>
-            <MenuItem icon={<Undo2 size={16} />} onClick={() => router.push("/estoque/devolucoes")}>
-              <span className="block text-sm font-medium text-ink">Devolver ao fornecedor</span>
-              <span className="block text-xs text-muted">
-                Mercadoria que volta — abate o que se deve ao fornecedor.
-              </span>
-            </MenuItem>
-
-            {multiSite && (
-              <>
-                <div className="my-1 h-px bg-line" />
                 <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
-                  Movimentação interna
+                  Compra
                 </p>
-                <MenuItem icon={<ArrowRightLeft size={16} />} onClick={() => setPanel("transferencia")}>
-                  <span className="block text-sm font-medium text-ink">Transferência</span>
-                  <span className="block text-xs text-muted">Movimentar produtos entre locais.</span>
-                </MenuItem>
-              </>
-            )}
-          </Menu>
-
-          {/* Site selector */}
-          {multiSite && activeSite && (
-            <Menu
-              align="end"
-              className="w-52"
-              trigger={
-                <button
-                  type="button"
-                  disabled={pending}
-                  className="ml-1 flex items-center gap-2 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-60"
-                >
-                  {pending ? (
-                    <Loader2 size={14} className="animate-spin text-muted" />
-                  ) : (
-                    <Store size={14} className="text-muted" />
-                  )}
-                  <span className="max-w-30 truncate">{activeSite.nome}</span>
-                  <ChevronDown size={13} className="text-muted" />
-                </button>
-              }
-            >
-              {sites.map((s) => (
+                {ENTRADA_COMPRA.map((a) => (
+                  <MenuItem
+                    key={a.id}
+                    icon={<a.icon size={16} />}
+                    onClick={() => setPanel(a.id)}
+                  >
+                    <span className="block text-sm font-medium text-ink">
+                      {a.label}
+                    </span>
+                    <span className="block text-xs text-muted">{a.desc}</span>
+                  </MenuItem>
+                ))}
                 <MenuItem
-                  key={s.id}
-                  icon={<Store size={13} />}
-                  onClick={() => changeSite(s.id)}
-                  trailing={
-                    <span className="text-[10px] text-faint">{s.tipo === "CD" ? "CD" : "Loja"}</span>
-                  }
+                  icon={<ShoppingBag size={16} />}
+                  onClick={() => setPanel("pedido")}
                 >
-                  <span className={cn("block truncate", s.id === activeSiteId && "font-semibold text-brand")}>
-                    {s.nome}
+                  <span className="block text-sm font-medium text-ink">
+                    Pedido de compra
+                  </span>
+                  <span className="block text-xs text-muted">
+                    Criar um pedido para um fornecedor.
                   </span>
                 </MenuItem>
-              ))}
-            </Menu>
-          )}
+
+                <div className="my-1 h-px bg-line" />
+                <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
+                  Entrada sem custo
+                </p>
+                {ENTRADA_SEM_CUSTO.map((a) => (
+                  <MenuItem
+                    key={a.id}
+                    icon={<a.icon size={16} />}
+                    onClick={() => setPanel(a.id)}
+                  >
+                    <span className="block text-sm font-medium text-ink">
+                      {a.label}
+                    </span>
+                    <span className="block text-xs text-muted">{a.desc}</span>
+                  </MenuItem>
+                ))}
+
+                <div className="my-1 h-px bg-line" />
+                <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
+                  Saída
+                </p>
+                <MenuItem
+                  icon={<Undo2 size={16} />}
+                  onClick={() => router.push("/estoque/devolucoes")}
+                >
+                  <span className="block text-sm font-medium text-ink">
+                    Devolver ao fornecedor
+                  </span>
+                  <span className="block text-xs text-muted">
+                    Mercadoria que volta — abate o que se deve ao fornecedor.
+                  </span>
+                </MenuItem>
+
+                {multiSite && (
+                  <>
+                    <div className="my-1 h-px bg-line" />
+                    <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-faint">
+                      Movimentação interna
+                    </p>
+                    <MenuItem
+                      icon={<ArrowRightLeft size={16} />}
+                      onClick={() => setPanel("transferencia")}
+                    >
+                      <span className="block text-sm font-medium text-ink">
+                        Transferência
+                      </span>
+                      <span className="block text-xs text-muted">
+                        Movimentar produtos entre locais.
+                      </span>
+                    </MenuItem>
+                  </>
+                )}
+              </Menu>
+
+              {/* Site selector */}
+              {multiSite && activeSite && (
+                <Menu
+                  align="end"
+                  className="w-52"
+                  trigger={
+                    <button
+                      type="button"
+                      disabled={pending}
+                      className="ml-1 flex items-center gap-2 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-60"
+                    >
+                      {pending ? (
+                        <Loader2
+                          size={14}
+                          className="animate-spin text-muted"
+                        />
+                      ) : (
+                        <Store size={14} className="text-muted" />
+                      )}
+                      <span className="max-w-30 truncate">
+                        {activeSite.nome}
+                      </span>
+                      <ChevronDown size={13} className="text-muted" />
+                    </button>
+                  }
+                >
+                  {sites.map((s) => (
+                    <MenuItem
+                      key={s.id}
+                      icon={<Store size={13} />}
+                      onClick={() => changeSite(s.id)}
+                      trailing={
+                        <span className="text-[10px] text-faint">
+                          {s.tipo === "CD" ? "CD" : "Loja"}
+                        </span>
+                      }
+                    >
+                      <span
+                        className={cn(
+                          "block truncate",
+                          s.id === activeSiteId && "font-semibold text-brand",
+                        )}
+                      >
+                        {s.nome}
+                      </span>
+                    </MenuItem>
+                  ))}
+                </Menu>
+              )}
             </>
           }
         />
@@ -372,7 +471,8 @@ export function EstoqueHeader({
         {navTabs.length > 0 && (
           <nav className="flex items-center gap-1 overflow-x-auto border-b border-line">
             {navTabs.map((tab) => {
-              const active = pathname === tab.href || pathname.startsWith(tab.href + "/");
+              const active =
+                pathname === tab.href || pathname.startsWith(tab.href + "/");
               return (
                 <Link
                   key={tab.href}
@@ -397,10 +497,14 @@ export function EstoqueHeader({
         open={panel !== null && panel.startsWith("entrada:")}
         onClose={closePanel}
         title={entradaMeta?.title ?? "Nova movimentação"}
-        description={entradaMeta?.description ?? "Lance a movimentação no estoque."}
+        description={
+          entradaMeta?.description ?? "Lance a movimentação no estoque."
+        }
         width="xl"
       >
-        {entradaMotivo && <EntradaPanel motivo={entradaMotivo} onClose={closePanel} />}
+        {entradaMotivo && (
+          <EntradaPanel motivo={entradaMotivo} onClose={closePanel} />
+        )}
       </Sheet>
 
       <Sheet
@@ -410,10 +514,14 @@ export function EstoqueHeader({
         description="Movimente produtos entre locais."
         width="xl"
       >
-        {panel === "transferencia" && <TransferenciaPanel onClose={closePanel} />}
+        {panel === "transferencia" && (
+          <TransferenciaPanel onClose={closePanel} />
+        )}
       </Sheet>
 
-      {panel === "pedido" && <PedidoPanel onClose={closePanel} empresa={empresa} />}
+      {panel === "pedido" && (
+        <PedidoPanel onClose={closePanel} empresa={empresa} />
+      )}
     </>
   );
 }
