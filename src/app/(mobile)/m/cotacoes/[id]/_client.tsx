@@ -120,9 +120,12 @@ export function CotacaoMobileDetalhe({
   resumo,
   pedidos,
   podePedir,
+  referencias,
 }: {
   cotacao: CotacaoDetalhe;
   fornecedores: FornecedorOpcao[];
+  /** Último preço de cada fornecedor por produto — o ▲▼ do comparativo. */
+  referencias: Record<string, number>;
   /** Leitura da cotação — mesmo motor determinístico do desktop. */
   resumo: ResumoCotacao;
   /** Pedidos que a cotação virou. Vazio até ela ser decidida. */
@@ -214,31 +217,44 @@ export function CotacaoMobileDetalhe({
         />
       ) : (
         <div className="space-y-4">
-          {/* Quem abre uma cotação decidida no celular está atrás de uma
-              pergunta só: "em que pedido isso foi parar?". Estava dentro do
-              comparativo; com o totalizador removido de lá, sobe para cá. */}
+          {/* Quem abre uma cotação concluída no celular está atrás de duas
+              respostas: "em que pedido isso foi parar?" e "já foi mandado?".
+              A segunda é a que evita o prejuízo — o operador que acha que
+              concluir avisou o fornecedor fica esperando mercadoria que
+              ninguém pediu. Por isso o recado de rascunho é texto, não selo. */}
           {pedidos.length > 0 && (
             <section className="rounded-[var(--radius-lg)] border border-ok/40 bg-ok-soft px-3 py-2.5">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-ok">
                 {pedidos.length === 1 ? "Pedido gerado" : `${pedidos.length} pedidos gerados`}
               </p>
-              <ul className="mt-1.5 flex flex-wrap gap-1.5">
+              <ul className="mt-1.5 flex flex-col gap-1.5">
                 {pedidos.map((p) => (
                   <li key={p.id}>
                     <Link
-                      href={`/m/pedidos?pedido=${p.id}`}
-                      className="flex items-center gap-2 rounded-full border border-ok/30 bg-surface px-2.5 py-1"
+                      href={`/pedidos?pedido=${p.id}`}
+                      className="flex items-center gap-2 rounded-[var(--radius)] border border-ok/30 bg-surface px-2.5 py-1.5"
                     >
                       <span className="font-mono text-[13px] font-semibold text-ink">
                         {p.numero}
                       </span>
-                      <span className="max-w-[8rem] truncate text-[11px] text-muted">
+                      <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
                         {p.supplierNome}
                       </span>
+                      {p.status === "RASCUNHO" && (
+                        <span className="shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
+                          Rascunho
+                        </span>
+                      )}
                     </Link>
                   </li>
                 ))}
               </ul>
+              {pedidos.some((p) => p.status === "RASCUNHO") && (
+                <p className="mt-1.5 text-[11px] leading-relaxed text-ink-2">
+                  Ainda não {pedidos.length === 1 ? "foi enviado" : "foram enviados"} ao
+                  fornecedor. Abra o pedido para revisar e enviar.
+                </p>
+              )}
             </section>
           )}
 
@@ -284,6 +300,7 @@ export function CotacaoMobileDetalhe({
                 cotacao={cotacao}
                 resumo={resumo}
                 podePedir={podePedir}
+                referencias={referencias}
                 superficie="mobile"
                 onProgresso={onProgresso}
               />

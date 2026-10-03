@@ -31,6 +31,7 @@ import { Input, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
 import { rotuloPreco, rotuloPrecoCurto } from "@/lib/compras/rotulo-preco";
 import { MAX_FAIXAS_ITEM } from "@/lib/compras/escalas";
+import { prazoPagamentoEmDias } from "@/lib/compras/custo-efetivo";
 import type { CotacaoPublica, ItemPublico } from "@/lib/compras/cotacao-link";
 import { recusarPeloLinkAction, responderPeloLinkAction } from "./actions";
 
@@ -148,6 +149,69 @@ type LinhaForm = {
   faixas: FaixaForm[];
 };
 
+/** O que o sistema entendeu do prazo digitado — em palavras. */
+function leituraPrazo(texto: string): string {
+  if (!texto.trim()) return "Parcelado? Separe com barra: 28/35/42.";
+  const dias = prazoPagamentoEmDias(texto);
+  if (dias === null) return "Informe em dias para o comprador comparar.";
+  if (dias === 0) return "Entendido: à vista.";
+  return /\d\D+\d/.test(texto)
+    ? `Entendido: ${dias} dias em média.`
+    : `Entendido: ${dias} ${dias === 1 ? "dia" : "dias"}.`;
+}
+
+/** Tudo o que o fornecedor digitou — o que o rascunho do aparelho guarda. */
+type FormularioSalvo = {
+  linhas: LinhaForm[];
+  prazoEntrega: string;
+  condicao: string;
+  frete: string;
+  observacao: string;
+};
+
+// O armazenamento do navegador pode não existir (aba anônima, dados
+// bloqueados) — todo acesso é tentativa, e falhar só desliga o rascunho.
+const chaveRascunho = (token: string) => `nohub-cotacao:${token}`;
+
+function lerRascunho(token: string): { salvoEm: string; formulario: FormularioSalvo } | null {
+  try {
+    const bruto = window.localStorage.getItem(chaveRascunho(token));
+    if (!bruto) return null;
+    const dado = JSON.parse(bruto) as { v?: number; salvoEm?: string; formulario?: FormularioSalvo };
+    if (dado.v !== 1 || !dado.salvoEm || !Array.isArray(dado.formulario?.linhas)) return null;
+    return { salvoEm: dado.salvoEm, formulario: dado.formulario };
+  } catch {
+    return null;
+  }
+}
+
+function gravarRascunho(token: string, formulario: FormularioSalvo) {
+  try {
+    window.localStorage.setItem(
+      chaveRascunho(token),
+      JSON.stringify({ v: 1, salvoEm: new Date().toISOString(), formulario }),
+    );
+  } catch {
+    // sem armazenamento, sem rascunho — a tela segue funcionando
+  }
+}
+
+function apagarRascunho(token: string) {
+  try {
+    window.localStorage.removeItem(chaveRascunho(token));
+  } catch {
+    // idem
+  }
+}
+
+const fmtHora = (iso: string) =>
+  new Date(iso).toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
 /** Spinner do botão em trabalho — o retorno imediato de que o toque pegou. */
 function Girando({ className }: { className?: string }) {
   return <Loader2 className={cn("size-4 animate-spin", className)} aria-hidden />;
@@ -192,6 +256,83 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
     cotacao.cabecalho.frete === null ? "" : paraMascara(cotacao.cabecalho.frete),
   );
   const [observacao, setObservacao] = useState(cotacao.cabecalho.observacao ?? "");
+
+  // ── Rascunho no aparelho ────────────────────────────────────
+  // Vendedor digita 40 preços, o WhatsApp chama, a aba fecha — e ele não
+  // digita de novo: responde por áudio. Cada mudança fica guardada NESTE
+  // aparelho (nunca no servidor: rascunho não é proposta) e volta na próxima
+  // abertura do mesmo link.
+  const formulario: FormularioSalvo = {
+    linhas,
+    prazoEntrega,
+    condicao,
+    frete,
+    observacao,
+  };
+  const inicial = useRef<string>(JSON.stringify(formulario));
+  const pronto = useRef(false);
+  const [restauradoEm, setRestauradoEm] = useState<string | null>(null);
+  /** Existe algo guardado no aparelho diferente do que veio do servidor. */
+  const [guardado, setGuardado] = useState(false);
+
+  function aplicarFormulario(f: FormularioSalvo) {
+    // Só valem as linhas dos itens que a cotação ainda tem — a lista pode ter
+    // mudado desde que o rascunho foi guardado.
+    const porId = new Map(f.linhas.map((l) => [l.itemId, l]));
+    setLinhas((atual) => atual.map((l) => porId.get(l.itemId) ?? l));
+    setPrazoEntrega(f.prazoEntrega);
+    setCondicao(f.condicao);
+    setFrete(f.frete);
+    setObservacao(f.observacao);
+  }
+
+  /** Só os campos que a tela tem — rascunho de versão anterior pode trazer outros. */
+  function normalizar(f: FormularioSalvo): FormularioSalvo {
+    return {
+      linhas: f.linhas,
+      prazoEntrega: f.prazoEntrega,
+      condicao: f.condicao,
+      frete: f.frete,
+      observacao: f.observacao,
+    };
+  }
+
+  useEffect(() => {
+    const salvo = lerRascunho(cotacao.token);
+    // Resposta enviada DEPOIS do rascunho ganha: ela é a palavra final dele.
+    if (
+      salvo &&
+      (!cotacao.respondidaEm || salvo.salvoEm > cotacao.respondidaEm) &&
+      JSON.stringify(normalizar(salvo.formulario)) !== inicial.current
+    ) {
+      aplicarFormulario(salvo.formulario);
+      setRestauradoEm(salvo.salvoEm);
+    }
+    pronto.current = true;
+    // Uma vez, na montagem: é a leitura do que ficou da visita anterior.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const serializado = JSON.stringify(formulario);
+  useEffect(() => {
+    if (!pronto.current) return;
+    const t = window.setTimeout(() => {
+      if (serializado === inicial.current) {
+        apagarRascunho(cotacao.token);
+        setGuardado(false);
+      } else {
+        gravarRascunho(cotacao.token, JSON.parse(serializado) as FormularioSalvo);
+        setGuardado(true);
+      }
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [serializado, cotacao.token]);
+
+  function descartarRascunho() {
+    apagarRascunho(cotacao.token);
+    aplicarFormulario(JSON.parse(inicial.current) as FormularioSalvo);
+    setRestauradoEm(null);
+  }
 
   const porItem = useMemo(
     () => new Map(linhas.map((l) => [l.itemId, l])),
@@ -298,6 +439,12 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
       setAcao(null);
       setConfirmando(false);
       if (r.ok) {
+        // O que foi enviado vira o novo ponto de partida: rascunho igual a
+        // ele não é rascunho.
+        inicial.current = JSON.stringify(formulario);
+        apagarRascunho(cotacao.token);
+        setRestauradoEm(null);
+        setGuardado(false);
         setJaRespondeu(true);
         setEnviado(true);
       } else setErro(r.erro);
@@ -311,8 +458,10 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
     startTransition(async () => {
       const r = await recusarPeloLinkAction({ token: cotacao.token, motivo: motivo || null });
       setAcao(null);
-      if (r.ok) setEnviado(true);
-      else setErro(r.erro);
+      if (r.ok) {
+        apagarRascunho(cotacao.token);
+        setEnviado(true);
+      } else setErro(r.erro);
     });
   }
 
@@ -346,6 +495,24 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
   return (
     <main className="mx-auto w-full max-w-[84rem] px-4 pt-5 pb-44 sm:px-6 md:pb-32 xl:px-10">
       <Cabecalho cotacao={cotacao} jaRespondeu={jaRespondeu} prazo={prazo} />
+
+      {restauradoEm && (
+        <div
+          role="status"
+          className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-brand/30 bg-brand-soft px-3.5 py-2.5 text-sm text-ink-2"
+        >
+          <span>
+            Recuperamos o que você digitou neste aparelho em {fmtHora(restauradoEm)}.
+          </span>
+          <button
+            type="button"
+            onClick={descartarRascunho}
+            className="tap rounded-full px-2 py-1 text-[13px] font-medium text-brand underline-offset-4 hover:underline focus-visible:ring-1 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          >
+            Descartar e começar de novo
+          </button>
+        </div>
+      )}
 
       {/* Celular: um cartão por produto. */}
       <section className="mt-5 flex flex-col gap-3 md:hidden">
@@ -414,16 +581,23 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
           <Field label="Prazo de pagamento (em dias)" htmlFor="condicao">
             <Input
               id="condicao"
-              placeholder="28 dias"
+              placeholder="28 ou 28/35/42"
               value={condicao}
               onChange={(e) => setCondicao(e.target.value)}
+              aria-describedby="condicao-leitura"
               className="text-base md:text-sm"
             />
+            {/* Devolve o que o sistema entendeu: "28/35/42" vira média, e o
+                vendedor confere antes de o comprador fazer conta com isso. */}
+            <p id="condicao-leitura" className="mt-1 text-[12px] text-muted">
+              {leituraPrazo(condicao)}
+            </p>
           </Field>
           <Field label="Frete" htmlFor="frete">
             <CampoPreco id="frete" valor={frete} onValor={setFrete} />
           </Field>
         </div>
+
         <div className="mt-3">
           <Field label="Recado para o comprador" htmlFor="obs">
             <Textarea
@@ -505,6 +679,9 @@ export function RespostaFornecedor({ cotacao }: { cotacao: CotacaoPublica }) {
               {faltantes > 0
                 ? `${faltantes} ${faltantes === 1 ? "item ainda sem resposta" : "itens ainda sem resposta"}`
                 : "Tudo respondido"}
+              {guardado && (
+                <span className="hidden sm:inline"> · rascunho guardado neste aparelho</span>
+              )}
             </p>
           </div>
           <Button

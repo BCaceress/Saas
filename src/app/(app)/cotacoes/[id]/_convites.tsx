@@ -26,7 +26,13 @@ import {
   Share2,
   Undo2,
   UserPlus,
+  Sparkles,
+  Paperclip,
+  AlertTriangle,
+  Trophy,
 } from "lucide-react";
+import { prazoPagamentoEmDias } from "@/lib/compras/custo-efetivo";
+import type { LeituraResposta } from "@/lib/compras/cotacao-leitura";
 import { cn } from "@/lib/utils";
 import { copiarTexto } from "@/lib/clipboard";
 import { mascaraMoeda, paraMascara, paraNumero } from "@/lib/moeda";
@@ -52,6 +58,7 @@ import {
   desfazerRecusaAction,
   mensagemDoConviteAction,
   linkDoConviteAction,
+  lerRespostaAction,
   recusarConviteAction,
   registrarRespostaAction,
   removerConviteAction,
@@ -92,9 +99,21 @@ export function ConvitesCotacao({
   editavel,
   podeConvidar,
   podeRemover,
+  variante = "faixa",
+  destaque = null,
+  onDestaque,
 }: {
+  /** Convite em foco (hover/foco) — sincroniza chip e coluna da tabela. */
+  destaque?: string | null;
+  onDestaque?: (conviteId: string | null) => void;
   cotacao: CotacaoDetalhe;
   fornecedores: FornecedorOpcao[];
+  /**
+   * "faixa": uma linha por convidado, recolhível.
+   * "chips": uma faixa de chips (acompanhamento) — estado, nome e total em
+   * uma linha de altura; o resto mora na ficha.
+   */
+  variante?: "faixa" | "chips";
   /** Cotação viva e a pessoa pode comprar: enviar, cobrar, registrar resposta. */
   editavel: boolean;
   /** Chamar mais um para a disputa — vale mesmo depois de respostas chegarem. */
@@ -150,17 +169,145 @@ export function ConvitesCotacao({
   const aguardando = cotacao.convites.filter((c) => c.status === "ENVIADA");
   const respondidos = cotacao.convites.filter((c) => c.status === "RESPONDIDA");
   /** Sem ninguém convidado não há o que recolher: o vazio é a mensagem. */
-  const mostrarLista = aberto || cotacao.convites.length === 0;
+  const chips = variante === "chips";
+  const mostrarLista = chips || aberto || cotacao.convites.length === 0;
+  /** Menor total entre quem cotou a lista INTEIRA — cesta pela metade não disputa. */
+  const melhorCheio = respondidos
+    .filter((c) => c.itensAtendidos === cotacao.itens.length)
+    .reduce<ConviteCotacao | null>((m, c) => (!m || c.total < m.total ? c : m), null);
+
+  /** Menu de ações de UM convite — o mesmo na faixa e no quadro de cartões. */
+  function acoesDoConvite(c: ConviteCotacao) {
+    const respondeu = c.status === "RESPONDIDA";
+    return (
+      <Menu
+        trigger={
+          <button
+            type="button"
+            aria-label={`Ações de ${c.supplierNome}`}
+            aria-haspopup="menu"
+            className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+          >
+            <MoreVertical size={15} />
+          </button>
+        }
+      >
+        {cotacao.itens.length > 0 && (
+          <MenuItem icon={<PencilLine size={14} />} onClick={() => setRespondendo(c)}>
+            {respondeu ? "Corrigir preços" : "Registrar resposta"}
+          </MenuItem>
+        )}
+
+        {c.status === "ENVIADA" && (
+          <MenuItem icon={<RotateCcw size={14} />} onClick={() => setReenviando(c)}>
+            Reenviar
+          </MenuItem>
+        )}
+
+        {c.status === "PENDENTE" && cotacao.itens.length > 0 && (
+          <MenuItem
+            icon={<Send size={14} />}
+            disabled={pendente}
+            onClick={() => setEnviando([c])}
+          >
+            Enviar a mensagem
+          </MenuItem>
+        )}
+
+        {/* O texto pronto, com o link dentro — para colar numa
+            conversa que já começou. */}
+        {c.status !== "RECUSADA" && (
+          <MenuItem
+            icon={<Copy size={14} />}
+            disabled={pendente}
+            onClick={() =>
+              rodar(async () => {
+                const { mensagem } = await mensagemDoConviteAction(c.id);
+                if (!(await copiarTexto(mensagem))) {
+                  throw new Error("O navegador bloqueou a cópia. Tente pelo WhatsApp.");
+                }
+                setTextoCopiado(c.id);
+              })
+            }
+          >
+            {textoCopiado === c.id ? "Mensagem copiada" : "Copiar mensagem"}
+          </MenuItem>
+        )}
+
+        {c.status !== "RECUSADA" && (
+          <MenuItem
+            icon={<LinkIcon size={14} />}
+            disabled={pendente}
+            onClick={() =>
+              rodar(async () => {
+                const { url } = await linkDoConviteAction(c.id);
+                if (!(await copiarTexto(url))) {
+                  throw new Error(
+                    "O navegador bloqueou a cópia. Abra o link e copie da barra de endereço.",
+                  );
+                }
+                setLinkCopiado(c.id);
+              })
+            }
+          >
+            {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
+          </MenuItem>
+        )}
+
+        {(c.status === "ENVIADA" || c.status === "PENDENTE") && (
+          <MenuItem
+            icon={<ThumbsDown size={14} />}
+            disabled={pendente}
+            onClick={() => rodar(() => recusarConviteAction(c.id))}
+          >
+            {'Marcar "Não vai cotar"'}
+          </MenuItem>
+        )}
+
+        {/* Recusa é o que o COMPRADOR ouviu, e quem digita erra de
+            linha. Voltar atrás devolve o fornecedor à disputa sem
+            perder a trilha de envio nem trocar o link que já está
+            na conversa dele. */}
+        {c.status === "RECUSADA" && (
+          <MenuItem
+            icon={<Undo2 size={14} />}
+            disabled={pendente}
+            onClick={() => rodar(() => desfazerRecusaAction(c.id))}
+          >
+            {'Desfazer "Não vai cotar"'}
+          </MenuItem>
+        )}
+
+        {podeRemover && (
+          <MenuItem
+            danger
+            icon={<Trash2 size={14} />}
+            disabled={pendente}
+            onClick={() => rodar(() => removerConviteAction(c.id))}
+          >
+            Remover da cotação
+          </MenuItem>
+        )}
+      </Menu>
+    );
+  }
 
   return (
     <section
       aria-label="Fornecedores da cotação"
-      className="rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-3"
+      className={cn(
+        chips ? "" : "rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-3",
+      )}
     >
       {/* Título e ações de CONJUNTO na mesma linha: mandar para quem não
           recebeu, cobrar quem não voltou, chamar mais um. Por fornecedor,
           tudo está no menu da linha. */}
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      <div
+        className={cn(
+          "flex flex-wrap items-center justify-between gap-x-4 gap-y-2",
+          chips && cotacao.convites.length > 0 && "hidden",
+        )}
+      >
         <button
           type="button"
           onClick={() => setAberto((v) => !v)}
@@ -184,7 +331,10 @@ export function ConvitesCotacao({
             <span className="text-[12px] text-muted">
               {respondidos.length} de {cotacao.convites.length}{" "}
               {respondidos.length === 1 ? "respondeu" : "responderam"}
-              {aguardando.length > 0 && ` · ${aguardando.length} aguardando`}
+              {aguardando.length > 0 &&
+                (cotacao.status === "ABERTA"
+                  ? ` · ${aguardando.length} aguardando`
+                  : ` · ${aguardando.length} sem resposta`)}
             </span>
           )}
         </button>
@@ -250,7 +400,63 @@ export function ConvitesCotacao({
             }
           />
         </div>
-      ) : !mostrarLista ? null : (
+      ) : !mostrarLista ? null : chips ? (
+        <ul className="flex flex-wrap items-center gap-2">
+          {cotacao.convites.map((c) => (
+            <ChipFornecedor
+              key={c.id}
+              convite={c}
+              totalItens={cotacao.itens.length}
+              melhor={melhorCheio?.id === c.id && respondidos.length > 1}
+              encerrada={cotacao.status !== "ABERTA"}
+              destacado={destaque === c.id}
+              acoes={editavel ? acoesDoConvite(c) : null}
+              onFicha={() => setFicha(c)}
+              onDestaque={onDestaque}
+              onCobrar={
+                editavel && cotacao.status === "ABERTA" && c.status === "ENVIADA"
+                  ? () => setReenviando(c)
+                  : null
+              }
+            />
+          ))}
+          {editavel && cotacao.status === "ABERTA" && (
+            <li className="flex items-center gap-3 pl-1">
+              {pendentes.length > 0 && cotacao.itens.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setEnviando(pendentes)}
+                  disabled={pendente}
+                  className="flex items-center gap-1 text-[12px] font-medium text-brand underline-offset-4 hover:underline disabled:opacity-50"
+                >
+                  <Send size={12} />
+                  Enviar para {pendentes.length}
+                </button>
+              )}
+              {aguardando.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => setReenviando("todos")}
+                  className="flex items-center gap-1 text-[12px] font-medium text-brand underline-offset-4 hover:underline"
+                >
+                  <RotateCcw size={12} />
+                  Cobrar todos
+                </button>
+              )}
+              {podeConvidar && disponiveis.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setConvidando(true)}
+                  className="flex items-center gap-1 text-[12px] font-medium text-ink-2 underline-offset-4 hover:text-ink hover:underline"
+                >
+                  <UserPlus size={12} />
+                  Adicionar
+                </button>
+              )}
+            </li>
+          )}
+        </ul>
+      ) : (
         // UMA LINHA por convidado, em colunas: com seis fornecedores, uma
         // pilha vertical de seis linhas empurra a matriz para baixo da dobra.
         //
@@ -310,117 +516,7 @@ export function ConvitesCotacao({
                           : `enviado ${fmtQuando(c.enviadaEm)}`}
                 </span>
 
-                {editavel && (
-                  <Menu
-                    trigger={
-                      <button
-                        type="button"
-                        aria-label={`Ações de ${c.supplierNome}`}
-                        aria-haspopup="menu"
-                        className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-                      >
-                        <MoreVertical size={15} />
-                      </button>
-                    }
-                  >
-                    {cotacao.itens.length > 0 && (
-                      <MenuItem icon={<PencilLine size={14} />} onClick={() => setRespondendo(c)}>
-                        {respondeu ? "Corrigir preços" : "Registrar resposta"}
-                      </MenuItem>
-                    )}
-
-                    {c.status === "ENVIADA" && (
-                      <MenuItem icon={<RotateCcw size={14} />} onClick={() => setReenviando(c)}>
-                        Reenviar
-                      </MenuItem>
-                    )}
-
-                    {c.status === "PENDENTE" && cotacao.itens.length > 0 && (
-                      <MenuItem
-                        icon={<Send size={14} />}
-                        disabled={pendente}
-                        onClick={() => setEnviando([c])}
-                      >
-                        Enviar a mensagem
-                      </MenuItem>
-                    )}
-
-                    {/* O texto pronto, com o link dentro — para colar numa
-                        conversa que já começou. */}
-                    {c.status !== "RECUSADA" && (
-                      <MenuItem
-                        icon={<Copy size={14} />}
-                        disabled={pendente}
-                        onClick={() =>
-                          rodar(async () => {
-                            const { mensagem } = await mensagemDoConviteAction(c.id);
-                            if (!(await copiarTexto(mensagem))) {
-                              throw new Error("O navegador bloqueou a cópia. Tente pelo WhatsApp.");
-                            }
-                            setTextoCopiado(c.id);
-                          })
-                        }
-                      >
-                        {textoCopiado === c.id ? "Mensagem copiada" : "Copiar mensagem"}
-                      </MenuItem>
-                    )}
-
-                    {c.status !== "RECUSADA" && (
-                      <MenuItem
-                        icon={<LinkIcon size={14} />}
-                        disabled={pendente}
-                        onClick={() =>
-                          rodar(async () => {
-                            const { url } = await linkDoConviteAction(c.id);
-                            if (!(await copiarTexto(url))) {
-                              throw new Error(
-                                "O navegador bloqueou a cópia. Abra o link e copie da barra de endereço.",
-                              );
-                            }
-                            setLinkCopiado(c.id);
-                          })
-                        }
-                      >
-                        {linkCopiado === c.id ? "Link copiado" : "Copiar link"}
-                      </MenuItem>
-                    )}
-
-                    {(c.status === "ENVIADA" || c.status === "PENDENTE") && (
-                      <MenuItem
-                        icon={<ThumbsDown size={14} />}
-                        disabled={pendente}
-                        onClick={() => rodar(() => recusarConviteAction(c.id))}
-                      >
-                        {'Marcar "Não vai cotar"'}
-                      </MenuItem>
-                    )}
-
-                    {/* Recusa é o que o COMPRADOR ouviu, e quem digita erra de
-                        linha. Voltar atrás devolve o fornecedor à disputa sem
-                        perder a trilha de envio nem trocar o link que já está
-                        na conversa dele. */}
-                    {c.status === "RECUSADA" && (
-                      <MenuItem
-                        icon={<Undo2 size={14} />}
-                        disabled={pendente}
-                        onClick={() => rodar(() => desfazerRecusaAction(c.id))}
-                      >
-                        {'Desfazer "Não vai cotar"'}
-                      </MenuItem>
-                    )}
-
-                    {podeRemover && (
-                      <MenuItem
-                        danger
-                        icon={<Trash2 size={14} />}
-                        disabled={pendente}
-                        onClick={() => rodar(() => removerConviteAction(c.id))}
-                      >
-                        Remover da cotação
-                      </MenuItem>
-                    )}
-                  </Menu>
-                )}
+                {editavel && acoesDoConvite(c)}
               </li>
             );
           })}
@@ -487,6 +583,156 @@ export function ConvitesCotacao({
 
       {envios && <EnviosSheet envios={envios} onFechar={() => setEnvios(null)} />}
     </section>
+  );
+}
+
+// ── Chip do fornecedor (faixa do acompanhamento) ────────────
+// Uma linha de altura por fornecedor: bolinha de estado, nome, e o que
+// importa agora — o total de quem respondeu, ou em que pé está quem não
+// respondeu. Contato, condições e trilha de envio moram na ficha (clique no
+// nome). Passar o mouse destaca a coluna dele na tabela.
+
+/** O último disparo para este fornecedor voltou com erro. */
+function envioFalhou(c: ConviteCotacao): boolean {
+  const ultimo = c.envios[0];
+  return !!ultimo && (!ultimo.sucesso || ultimo.status === "FALHOU");
+}
+
+type EstadoChip = {
+  /** Texto curto no lugar do total ("viu 10:42"). null = respondeu. */
+  texto: string | null;
+  /** Descrição completa, para leitor de tela e tooltip. */
+  titulo: string;
+  ponto: string;
+};
+
+function estadoDoChip(c: ConviteCotacao, encerrada: boolean): EstadoChip {
+  if (c.status === "RESPONDIDA") {
+    return { texto: null, titulo: `respondeu ${fmtQuando(c.respondidaEm)}`, ponto: "bg-ok" };
+  }
+  if (c.status === "RECUSADA") {
+    return {
+      texto: "não vai cotar",
+      titulo: c.observacao ? `não vai cotar: ${c.observacao}` : "não vai cotar",
+      ponto: "bg-line-strong",
+    };
+  }
+  if (encerrada) return { texto: "sem resposta", titulo: "não respondeu", ponto: "bg-line-strong" };
+  if (c.status === "PENDENTE") {
+    return { texto: "não enviado", titulo: "a lista ainda não saiu para ele", ponto: "bg-line-strong" };
+  }
+  if (envioFalhou(c)) {
+    return {
+      texto: "envio falhou",
+      titulo: c.envios[0]?.erro ?? "a mensagem não chegou",
+      ponto: "bg-danger",
+    };
+  }
+  if (c.abertoEm) {
+    return {
+      texto: `viu ${fmtQuando(c.abertoEm)}`,
+      titulo: "abriu o link e ainda não respondeu",
+      ponto: "bg-accent",
+    };
+  }
+  return {
+    texto: "não abriu",
+    titulo: c.enviadaEm ? `enviado ${fmtQuando(c.enviadaEm)}, não abriu o link` : "não abriu o link",
+    ponto: "bg-line-strong",
+  };
+}
+
+function ChipFornecedor({
+  convite: c,
+  totalItens,
+  melhor,
+  encerrada,
+  destacado,
+  acoes,
+  onFicha,
+  onDestaque,
+  onCobrar,
+}: {
+  convite: ConviteCotacao;
+  totalItens: number;
+  /** Menor total entre quem cotou a lista inteira. */
+  melhor: boolean;
+  /** A cotação não aceita mais resposta. */
+  encerrada: boolean;
+  /** A coluna dele está em foco na tabela. */
+  destacado: boolean;
+  acoes: React.ReactNode;
+  onFicha: () => void;
+  onDestaque?: (conviteId: string | null) => void;
+  /** Cobrar / reenviar — só para quem pode responder. */
+  onCobrar: (() => void) | null;
+}) {
+  const e = estadoDoChip(c, encerrada);
+  const faltam = totalItens - c.itensAtendidos;
+  const respondeu = c.status === "RESPONDIDA";
+
+  return (
+    <li
+      onMouseEnter={() => onDestaque?.(c.id)}
+      onMouseLeave={() => onDestaque?.(null)}
+      className={cn(
+        "flex h-9 items-center gap-2 rounded-full border bg-surface pl-1 pr-1 transition-colors",
+        destacado ? "border-brand/60 bg-brand-soft/50" : "border-line",
+        melhor && !destacado && "border-ok/50",
+      )}
+    >
+      <button
+        type="button"
+        onClick={onFicha}
+        onFocus={() => onDestaque?.(c.id)}
+        onBlur={() => onDestaque?.(null)}
+        title={`${c.supplierNome} — ${e.titulo}`}
+        className="flex min-w-0 items-center gap-2 rounded-full py-0.5 pr-1 text-left focus-visible:outline-2 focus-visible:outline-[var(--ring)]"
+      >
+        <span className="relative shrink-0">
+          <SupplierAvatar nome={c.supplierNome} logoUrl={c.supplierLogoUrl} size={26} />
+          <span
+            aria-hidden
+            className={cn("absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full ring-2 ring-surface", e.ponto)}
+          />
+        </span>
+        <span className="max-w-[10rem] truncate text-[13px] font-medium text-ink">
+          {c.supplierNome}
+        </span>
+        <span className="sr-only">{e.titulo}</span>
+        {respondeu ? (
+          <span className="flex items-center gap-1 font-mono text-[13px] font-semibold tabular-nums text-ink">
+            {fmtMoney(c.total)}
+            {melhor && <Trophy size={12} className="text-ok" aria-label="menor total" />}
+            {faltam > 0 && (
+              <span className="font-sans text-[11px] font-medium text-accent">
+                {c.itensAtendidos}/{totalItens}
+              </span>
+            )}
+          </span>
+        ) : (
+          <span
+            className={cn(
+              "text-[12px]",
+              e.ponto === "bg-danger" ? "text-danger" : e.ponto === "bg-accent" ? "text-accent" : "text-faint",
+            )}
+          >
+            {e.texto}
+          </span>
+        )}
+      </button>
+
+      {onCobrar && (
+        <button
+          type="button"
+          onClick={onCobrar}
+          className="shrink-0 rounded-full px-2 py-0.5 text-[12px] font-semibold text-brand transition-colors hover:bg-brand-soft"
+        >
+          {envioFalhou(c) ? "Reenviar" : "Cobrar"}
+        </button>
+      )}
+      {acoes}
+    </li>
   );
 }
 
@@ -1160,6 +1406,51 @@ function RespostaSheet({
     }[];
   }) => void;
 }) {
+  /**
+   * Linhas preenchidas pela leitura automática, com o que merece segundo
+   * olhar. Some quando o operador mexe na linha — aí o número passa a ser dele.
+   */
+  const [lidos, setLidos] = useState<Map<string, { convertido: boolean; suspeito: boolean }>>(
+    () => new Map(),
+  );
+  const [naoIdentificados, setNaoIdentificados] = useState<string[]>([]);
+
+  /** Aplica a leitura nos campos. Não salva: o botão de salvar continua sendo do operador. */
+  function aplicarLeitura(l: LeituraResposta) {
+    const porId = new Map(
+      l.itens.flatMap((x) => (itens[x.indice] ? [[itens[x.indice].id, x] as const] : [])),
+    );
+    setLinhas((ls) =>
+      ls.map((linha) => {
+        const x = porId.get(linha.quotationItemId);
+        if (!x) return linha;
+        return x.naoTem
+          ? { ...linha, naoTem: true, preco: "", faixas: [] }
+          : { ...linha, naoTem: false, preco: paraMascara(x.preco ?? 0) };
+      }),
+    );
+    setLidos(
+      new Map(
+        [...porId].map(([id, x]) => [id, { convertido: x.convertido, suspeito: x.suspeito }]),
+      ),
+    );
+    setNaoIdentificados(l.naoIdentificados);
+    // Condição comercial só entra quando a mensagem falou dela — o que o
+    // operador já digitou não é apagado por um silêncio.
+    if (l.prazoEntregaDias !== null) setPrazo(String(l.prazoEntregaDias));
+    if (l.condicaoPagamento) setCondicao(l.condicaoPagamento);
+    if (l.frete !== null) setFrete(paraMascara(l.frete));
+    if (l.observacao) setObservacao((o) => (o.trim() ? o : l.observacao!));
+  }
+
+  function esquecerLeitura(id: string) {
+    if (!lidos.has(id)) return;
+    setLidos((m) => {
+      const n = new Map(m);
+      n.delete(id);
+      return n;
+    });
+  }
   const [linhas, setLinhas] = useState<LinhaResposta[]>(() =>
     itens.map((i) => {
       const anterior = convite.respostas.find((r) => r.quotationItemId === i.id);
@@ -1218,6 +1509,7 @@ function RespostaSheet({
    * desmarcar sem querer — e aí o comparativo cobra um preço que ninguém deu.
    */
   function alternarNaoTem(id: string, marcado: boolean) {
+    esquecerLeitura(id);
     atualizar(id, marcado ? { naoTem: true, preco: "", faixas: [] } : { naoTem: false });
   }
 
@@ -1407,6 +1699,24 @@ function RespostaSheet({
         </span>
       </div>
 
+      <LerMensagem conviteId={convite.id} onLeitura={aplicarLeitura} />
+
+      {naoIdentificados.length > 0 && (
+        <div className="mb-3 rounded-[var(--radius)] border border-accent/40 bg-accent-soft px-3.5 py-2.5 text-[12px] text-ink-2">
+          <p className="font-medium text-accent">
+            {naoIdentificados.length === 1
+              ? "Um trecho não casou com nenhum item"
+              : `${naoIdentificados.length} trechos não casaram com nenhum item`}{" "}
+            — confira se falta algo na lista:
+          </p>
+          <ul className="mt-1 list-disc pl-5">
+            {naoIdentificados.map((t) => (
+              <li key={t}>{t}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Rolagem própria, e não a do modal: com trinta itens o cabeçalho
           da tabela precisa continuar grudado no topo enquanto a lista corre. */}
       <div className="max-h-[48vh] overflow-auto rounded-[var(--radius)] border border-line">
@@ -1444,6 +1754,9 @@ function RespostaSheet({
                           {item.sku && (
                             <p className="font-mono text-[11px] text-faint">{item.sku}</p>
                           )}
+                          {lidos.has(item.id) && (
+                            <MarcaLeitura {...lidos.get(item.id)!} />
+                          )}
                         </div>
                       </div>
                     </td>
@@ -1477,9 +1790,10 @@ function RespostaSheet({
                           }}
                           value={l.naoTem ? "" : l.preco}
                           disabled={l.naoTem}
-                          onChange={(e) =>
-                            atualizar(item.id, { preco: mascaraMoeda(e.target.value) })
-                          }
+                          onChange={(e) => {
+                            esquecerLeitura(item.id);
+                            atualizar(item.id, { preco: mascaraMoeda(e.target.value) });
+                          }}
                           onKeyDown={(e) => aoTabular(e, i)}
                           onFocus={(e) => e.currentTarget.select()}
                           inputMode="decimal"
@@ -1673,9 +1987,22 @@ function RespostaSheet({
           <input
             value={condicao}
             onChange={(e) => setCondicao(e.target.value)}
-            placeholder="Ex.: 28 dias"
+            placeholder="Ex.: 28/35/42"
             className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink"
           />
+          {/* O número que o custo efetivo vai usar — dito antes de salvar. */}
+          {condicao.trim() && (
+            <span className="text-[11px] text-muted">
+              {(() => {
+                const d = prazoPagamentoEmDias(condicao);
+                return d === null
+                  ? "Sem dias no texto: conta como à vista no custo efetivo."
+                  : d === 0
+                    ? "À vista."
+                    : `${d} dias em média.`;
+              })()}
+            </span>
+          )}
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-[12px] font-medium text-ink-2">Frete</span>
@@ -1709,6 +2036,206 @@ function RespostaSheet({
         />
       </label>
     </Modal>
+  );
+}
+
+// ── Leitura da mensagem do fornecedor ───────────────────────
+// O fornecedor que responde no WhatsApp manda texto, print ou PDF. Colar aqui
+// preenche a tabela abaixo — e só preenche: o operador confere e salva.
+
+const TIPOS_LEITURA = ["application/pdf", "image/jpeg", "image/png", "image/webp"];
+const MAX_ARQUIVO_BYTES = 6 * 1024 * 1024;
+
+function lerComoBase64(arquivo: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).replace(/^data:[^;]+;base64,/, ""));
+    r.onerror = () => reject(new Error("Não foi possível abrir o arquivo."));
+    r.readAsDataURL(arquivo);
+  });
+}
+
+function LerMensagem({
+  conviteId,
+  onLeitura,
+}: {
+  conviteId: string;
+  onLeitura: (l: LeituraResposta) => void;
+}) {
+  const [aberto, setAberto] = useState(false);
+  const [texto, setTexto] = useState("");
+  const [arquivo, setArquivo] = useState<File | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+  const [resultado, setResultado] = useState<string | null>(null);
+  const [lendo, startLeitura] = useTransition();
+  const entrada = useRef<HTMLInputElement>(null);
+
+  function escolher(f: File | null | undefined) {
+    setErro(null);
+    if (!f) return;
+    if (!TIPOS_LEITURA.includes(f.type)) {
+      setErro("Use foto (JPG, PNG, WebP) ou PDF.");
+      return;
+    }
+    if (f.size > MAX_ARQUIVO_BYTES) {
+      setErro("Arquivo acima de 6 MB. Envie um print menor ou só a página da tabela.");
+      return;
+    }
+    setArquivo(f);
+  }
+
+  function ler() {
+    setErro(null);
+    setResultado(null);
+    startLeitura(async () => {
+      try {
+        const r = await lerRespostaAction({
+          conviteId,
+          texto: texto.trim() || null,
+          arquivo: arquivo
+            ? {
+                mimeType: arquivo.type as "application/pdf" | "image/jpeg" | "image/png" | "image/webp",
+                base64: await lerComoBase64(arquivo),
+              }
+            : null,
+        });
+        if (!r.ok) {
+          setErro(r.erro);
+          return;
+        }
+        onLeitura(r.leitura);
+        const conferir = r.leitura.itens.filter((i) => i.suspeito || i.convertido).length;
+        setResultado(
+          [
+            `${r.leitura.itens.length} ${r.leitura.itens.length === 1 ? "item preenchido" : "itens preenchidos"}`,
+            conferir > 0 ? `${conferir} para conferir` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ") + ". Revise antes de salvar.",
+        );
+        setAberto(false);
+      } catch (e) {
+        setErro(e instanceof Error ? e.message : "Não foi possível ler agora.");
+      }
+    });
+  }
+
+  if (!aberto) {
+    return (
+      <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <button
+          type="button"
+          onClick={() => setAberto(true)}
+          className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[13px] font-medium text-ink transition-colors hover:bg-surface-2"
+        >
+          <Sparkles size={14} className="text-brand" />
+          Colar resposta do WhatsApp
+        </button>
+        {resultado && <span className="text-[12px] text-ok">{resultado}</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-3 flex flex-col gap-2 rounded-[var(--radius)] border border-brand/30 bg-brand-soft/40 p-3">
+      <label htmlFor="leitura-texto" className="text-[12px] font-medium text-ink-2">
+        Cole a mensagem do fornecedor, ou anexe o print ou PDF da tabela
+      </label>
+      <textarea
+        id="leitura-texto"
+        value={texto}
+        onChange={(e) => setTexto(e.target.value)}
+        // Print copiado da conversa chega como imagem no Ctrl+V.
+        onPaste={(e) => {
+          const img = [...e.clipboardData.files].find((f) => f.type.startsWith("image/"));
+          if (img) {
+            e.preventDefault();
+            escolher(img);
+          }
+        }}
+        rows={4}
+        autoFocus
+        placeholder={"Skol lata cx 42,90\nBrahma não tenho\nPagamento 28/35 · entrega em 2 dias"}
+        className="rounded-[var(--radius)] border border-line bg-surface px-3 py-2 text-sm text-ink"
+      />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <input
+            ref={entrada}
+            type="file"
+            accept={TIPOS_LEITURA.join(",")}
+            className="sr-only"
+            onChange={(e) => escolher(e.target.files?.[0])}
+            aria-label="Anexar print ou PDF do fornecedor"
+          />
+          <button
+            type="button"
+            onClick={() => entrada.current?.click()}
+            className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink hover:bg-surface-2"
+          >
+            <Paperclip size={13} />
+            {arquivo ? "Trocar arquivo" : "Anexar print ou PDF"}
+          </button>
+          {arquivo && (
+            <span className="flex min-w-0 items-center gap-1 text-[12px] text-muted">
+              <span className="truncate">{arquivo.name || "imagem colada"}</span>
+              <button
+                type="button"
+                onClick={() => setArquivo(null)}
+                aria-label="Tirar o arquivo"
+                className="grid h-6 w-6 place-items-center rounded-full hover:bg-surface-2"
+              >
+                <X size={12} />
+              </button>
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setAberto(false)}
+            className="rounded-full px-3 py-1.5 text-[12px] font-medium text-muted hover:text-ink"
+          >
+            Fechar
+          </button>
+          <button
+            type="button"
+            onClick={ler}
+            disabled={lendo || (!texto.trim() && !arquivo)}
+            className="inline-flex items-center gap-1.5 rounded-full bg-brand px-3.5 py-1.5 text-[13px] font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
+          >
+            {lendo ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+            {lendo ? "Lendo…" : "Preencher a tabela"}
+          </button>
+        </div>
+      </div>
+      {erro && (
+        <p role="alert" className="text-[12px] text-danger">
+          {erro}
+        </p>
+      )}
+      <p className="text-[11px] text-muted">
+        A leitura só preenche os campos. Nada é salvo até você conferir e clicar em Salvar resposta.
+      </p>
+    </div>
+  );
+}
+
+/** O que a leitura automática deixou para o operador conferir nesta linha. */
+function MarcaLeitura({ convertido, suspeito }: { convertido: boolean; suspeito: boolean }) {
+  if (suspeito) {
+    return (
+      <p className="mt-0.5 flex items-center gap-1 text-[11px] font-medium text-accent">
+        <AlertTriangle size={11} aria-hidden />
+        lido da mensagem — longe do custo, confira a embalagem
+      </p>
+    );
+  }
+  return (
+    <p className="mt-0.5 flex items-center gap-1 text-[11px] text-brand">
+      <Sparkles size={11} aria-hidden />
+      {convertido ? "lido da mensagem — convertido de unidade para a embalagem" : "lido da mensagem"}
+    </p>
   );
 }
 

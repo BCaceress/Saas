@@ -884,6 +884,9 @@ export type PedidoCompraView = {
   temNota: boolean;
   /** De onde o pedido nasceu — distingue compra planejada de documento retroativo. */
   origem: string;
+  /** Cotação que originou, quando houve — o rastro de volta para a decisão. */
+  quotationId: string | null;
+  quotationNumero: string | null;
   /** Alguma linha não é COMPRA (bonificação, brinde, amostra). */
   temBonificacao: boolean;
   /**
@@ -1050,6 +1053,9 @@ export async function loadPedidosCompraPagina(
     include: {
       supplier: { select: { razaoSocial: true, nomeFantasia: true, telefone: true, email: true, logoUrl: true } },
       site: { select: { nome: true } },
+      // A cotação de origem: o pedido guarda a compra, ela guarda a decisão.
+      // Trazer o número aqui é o que faz o link de volta existir na tela.
+      quotation: { select: { id: true, numero: true } },
       items: true,
       // Só o booleano interessa à lista — contar é mais barato que hidratar a nota.
       _count: { select: { inbounds: true } },
@@ -1103,6 +1109,8 @@ export async function loadPedidosCompraPagina(
     totalItems: p.items.length,
     temNota: p._count.inbounds > 0,
     origem: p.origem,
+    quotationId: p.quotation?.id ?? null,
+    quotationNumero: p.quotation?.numero ?? null,
     temBonificacao: p.items.some((i) => i.tipo !== "COMPRA"),
     // Saldo em dinheiro do que ainda não chegou. Bonificação não entra: ela
     // nunca teve custo, e somá-la aqui inflaria o "valor em aberto".

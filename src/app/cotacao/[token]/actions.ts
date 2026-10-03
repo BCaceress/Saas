@@ -8,6 +8,8 @@ import { consumir, mensagemBloqueio } from "@/lib/rate-limit";
 import { linkParaGravar, marcarLinkRespondido } from "@/lib/compras/cotacao-link";
 import { registrarPrecosDaCotacao } from "@/lib/compras/cotacao-precos";
 import { normalizarFaixas } from "@/lib/compras/escalas";
+import { prazoPagamentoEmDias } from "@/lib/compras/custo-efetivo";
+import { avisarRespostaDaCotacao } from "@/lib/compras/cotacao-push";
 
 // ============================================================
 // Resposta pública da cotação. NÃO tem sessão, NÃO tem guard de permissão:
@@ -146,6 +148,8 @@ export async function responderPeloLinkAction(
           respondidaVia: "LINK",
           prazoEntregaDias: d.prazoEntregaDias ?? null,
           condicaoPagamento: d.condicaoPagamento || null,
+          // O texto é do fornecedor; o número é o que o comparativo usa.
+          prazoPagamentoDias: prazoPagamentoEmDias(d.condicaoPagamento),
           frete: d.frete ?? null,
           observacao: d.observacao || null,
         },
@@ -183,6 +187,12 @@ export async function responderPeloLinkAction(
     // isso: a proposta dele já está salva acima, então roda depois da resposta
     // (`after`) em vez de segurar o botão. Não lança — ver cotacao-precos.
     after(() => runWithTenant(link.tenantId, () => registrarPrecosDaCotacao(convite.id)));
+    // O comprador fica sabendo agora, não na próxima rodada do cron.
+    after(() =>
+      runWithTenant(link.tenantId, () =>
+        avisarRespostaDaCotacao(link.tenantId, convite.id, "resposta"),
+      ).catch(() => undefined),
+    );
     return { ok: true };
   });
 }
@@ -229,6 +239,11 @@ export async function recusarPeloLinkAction(
       }),
       marcarLinkRespondido(link.linkId),
     ]);
+    after(() =>
+      runWithTenant(link.tenantId, () =>
+        avisarRespostaDaCotacao(link.tenantId, convite.id, "recusa"),
+      ).catch(() => undefined),
+    );
     return { ok: true };
   });
 }

@@ -9,6 +9,7 @@ import { logErro } from "@/lib/log";
 import { limparExpirados } from "@/lib/rate-limit";
 import { limparTokensExpirados } from "@/lib/senha";
 import { snapshotEstoqueTodos } from "@/lib/snapshot";
+import { gerarCotacoesRecorrentesTodos } from "@/lib/compras/cotacao-recorrente";
 
 /**
  * Dispatcher diário — existe por causa do plano.
@@ -63,6 +64,8 @@ async function executar(req: Request) {
   resultados.push(await passo("sincronizar-catalogos", () => sincronizarCatalogosDevidos(50)));
   resultados.push(await passo("importar-nfe-email", () => sincronizarCaixasTodos()));
   resultados.push(await passo("distribuicao-sefaz", () => sincronizarDistribuicaoTodos()));
+  // Às 7h: a cotação da semana fica pronta antes de o comprador abrir o sistema.
+  resultados.push(await passo("cotacao-recorrente", () => gerarCotacoesRecorrentesTodos()));
 
   const falhas = resultados.filter((r) => !r.ok);
 

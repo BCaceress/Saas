@@ -32,7 +32,9 @@ export default auth((req) => {
   // preço. O cabeçalho abaixo é lido pelo layout raiz, que fixa
   // data-theme="light" no <html> — no <html> mesmo, e não num wrapper, para
   // que fundo da página, scrollbar e barra de status venham claros junto.
-  if (pathname.startsWith("/cotacao/")) {
+  // O link do pedido (/pedido/<token>) segue a mesma regra: quem abre é o
+  // fornecedor, sem conta. Atenção: "/pedidos" (tela do operador) NÃO casa.
+  if (pathname.startsWith("/cotacao/") || pathname.startsWith("/pedido/")) {
     const headers = new Headers(req.headers);
     headers.set(TEMA_FORCADO_HEADER, "light");
     return NextResponse.next({ request: { headers } });

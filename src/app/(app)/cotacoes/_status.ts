@@ -29,8 +29,12 @@ const ROTULOS: Record<StatusVisivel, Rotulo> = {
     classe: "bg-accent-soft text-accent",
   },
   RESPONDIDA: { id: "RESPONDIDA", label: "Respondida", classe: "bg-ok-soft text-ok" },
-  ENCERRADA: { id: "ENCERRADA", label: "Encerrada", classe: "bg-accent-soft text-accent" },
-  DECIDIDA: { id: "DECIDIDA", label: "Virou pedido", classe: "bg-ok-soft text-ok" },
+  // Encerrar as respostas é o passo "decidir compra": o nome diz o momento.
+  ENCERRADA: { id: "ENCERRADA", label: "Em decisão", classe: "bg-accent-soft text-accent" },
+  // "Virou pedido" dizia que a compra saiu. Ela não saiu: a decisão foi
+  // tomada e o pedido nasceu em rascunho, esperando revisão. "Concluída" é o
+  // que de fato aconteceu com a COTAÇÃO — o resto é vida do pedido.
+  DECIDIDA: { id: "DECIDIDA", label: "Concluída", classe: "bg-ok-soft text-ok" },
   CANCELADA: { id: "CANCELADA", label: "Cancelada", classe: "bg-surface-2 text-faint" },
 };
 

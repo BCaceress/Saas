@@ -1,12 +1,11 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Kanban, List, Plus, ShoppingBag, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   cancelarPedidoCompraAction,
-  enviarPedidoCompraAction,
   excluirPedidoCompraAction,
   marcarAguardandoPedidoAction,
 } from "../estoque/actions";
@@ -26,6 +25,7 @@ import { PurchaseOrderKanban } from "./_po-kanban";
 import { PurchaseOrderSummary } from "./_po-summary";
 import type { ResumoPedidos } from "../estoque/_data";
 import { transicaoDrag } from "../cotacoes/_ui";
+import { EnvioPedidoSheet } from "@/components/app/envio-pedido";
 
 // ── Raiz do módulo Pedidos de Compra ───────────────────────────
 // Lista e Kanban consomem exatamente os mesmos dados filtrados —
@@ -52,6 +52,8 @@ export function PurchaseOrdersClient({
   resumo,
   empresa,
   initialView,
+  focoId,
+  focoPedido,
 }: {
   /** Já é a FATIA da página — filtrar e ordenar aconteceu no banco. */
   pedidos: PedidoView[];
@@ -62,6 +64,10 @@ export function PurchaseOrdersClient({
   resumo: ResumoPedidos;
   empresa: string;
   initialView: PoView;
+  /** `?pedido=<id>`: quem chegou aqui atrás de UM pedido, vindo de outra tela. */
+  focoId: string | null;
+  /** O pedido do foco, quando ele não cabe no recorte da página atual. */
+  focoPedido: PedidoView | null;
 }) {
   const router = useRouter();
   const { options, garantir: garantirFormOptions } = useFormOptions();
@@ -76,15 +82,42 @@ export function PurchaseOrdersClient({
   const totalPaginas = Math.max(1, Math.ceil(total / porPagina));
 
   // Sobreposições
-  const [detalhe, setDetalhe] = useState<PedidoView | null>(null);
+  //
+  // O foco da URL já entra como estado inicial: abrir o drawer num efeito
+  // pintava a lista primeiro e o pedido depois, e quem clicou em "Revisar
+  // pedido" via a lista inteira piscar antes de chegar onde queria.
+  const [detalhe, setDetalhe] = useState<PedidoView | null>(
+    () => focoPedido ?? pedidos.find((p) => p.id === focoId) ?? null,
+  );
   // `detalhe` é a foto de quando o drawer abriu — depois de um
   // router.refresh() (ex: bonificação adicionada) a lista `pedidos` vem
   // atualizada mas o state antigo não. Busca a versão viva pelo id, sem
   // fechar o drawer nem perder o pedido se ele sumir da lista filtrada.
   const detalheAtual = useMemo(
-    () => (detalhe ? (pedidos.find((p) => p.id === detalhe.id) ?? detalhe) : null),
-    [detalhe, pedidos],
+    () =>
+      detalhe
+        ? (pedidos.find((p) => p.id === detalhe.id) ??
+          (focoPedido?.id === detalhe.id ? focoPedido : null) ??
+          detalhe)
+        : null,
+    [detalhe, pedidos, focoPedido],
   );
+  /**
+   * Fechar o drawer aberto pela URL tira o `?pedido=` junto. Sem isso, o F5
+   * (ou o refresh depois de qualquer ação) reabriria o pedido que a pessoa
+   * acabou de fechar, e a tela pareceria travada nele.
+   */
+  function fecharDetalhe() {
+    setDetalhe(null);
+    if (focoId) router.replace(`/pedidos${urlDosFiltros(filtros)}`, { scroll: false });
+  }
+
+  // O painel de bonificação do drawer precisa do catálogo. Quem abre pela lista
+  // já pede as opções no clique; quem chega pela URL não passou por lá.
+  useEffect(() => {
+    if (focoId) garantirFormOptions();
+  }, [focoId, garantirFormOptions]);
+
   const [editar, setEditar] = useState<PedidoView | null>(null);
   const [duplicar, setDuplicar] = useState<PedidoView | null>(null);
   const abrirNovoPedido = useAbrirNovoPedido();
@@ -94,6 +127,8 @@ export function PurchaseOrdersClient({
   // Status sendo alterado a partir do drawer (lista mostra loading na coluna Status).
   const [statusPendingId, setStatusPendingId] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
+  /** Pedido arrastado para "Enviado": o envio de verdade passa pela folha. */
+  const [enviando, setEnviando] = useState<string | null>(null);
   const avisoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function mostrarAviso(msg: string) {
     setAviso(msg);
@@ -125,11 +160,15 @@ export function PurchaseOrdersClient({
       );
       return;
     }
-    if (acao === "enviar" && !window.confirm(`Enviar o pedido ${p.numero} ao fornecedor?`)) return;
+    // Arrastar para "Enviado" não pode só trocar a coluna: o fornecedor
+    // precisa receber a mensagem. A folha de envio decide o status.
+    if (acao === "enviar") {
+      setEnviando(p.id);
+      return;
+    }
     setMovendoId(p.id);
     try {
-      if (acao === "enviar") await enviarPedidoCompraAction(p.id);
-      else await marcarAguardandoPedidoAction(p.id);
+      await marcarAguardandoPedidoAction(p.id);
       router.refresh();
     } catch (e) {
       mostrarAviso(e instanceof Error ? e.message : "Falha ao mover o pedido.");
@@ -257,13 +296,17 @@ export function PurchaseOrdersClient({
         pedido={detalheAtual}
         empresa={empresa}
         products={options?.products ?? []}
-        onClose={() => setDetalhe(null)}
+        onClose={fecharDetalhe}
         onEditar={(p) => { setDetalhe(null); setEditar(p); }}
         onStatusChanging={setStatusPendingId}
       />
 
       {editar && (
         <PedidoFormSheetLazy open onClose={() => setEditar(null)} mode="editar" pedido={editar} empresa={empresa} onDone={() => setEditar(null)} />
+      )}
+
+      {enviando && (
+        <EnvioPedidoSheet pedidoIds={[enviando]} onFechar={() => setEnviando(null)} />
       )}
 
       {/* Duplicar = novo pedido pré-carregado com fornecedor/itens do original */}

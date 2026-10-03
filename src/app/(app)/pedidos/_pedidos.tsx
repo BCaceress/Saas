@@ -45,7 +45,6 @@ import {
   criarPedidoCompraAction,
   atualizarPedidoCompraAction,
   atualizarPrevisaoEntregaPedidoAction,
-  enviarPedidoCompraAction,
   marcarAguardandoPedidoAction,  cancelarPedidoCompraAction,
   excluirPedidoCompraAction,
   adicionarBonificacaoPedidoAction,
@@ -60,6 +59,7 @@ import {
 import { ReceberMercadoriaPanel } from "./_receber-mercadoria";
 import { SolicitarSheet, type GrupoEnvio, copiarTexto } from "./_solicitar";
 import { ReenviarSheet } from "./_reenviar";
+import { EnvioPedidoSheet } from "@/components/app/envio-pedido";
 import { QrPedidoSheet } from "@/components/app/qr-pedido";
 import { fmtMoney, fmtQtd, previsaoLabel, relDiaHora, Thumb } from "../cotacoes/_ui";
 import { PurchaseItemCard, PurchaseListHeader, defaultPackaging, precoSugerido } from "./_purchase-item";
@@ -114,6 +114,13 @@ export type PedidoView = {
   temNota: boolean;
   /** De onde o pedido nasceu: compra planejada × documento retroativo. */
   origem: string;
+  /**
+   * A cotação que originou este pedido, quando houve uma. É o que responde
+   * "por que eu escolhi este fornecedor e este preço?" sem sair da tela — a
+   * comparação inteira está lá, e ela não é regravada quando o pedido muda.
+   */
+  quotationId: string | null;
+  quotationNumero: string | null;
   temBonificacao: boolean;
   /** Quanto ainda falta chegar, em dinheiro. */
   valorSaldo: number;
@@ -174,6 +181,7 @@ export function PedidoDrawer({
   const [pending, setPending] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [reenviar, setReenviar] = useState(false);
+  const [confirmarEnvio, setConfirmarEnvio] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const [bonusOpen, setBonusOpen] = useState(false);
   const [saldoOpen, setSaldoOpen] = useState(false);
@@ -207,6 +215,7 @@ export function PedidoDrawer({
     setPending(null);
     setErro(null);
     setReenviar(false);
+    setConfirmarEnvio(false);
     setQrOpen(false);
     setBonusOpen(false);
     setStepAberto(null);
@@ -328,6 +337,10 @@ export function PedidoDrawer({
           <AcaoBtn key="editar" tone="secondary" icon={Pencil} label="Editar" tooltip="Editar itens e dados do pedido" onClick={() => onEditar(p)} />,
         );
       }
+      // Enviar é a fronteira do fluxo: antes dela o pedido é assunto interno,
+      // depois dela existe uma promessa feita a outra empresa. Passa por
+      // conferência — fornecedor, itens, valor e condições na tela — porque o
+      // rascunho pode ter vindo de uma cotação e ninguém deve mandar sem ler.
       botoes.push(
         <AcaoBtn
           key="enviar"
@@ -337,7 +350,7 @@ export function PedidoDrawer({
           tooltip="Envia o pedido ao fornecedor"
           loading={pending === "enviar"}
           disabled={pending !== null}
-          onClick={() => run("enviar", () => enviarPedidoCompraAction(p.id))}
+          onClick={() => setConfirmarEnvio(true)}
         />,
       );
       botoes.push(
@@ -505,6 +518,25 @@ export function PedidoDrawer({
               valor={`${fmtQtd(p.items.reduce((a, it) => a + it.qtdPedida * it.fatorConversao, 0))} UN`}
             />
             <PrevisaoEntregaCampo pedido={p} />
+
+            {/* Rastro para trás: a cotação continua sendo a prova de por que
+                este fornecedor e este preço ganharam. Editar o pedido não a
+                reescreve — são documentos diferentes, e o link deixa isso
+                visível em vez de deduzível. */}
+            {p.quotationId && (
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">
+                  Origem
+                </p>
+                <Link
+                  href={`/cotacoes/${p.quotationId}`}
+                  className="flex items-center gap-1 text-sm font-medium text-brand hover:underline"
+                >
+                  Cotação {p.quotationNumero}
+                  <ArrowUpRight size={13} className="shrink-0" />
+                </Link>
+              </div>
+            )}
 
             {p.observacao && <ResumoCampo label="Observação" valor={p.observacao} full />}
           </div>
@@ -798,6 +830,20 @@ export function PedidoDrawer({
       {p && saldoOpen && (
         <SaldoPedidoSheet pedidoId={p.id} onClose={() => setSaldoOpen(false)} />
       )}
+
+      {/* ── Envio ao fornecedor ──────────────────────────────
+          O último ponto em que o pedido ainda é só nosso. A folha mostra quem
+          recebe e por onde, e o pedido só vira ENVIADO quando a mensagem sai
+          — antes, este botão trocava o status sem mandar nada a ninguém. */}
+      {p && confirmarEnvio && (
+        <EnvioPedidoSheet
+          pedidoIds={[p.id]}
+          onFechar={() => {
+            setConfirmarEnvio(false);
+            router.refresh();
+          }}
+        />
+      )}
     </Sheet>
   );
 }
@@ -1078,7 +1124,10 @@ export function PedidoFormSheet({
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-1 text-xs font-medium text-muted">
             Observação
-            <textarea ref={observacaoRef} value={observacao} onChange={(e) => setObservacao(e.target.value)} rows={1} placeholder="Condições, prazo de pagamento, etc." className={cn(selectCls, "resize-none")} />
+            {/* Cresce quando o texto tem linhas — o pedido gerado por cotação
+                chega com origem, pagamento, frete e prazo, e uma linha só
+                escondia tudo menos a primeira. */}
+            <textarea ref={observacaoRef} value={observacao} onChange={(e) => setObservacao(e.target.value)} rows={observacao.includes("\n") ? 4 : 1} placeholder="Condições, prazo de pagamento, etc." className={cn(selectCls, "resize-none")} />
           </label>
 
           {erro && <p className="rounded-lg bg-danger-soft px-3 py-2.5 text-sm text-danger">{erro}</p>}
@@ -1659,7 +1708,10 @@ function ResumoCampo({ label, valor, full }: { label: string; valor: string; ful
   return (
     <div className={full ? "basis-full" : undefined}>
       <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">{label}</p>
-      <p className="text-sm text-ink">{valor}</p>
+      {/* A observação de um pedido vindo de cotação tem linhas (origem,
+          pagamento, frete, prazo). Sem `pre-line` elas viravam um parágrafo
+          corrido em que a origem se perdia no meio das condições. */}
+      <p className="whitespace-pre-line text-sm text-ink">{valor}</p>
     </div>
   );
 }

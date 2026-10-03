@@ -9,9 +9,14 @@ import {
   Ban,
   CalendarClock,
   CheckCheck,
-  Lock,
+  Copy,
+  Gavel,
+  History,
   MoreHorizontal,
+  Repeat,
+  Send,
   Trash2,
+  Undo2,
   Unlock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -20,6 +25,7 @@ import type { CotacaoAnterior, CotacaoDetalhe, FornecedorOpcao } from "../_compr
 import {
   cancelarCotacaoAction,
   descartarSeVaziaAction,
+  duplicarCotacaoAction,
   encerrarCotacaoAction,
   excluirCotacaoAction,
   reabrirCotacaoAction,
@@ -32,7 +38,13 @@ import { AcompanhamentoCotacao } from "./_acompanhamento";
 import { RevisarCotacao } from "./_revisar";
 import type { PedidoDaCotacao } from "@/lib/compras/cotacao-economia";
 import type { Envio } from "../_compra-actions";
-import { andamento, statusVisivel } from "../_status";
+import { statusVisivel } from "../_status";
+import type { EventoCotacao } from "@/lib/compras/cotacao-linha-do-tempo";
+import { HistoricoSheet } from "./_linha-do-tempo";
+import { TrilhaEtapas } from "./_trilha";
+import { etapasDaCotacao } from "../_etapas";
+import { EnvioPedidoSheet } from "@/components/app/envio-pedido";
+import { descreverRecorrencia, RecorrenciaSheet } from "./_recorrencia";
 
 // ── Cotação, tela inteira ───────────────────────────────────
 // A tela tem duas caras, porque o trabalho é outro antes e depois do envio.
@@ -51,12 +63,18 @@ export function CotacaoDetalheClient({
   fornecedores,
   sites,
   resumo,
+  referencias,
+  linhaDoTempo,
   pedidos,
   anterior,
   podePedir,
   usaMinimo,
 }: {
   cotacao: CotacaoDetalhe;
+  /** Último preço de cada fornecedor por produto (▲▼ do comparativo). */
+  referencias: Record<string, number>;
+  /** Tudo o que aconteceu com a cotação, mais recente primeiro. */
+  linhaDoTempo: EventoCotacao[];
   fornecedores: FornecedorOpcao[];
   /** Lojas ativas: com uma só, o nome dela não informa nada e some da tela. */
   sites: { id: string; nome: string }[];
@@ -102,9 +120,13 @@ export function CotacaoDetalheClient({
         podePedir={podePedir}
         multiSite={sites.length > 1}
         rascunho={rascunho}
+        pedidos={pedidos}
+        linhaDoTempo={linhaDoTempo}
       />
 
-      {pedidos.length > 0 && <VirouPedido pedidos={pedidos} />}
+      {pedidos.length > 0 && (
+        <VirouPedido pedidos={pedidos} concluida={cotacao.status === "DECIDIDA"} />
+      )}
 
       {rascunho ? (
         <RevisarCotacao
@@ -122,6 +144,7 @@ export function CotacaoDetalheClient({
         />
       ) : (
         <AcompanhamentoCotacao
+          referencias={referencias}
           cotacao={cotacao}
           fornecedores={fornecedores}
           resumo={resumo}
@@ -151,41 +174,107 @@ export function CotacaoDetalheClient({
   );
 }
 
-// ── A cotação virou pedido ──────────────────────────────────
-// Primeira coisa da tela depois das abas, e em todas elas: quem abre uma
-// cotação decidida está atrás de uma pergunta só — "em que pedido isso foi
-// parar?". O número do pedido é a resposta, então ele é o que está em
-// destaque, não o aviso em volta.
+// ── Compra definida: os pedidos que nasceram daqui ──────────
+// Primeira coisa da tela, em todas as abas: quem abre uma cotação concluída
+// está atrás de uma pergunta só — "em que pedido isso foi parar, e ele já
+// saiu?". As duas metades da resposta ficam na mesma linha: o número do pedido
+// e o estado dele.
+//
+// O aviso de que NADA foi enviado é o ponto do painel. O erro caro deste fluxo
+// é o operador achar que concluir a cotação avisou o fornecedor, ficar
+// esperando a mercadoria e descobrir na sexta que o pedido dormiu em rascunho.
+// Por isso o recado aparece enquanto existir rascunho, e some sozinho quando
+// todo mundo já foi enviado.
 
-function VirouPedido({ pedidos }: { pedidos: PedidoDaCotacao[] }) {
+/** Como o rascunho se distingue do que já saiu, sem abrir o pedido. */
+const ROTULO_PEDIDO: Record<string, { label: string; classe: string }> = {
+  RASCUNHO: { label: "Rascunho", classe: "bg-surface-2 text-muted" },
+  ENVIADO: { label: "Enviado", classe: "bg-brand-soft text-brand" },
+  AGUARDANDO: { label: "Confirmado", classe: "bg-accent-soft text-accent" },
+  EM_TRANSITO: { label: "Em trânsito", classe: "bg-accent-soft text-accent" },
+  RECEBIDO_PARCIAL: { label: "Recebido em parte", classe: "bg-accent-soft text-accent" },
+  RECEBIDO: { label: "Concluído", classe: "bg-ok-soft text-ok" },
+  CANCELADO: { label: "Cancelado", classe: "bg-surface-2 text-faint" },
+};
+
+const money = (v: number) =>
+  v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+function VirouPedido({
+  pedidos,
+  concluida,
+}: {
+  pedidos: PedidoDaCotacao[];
+  /** Falso quando a cotação foi reaberta e os pedidos ficaram para trás. */
+  concluida: boolean;
+}) {
+  const rascunhos = pedidos.filter((p) => p.status === "RASCUNHO");
+  const [enviando, setEnviando] = useState<string[] | null>(null);
+
+  // Uma linha por pedido: número, estado, fornecedor, valor e a ação. O que
+  // antes era um painel verde de 150px vira uma lista que cabe no olhar.
   return (
-    <section
-      aria-label="Pedidos gerados por esta cotação"
-      className="flex flex-col gap-2.5 rounded-[var(--radius-lg)] border border-ok/40 bg-ok-soft px-4 py-3"
-    >
-      <p className="flex items-start gap-2 text-[13px] leading-relaxed text-ok">
-        <CheckCheck size={15} className="mt-0.5 shrink-0" />
-        <span>
-          Esta cotação já virou {pedidos.length === 1 ? "pedido de compra" : "pedidos de compra"}.
-          Acompanhe o resto em Pedidos.
-        </span>
-      </p>
-      <ul className="flex flex-wrap gap-2">
-        {pedidos.map((p) => (
-          <li key={p.id}>
-            <Link
-              href={`/pedidos?pedido=${p.id}`}
-              className="flex items-center gap-2 rounded-full border border-ok/30 bg-surface px-3 py-1.5 transition-colors hover:bg-surface-2"
-            >
-              <span className="font-mono text-[14px] font-semibold text-ink">{p.numero}</span>
-              <span className="max-w-[12rem] truncate text-[12px] text-muted">
-                {p.supplierNome}
+    <section id="pedidos-gerados" aria-label="Pedidos gerados por esta cotação">
+      {!concluida && (
+        <p className="mb-1.5 text-[12px] text-accent">
+          Cotação reaberta — {pedidos.length === 1 ? "o pedido abaixo continua" : "os pedidos abaixo continuam"}{" "}
+          valendo e não mudam com o que você alterar aqui.
+        </p>
+      )}
+      <ul className="divide-y divide-line rounded-[var(--radius-lg)] border border-line bg-surface">
+        {pedidos.map((p) => {
+          const rotulo = ROTULO_PEDIDO[p.status] ?? { label: p.status, classe: "bg-surface-2 text-muted" };
+          const rascunho = p.status === "RASCUNHO";
+          return (
+            <li key={p.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
+              <CheckCheck size={15} className={cn("shrink-0", rascunho ? "text-accent" : "text-ok")} aria-hidden />
+              <span className="font-mono text-[13px] font-semibold text-ink">{p.numero}</span>
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                  rascunho ? "bg-accent-soft text-accent" : rotulo.classe,
+                )}
+              >
+                {rascunho ? "Não enviado" : rotulo.label}
               </span>
-              <ArrowUpRight size={13} className="shrink-0 text-muted" />
-            </Link>
+              <span className="min-w-0 flex-1 truncate text-[12px] text-muted">
+                {p.supplierNome} · {p.itens} {p.itens === 1 ? "item" : "itens"} ·{" "}
+                <span className="font-mono tabular-nums text-ink-2">{money(p.valorTotal)}</span>
+              </span>
+              {rascunho && (
+                <button
+                  type="button"
+                  onClick={() => setEnviando([p.id])}
+                  className="flex shrink-0 items-center gap-1.5 rounded-full bg-brand px-3 py-1 text-[12px] font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+                >
+                  <Send size={12} className="shrink-0" />
+                  Enviar
+                </button>
+              )}
+              <Link
+                href={`/pedidos?pedido=${p.id}`}
+                className="flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink"
+              >
+                {rascunho ? "Revisar" : "Ver"}
+                <ArrowUpRight size={12} className="shrink-0" />
+              </Link>
+            </li>
+          );
+        })}
+        {rascunhos.length > 1 && (
+          <li className="flex justify-end px-3 py-1.5">
+            <button
+              type="button"
+              onClick={() => setEnviando(rascunhos.map((p) => p.id))}
+              className="text-[12px] font-semibold text-brand underline-offset-4 hover:underline"
+            >
+              Enviar os {rascunhos.length} pedidos
+            </button>
           </li>
-        ))}
+        )}
       </ul>
+
+      {enviando && <EnvioPedidoSheet pedidoIds={enviando} onFechar={() => setEnviando(null)} />}
     </section>
   );
 }
@@ -197,10 +286,14 @@ function Cabecalho({
   podePedir,
   multiSite,
   rascunho,
+  pedidos,
+  linhaDoTempo,
 }: {
   cotacao: CotacaoDetalhe;
   podePedir: boolean;
   multiSite: boolean;
+  /** Eventos da gaveta "Histórico". */
+  linhaDoTempo: EventoCotacao[];
   /**
    * Em rascunho o cabeçalho da PÁGINA é este, e só este. O nome, a loja e o
    * prazo que ele mostraria são campos editáveis logo abaixo — repetir aqui
@@ -208,6 +301,8 @@ function Cabecalho({
    * enquanto a pessoa digita.
    */
   rascunho: boolean;
+  /** Pedidos já gerados — o que a reabertura precisa avisar antes de rodar. */
+  pedidos: PedidoDaCotacao[];
 }) {
   const router = useRouter();
   const [pendente, startTransition] = useTransition();
@@ -218,8 +313,46 @@ function Cabecalho({
    * cotação inteira. Clique solto em botão de barra não pode disparar isso.
    */
   const [confirmar, setConfirmar] = useState<
-    null | "encerrar" | "reabrir" | "cancelar" | "excluir"
+    null | "encerrar" | "reabrir" | "cancelar" | "excluir" | "duplicar"
   >(null);
+  const [repetindo, setRepetindo] = useState(false);
+  const [historico, setHistorico] = useState(false);
+  const podeRepetir =
+    cotacao.status !== "CANCELADA" && cotacao.itens.length > 0 && cotacao.convites.length > 0;
+
+  const concluida = cotacao.status === "DECIDIDA";
+  const recebendo = cotacao.status === "ABERTA";
+  const emDecisao = cotacao.status === "ENCERRADA";
+  const respondidosN = cotacao.convites.filter((c) => c.status === "RESPONDIDA").length;
+  /** Convidados que ainda podem responder — o que "decidir agora" corta. */
+  const faltam = cotacao.convites.filter(
+    (c) => c.status === "ENVIADA" || c.status === "PENDENTE",
+  ).length;
+  const rascunhosPendurados = pedidos.filter((p) => p.status === "RASCUNHO");
+  const pedidosVivos = pedidos.filter((p) => p.status !== "CANCELADO");
+
+  /**
+   * O que a reabertura precisa dizer, e que muda conforme o que já existe.
+   *
+   * Sem pedido é uma volta barata: a cotação só volta a aceitar resposta. COM
+   * pedido é outra conversa — o pedido não acompanha a mudança, e o operador
+   * precisa saber disso ANTES, porque quase sempre o que ele queria era editar
+   * o pedido (comprar 8 em vez de 10), não refazer a negociação.
+   */
+  const textoReabrir = concluida
+    ? [
+        "A cotação volta para o estado de conversa e os fornecedores podem responder de novo.",
+        pedidosVivos.length > 0
+          ? `Esta cotação já ${pedidosVivos.length === 1 ? "gerou o pedido" : "gerou os pedidos"} ${pedidosVivos.map((p) => p.numero).join(", ")}. ${pedidosVivos.length === 1 ? "Ele continua valendo e NÃO será atualizado" : "Eles continuam valendo e NÃO serão atualizados"} automaticamente com o que você mudar aqui.`
+          : null,
+        rascunhosPendurados.length > 0
+          ? "Se o que você quer é só mudar quantidade, preço ou itens da compra, o lugar é o rascunho do pedido — não a cotação."
+          : null,
+        "Nenhuma resposta de fornecedor é apagada.",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : "Os fornecedores voltam a poder responder pelos links que já receberam. As respostas que já entraram continuam valendo.";
 
   const CONFIRMACOES = {
     /**
@@ -239,20 +372,36 @@ function Cabecalho({
       executar: () => excluirCotacaoAction(cotacao.id),
     },
     encerrar: {
-      titulo: "Encerrar a cotação",
-      texto:
-        "Os links param de aceitar resposta na hora — quem estiver preenchendo perde o que digitou. Você continua podendo comparar e gerar pedidos, e dá para reabrir depois.",
-      acao: "Encerrar",
+      titulo: "Decidir a compra agora?",
+      texto: `${faltam} ${faltam === 1 ? "fornecedor ainda não respondeu" : "fornecedores ainda não responderam"}. Ao decidir, os links fecham e ninguém mais manda proposta. Se mudar de ideia, dá para voltar a receber.`,
+      acao: "Decidir agora",
       perigo: false,
       executar: () => encerrarCotacaoAction(cotacao.id),
     },
     reabrir: {
-      titulo: "Reabrir a cotação",
-      texto:
-        "Os fornecedores voltam a poder responder pelos links que já receberam. As respostas que já entraram continuam valendo.",
-      acao: "Reabrir",
+      titulo: concluida ? "Reabrir esta cotação?" : "Voltar a receber propostas?",
+      texto: concluida
+        ? textoReabrir
+        : "Os links voltam a aceitar proposta e a tabela volta a ser só de leitura. As escolhas que você marcou não são guardadas.",
+      acao: concluida ? "Reabrir cotação" : "Voltar a receber",
       perigo: false,
       executar: () => reabrirCotacaoAction(cotacao.id),
+    },
+    /**
+     * O caminho honesto para "quero cotar outra lista": em vez de mexer numa
+     * negociação já respondida, pergunta de novo. Copia a PERGUNTA, nunca as
+     * respostas — quem faz isso é `duplicarCotacaoAction`.
+     */
+    duplicar: {
+      titulo: "Duplicar a cotação",
+      texto:
+        "Uma cotação nova nasce em rascunho com os mesmos produtos e os mesmos fornecedores. Os preços não vêm junto — cada rodada tem os seus. Esta cotação e os pedidos dela ficam como estão.",
+      acao: "Duplicar",
+      perigo: false,
+      executar: async () => {
+        const nova = await duplicarCotacaoAction(cotacao.id);
+        router.push(`/cotacoes/${nova.id}`);
+      },
     },
     cancelar: {
       titulo: "Cancelar a cotação",
@@ -336,14 +485,18 @@ function Cabecalho({
                 <span className="font-mono text-[12px] font-semibold text-muted">
                   {cotacao.numero}
                 </span>
-                <span
-                  className={cn(
-                    "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                    rotulo.classe,
-                  )}
-                >
-                  {rotulo.label}
-                </span>
+                {/* A trilha diz o andamento; o selo só aparece quando a
+                    cotação saiu do caminho (cancelada). */}
+                {cotacao.status === "CANCELADA" && (
+                  <span
+                    className={cn(
+                      "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                      rotulo.classe,
+                    )}
+                  >
+                    {rotulo.label}
+                  </span>
+                )}
               </div>
             )}
             <h2 className="truncate font-display text-[19px] font-semibold leading-tight text-ink">
@@ -361,7 +514,14 @@ function Cabecalho({
 
             {rascunho ? (
               <p className="mt-0.5 truncate text-[13px] text-muted">
-                Confira as informações, itens e fornecedores antes de criar a cotação.
+                {cotacao.geradaPorRecorrencia ? (
+                  <span className="inline-flex items-center gap-1 text-brand">
+                    <Repeat size={13} className="shrink-0" />
+                    Montada pela repetição programada — confira as quantidades e envie.
+                  </span>
+                ) : (
+                  "Confira as informações, itens e fornecedores antes de criar a cotação."
+                )}
               </p>
             ) : (
               /* Andamento e prazo são as duas perguntas do topo — "quanto já
@@ -369,25 +529,18 @@ function Cabecalho({
                  a loja, todas no mesmo cinza: o prazo vencido lia igual ao
                  nome da filial. Agora o andamento tem barra e o prazo tem cor
                  quando vira ação. */
-              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-muted">
-                {cotacao.convites.length > 0 && (
-                  <span className="flex items-center gap-2">
-                    <span
-                      aria-hidden
-                      className="h-1 w-16 overflow-hidden rounded-full bg-surface-2"
-                    >
-                      <span
-                        className="block h-full rounded-full bg-ok transition-[width]"
-                        style={{
-                          width: `${Math.round((respondidos / cotacao.convites.length) * 100)}%`,
-                        }}
-                      />
-                    </span>
-                    {andamento(cotacao.convites.length, respondidos)}
-                  </span>
-                )}
+              <>
+              {cotacao.status !== "CANCELADA" && (
+                <div className="mt-2">
+                  <TrilhaEtapas
+                    etapas={etapasDaCotacao(cotacao.status, cotacao.convites, pedidos)}
+                  />
+                </div>
+              )}
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-muted">
 
-                {prazo && (
+                {/* Prazo só importa enquanto os links aceitam proposta. */}
+                {prazo && recebendo && (
                   <span
                     className={cn(
                       "flex items-center gap-1.5",
@@ -406,58 +559,126 @@ function Cabecalho({
                 )}
 
                 {multiSite && <span>Entrega em {cotacao.siteNome}</span>}
+
+                {cotacao.recorrencia && (
+                  <span
+                    className={cn(
+                      "flex items-center gap-1",
+                      cotacao.recorrencia.ativo ? "text-brand" : "text-faint",
+                    )}
+                  >
+                    <Repeat size={13} className="shrink-0" />
+                    {cotacao.recorrencia.ativo
+                      ? `Repete ${descreverRecorrencia(cotacao.recorrencia)}`
+                      : "Repetição pausada"}
+                  </span>
+                )}
+                {cotacao.geradaPorRecorrencia && (
+                  <span className="flex items-center gap-1">
+                    <Repeat size={13} className="shrink-0" />
+                    Montada pela repetição
+                  </span>
+                )}
               </div>
+              </>
             )}
           </div>
         </div>
 
-        {/* ENCERRAR e CANCELAR não são o objetivo de quem abre esta tela — são
-            saídas de emergência, e como botões no topo competiam com a decisão
-            de compra, que é a ação de verdade e mora no rodapé da comparação.
-            Foram para o menu. O único botão que sobra é o da cotação já
-            decidida, quando o trabalho aqui acabou e o próximo passo é o
-            pedido. */}
-        {podePedir && (
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            {cotacao.status === "DECIDIDA" && (
-              <Link
-                href="/pedidos"
-                className="flex items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+        {/* ENCERRAR, REABRIR e CANCELAR não são o objetivo de quem abre esta
+            tela — são mudanças de estado, e como botões no topo competiam com a
+            decisão de compra, que é a ação de verdade e mora no rodapé da
+            comparação. Foram para o menu. O único botão que sobra é o da
+            cotação já concluída, quando o trabalho aqui acabou e o próximo
+            passo é o pedido. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {!rascunho && linhaDoTempo.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setHistorico(true)}
+              className="flex h-10 items-center gap-1.5 rounded-full border border-line px-3.5 text-sm font-medium text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink"
+            >
+              <History size={15} />
+              Histórico
+            </button>
+          )}
+        {podePedir && cotacao.status !== "CANCELADA" && (
+          <>
+            {/* Concluída, o próximo passo não está mais nesta tela: está no
+                pedido em rascunho, logo abaixo. O botão do topo só empurra o
+                olho para lá — mandar para /pedidos, como antes, jogava o
+                operador numa lista de vinte pedidos para achar os dois dele. */}
+            {/* A passagem entre os dois momentos da tela. "Decidir" fecha as
+                respostas (pergunta antes só se ainda falta alguém); "Voltar a
+                receber" reabre. */}
+            {recebendo && (
+              <button
+                type="button"
+                disabled={pendente || respondidosN === 0}
+                title={respondidosN === 0 ? "Espere a primeira proposta para decidir." : undefined}
+                onClick={() =>
+                  faltam > 0
+                    ? setConfirmar("encerrar")
+                    : rodar(() => encerrarCotacaoAction(cotacao.id))
+                }
+                className={cn(
+                  "flex h-10 items-center gap-1.5 rounded-full bg-brand px-4 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-40",
+                  respondidosN > 0 && faltam === 0 && "ring-4 ring-brand/20",
+                )}
               >
-                <CheckCheck size={14} />
-                Ver pedidos gerados
-              </Link>
+                <Gavel size={15} />
+                Decidir compra
+              </button>
+            )}
+            {emDecisao && (
+              <button
+                type="button"
+                disabled={pendente}
+                onClick={() => setConfirmar("reabrir")}
+                className="flex h-10 items-center gap-1.5 rounded-full border border-line px-3.5 text-sm font-medium text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50"
+              >
+                <Undo2 size={15} />
+                Voltar a receber
+              </button>
             )}
 
-            {(cotacao.status === "RASCUNHO" ||
-              cotacao.status === "ABERTA" ||
-              cotacao.status === "ENCERRADA") && (
-              <Menu
-                trigger={
-                  <button
-                    type="button"
-                    aria-label="Mais ações da cotação"
-                    aria-haspopup="menu"
-                    disabled={pendente}
-                    className="grid h-10 w-10 cursor-pointer place-items-center rounded-full border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50"
-                  >
-                    <MoreHorizontal size={17} />
-                  </button>
-                }
-              >
-                {cotacao.status === "ABERTA" && (
-                  <MenuItem icon={<Lock size={14} />} onClick={() => setConfirmar("encerrar")}>
-                    Encerrar cotação
-                  </MenuItem>
-                )}
-                {cotacao.status === "ENCERRADA" && (
-                  <MenuItem icon={<Unlock size={14} />} onClick={() => setConfirmar("reabrir")}>
-                    Reabrir cotação
-                  </MenuItem>
-                )}
-                {/* Rascunho apaga; enviada em diante, cancela. São ações
-                    diferentes e o rótulo diz qual é — "Cancelar" numa cotação
-                    que nunca saiu prometia um rastro que não faz falta. */}
+            <Menu
+              trigger={
+                <button
+                  type="button"
+                  aria-label="Mais ações da cotação"
+                  aria-haspopup="menu"
+                  disabled={pendente}
+                  className="grid h-10 w-10 cursor-pointer place-items-center rounded-full border border-line text-muted transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50"
+                >
+                  <MoreHorizontal size={17} />
+                </button>
+              }
+            >
+              {/* Numa cotação concluída NÃO existe "editar": existe reabrir, e
+                  o rótulo diz que é mudança de estado. Editar direto deixaria
+                  a decisão registrada e a pergunta mudando por baixo dela. */}
+              {concluida && (
+                <MenuItem icon={<Unlock size={14} />} onClick={() => setConfirmar("reabrir")}>
+                  Reabrir cotação
+                </MenuItem>
+              )}
+              {podeRepetir && (
+                <MenuItem icon={<Repeat size={14} />} onClick={() => setRepetindo(true)}>
+                  {cotacao.recorrencia ? "Ajustar repetição" : "Repetir toda semana"}
+                </MenuItem>
+              )}
+              {!rascunho && (
+                <MenuItem icon={<Copy size={14} />} onClick={() => setConfirmar("duplicar")}>
+                  Duplicar cotação
+                </MenuItem>
+              )}
+              {/* Rascunho apaga; enviada em diante, cancela. São ações
+                  diferentes e o rótulo diz qual é — "Cancelar" numa cotação
+                  que nunca saiu prometia um rastro que não faz falta. E
+                  concluída não cancela: o pedido já existe do lado de fora,
+                  então o caminho é reabrir ou cancelar o pedido. */}
+              {!concluida && (
                 <MenuItem
                   danger
                   icon={rascunho ? <Trash2 size={14} /> : <Ban size={14} />}
@@ -465,21 +686,38 @@ function Cabecalho({
                 >
                   {rascunho ? "Excluir rascunho" : "Cancelar cotação"}
                 </MenuItem>
-              </Menu>
-            )}
-          </div>
+              )}
+            </Menu>
+          </>
         )}
+        </div>
       </div>
 
       {/* Em rascunho o recado é campo editável na tela — mostrá-lo aqui também
           era o mesmo texto duas vezes, e o de cima congelado. */}
       {cotacao.observacao && !rascunho && (
-        <p className="rounded-[var(--radius)] border border-line bg-surface-2 px-3.5 py-2 text-[13px] text-ink-2">
-          {cotacao.observacao}
+        <p className="truncate pl-[52px] text-[12px] text-muted" title={cotacao.observacao}>
+          Recado aos fornecedores: {cotacao.observacao}
         </p>
       )}
 
       {erro && <p className="text-[13px] text-danger">{erro}</p>}
+
+      {historico && (
+        <HistoricoSheet
+          numero={cotacao.numero}
+          eventos={linhaDoTempo}
+          onFechar={() => setHistorico(false)}
+        />
+      )}
+
+      {repetindo && (
+        <RecorrenciaSheet
+          quotationId={cotacao.id}
+          atual={cotacao.recorrencia}
+          onFechar={() => setRepetindo(false)}
+        />
+      )}
 
       {confirmar && (
         <ConfirmarAcao

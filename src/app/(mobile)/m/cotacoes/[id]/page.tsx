@@ -35,8 +35,9 @@ export default async function CotacaoMobilePage({
       loadFornecedoresOpcao(),
       loadReferenciasPreco(cotacao),
     ]);
-    // Só depois de decidida existem pedidos: antes disso não há o que apontar.
-    const pedidos = cotacao.status === "DECIDIDA" ? await pedidosDaCotacao(id) : [];
+    // Pedido só nasce da conclusão — mas sobrevive à reabertura, e é aí que
+    // ele mais precisa aparecer.
+    const pedidos = cotacao.status === "RASCUNHO" ? [] : await pedidosDaCotacao(id);
     return { cotacao, fornecedores, referencias, pedidos };
   });
 
@@ -74,6 +75,7 @@ export default async function CotacaoMobilePage({
       fornecedores={dados.fornecedores}
       resumo={resumo}
       pedidos={dados.pedidos}
+      referencias={dados.referencias}
       podePedir={podeEmAlguma(ctx.acessos, "compras.pedir")}
     />
   );

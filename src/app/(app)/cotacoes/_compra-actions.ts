@@ -22,14 +22,25 @@ import { db } from "@/lib/prisma";
 import { enviarEmail } from "@/lib/email";
 import { emailCotacao } from "@/lib/email/templates";
 import { getActiveSiteId, listSites } from "@/lib/sites";
+import { prazoPagamentoEmDias } from "@/lib/compras/custo-efetivo";
+import {
+  promptLeitura,
+  SISTEMA_LEITURA,
+  validarLeitura,
+  type LeituraBruta,
+  type LeituraResposta,
+} from "@/lib/compras/cotacao-leitura";
+import { completeJson, completeJsonComArquivo, llmConfigured } from "@/lib/llm";
+import { consumir, mensagemBloqueio } from "@/lib/rate-limit";
 
 // ============================================================
 // Compras (evolução do Quotation/RFQ) — pedir preço, registrar resposta,
 // decidir.
 //
-// Nada aqui mexe em estoque: a compra é planejamento e conversa. Só o passo
-// final ("gerar pedidos") cria PurchaseOrder, e aí o fluxo volta a ser o de
-// sempre — /pedidos manda no resto da vida do pedido.
+// Nada aqui mexe em estoque nem cria recebimento: a compra é planejamento e
+// conversa. Só o passo final (concluir) cria PurchaseOrder — sempre em
+// RASCUNHO, nunca enviado —, e aí o fluxo volta a ser o de sempre: /pedidos
+// manda no resto da vida do pedido, envio inclusive.
 // ============================================================
 
 async function tx<T>(fn: (tid: string, userId: string) => Promise<T>): Promise<T> {
@@ -233,9 +244,15 @@ export async function editarCotacaoAction(input: z.input<typeof editarSchema>) {
   });
 }
 
+/**
+ * "Decidir compra": fecha as respostas e leva a cotação para EM DECISÃO
+ * (status ENCERRADA). Os links param de aceitar proposta — ninguém muda o
+ * preço enquanto o comprador decide. "Voltar a receber" é `reabrirCotacaoAction`.
+ */
 export async function encerrarCotacaoAction(id: string) {
-  return tx(async () => {
-    await exigirEditavel(id);
+  return txp("compras.pedir", null, async () => {
+    const c = await exigirEditavel(id);
+    if (c.status !== "ABERTA") throw new Error("Esta cotação não está recebendo propostas.");
     await db.quotation.updateMany({
       where: { id },
       data: { status: "ENCERRADA", encerradaEm: new Date() },
@@ -244,12 +261,42 @@ export async function encerrarCotacaoAction(id: string) {
   });
 }
 
+/**
+ * Devolve a cotação para o estado de conversa.
+ *
+ * Vale para a ENCERRADA (prazo fechado cedo demais) e também para a CONCLUÍDA
+ * — porque "quero mudar a compra" tem duas respostas diferentes e o operador
+ * precisa poder escolher a certa:
+ *
+ *   quero comprar 8 em vez de 10  → EDITAR O PEDIDO (rascunho, ao lado)
+ *   quero cotar outro produto     → REABRIR A COTAÇÃO (isto aqui)
+ *
+ * O que a reabertura NÃO faz, de propósito:
+ *
+ *   • não apaga os pedidos já gerados — eles são documentos com número, e o
+ *     comprador pode muito bem querer manter o que já decidiu e só cotar mais;
+ *   • não sincroniza a cotação com o pedido nem o contrário. Mudar a pergunta
+ *     depois de um pedido criado não reescreve o pedido, e é isso que a tela
+ *     avisa antes de deixar reabrir;
+ *   • não descarta resposta nenhuma. `regrasDaCotacao` já trava a lista de
+ *     itens assim que existe uma resposta, então nenhum preço antigo passa a
+ *     valer para um item ou quantidade que o fornecedor não viu.
+ *
+ * `decididaEm` fica onde está: é história ("quando a compra foi decidida"), e
+ * só é reescrita quando uma nova conclusão acontecer.
+ */
 export async function reabrirCotacaoAction(id: string) {
-  return tx(async () => {
+  // Reabrir uma cotação concluída desfaz uma decisão de compra — é mais do que
+  // "ver", e por isso passa pela mesma permissão de quem decide.
+  const ctx = await guardAction("compras.pedir");
+  return runWithTenant(ctx.tenant.id, async () => {
     const c = await db.quotation.findFirst({ where: { id }, select: { status: true } });
-    if (c?.status !== "ENCERRADA") throw new Error("Só uma cotação encerrada pode ser reaberta.");
+    if (!c) throw new Error("Cotação não encontrada.");
+    if (c.status !== "ENCERRADA" && c.status !== "DECIDIDA") {
+      throw new Error("Só uma cotação encerrada ou concluída pode ser reaberta.");
+    }
     await db.quotation.updateMany({
-      where: { id },
+      where: { id, status: c.status },
       data: { status: "ABERTA", encerradaEm: null },
     });
     ok();
@@ -369,7 +416,11 @@ export async function cancelarCotacaoAction(id: string) {
   return tx(async () => {
     const c = await db.quotation.findFirst({ where: { id }, select: { status: true } });
     if (!c) throw new Error("Cotação não encontrada.");
-    if (c.status === "DECIDIDA") throw new Error("Cotação já virou pedido — não dá para cancelar.");
+    if (c.status === "DECIDIDA") {
+      throw new Error(
+        "Esta cotação já foi concluída e gerou pedido. Reabra a cotação ou cancele o pedido em Pedidos.",
+      );
+    }
     await db.quotation.updateMany({
       where: { id },
       data: { status: "CANCELADA", canceladaEm: new Date() },
@@ -2173,6 +2224,7 @@ export async function registrarRespostaAction(input: z.input<typeof respostaSche
         respondidaVia: "OPERADOR",
         prazoEntregaDias: d.prazoEntregaDias ?? null,
         condicaoPagamento: d.condicaoPagamento ?? null,
+        prazoPagamentoDias: prazoPagamentoEmDias(d.condicaoPagamento),
         frete: d.frete ?? null,
         observacao: d.observacao ?? null,
       },
@@ -2246,7 +2298,25 @@ export async function desfazerRecusaAction(conviteId: string) {
   });
 }
 
-// ── Decisão: compra vira pedido ─────────────────────────────
+// ── Conclusão da cotação: a decisão vira PEDIDO EM RASCUNHO ──
+//
+// Concluir a cotação é dizer "já sei de quem vou comprar" — não é falar com o
+// fornecedor. São duas ações, e o sistema não pode juntá-las: entre decidir e
+// pedir existe a revisão, que é onde o comprador corta a quantidade que não
+// cabe no caixa, tira o item que chegou ontem e ajusta o combinado.
+//
+// Por isso o pedido nasce SEMPRE em RASCUNHO. Enviar é um segundo passo: na
+// conferência da conclusão o comprador escolhe, fornecedor por fornecedor,
+// "enviar agora" (abre a folha de envio logo em seguida) ou "revisar antes"
+// (o rascunho espera na tela do pedido). Em nenhum caso esta action fala com
+// o fornecedor — quem envia é `pedidos/envio-actions`, e só quando a mensagem
+// sai o pedido deixa de ser rascunho.
+//
+//   COTAÇÃO CONCLUÍDA → PEDIDO RASCUNHO → (revisão) → PEDIDO ENVIADO
+//
+// A cotação guarda a DECISÃO; o pedido guarda a COMPRA. Editar o pedido depois
+// não reescreve a cotação — a pergunta e as propostas ficam como estavam, que
+// é o que faz a comparação continuar auditável um mês depois.
 
 const decidirSchema = z.object({
   quotationId: z.string().min(1),
@@ -2264,10 +2334,52 @@ const decidirSchema = z.object({
       }),
     )
     .min(1, "Escolha ao menos um item."),
-  enviar: z.boolean().default(true),
 });
 
-export async function gerarPedidosAction(input: z.input<typeof decidirSchema>) {
+export type PedidoGerado = {
+  id: string;
+  numero: string;
+  /** Liga o pedido à escolha "enviar agora / revisar" feita por fornecedor. */
+  supplierId: string;
+  status: string;
+  supplierNome: string;
+  itens: number;
+  total: number;
+};
+
+export type ResultadoConclusao = {
+  /** Pedidos em rascunho desta cotação depois da conclusão. */
+  pedidos: PedidoGerado[];
+  /** Itens de texto livre, sem produto no catálogo — ficaram de fora. */
+  semProduto: string[];
+  /**
+   * Fornecedores que já tinham pedido desta cotação e não ganharam outro.
+   * Acontece quando a cotação foi reaberta e concluída de novo.
+   */
+  jaTinhamPedido: string[];
+  /** A cotação já estava concluída quando o clique chegou (duplo clique, F5). */
+  jaConcluida: boolean;
+};
+
+/**
+ * Conclui a cotação e cria um pedido POR FORNECEDOR escolhido, em rascunho.
+ *
+ * Um pedido por fornecedor porque pedido é documento que sai para UMA empresa:
+ * misturar dois fornecedores numa folha só é papel que ninguém pode receber.
+ *
+ * Idempotente por construção. A conclusão é "reivindicada" com um update
+ * condicional (só sai de ABERTA/ENCERRADA), então o segundo clique — ou o F5
+ * em cima do POST — não gera a segunda leva de pedidos: encontra a cotação já
+ * concluída e devolve o que existe. E, mesmo se a cotação for reaberta e
+ * concluída outra vez, fornecedor que já tem pedido vivo não ganha duplicado;
+ * o convite carrega o `purchaseOrderId` que prova isso.
+ *
+ * Nada aqui mexe em estoque nem cria recebimento: pedido é promessa, não
+ * mercadoria.
+ */
+export async function concluirCotacaoAction(
+  input: z.input<typeof decidirSchema>,
+): Promise<ResultadoConclusao> {
   const d = decidirSchema.parse(input);
   const ctx = await guardAction("compras.pedir");
 
@@ -2287,6 +2399,11 @@ export async function gerarPedidosAction(input: z.input<typeof decidirSchema>) {
             id: true,
             supplierId: true,
             prazoEntregaDias: true,
+            condicaoPagamento: true,
+            frete: true,
+            observacao: true,
+            purchaseOrderId: true,
+            supplier: { select: { razaoSocial: true, nomeFantasia: true } },
             responses: {
               select: {
                 quotationItemId: true,
@@ -2300,20 +2417,54 @@ export async function gerarPedidosAction(input: z.input<typeof decidirSchema>) {
       },
     });
     if (!cotacao) throw new Error("Cotação não encontrada.");
-    if (cotacao.status === "DECIDIDA") throw new Error("Esta compra já virou pedido.");
-    if (cotacao.status === "CANCELADA") throw new Error("Compra cancelada.");
+    if (cotacao.status === "CANCELADA") throw new Error("Cotação cancelada.");
+    if (cotacao.status === "RASCUNHO") {
+      throw new Error("Esta cotação ainda não saiu — envie aos fornecedores antes de concluir.");
+    }
+
+    // Já concluída: o clique repetido não recria nada. Devolve o que existe
+    // para a tela apontar os pedidos em vez de acusar erro.
+    if (cotacao.status === "DECIDIDA") {
+      return {
+        pedidos: await pedidosVivosDaCotacao(cotacao.id),
+        semProduto: [],
+        jaTinhamPedido: [],
+        jaConcluida: true,
+      };
+    }
 
     const itemPorId = new Map(cotacao.items.map((i) => [i.id, i]));
     const convitePorId = new Map(cotacao.suppliers.map((s) => [s.id, s]));
 
+    // Pedido de compra que ainda vale por convite — cancelado não conta: o
+    // fornecedor que teve o pedido cancelado pode receber outro.
+    const pedidosVivos = await db.purchaseOrder.findMany({
+      where: { quotationId: cotacao.id, status: { not: "CANCELADO" } },
+      select: { id: true },
+    });
+    const idsVivos = new Set(pedidosVivos.map((p) => p.id));
+
     // Agrupa por fornecedor: cada um vira um pedido de compra independente.
-    const porConvite = new Map<string, { productId: string; packagingId: string | null; qtdPedida: number; custoUnitario: number }[]>();
+    const porConvite = new Map<
+      string,
+      { productId: string; packagingId: string | null; qtdPedida: number; custoUnitario: number }[]
+    >();
     const semProduto: string[] = [];
+    const jaTinhamPedido: string[] = [];
 
     for (const escolha of d.escolhas) {
       const item = itemPorId.get(escolha.quotationItemId);
       const convite = convitePorId.get(escolha.conviteId);
       if (!item || !convite) continue;
+
+      // Fornecedor que já saiu daqui com pedido vivo não ganha um segundo por
+      // causa de uma reabertura — o pedido dele é editável, e é lá que a
+      // mudança deve entrar.
+      if (convite.purchaseOrderId && idsVivos.has(convite.purchaseOrderId)) {
+        const nome = convite.supplier.nomeFantasia || convite.supplier.razaoSocial;
+        if (!jaTinhamPedido.includes(nome)) jaTinhamPedido.push(nome);
+        continue;
+      }
 
       // Item de texto livre não tem para onde ir no estoque — avisa em vez de
       // criar pedido pela metade em silêncio.
@@ -2328,7 +2479,8 @@ export async function gerarPedidosAction(input: z.input<typeof decidirSchema>) {
       // Comprar MENOS do que foi cotado mudaria a disputa depois de decidida —
       // o vencedor pode ter ganho no volume. Só para cima, e o preço vem da
       // faixa que a quantidade alcança, recalculada AQUI: preço que chega do
-      // cliente é sugestão, nunca fato.
+      // cliente é sugestão, nunca fato. Para menos, o lugar é o rascunho do
+      // pedido, onde cortar não reescreve a disputa.
       const cotada = Number(item.quantidade);
       const pedida = Math.max(cotada, escolha.quantidade ?? cotada);
       const { preco } = precoNaQuantidade(
@@ -2351,6 +2503,11 @@ export async function gerarPedidosAction(input: z.input<typeof decidirSchema>) {
     }
 
     if (porConvite.size === 0) {
+      if (jaTinhamPedido.length > 0) {
+        throw new Error(
+          `Os fornecedores escolhidos já têm pedido desta cotação (${jaTinhamPedido.join(", ")}). Ajuste o pedido em vez de gerar outro.`,
+        );
+      }
       throw new Error(
         semProduto.length
           ? "Os itens escolhidos não estão vinculados a um produto do catálogo. Vincule antes de gerar o pedido."
@@ -2358,46 +2515,135 @@ export async function gerarPedidosAction(input: z.input<typeof decidirSchema>) {
       );
     }
 
-    // Sequencial de propósito: o número do pedido (PC-000NN) é gerado por
-    // tenant e criações paralelas colidiriam no unique.
-    const criados: { id: string; conviteId: string }[] = [];
-    for (const [conviteId, items] of porConvite) {
-      const convite = convitePorId.get(conviteId)!;
-      const previsao = convite.prazoEntregaDias
-        ? new Date(Date.now() + convite.prazoEntregaDias * 24 * 60 * 60 * 1000)
-        : null;
-
-      const id = await criarPedidoCompra(
-        ctx.tenant.id,
-        {
-          siteId: cotacao.siteId,
-          supplierId: convite.supplierId,
-          previsaoEntrega: previsao,
-          observacao: `Gerado da compra ${cotacao.numero}`,
-          origem: "COTACAO",
-          quotationId: cotacao.id,
-          items,
-        },
-        { enviar: d.enviar, createdBy: ctx.user.id ?? undefined },
-      );
-      criados.push({ id, conviteId });
-      await db.quotationSupplier.updateMany({
-        where: { id: conviteId },
-        data: { purchaseOrderId: id },
-      });
-    }
-
-    await db.quotation.updateMany({
-      where: { id: cotacao.id },
+    // A trava: só quem consegue tirar a cotação de ABERTA/ENCERRADA cria os
+    // pedidos. O segundo clique não passa daqui, e por isso não duplica nada.
+    const claim = await db.quotation.updateMany({
+      where: { id: cotacao.id, status: { in: ["ABERTA", "ENCERRADA"] } },
       data: { status: "DECIDIDA", decididaEm: new Date() },
     });
+    if (claim.count === 0) {
+      return {
+        pedidos: await pedidosVivosDaCotacao(cotacao.id),
+        semProduto,
+        jaTinhamPedido,
+        jaConcluida: true,
+      };
+    }
+
+    // Sequencial de propósito: o número do pedido (PC-000NN) é gerado por
+    // tenant e criações paralelas colidiriam no unique.
+    try {
+      for (const [conviteId, items] of porConvite) {
+        const convite = convitePorId.get(conviteId)!;
+        const previsao = convite.prazoEntregaDias
+          ? new Date(Date.now() + convite.prazoEntregaDias * 24 * 60 * 60 * 1000)
+          : null;
+
+        const id = await criarPedidoCompra(
+          ctx.tenant.id,
+          {
+            siteId: cotacao.siteId,
+            supplierId: convite.supplierId,
+            previsaoEntrega: previsao,
+            observacao: observacaoDoPedido(cotacao.numero, convite),
+            origem: "COTACAO",
+            quotationId: cotacao.id,
+            items,
+          },
+          // Rascunho, sempre. Concluir a cotação nunca fala com o fornecedor.
+          { enviar: false, createdBy: ctx.user.id ?? undefined },
+        );
+        await db.quotationSupplier.updateMany({
+          where: { id: conviteId },
+          data: { purchaseOrderId: id },
+        });
+      }
+    } catch (e) {
+      // Falhou no meio: cotação concluída sem pedido é pior do que cotação
+      // aberta com pedido a menos — o comprador precisa poder tentar de novo.
+      // Os pedidos que já saíram ficam (têm número emitido), e o guarda de
+      // duplicidade acima impede que ganhem um par na segunda tentativa.
+      await db.quotation.updateMany({
+        where: { id: cotacao.id, status: "DECIDIDA" },
+        data: { status: cotacao.status, decididaEm: null },
+      });
+      throw e;
+    }
 
     revalidatePath("/cotacoes", "layout");
+    revalidatePath("/m/cotacoes", "layout");
     revalidatePath("/pedidos", "layout");
-    revalidatePath("/estoque", "layout");
-    return { pedidos: criados.length, semProduto };
+    return {
+      pedidos: await pedidosVivosDaCotacao(cotacao.id),
+      semProduto,
+      jaTinhamPedido,
+      jaConcluida: false,
+    };
   });
 }
+
+/** Pedidos não cancelados desta cotação, no formato que a tela mostra. */
+async function pedidosVivosDaCotacao(quotationId: string): Promise<PedidoGerado[]> {
+  const pedidos = await db.purchaseOrder.findMany({
+    where: { quotationId, status: { not: "CANCELADO" } },
+    select: {
+      id: true,
+      numero: true,
+      status: true,
+      supplierId: true,
+      valorTotal: true,
+      supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+      _count: { select: { items: true } },
+    },
+    orderBy: { numero: "asc" },
+  });
+  return pedidos.map((p) => ({
+    id: p.id,
+    numero: p.numero,
+    supplierId: p.supplierId,
+    status: p.status,
+    supplierNome: p.supplier.nomeFantasia || p.supplier.razaoSocial,
+    itens: p._count.items,
+    total: Number(p.valorTotal),
+  }));
+}
+
+/**
+ * O que o pedido herda da negociação, em texto.
+ *
+ * `PurchaseOrder` não tem coluna de frete nem de condição de pagamento — elas
+ * vivem no convite da cotação. Perdê-las na virada seria jogar fora metade do
+ * que foi combinado, então descem como observação: é o campo que o fornecedor
+ * lê no PDF e o comprador confere na revisão. A primeira linha é a origem, que
+ * responde "de onde veio este pedido?" sem sair da tela.
+ */
+function observacaoDoPedido(
+  numeroCotacao: string,
+  convite: {
+    condicaoPagamento: string | null;
+    frete: unknown;
+    prazoEntregaDias: number | null;
+    observacao: string | null;
+  },
+): string {
+  const linhas = [`Origem: Cotação ${numeroCotacao}`];
+  if (convite.condicaoPagamento) linhas.push(`Pagamento: ${convite.condicaoPagamento}`);
+  const frete =
+    convite.frete === null || convite.frete === undefined ? null : Number(convite.frete);
+  if (frete !== null && frete > 0) {
+    linhas.push(
+      `Frete cotado: ${frete.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
+    );
+  }
+  if (convite.prazoEntregaDias) {
+    linhas.push(
+      `Prazo de entrega: ${convite.prazoEntregaDias} ${convite.prazoEntregaDias === 1 ? "dia" : "dias"}`,
+    );
+  }
+  if (convite.observacao) linhas.push(`Recado do fornecedor: ${convite.observacao}`);
+  return linhas.join("\n");
+}
+
 
 // ── Ponte: Reposição Inteligente → Compra ───────────────────
 
@@ -2480,6 +2726,241 @@ export async function salvarLimitesEscalaAction(
         escalaCapitalExtraMax: d.capitalExtraMax,
       },
     });
+    ok();
+    return { ok: true as const };
+  });
+}
+
+// ── Custo efetivo ───────────────────────────────────────────
+
+/**
+ * Custo do dinheiro da empresa (% ao mês). Como as travas de escala, é do
+ * negócio e não da cotação: o comparativo deixa testar outro número na hora,
+ * e só este botão grava.
+ */
+export async function salvarCustoCapitalAction(pct: number) {
+  const valor = z.number().min(0).max(20).parse(pct);
+  const ctx = await guardAction("compras.pedir");
+  return runWithTenant(ctx.tenant.id, async () => {
+    await db.tenant.update({
+      where: { id: ctx.tenant.id },
+      data: { custoCapitalMesPct: valor },
+    });
+    ok();
+    return { ok: true as const };
+  });
+}
+
+// ── Leitura da resposta que chegou por mensagem ─────────────
+
+const TIPOS_ARQUIVO = ["application/pdf", "image/jpeg", "image/png", "image/webp"] as const;
+/** ~6 MB de arquivo depois do base64 — print e PDF de tabela cabem com folga. */
+const MAX_BASE64 = 8_000_000;
+
+const leituraSchema = z
+  .object({
+    conviteId: z.string().min(1),
+    texto: z.string().trim().max(12_000).optional().nullable(),
+    arquivo: z
+      .object({
+        mimeType: z.enum(TIPOS_ARQUIVO),
+        base64: z.string().min(10).max(MAX_BASE64),
+      })
+      .optional()
+      .nullable(),
+  })
+  .refine((d) => !!d.texto || !!d.arquivo, "Cole a mensagem ou anexe o arquivo do fornecedor.");
+
+export type ResultadoLeitura =
+  | { ok: true; leitura: LeituraResposta }
+  | { ok: false; erro: string };
+
+/**
+ * Lê a mensagem (ou print/PDF) do fornecedor e devolve os campos preenchidos.
+ * NÃO grava nada: a folha de resposta mostra o resultado para conferência e só
+ * o "Salvar resposta" do operador vira proposta.
+ */
+export async function lerRespostaAction(
+  input: z.input<typeof leituraSchema>,
+): Promise<ResultadoLeitura> {
+  const parsed = leituraSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, erro: parsed.error.issues[0]?.message ?? "Dados inválidos." };
+  }
+  const d = parsed.data;
+  const ctx = await guardAction("compras.pedir");
+  if (!llmConfigured()) {
+    return {
+      ok: false,
+      erro: "A leitura automática não está configurada neste ambiente. Preencha os preços à mão.",
+    };
+  }
+  const limite = await consumir(`cotacao-leitura:${ctx.tenant.id}`, 40, 60 * 60);
+  if (!limite.ok) return { ok: false, erro: mensagemBloqueio(limite.esperaSeg) };
+
+  return runWithTenant(ctx.tenant.id, async (): Promise<ResultadoLeitura> => {
+    const convite = await db.quotationSupplier.findFirst({
+      where: { id: d.conviteId },
+      select: {
+        quotation: {
+          select: {
+            siteId: true,
+            items: {
+              orderBy: [{ ordem: "asc" }, { descricao: "asc" }],
+              select: { descricao: true, quantidade: true, productId: true, packagingId: true },
+            },
+          },
+        },
+      },
+    });
+    if (!convite) return { ok: false, erro: "Convite não encontrado." };
+    assertSite(ctx, "compras.pedir", convite.quotation.siteId);
+
+    const itensQ = convite.quotation.items;
+    const productIds = [...new Set(itensQ.flatMap((i) => (i.productId ? [i.productId] : [])))];
+    const packagingIds = [...new Set(itensQ.flatMap((i) => (i.packagingId ? [i.packagingId] : [])))];
+    const [produtos, embalagens] = await Promise.all([
+      productIds.length
+        ? db.product.findMany({
+            where: { id: { in: productIds } },
+            select: { id: true, custo: true, custoMedio: true },
+          })
+        : Promise.resolve([]),
+      packagingIds.length
+        ? db.productPackaging.findMany({
+            where: { id: { in: packagingIds } },
+            select: { id: true, nome: true, fatorConversao: true },
+          })
+        : Promise.resolve([]),
+    ]);
+    const custo = new Map(
+      produtos.map((p) => [p.id, Number(p.custoMedio ?? 0) || Number(p.custo ?? 0) || null]),
+    );
+    const emb = new Map(embalagens.map((e) => [e.id, e]));
+
+    // A MESMA ordem da folha de resposta — é pelo índice que a tela casa.
+    const itens = itensQ.map((i) => {
+      const e = i.packagingId ? emb.get(i.packagingId) : undefined;
+      const fator = e ? Number(e.fatorConversao) || 1 : 1;
+      const c = i.productId ? custo.get(i.productId) : null;
+      return {
+        descricao: i.descricao,
+        quantidade: Number(i.quantidade),
+        embalagem: e ? (fator > 1 ? `${e.nome} (${fator} un.)` : e.nome) : null,
+        esperado: c ? c * fator : null,
+      };
+    });
+
+    try {
+      const user = promptLeitura(itens, d.texto || null);
+      const bruta = d.arquivo
+        ? await completeJsonComArquivo<LeituraBruta>({
+            system: SISTEMA_LEITURA,
+            user,
+            media: d.arquivo,
+          })
+        : await completeJson<LeituraBruta>({ system: SISTEMA_LEITURA, user });
+      const leitura = validarLeitura(bruta, itens);
+      if (leitura.itens.length === 0) {
+        return {
+          ok: false,
+          erro: "Nenhum item da cotação foi reconhecido. Confira se é a mensagem certa ou preencha à mão.",
+        };
+      }
+      return { ok: true, leitura };
+    } catch {
+      return {
+        ok: false,
+        erro: "Não foi possível ler agora. Tente de novo em instantes ou preencha à mão.",
+      };
+    }
+  });
+}
+
+// ── Cotação recorrente ──────────────────────────────────────
+
+const recorrenciaSchema = z.object({
+  quotationId: z.string().min(1),
+  diasSemana: z
+    .array(z.number().int().min(0).max(6))
+    .min(1, "Escolha ao menos um dia da semana.")
+    .max(7),
+  modoQuantidade: z.enum(["FIXA", "REPOSICAO"]),
+  ativo: z.boolean().default(true),
+});
+
+/**
+ * Liga (ou ajusta) a repetição de uma cotação. A cotação vira MOLDE: nos dias
+ * marcados, o job diário cria um rascunho com a lista e os fornecedores dela.
+ * Rascunho vazio não serve de molde — não haveria o que repetir.
+ */
+export async function definirRecorrenciaAction(input: z.input<typeof recorrenciaSchema>) {
+  const d = recorrenciaSchema.parse(input);
+  const ctx = await guardAction("compras.pedir");
+  return runWithTenant(ctx.tenant.id, async () => {
+    const q = await db.quotation.findFirst({
+      where: { id: d.quotationId },
+      select: {
+        siteId: true,
+        titulo: true,
+        status: true,
+        _count: { select: { items: true, suppliers: true } },
+      },
+    });
+    if (!q) throw new Error("Cotação não encontrada.");
+    assertSite(ctx, "compras.pedir", q.siteId);
+    if (q.status === "CANCELADA") throw new Error("Cotação cancelada não serve de molde.");
+    if (q._count.items === 0) throw new Error("Adicione produtos antes de programar a repetição.");
+    if (q._count.suppliers === 0) {
+      throw new Error("Escolha os fornecedores antes de programar a repetição.");
+    }
+
+    const dias = [...new Set(d.diasSemana)].sort((a, b) => a - b);
+    // Título da série sem o carimbo de cópia/data: "Cotação de 19/08" repetida
+    // toda semana viraria mentira na segunda geração.
+    const titulo =
+      q.titulo.replace(/^Cópia de /, "").replace(/ de \d{2}\/\d{2}$/, "").trim() ||
+      "Cotação recorrente";
+
+    const existente = await db.quotationSchedule.findFirst({
+      where: { quotationId: d.quotationId },
+      select: { id: true },
+    });
+    if (existente) {
+      await db.quotationSchedule.updateMany({
+        where: { id: existente.id },
+        data: { diasSemana: dias, modoQuantidade: d.modoQuantidade, ativo: d.ativo },
+      });
+    } else {
+      await db.quotationSchedule.create({
+        data: {
+          tenantId: ctx.tenant.id,
+          siteId: q.siteId,
+          quotationId: d.quotationId,
+          titulo,
+          diasSemana: dias,
+          modoQuantidade: d.modoQuantidade,
+          ativo: d.ativo,
+          createdBy: ctx.user.id ?? null,
+        },
+      });
+    }
+    ok();
+    return { ok: true as const };
+  });
+}
+
+/** Para de repetir. As cotações já geradas continuam como estão. */
+export async function removerRecorrenciaAction(quotationId: string) {
+  const ctx = await guardAction("compras.pedir");
+  return runWithTenant(ctx.tenant.id, async () => {
+    const r = await db.quotationSchedule.findFirst({
+      where: { quotationId },
+      select: { id: true, siteId: true },
+    });
+    if (!r) return { ok: true as const };
+    assertSite(ctx, "compras.pedir", r.siteId);
+    await db.quotationSchedule.deleteMany({ where: { id: r.id } });
     ok();
     return { ok: true as const };
   });

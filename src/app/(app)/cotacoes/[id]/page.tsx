@@ -8,8 +8,10 @@ import {
   loadCotacao,
   loadFornecedoresOpcao,
   loadReferenciasPreco,
+  loadDatasLinhaDoTempo,
   loadUltimaCotacaoComItens,
 } from "../_compra-data";
+import { montarLinhaDoTempo } from "@/lib/compras/cotacao-linha-do-tempo";
 import { listSites } from "@/lib/sites";
 import { CotacaoDetalheClient } from "./_client";
 
@@ -31,7 +33,7 @@ export default async function CotacaoPage({
       await sitesPromise.catch(() => []);
       return null;
     }
-    const [fornecedores, sites, referencias, anterior, pedidos] = await Promise.all([
+    const [fornecedores, sites, referencias, anterior, pedidos, datas] = await Promise.all([
       loadFornecedoresOpcao(
         cotacao.itens.map((i) => i.productId).filter((id): id is string => !!id),
       ),
@@ -42,8 +44,13 @@ export default async function CotacaoPage({
       cotacao.status === "RASCUNHO" ? Promise.resolve({}) : loadReferenciasPreco(cotacao),
       // Molde para o estado vazio — só faz sentido enquanto a lista está vazia.
       cotacao.itens.length === 0 ? loadUltimaCotacaoComItens(id) : Promise.resolve(null),
-      // Só depois de decidida existem pedidos: antes disso não há o que apontar.
-      cotacao.status === "DECIDIDA" ? pedidosDaCotacao(id) : Promise.resolve([]),
+      // Pedido só nasce da conclusão — mas sobrevive à reabertura. Consultar
+      // apenas em DECIDIDA escondia justamente o caso perigoso: cotação
+      // reaberta com rascunho de pedido pendurado, que é o que o operador
+      // precisa ver antes de mexer na pergunta de novo.
+      cotacao.status === "RASCUNHO" ? Promise.resolve([]) : pedidosDaCotacao(id),
+      // Linha do tempo só existe depois do envio — rascunho não tem história.
+      cotacao.status === "RASCUNHO" ? Promise.resolve(null) : loadDatasLinhaDoTempo(id),
     ]);
 
     return {
@@ -53,10 +60,35 @@ export default async function CotacaoPage({
       referencias,
       pedidos,
       anterior,
+      datas,
     };
   });
 
   if (!dados) notFound();
+
+  const linhaDoTempo = dados.datas
+    ? montarLinhaDoTempo({
+        criadaEm: dados.cotacao.criadaEm,
+        geradaPorRecorrencia: dados.cotacao.geradaPorRecorrencia,
+        encerradaEm: dados.datas.encerradaEm,
+        decididaEm: dados.datas.decididaEm,
+        canceladaEm: dados.datas.canceladaEm,
+        convites: dados.cotacao.convites.map((c) => ({
+          id: c.id,
+          supplierNome: c.supplierNome,
+          status: c.status,
+          abertoEm: c.abertoEm,
+          respondidaEm: c.respondidaEm,
+          origemResposta: c.origemResposta,
+          observacao: c.observacao,
+          envios: c.envios,
+        })),
+        pedidos: dados.pedidos.flatMap((p) => {
+          const d = dados.datas!.pedidos.get(p.id);
+          return d ? [{ ...p, ...d }] : [];
+        }),
+      })
+    : [];
 
   // Resumo é derivação pura do que já foi carregado — roda no servidor para o
   // cliente receber texto pronto, não a regra.
@@ -90,6 +122,8 @@ export default async function CotacaoPage({
       fornecedores={dados.fornecedores}
       sites={dados.sites}
       resumo={resumo}
+      referencias={dados.referencias}
+      linhaDoTempo={linhaDoTempo}
       pedidos={dados.pedidos}
       anterior={dados.anterior}
       podePedir={podeEmAlguma(ctx.acessos, "compras.pedir")}

@@ -60,11 +60,18 @@ export async function loadCotacoes(): Promise<{
       status: true,
       prazoResposta: true,
       createdAt: true,
+      recorrenciaId: true,
+      moldeDe: { select: { ativo: true } },
+      pedidos: {
+        where: { status: "RASCUNHO" },
+        select: { createdAt: true },
+      },
       site: { select: { nome: true } },
       items: { select: { id: true, quantidade: true } },
       suppliers: {
         select: {
           status: true,
+          respondidaEm: true,
           frete: true,
           responses: {
             select: { quotationItemId: true, disponivel: true, precoUnitario: true },
@@ -74,6 +81,8 @@ export async function loadCotacoes(): Promise<{
     },
   });
 
+  // Rascunho de pedido com mais de um dia é o que a caixa de entrada cobra.
+  const limiteParado = Date.now() - 24 * 60 * 60 * 1000;
   let planejamento = 0;
   let cotando = 0;
   let valorPrevisto = 0;
@@ -131,6 +140,15 @@ export async function loadCotacoes(): Promise<{
       totalRespondidos: c.suppliers.filter((s) => s.status === "RESPONDIDA").length,
       totalRecusados: c.suppliers.filter((s) => s.status === "RECUSADA").length,
       melhorTotal: totais.length ? Math.min(...totais) : null,
+      ultimaRespostaEm:
+        c.suppliers
+          .filter((s) => s.status === "RESPONDIDA" && s.respondidaEm)
+          .map((s) => s.respondidaEm!.toISOString())
+          .sort()
+          .at(-1) ?? null,
+      pedidosParados: c.pedidos.filter((p) => p.createdAt.getTime() < limiteParado).length,
+      repete: c.moldeDe?.ativo ?? false,
+      geradaPorRecorrencia: c.recorrenciaId !== null,
     };
   });
 
@@ -205,6 +223,16 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
       createdAt: true,
       enviadaEm: true,
       pedeEscala: true,
+      recorrenciaId: true,
+      moldeDe: {
+        select: {
+          id: true,
+          diasSemana: true,
+          modoQuantidade: true,
+          ativo: true,
+          ultimaGeracaoEm: true,
+        },
+      },
       site: { select: { nome: true } },
       items: {
         orderBy: [{ ordem: "asc" }, { descricao: "asc" }],
@@ -228,6 +256,7 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
           respondidaEm: true,
           prazoEntregaDias: true,
           condicaoPagamento: true,
+          prazoPagamentoDias: true,
           frete: true,
           observacao: true,
           purchaseOrderId: true,
@@ -296,7 +325,13 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
     productIds.length
       ? db.product.findMany({
           where: { id: { in: productIds } },
-          select: { id: true, sku: true, imagemUrl: true, custoMedio: true, custo: true },
+          select: {
+            id: true,
+            sku: true,
+            imagemUrl: true,
+            custoMedio: true,
+            custo: true,
+          },
         })
       : Promise.resolve([]),
     packagingIds.length
@@ -432,6 +467,7 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
       respondidaEm: s.respondidaEm?.toISOString() ?? null,
       prazoEntregaDias: s.prazoEntregaDias,
       condicaoPagamento: s.condicaoPagamento,
+      prazoPagamentoDias: s.prazoPagamentoDias,
       frete: s.frete === null ? null : n(s.frete),
       observacao: s.observacao,
       purchaseOrderId: s.purchaseOrderId,
@@ -457,6 +493,17 @@ export async function loadCotacao(id: string, tenant: Tenant): Promise<CotacaoDe
     enviadaEm: c.enviadaEm?.toISOString() ?? null,
     pedeEscala: c.pedeEscala,
     limitesEscala: limitesDoTenant(tenant),
+    custoCapitalMesPct: n(tenant.custoCapitalMesPct),
+    recorrencia: c.moldeDe
+      ? {
+          id: c.moldeDe.id,
+          diasSemana: c.moldeDe.diasSemana,
+          modoQuantidade: c.moldeDe.modoQuantidade === "REPOSICAO" ? "REPOSICAO" : "FIXA",
+          ativo: c.moldeDe.ativo,
+          ultimaGeracaoEm: c.moldeDe.ultimaGeracaoEm?.toISOString() ?? null,
+        }
+      : null,
+    geradaPorRecorrencia: c.recorrenciaId !== null,
     itens,
     convites,
   };
@@ -656,5 +703,44 @@ export async function loadOpcoes(): Promise<OpcoesCotacao> {
       contatos: f.contacts,
     })),
     sites,
+  };
+}
+
+// ── Linha do tempo ──────────────────────────────────────────
+
+/**
+ * As datas que o DTO do detalhe não carrega: fim de cada fase da cotação e o
+ * andamento de cada pedido. O resto da linha do tempo sai de `CotacaoDetalhe`.
+ */
+export async function loadDatasLinhaDoTempo(id: string): Promise<{
+  encerradaEm: string | null;
+  decididaEm: string | null;
+  canceladaEm: string | null;
+  pedidos: Map<string, { criadoEm: string; enviadoEm: string | null; recebidoEm: string | null }>;
+}> {
+  const [q, pedidos] = await Promise.all([
+    db.quotation.findFirst({
+      where: { id },
+      select: { encerradaEm: true, decididaEm: true, canceladaEm: true },
+    }),
+    db.purchaseOrder.findMany({
+      where: { quotationId: id },
+      select: { id: true, createdAt: true, enviadoEm: true, recebidoEm: true },
+    }),
+  ]);
+  return {
+    encerradaEm: q?.encerradaEm?.toISOString() ?? null,
+    decididaEm: q?.decididaEm?.toISOString() ?? null,
+    canceladaEm: q?.canceladaEm?.toISOString() ?? null,
+    pedidos: new Map(
+      pedidos.map((p) => [
+        p.id,
+        {
+          criadoEm: p.createdAt.toISOString(),
+          enviadoEm: p.enviadoEm?.toISOString() ?? null,
+          recebidoEm: p.recebidoEm?.toISOString() ?? null,
+        },
+      ]),
+    ),
   };
 }

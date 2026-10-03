@@ -24,6 +24,8 @@ export type PedidoDaCotacao = {
   numero: string;
   status: string;
   supplierNome: string;
+  /** Quantas linhas o pedido tem HOJE — a revisão pode ter tirado ou somado. */
+  itens: number;
   valorTotal: number;
   /** Quanto as entradas desse pedido efetivamente custaram. */
   valorRecebido: number;
@@ -44,6 +46,7 @@ export async function pedidosDaCotacao(quotationId: string): Promise<PedidoDaCot
       status: true,
       valorTotal: true,
       supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+      _count: { select: { items: true } },
       entradas: { select: { items: { select: { custoTotal: true } } } },
     },
     orderBy: { numero: "asc" },
@@ -54,6 +57,7 @@ export async function pedidosDaCotacao(quotationId: string): Promise<PedidoDaCot
     numero: p.numero,
     status: p.status,
     supplierNome: p.supplier.nomeFantasia || p.supplier.razaoSocial,
+    itens: p._count.items,
     valorTotal: Number(p.valorTotal),
     valorRecebido: p.entradas.reduce(
       (a, e) => a + e.items.reduce((b, i) => b + Number(i.custoTotal), 0),

@@ -174,6 +174,12 @@ export type CotacaoPublica = {
   /** Já enviou uma resposta? Continua editável enquanto a cotação estiver aberta. */
   respondida: boolean;
   /**
+   * Quando a última resposta foi gravada. O rascunho guardado no aparelho só
+   * é oferecido se for mais novo que isto — senão ele desfaria a correção que
+   * o próprio fornecedor mandou de outro aparelho.
+   */
+  respondidaEm: string | null;
+  /**
    * O comprador quer ver promoção por volume. Ligado, cada item ganha um bloco
    * recolhido de faixas; desligado, a tela segue com um preço por item — que é
    * o piso do que o vendedor aguenta responder no meio do dia.
@@ -202,7 +208,7 @@ const n = (v: unknown) => Number(v ?? 0);
  * Cadastro incompleto não vira linha quebrada: cada pedaço que falta some, e
  * se não sobrar nada o bloco inteiro não aparece.
  */
-function enderecoEmLinha(t: {
+export function enderecoEmLinha(t: {
   rua: string | null;
   numero: string | null;
   cidade: string | null;
@@ -257,6 +263,7 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
       where: { id: link.quotationSupplierId },
       select: {
         status: true,
+        respondidaEm: true,
         prazoEntregaDias: true,
         condicaoPagamento: true,
         frete: true,
@@ -396,6 +403,8 @@ export async function resolverLinkCotacao(token: string): Promise<LinkResolvido>
         fornecedor: convite.supplier.nomeFantasia || convite.supplier.razaoSocial,
         contato: convite.contact?.nome ?? null,
         respondida: convite.status === "RESPONDIDA",
+        respondidaEm:
+          convite.status === "RESPONDIDA" ? (convite.respondidaEm?.toISOString() ?? null) : null,
         pedeEscala: convite.quotation.pedeEscala,
         itens: convite.quotation.items.map((i) => {
           const emb = i.packagingId ? porEmbalagem.get(i.packagingId) : undefined;

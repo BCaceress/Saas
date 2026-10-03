@@ -302,3 +302,54 @@ export function emailCotacao(input: {
     }),
   };
 }
+
+/**
+ * Pedido de compra enviado ao fornecedor. A tabela vai inteira (é o
+ * documento), e o botão leva ao link onde ele confirma a entrega.
+ */
+export function emailPedido(input: {
+  para: string;
+  fornecedor: string;
+  mercado: string;
+  numero: string;
+  url: string;
+  entregaEm: string;
+  itens: { descricao: string; quantidade: string; total: string }[];
+  total: string;
+  observacao?: string | null;
+}): Mensagem {
+  const linhas = input.itens
+    .map(
+      (i) =>
+        `<tr>
+           <td style="padding:7px 0;border-bottom:1px solid ${LINHA};font-size:14px;color:${TINTA};">${escape(i.descricao)}</td>
+           <td style="padding:7px 8px;border-bottom:1px solid ${LINHA};font-size:14px;color:${MUDO};text-align:right;white-space:nowrap;">${escape(i.quantidade)}</td>
+           <td style="padding:7px 0;border-bottom:1px solid ${LINHA};font-size:14px;color:${TINTA};text-align:right;white-space:nowrap;">${escape(i.total)}</td>
+         </tr>`,
+    )
+    .join("");
+  const tabela = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:4px 0 8px;">
+      ${linhas}
+      <tr><td colspan="2" style="padding:9px 0;font-size:14px;color:${MUDO};">Total</td>
+      <td style="padding:9px 0;font-size:15px;font-weight:600;color:${TINTA};text-align:right;white-space:nowrap;">${escape(input.total)}</td></tr>
+    </table>`;
+
+  return {
+    para: input.para,
+    assunto: `Pedido de compra ${input.numero} — ${input.mercado}`,
+    html: envelope({
+      titulo: `Pedido ${input.numero}`,
+      corpo: [
+        `Olá, ${escape(input.fornecedor)}.`,
+        `A ${b(input.mercado)} está fazendo o pedido abaixo, para entrega em ${escape(input.entregaEm)}.`,
+        tabela,
+        ...(input.observacao
+          ? [escape(input.observacao).replace(/\n/g, "<br>")]
+          : []),
+        "Confirme o pedido e informe a previsão de entrega pelo link — sem cadastro, funciona pelo celular. Se algo não puder ser atendido, avise por lá também.",
+      ],
+      cta: { rotulo: "Confirmar pedido", url: input.url },
+      nota: "O link é só seu e vale para este pedido.",
+    }),
+  };
+}

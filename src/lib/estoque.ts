@@ -501,7 +501,12 @@ export async function adicionarBonificacaoPedido(
 }
 
 /** RASCUNHO → ENVIADO (manda ao fornecedor). */
-export async function enviarPedidoCompra(tenantId: string, pedidoId: string): Promise<void> {
+export async function enviarPedidoCompra(
+  tenantId: string,
+  pedidoId: string,
+  /** Como e para quem saiu ("por e-mail para João"). Vai para a linha do tempo. */
+  detalhe?: string,
+): Promise<void> {
   const po = await comTenant(tenantId, basePrisma.purchaseOrder.findFirst({
     where: { id: pedidoId, tenantId },
     select: { status: true, numero: true },
@@ -519,7 +524,9 @@ export async function enviarPedidoCompra(tenantId: string, pedidoId: string): Pr
     tenantId,
     purchaseOrderId: pedidoId,
     tipo: "PEDIDO_ENVIADO",
-    descricao: `Pedido ${po.numero} enviado ao fornecedor.`,
+    descricao: detalhe
+      ? `Pedido ${po.numero} enviado ${detalhe}.`
+      : `Pedido ${po.numero} enviado ao fornecedor.`,
   });
 }
 

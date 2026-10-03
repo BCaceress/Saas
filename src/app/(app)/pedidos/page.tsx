@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import {
+  loadPedidosCompra,
   loadPedidosCompraPagina,
   loadResumoPedidos,
   loadFornecedoresComPedido,
@@ -71,10 +72,20 @@ export default async function ComprasPage({
   const store = await cookies();
   const view: PoView = store.get(PO_VIEW_COOKIE)?.value === "kanban" ? "kanban" : "lista";
 
+  /**
+   * `?pedido=<id>` abre aquele pedido de cara.
+   *
+   * É o que faz "Revisar pedido", vindo da cotação recém-concluída, cair no
+   * pedido certo em vez de numa lista onde ele pode estar na página três — ou
+   * escondido por um filtro salvo. Por isso o foco é buscado À PARTE da
+   * página: ele não depende do recorte da tela.
+   */
+  const focoId = typeof sp.pedido === "string" ? sp.pedido : null;
+
   const data = await withTenant(ctx, async () => {
     const activeSiteId = await getActiveSiteId();
     const paginado = view === "lista";
-    const [pagina, sites, resumo, fornecedores] = await Promise.all([
+    const [pagina, sites, resumo, fornecedores, foco] = await Promise.all([
       loadPedidosCompraPagina(
         filtroDoBanco(filtros, {
           skip: paginado ? (filtros.pagina - 1) * POR_PAGINA : 0,
@@ -86,6 +97,9 @@ export default async function ComprasPage({
       // o filtro não são resumo, são ruído.
       loadResumoPedidos(),
       loadFornecedoresComPedido(),
+      focoId
+        ? loadPedidosCompra({ id: focoId, take: 1 }).then((r) => r[0] ?? null)
+        : Promise.resolve(null),
     ]);
     return {
       pedidos: pagina.rows,
@@ -94,10 +108,17 @@ export default async function ComprasPage({
       activeSiteId,
       resumo,
       fornecedores,
+      foco,
     };
   });
 
   const pedidosSerial = data.pedidos.map(serialPedido);
+  // Já está na página? Então não vai duas vezes para o cliente — o drawer lê a
+  // linha viva da lista e continua atualizando junto com ela.
+  const focoSerial =
+    data.foco && !data.pedidos.some((p) => p.id === data.foco!.id)
+      ? serialPedido(data.foco)
+      : null;
 
   return (
     <FormOptionsProvider>
@@ -124,6 +145,8 @@ export default async function ComprasPage({
             resumo={data.resumo}
             empresa={ctx.tenant.nome}
             initialView={view}
+            focoId={focoId}
+            focoPedido={focoSerial}
           />
         </div>
       </NovoPedidoProvider>

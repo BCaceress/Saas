@@ -2,7 +2,7 @@ import "server-only";
 import webpush, { WebPushError } from "web-push";
 import { basePrisma, comTenant } from "@/lib/prisma";
 import { runWithTenant } from "@/lib/tenant-context";
-import { parseAcessosJson, type Acesso } from "@/lib/permissoes";
+import { can, parseAcessosJson, type Acesso, type Permissao } from "@/lib/permissoes";
 import { computarAlertas, filtrarAlertas } from "./computar";
 import type { AlertItem } from "@/lib/alerts-types";
 
@@ -269,4 +269,118 @@ export async function dispararAlertasPush(
   }
 
   return resumo;
+}
+
+// ── Disparo imediato ────────────────────────────────────────
+// O cron acima roda de hora em hora e só enxerga o que o computador de alertas
+// vê. Alguns fatos não podem esperar a próxima rodada — a proposta que o
+// fornecedor acabou de mandar pelo link é o caso: a pessoa está com o
+// celular no bolso e o concorrente dele também está respondendo.
+//
+// Mesmas regras do cron: janela de silêncio da empresa, conta ativa, só quem
+// tem a permissão NA loja do fato. O `alertaId` entra no `alertasEnviados` da
+// inscrição para a rodada do cron não repetir a mesma notícia uma hora depois.
+
+export type PushImediato = {
+  tenantId: string;
+  permissao: Permissao;
+  siteId: string;
+  mensagem: { titulo: string; corpo: string; url: string; tag: string };
+  /** Id do alerta equivalente no sino (`kind:sujeito`). */
+  alertaId?: string;
+  /** Não notificar quem causou o fato (o operador que digitou a resposta). */
+  excetoUserId?: string | null;
+};
+
+/** Devolve quantos aparelhos receberam. Nunca lança: push é aviso, não fluxo. */
+export async function enviarPushImediato(p: PushImediato): Promise<number> {
+  try {
+    if (!configurarVapid()) return 0;
+
+    const tenant = await basePrisma.tenant.findFirst({
+      where: { id: p.tenantId, status: { in: ["TRIAL", "ACTIVE"] } },
+      select: { pushHoraInicio: true, pushHoraFim: true },
+    });
+    if (!tenant) return 0;
+    const h = horaLocal();
+    const inicio = tenant.pushHoraInicio ?? HORA_INICIO;
+    const fim = tenant.pushHoraFim ?? HORA_FIM;
+    // Fora da janela o sino guarda a notícia; o cron da manhã a leva.
+    if (h < inicio || h >= fim) return 0;
+
+    const agora = new Date();
+    const inscricoes = (await comTenant(
+      p.tenantId,
+      basePrisma.pushSubscription.findMany({
+        where: {
+          OR: [{ silenciadoAte: null }, { silenciadoAte: { lt: agora } }],
+          ...(p.excetoUserId ? { userId: { not: p.excetoUserId } } : {}),
+        },
+        select: {
+          id: true,
+          userId: true,
+          endpoint: true,
+          p256dh: true,
+          auth: true,
+          alertasEnviados: true,
+          falhas: true,
+          silenciadoAte: true,
+        },
+      }),
+    )) as Inscricao[];
+    if (inscricoes.length === 0) return 0;
+
+    const userIds = [...new Set(inscricoes.map((i) => i.userId))];
+    const memberships = await comTenant(
+      p.tenantId,
+      basePrisma.membership.findMany({
+        where: { userId: { in: userIds }, ativo: true },
+        select: { userId: true, acessos: { select: { perfil: true, siteId: true } } },
+      }),
+    );
+    const autorizados = new Set(
+      memberships
+        .filter((m) => can(parseAcessosJson(m.acessos), p.permissao, p.siteId))
+        .map((m) => m.userId),
+    );
+
+    const payload = JSON.stringify({ ...p.mensagem, prioridade: "alto" });
+    let enviadas = 0;
+    for (const inscricao of inscricoes) {
+      if (!autorizados.has(inscricao.userId)) continue;
+      if (p.alertaId && inscricao.alertasEnviados.includes(p.alertaId)) continue;
+      try {
+        await webpush.sendNotification(
+          { endpoint: inscricao.endpoint, keys: { p256dh: inscricao.p256dh, auth: inscricao.auth } },
+          payload,
+        );
+        enviadas += 1;
+        await comTenant(
+          p.tenantId,
+          basePrisma.pushSubscription.updateMany({
+            where: { id: inscricao.id },
+            data: {
+              falhas: 0,
+              ultimoEnvio: new Date(),
+              ...(p.alertaId
+                ? { alertasEnviados: [...inscricao.alertasEnviados, p.alertaId] }
+                : {}),
+            },
+          }),
+        );
+      } catch (e) {
+        const status = e instanceof WebPushError ? e.statusCode : 0;
+        if (status === 404 || status === 410) {
+          await comTenant(
+            p.tenantId,
+            basePrisma.pushSubscription.deleteMany({ where: { id: inscricao.id } }),
+          );
+        }
+        // Outras falhas ficam para o cron contar — ele é quem aposenta aparelho.
+      }
+    }
+    return enviadas;
+  } catch {
+    return 0;
+  }
 }

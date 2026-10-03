@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
+  AlertTriangle,
   ChevronDown,
   ChevronRight,
+  Lightbulb,
   Layers,
   Scale,
   Target,
@@ -13,15 +15,49 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { precoNaQuantidade, type LimitesEscala } from "@/lib/compras/escalas";
+import {
+  custoDaProposta,
+  fatorPrazo,
+  prazoPagamentoEmDias,
+  type CustoProposta,
+} from "@/lib/compras/custo-efetivo";
 import { BottomSheet } from "@/components/mobile/bottom-sheet";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { toast } from "@/components/ui/toast";
 import { EstadoVazio, fmtMoney, fmtPreco, unidadeDaQtd } from "../_catalogo/ui";
 import { SupplierAvatar, Thumb } from "../_ui";
 import type { ConviteCotacao, CotacaoDetalhe, ItemCotacao } from "../_compra-types";
-import { gerarPedidosAction } from "../_compra-actions";
+import { concluirCotacaoAction, salvarCustoCapitalAction } from "../_compra-actions";
 import { LenteOportunidade, type Sugestao } from "./_escala";
 import { LeituraDaCotacao } from "./_resumo";
+import { decidirEnvio, type DecisaoEnvio } from "@/lib/compras/conclusao-envio";
+import { EnvioPedidoSheet } from "@/components/app/envio-pedido";
+import { atencaoDoItem, type Atencao } from "@/lib/compras/atencao-item";
+
+/**
+ * Preferência pessoal na conferência: quem sempre revisa antes não precisa
+ * desmarcar "enviar agora" toda vez. Só vale para pedido sem aviso — pedido
+ * com aviso sempre nasce em "revisar".
+ */
+const CHAVE_PREFERENCIA_ENVIO = "nohub-conclusao-envio";
+
+function lerPreferenciaEnvio(): "enviar" | "revisar" {
+  try {
+    return window.localStorage.getItem(CHAVE_PREFERENCIA_ENVIO) === "revisar" ? "revisar" : "enviar";
+  } catch {
+    return "enviar";
+  }
+}
+
+function gravarPreferenciaEnvio(v: "enviar" | "revisar") {
+  try {
+    window.localStorage.setItem(CHAVE_PREFERENCIA_ENVIO, v);
+  } catch {
+    // sem armazenamento, sem preferência
+  }
+}
+
+type EscolhaEnvio = "enviar" | "revisar";
 import type { ResumoCotacao } from "@/lib/compras/cotacao-resumo";
 
 // ── Comparativo ─────────────────────────────────────────────
@@ -52,14 +88,51 @@ const fmtQtd = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits:
  * coluna e acha sozinho o que falta decidir; empilhado, doze itens são meio
  * metro de rolagem sem atalho.
  */
-type FiltroItens = "todos" | "pendentes" | "promocao" | "marca";
+type FiltroItens = "todos" | "atencao" | "pendentes" | "promocao" | "marca";
 
 const ROTULO_FILTRO: Record<FiltroItens, string> = {
   todos: "Todos",
+  atencao: "Precisa de decisão",
   pendentes: "Sem escolha",
   promocao: "Com promoção",
   marca: "Marca divergente",
 };
+
+/**
+ * Faixa de calor da célula: quanto ela está acima da melhor da linha. Cor só
+ * onde há dinheiro — até 5% é empate prático e fica sem tinta.
+ */
+function calor(valor: number, melhor: number): "melhor" | "neutro" | "acima" | "longe" {
+  if (melhor <= 0) return "neutro";
+  const pct = (valor - melhor) / melhor;
+  if (pct <= 0.0005) return "melhor";
+  if (pct <= 0.05) return "neutro";
+  if (pct <= 0.15) return "acima";
+  return "longe";
+}
+
+const CLASSE_CALOR = {
+  melhor: "",
+  neutro: "",
+  acima: "bg-accent-soft/60",
+  longe: "bg-danger-soft/50",
+} as const;
+
+/** "▲ 4%" contra o último preço deste fornecedor; null abaixo de 2%. */
+function variacao(preco: number, referencia: number | undefined): { texto: string; subiu: boolean } | null {
+  if (!referencia || referencia <= 0) return null;
+  const pct = ((preco - referencia) / referencia) * 100;
+  if (Math.abs(pct) < 2) return null;
+  return { texto: `${pct > 0 ? "▲" : "▼"}${Math.abs(Math.round(pct))}%`, subiu: pct > 0 };
+}
+
+/** "28d" / "à vista" — o prazo de pagamento da proposta, curto. */
+function condicaoCurta(c: ConviteCotacao): string | null {
+  const dias = c.prazoPagamentoDias ?? prazoPagamentoEmDias(c.condicaoPagamento);
+  return dias === null ? null : dias === 0 ? "à vista" : `${dias}d`;
+}
+
+type Criterio = "preco" | "custo";
 
 /**
  * Aviso de quantidade parcial: o fornecedor respondeu que só atende parte do
@@ -103,8 +176,28 @@ export function ComparativoCotacao({
   podePedir,
   superficie = "desktop",
   onProgresso,
+  referencias = {},
+  onCobrar,
+  fase = "decidindo",
+  destaque = null,
+  onDestaque,
 }: {
+  /**
+   * "recebendo": só leitura (sem escolha, estratégia nem rodapé).
+   * "decidindo": seleção, "Como comprar" e conclusão. O celular usa este.
+   */
+  fase?: "recebendo" | "decidindo";
+  /** Fornecedor em foco (hover no chip ou no cabeçalho) — destaca a coluna. */
+  destaque?: string | null;
+  onDestaque?: (conviteId: string | null) => void;
+  /** Cobrar quem ainda não respondeu — a folha de envio mora na página. */
+  onCobrar?: (alvos: ConviteCotacao[]) => void;
   cotacao: CotacaoDetalhe;
+  /**
+   * Último preço que cada fornecedor praticou em cada produto antes desta
+   * cotação (`${supplierId}:${productId}`). Vira o "▲ 4%" da célula.
+   */
+  referencias?: Record<string, number>;
   /** Leitura em texto do que os números dizem — fica logo abaixo do totalizador. */
   resumo: ResumoCotacao;
   podePedir: boolean;
@@ -139,29 +232,81 @@ export function ComparativoCotacao({
     else setAviso(texto);
   }
 
-  const respondidos = cotacao.convites.filter((c) => c.status === "RESPONDIDA");
+  const respondidos = useMemo(
+    () => cotacao.convites.filter((c) => c.status === "RESPONDIDA"),
+    [cotacao.convites],
+  );
 
-  // itemId → conviteId com o menor preço disponível.
-  const melhorPorItem = useMemo(() => {
-    const mapa = new Map<string, { conviteId: string; preco: number }>();
+  // ── Critério: preço de nota ou custo efetivo ──────────────
+  // Preço é o que sai no boleto. Custo efetivo soma o frete rateado e desconta
+  // o prazo pelo custo do dinheiro — é o que a compra custa de verdade, em
+  // reais de hoje.
+  const [criterio, setCriterio] = useState<Criterio>("preco");
+  const [taxaMes, setTaxaMes] = useState(cotacao.custoCapitalMesPct);
+
+  /** Custo efetivo de cada proposta, na quantidade cotada. */
+  const custos = useMemo(() => {
+    const mapa = new Map<string, CustoProposta>();
+    for (const c of respondidos) {
+      const linhas = cotacao.itens.flatMap((i) => {
+        const r = c.respostas.find((x) => x.quotationItemId === i.id);
+        return r?.disponivel ? [{ itemId: i.id, quantidade: i.quantidade, preco: r.precoUnitario }] : [];
+      });
+      mapa.set(
+        c.id,
+        custoDaProposta(
+          linhas,
+          {
+            prazoPagamentoDias: c.prazoPagamentoDias ?? prazoPagamentoEmDias(c.condicaoPagamento),
+            frete: c.frete,
+          },
+          taxaMes,
+        ),
+      );
+    }
+    return mapa;
+  }, [respondidos, cotacao.itens, taxaMes]);
+
+  /** Melhor proposta de cada item pelo critério pedido (na quantidade cotada). */
+  function calcularMelhores(crit: Criterio) {
+    const mapa = new Map<string, { conviteId: string; preco: number; valor: number }>();
     for (const item of cotacao.itens) {
       for (const convite of respondidos) {
         const r = convite.respostas.find((x) => x.quotationItemId === item.id);
         if (!r?.disponivel) continue;
+        const valor =
+          crit === "custo"
+            ? (custos.get(convite.id)?.linhas.get(item.id)?.unitario ?? r.precoUnitario)
+            : r.precoUnitario;
         const atual = mapa.get(item.id);
-        if (!atual || r.precoUnitario < atual.preco) {
-          mapa.set(item.id, { conviteId: convite.id, preco: r.precoUnitario });
+        if (!atual || valor < atual.valor) {
+          mapa.set(item.id, { conviteId: convite.id, preco: r.precoUnitario, valor });
         }
       }
     }
     return mapa;
-  }, [cotacao.itens, respondidos]);
+  }
+
+  // itemId → quem vence no critério atual.
+  const melhorPorItem = calcularMelhores(criterio);
 
   const [escolhas, setEscolhas] = useState<Record<string, string | null>>(() =>
     Object.fromEntries(
       cotacao.itens.map((i) => [i.id, melhorPorItem.get(i.id)?.conviteId ?? null]),
     ),
   );
+
+  function trocarCriterio(novo: Criterio) {
+    setCriterio(novo);
+    // Na estratégia "melhor por item", mudar a régua muda quem ganha — a
+    // seleção acompanha. Escolha personalizada ou fornecedor único ficam.
+    if (modo === "melhor") {
+      const melhores = calcularMelhores(novo);
+      setEscolhas(
+        Object.fromEntries(cotacao.itens.map((i) => [i.id, melhores.get(i.id)?.conviteId ?? null])),
+      );
+    }
+  }
 
   // Quanto pedir de cada item. Começa na quantidade cotada e só sobe quando o
   // operador leva uma faixa de promoção — a lente de necessidade nunca mexe
@@ -178,6 +323,15 @@ export function ComparativoCotacao({
   const [estrategiaAberta, setEstrategiaAberta] = useState(false);
   const [confirmando, setConfirmando] = useState(false);
   const [filtro, setFiltro] = useState<FiltroItens>("todos");
+  /** Na conferência: o que fazer com o pedido de cada fornecedor (por convite). */
+  const [envioEscolha, setEnvioEscolha] = useState<Record<string, EscolhaEnvio>>({});
+  /** Itens com vencedor claro abertos na tabela (recolhidos por padrão). */
+  const [mostrarClaros, setMostrarClaros] = useState(false);
+  /** Pedidos que, depois de concluir, vão para a folha de envio. */
+  const [enviarIds, setEnviarIds] = useState<string[] | null>(null);
+  /** Linha com o foco do teclado na matriz (índice em `itensVisiveis`). */
+  const [linhaAtiva, setLinhaAtiva] = useState<number | null>(null);
+  const linhasRef = useRef<(HTMLTableRowElement | null)[]>([]);
 
   const [limites, setLimites] = useState<LimitesEscala>(cotacao.limitesEscala);
 
@@ -214,6 +368,27 @@ export function ComparativoCotacao({
       quantidadeDe(item),
     ).preco;
   }
+
+  /**
+   * Custo efetivo por unidade NA QUANTIDADE ESCOLHIDA. Reaproveita o frete
+   * rateado da proposta e aplica ao preço da faixa, se houver.
+   */
+  function custoDe(item: ItemCotacao, convite: ConviteCotacao): number | null {
+    const preco = precoDe(item, convite);
+    if (preco === null) return null;
+    const r = convite.respostas.find((x) => x.quotationItemId === item.id);
+    const linha = custos.get(convite.id)?.linhas.get(item.id);
+    if (!r || !linha || r.precoUnitario <= 0) return preco;
+    const fp = fatorPrazo(
+      convite.prazoPagamentoDias ?? prazoPagamentoEmDias(convite.condicaoPagamento),
+      taxaMes,
+    );
+    return (preco + linha.freteUnit) * fp;
+  }
+
+  /** O número que a comparação usa — preço ou custo, conforme o critério. */
+  const valorDe = (item: ItemCotacao, convite: ConviteCotacao) =>
+    criterio === "custo" ? custoDe(item, convite) : precoDe(item, convite);
 
   /** Levar uma faixa: escolhe o fornecedor E sobe a quantidade, junto. */
   function aplicarFaixa(itemId: string, conviteId: string, quantidade: number) {
@@ -422,12 +597,21 @@ export function ComparativoCotacao({
    */
   const economiaDividindo = melhorCheio ? melhorCheio.total - totalEscolhido : 0;
 
-  function gerar() {
+  /**
+   * Conclui a cotação. NÃO envia nada ao fornecedor: os pedidos nascem em
+   * rascunho e ficam esperando a revisão — o botão de enviar mora na tela do
+   * pedido, que é onde o comprador ainda pode cortar quantidade e conferir o
+   * combinado. Aqui o clique só fecha a decisão.
+   *
+   * `pendente` trava o botão enquanto roda e o servidor é idempotente, então
+   * duplo clique e F5 não geram uma segunda leva de pedidos.
+   */
+  function concluir() {
     setErro(null);
     setAviso(null);
     startTransition(async () => {
       try {
-        const r = await gerarPedidosAction({
+        const r = await concluirCotacaoAction({
           quotationId: cotacao.id,
           escolhas: Object.entries(escolhas)
             .filter(([, conviteId]) => conviteId !== null)
@@ -438,20 +622,38 @@ export function ComparativoCotacao({
               // gravadas — aqui vai só o "quanto", nunca o "por quanto".
               quantidade: quantidades[quotationItemId] ?? null,
             })),
-          enviar: true,
         });
-        if (r.semProduto.length > 0) {
-          avisar(
-            "aviso",
-            `Ficaram de fora ${r.semProduto.length} ${r.semProduto.length === 1 ? "item que não está" : "itens que não estão"} vinculados ao catálogo: ${r.semProduto.join(", ")}.`,
+        const recados = [
+          r.semProduto.length > 0
+            ? `Ficaram de fora ${r.semProduto.length} ${r.semProduto.length === 1 ? "item que não está" : "itens que não estão"} vinculados ao catálogo: ${r.semProduto.join(", ")}.`
+            : null,
+          r.jaTinhamPedido.length > 0
+            ? `${r.jaTinhamPedido.join(", ")} já ${r.jaTinhamPedido.length === 1 ? "tinha" : "tinham"} pedido desta cotação — nenhum pedido novo foi criado para ${r.jaTinhamPedido.length === 1 ? "ele" : "eles"}.`
+            : null,
+        ].filter(Boolean) as string[];
+
+        if (recados.length > 0) {
+          avisar("aviso", recados.join(" "));
+        } else if (mobile && paraEnviar === 0) {
+          toast.success(
+            r.pedidos.length === 1
+              ? "Pedido criado em rascunho"
+              : `${r.pedidos.length} pedidos criados em rascunho`,
           );
-        } else if (mobile) {
-          toast.success("Pedidos gerados");
         }
         setConfirmando(false);
+        // Os pedidos marcados "enviar agora" seguem para a folha de envio. Os
+        // outros ficam em rascunho, e o painel "Compra definida" aponta para eles.
+        const fornecedoresParaEnviar = new Set(
+          pedidosPrevistos.filter((x) => escolhaDe(x) === "enviar").map((x) => x.supplierId),
+        );
+        const ids = r.pedidos
+          .filter((p) => p.status === "RASCUNHO" && fornecedoresParaEnviar.has(p.supplierId))
+          .map((p) => p.id);
+        if (ids.length > 0) setEnviarIds(ids);
         router.refresh();
       } catch (e) {
-        avisar("erro", e instanceof Error ? e.message : "Não foi possível gerar os pedidos.");
+        avisar("erro", e instanceof Error ? e.message : "Não foi possível concluir a cotação.");
       }
     });
   }
@@ -501,22 +703,66 @@ export function ComparativoCotacao({
           .filter(Boolean)
           .join(" · ");
 
-  /** Em quantos pedidos a escolha vai virar, e de quanto cada um. */
+  /** Em quantos pedidos a escolha vai virar, de quanto cada um, e se dá para enviar já. */
   const pedidosPrevistos = respondidos
     .map((c) => {
       const itens = cotacao.itens.filter((i) => escolhas[i.id] === c.id);
+      const total = itens.reduce((acc, i) => {
+        const preco = precoDe(i, c);
+        return preco === null ? acc : acc + preco * quantidadeDe(i);
+      }, 0);
+      const avisosCusto = custos.get(c.id)?.avisos ?? [];
+      const decisao: DecisaoEnvio = decidirEnvio({
+        itensForaDoCatalogo: itens.filter((i) => !i.productId).length,
+        itensAcimaDoCotado: itens.filter((i) => quantidadeDe(i) > i.quantidade).length,
+        itensComMarcaDivergente: itens.filter((i) => marcasDivergemNoItem(i.id)).length,
+        total,
+        pedidoMinimo: c.supplierPedidoMinimo,
+        respostaManual: c.origemResposta === "manual",
+        prazoDesconhecido: avisosCusto.includes("prazo-desconhecido"),
+        temContato:
+          !!(c.telefone || c.email) || c.contatos.some((x) => !!(x.telefone || x.email)),
+        jaTemPedido: !!c.purchaseOrderId,
+      });
       return {
         id: c.id,
+        supplierId: c.supplierId,
         nome: c.supplierNome,
         logoUrl: c.supplierLogoUrl,
         itens: itens.length,
-        total: itens.reduce((acc, i) => {
-          const preco = precoDe(i, c);
-          return preco === null ? acc : acc + preco * quantidadeDe(i);
-        }, 0),
+        total,
+        decisao,
       };
     })
     .filter((x) => x.itens > 0);
+
+  /** O que cada pedido vai fazer: a escolha da pessoa, ou a sugestão da regra. */
+  const escolhaDe = (x: (typeof pedidosPrevistos)[number]): EscolhaEnvio =>
+    x.decisao.bloqueio ? "revisar" : (envioEscolha[x.id] ?? x.decisao.sugestao);
+  const paraEnviar = pedidosPrevistos.filter((x) => escolhaDe(x) === "enviar").length;
+  const paraRevisar = pedidosPrevistos.length - paraEnviar;
+
+  /** Abre a conferência com a sugestão de cada fornecedor já marcada. */
+  function abrirConferencia() {
+    const preferencia = lerPreferenciaEnvio();
+    setEnvioEscolha(
+      Object.fromEntries(
+        pedidosPrevistos.map((x) => [
+          x.id,
+          x.decisao.sugestao === "enviar" && preferencia === "enviar" ? "enviar" : "revisar",
+        ]),
+      ),
+    );
+    setConfirmando(true);
+  }
+
+  function escolherEnvio(conviteId: string, v: EscolhaEnvio) {
+    setEnvioEscolha((e) => ({ ...e, [conviteId]: v }));
+    // Só pedido limpo ensina a preferência — trocar um pedido com aviso para
+    // "revisar" não diz nada sobre o hábito da pessoa.
+    const x = pedidosPrevistos.find((p) => p.id === conviteId);
+    if (x && x.decisao.sugestao === "enviar") gravarPreferenciaEnvio(v);
+  }
 
   /**
    * Um pedido ou vários? A resposta é a contagem de fornecedores escolhidos, e
@@ -524,11 +770,28 @@ export function ComparativoCotacao({
    * aí o plural prometeria uma divisão que não vai acontecer.
    */
   const umPedidoSo = pedidosPrevistos.length === 1;
-  const rotuloGerar = umPedidoSo
-    ? `Gerar pedido para ${pedidosPrevistos[0].nome}`
+  /**
+   * "Gerar pedido para FLAMARSUL" mentia duas vezes: escondia que a COTAÇÃO
+   * termina aqui e sugeria que algo sai para o fornecedor. O rótulo agora diz
+   * as duas coisas que acontecem de fato — conclui e gera — e conta quantos.
+   */
+  const rotuloConcluir = umPedidoSo
+    ? "Concluir e gerar pedido"
     : pedidosPrevistos.length > 1
-      ? `Gerar ${pedidosPrevistos.length} pedidos`
-      : "Gerar pedido";
+      ? `Concluir e gerar ${pedidosPrevistos.length} pedidos`
+      : "Concluir cotação";
+
+  /** O botão da conferência diz o que acontece com os pedidos. */
+  const rotuloConfirmar =
+    paraEnviar === 0
+      ? umPedidoSo
+        ? "Concluir e revisar o pedido"
+        : "Concluir e revisar os pedidos"
+      : paraRevisar === 0
+        ? umPedidoSo
+          ? "Concluir e enviar o pedido"
+          : `Concluir e enviar ${paraEnviar} pedidos`
+        : `Concluir · enviar ${paraEnviar} e revisar ${paraRevisar}`;
 
   /** Alguém ofereceu promoção por volume neste item? */
   function temPromocaoNoItem(item: ItemCotacao): boolean {
@@ -538,8 +801,31 @@ export function ComparativoCotacao({
     });
   }
 
+  /** Por que este item pede decisão — ou null, quando o vencedor é claro. */
+  function atencaoDe(item: ItemCotacao): Atencao | null {
+    const melhor = melhorPorItem.get(item.id);
+    const respostaMelhor = melhor
+      ? respondidos
+          .find((c) => c.id === melhor.conviteId)
+          ?.respostas.find((x) => x.quotationItemId === item.id)
+      : undefined;
+    return atencaoDoItem({
+      valores: respondidos
+        .map((c) => valorDe(item, c))
+        .filter((v): v is number => v !== null),
+      respondidos: respondidos.length,
+      melhorParcial:
+        respostaMelhor?.quantidadeOfertada != null &&
+        respostaMelhor.quantidadeOfertada < item.quantidade,
+      marcasDivergem: marcasDivergemNoItem(item.id),
+      temPromocao: temPromocaoNoItem(item),
+    });
+  }
+  const atencaoPorItem = new Map(cotacao.itens.map((i) => [i.id, atencaoDe(i)]));
+
   function passaNoFiltro(item: ItemCotacao, f: FiltroItens): boolean {
     if (f === "pendentes") return !escolhas[item.id];
+    if (f === "atencao") return !decidida && !!atencaoPorItem.get(item.id);
     if (f === "promocao") return temPromocaoNoItem(item);
     if (f === "marca") return marcasDivergemNoItem(item.id);
     return true;
@@ -548,19 +834,194 @@ export function ComparativoCotacao({
   const contagemFiltro = {
     todos: cotacao.itens.length,
     pendentes: cotacao.itens.filter((i) => passaNoFiltro(i, "pendentes")).length,
+    atencao: cotacao.itens.filter((i) => passaNoFiltro(i, "atencao")).length,
     promocao: cotacao.itens.filter((i) => passaNoFiltro(i, "promocao")).length,
     marca: cotacao.itens.filter((i) => passaNoFiltro(i, "marca")).length,
   } satisfies Record<FiltroItens, number>;
 
-  const itensVisiveis = cotacao.itens.filter((i) => passaNoFiltro(i, filtro));
+  // Tabela COMPLETA, com o que pede decisão no topo (ordenação estável: dentro
+  // de cada grupo, a ordem da lista que o comprador montou).
+  const itensVisiveis = cotacao.itens
+    .filter((i) => passaNoFiltro(i, filtro))
+    .sort((a, b) =>
+      decidida ? 0 : (atencaoPorItem.get(a.id) ? 0 : 1) - (atencaoPorItem.get(b.id) ? 0 : 1),
+    );
+  /** A cotação não aceita mais resposta: quem não respondeu, não responde mais. */
+  const fechada = cotacao.status !== "ABERTA";
+
+  /** Convidados que ainda podem responder — colunas cinza na matriz. */
+  const aguardando = cotacao.convites.filter(
+    (c) => c.status === "ENVIADA" || c.status === "PENDENTE",
+  );
+
+
+
+  const editavelMatriz = podePedir && !decidida;
+  /** Tabela só de leitura: recebendo propostas, concluída, ou sem permissão. */
+  const leitura = fase === "recebendo" || !editavelMatriz;
+  /**
+   * Há algo além do preço que muda a conta? Frete, ou prazos de pagamento
+   * diferentes entre quem respondeu. Sem isso, "comparar por" não existe.
+   */
+  const temExtras =
+    respondidos.some((c) => (c.frete ?? 0) > 0) ||
+    new Set(respondidos.map((c) => c.prazoPagamentoDias ?? prazoPagamentoEmDias(c.condicaoPagamento) ?? -1))
+      .size > 1;
+
+  type Recomendacao = {
+    id: string;
+    texto: string;
+    tom: "acao" | "info" | "alerta";
+    acao?: { rotulo: string; onClick: () => void };
+  };
+  const recomendacoes: Recomendacao[] = [];
+  if (editavelMatriz) {
+    const unico = melhorCheio ? respondidos.find((c) => c.id === melhorCheio.id) : undefined;
+    if (unico && previaMelhor.fornecedores > 1 && modo !== "fornecedor") {
+      const extra = totalBaseDe(unico) - previaMelhor.total;
+      recomendacoes.push({
+        id: "um-so",
+        tom: "acao",
+        texto:
+          extra <= 0.005
+            ? `Fechar tudo com ${unico.supplierNome} sai pelo mesmo valor e vira 1 pedido em vez de ${previaMelhor.fornecedores}.`
+            : `Fechar tudo com ${unico.supplierNome} custa ${fmtMoney(extra)} a mais e vira 1 pedido em vez de ${previaMelhor.fornecedores}.`,
+        acao: { rotulo: "Fechar com um só", onClick: () => aplicarFornecedor(unico.id) },
+      });
+    }
+    if (modo !== "melhor" && previaMelhor.itens > 0) {
+      const ganho = totalEscolhido - previaMelhor.total;
+      if (ganho > 0.005) {
+        recomendacoes.push({
+          id: "melhor",
+          tom: "acao",
+          texto: `O melhor preço por item economiza ${fmtMoney(ganho)} em relação à escolha atual.`,
+          acao: { rotulo: "Usar melhor preço", onClick: aplicarMelhorPreco },
+        });
+      }
+    }
+  }
+  const quemFalta = aguardando.filter((c) => c.status === "ENVIADA");
+  if (quemFalta.length > 0 && !fechada) {
+    recomendacoes.push({
+      id: "cobrar",
+      tom: "alerta",
+      texto: `${quemFalta.map((c) => c.supplierNome).join(", ")} ainda não ${quemFalta.length === 1 ? "respondeu" : "responderam"} — a proposta que falta pode ser a melhor.`,
+      acao: onCobrar && editavelMatriz
+        ? { rotulo: quemFalta.length === 1 ? "Cobrar" : "Cobrar todos", onClick: () => onCobrar(quemFalta) }
+        : undefined,
+    });
+  }
+  const ninguem = cotacao.itens.filter((i) => atencaoPorItem.get(i.id)?.tipo === "ninguem").length;
+  if (ninguem > 0 && !decidida) {
+    recomendacoes.push({
+      id: "ninguem",
+      tom: "info",
+      texto: `${ninguem} ${ninguem === 1 ? "item não recebeu" : "itens não receberam"} nenhuma proposta e ${ninguem === 1 ? "fica" : "ficam"} fora dos pedidos.`,
+    });
+  }
+
+  /**
+   * Teclado na matriz: ↑/↓ (ou j/k) andam de linha, 1–9 escolhem o fornecedor
+   * daquela coluna, 0 limpa. Quem decide 40 itens não quer mirar 40 cliques.
+   */
+  function aoTeclarMatriz(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const total = linhasNaTela.length;
+    if (total === 0) return;
+    const atual = linhaAtiva ?? -1;
+    let proxima: number | null = null;
+    if (e.key === "ArrowDown" || e.key === "j") proxima = Math.min(total - 1, atual + 1);
+    else if (e.key === "ArrowUp" || e.key === "k") proxima = Math.max(0, atual - 1);
+    if (proxima !== null) {
+      e.preventDefault();
+      setLinhaAtiva(proxima);
+      linhasRef.current[proxima]?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    if (linhaAtiva === null || !editavelMatriz) return;
+    const item = linhasNaTela[linhaAtiva];
+    if (!item) return;
+    if (e.key === "0" || e.key === "Backspace" || e.key === "Delete") {
+      e.preventDefault();
+      setModo("manual");
+      setEscolhas((x) => ({ ...x, [item.id]: null }));
+      return;
+    }
+    if (/^[1-9]$/.test(e.key)) {
+      const convite = respondidos[Number(e.key) - 1];
+      if (!convite || precoDe(item, convite) === null) return;
+      e.preventDefault();
+      setModo("manual");
+      setEscolhas((x) => ({ ...x, [item.id]: convite.id }));
+      // Escolheu, desce: o ritmo de quem está decidindo a lista inteira.
+      const seguinte = Math.min(total - 1, linhaAtiva + 1);
+      setLinhaAtiva(seguinte);
+      linhasRef.current[seguinte]?.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  // ── Tabela do computador ───────────────────────────────────
+  // RECEBENDO (ou concluída): só leitura, na ordem da lista. DECIDINDO: o que
+  // pede decisão sobe, e os itens com vencedor claro ficam recolhidos numa
+  // linha — a tabela inteira continua a um clique.
+  const itensTabela = leitura
+    ? cotacao.itens
+    : [...cotacao.itens].sort(
+        (a, b) => (atencaoPorItem.get(a.id) ? 0 : 1) - (atencaoPorItem.get(b.id) ? 0 : 1),
+      );
+  const qtdAtencaoTab = leitura ? 0 : itensTabela.filter((i) => atencaoPorItem.get(i.id)).length;
+  const recolher = !leitura && qtdAtencaoTab > 0 && !mostrarClaros;
+  const linhasNaTela = recolher ? itensTabela.slice(0, qtdAtencaoTab) : itensTabela;
+  const itensClaros = itensTabela.slice(qtdAtencaoTab);
+  const totalClaros = itensClaros.reduce((acc, item) => {
+    const c = respondidos.find((x) => x.id === escolhas[item.id]);
+    const preco = c ? precoDe(item, c) : null;
+    return preco === null ? acc : acc + preco * quantidadeDe(item);
+  }, 0);
+  const colunas = respondidos.length + aguardando.length + 2;
+  const recomendacao = leitura ? null : (recomendacoes.find((r) => r.tom === "acao") ?? null);
 
   return (
-    <div className="flex flex-col gap-4">
-      {temFaixa && (
+    <div className="flex flex-col gap-3">
+      {/* DECIDINDO: como comprar, numa linha. */}
+      {!mobile && !leitura && (
+        <BarraDecisao
+          modo={modo}
+          totalMelhor={previaMelhor.total}
+          pedidosMelhor={previaMelhor.fornecedores}
+          opcoesUnico={respondidos.map((c) => ({
+            id: c.id,
+            nome: c.supplierNome,
+            total: totalBaseDe(c),
+            atende: c.itensAtendidos,
+          }))}
+          totalItens={cotacao.itens.length}
+          unicoAtual={fornecedorUnico ?? idUnicoSugerido}
+          totalManual={modo === "manual" ? totalEscolhido : null}
+          onMelhor={aplicarMelhorPreco}
+          onFornecedor={aplicarFornecedor}
+          criterio={
+            temExtras ? (
+              <SeletorCriterio
+                criterio={criterio}
+                onCriterio={trocarCriterio}
+                taxaMes={taxaMes}
+                onTaxaMes={setTaxaMes}
+                taxaPadrao={cotacao.custoCapitalMesPct}
+                podeSalvar={podePedir}
+              />
+            ) : null
+          }
+          recomendacao={recomendacao}
+        />
+      )}
+
+      {!leitura && temFaixa && (
         <AlternadorLente lente={lente} onLente={setLente} onNecessidade={zerarQuantidades} />
       )}
 
-      {lente === "oportunidade" && (
+      {!leitura && lente === "oportunidade" && (
         <LenteOportunidade
           itens={cotacao.itens}
           respondidos={respondidos}
@@ -569,406 +1030,432 @@ export function ComparativoCotacao({
           onLimites={setLimites}
           escolhas={escolhas}
           quantidades={quantidades}
-          editavel={podePedir && !decidida}
+          editavel={editavelMatriz}
           onAplicarFaixa={aplicarFaixa}
           onAplicarTodas={aplicarSugestoes}
         />
       )}
 
-      {lente === "necessidade" && (
+      {(leitura || lente === "necessidade") && (
         <>
-      {/* A matriz é o elemento principal da tela, e com seis fornecedores ela
-          não cabe na largura de um notebook. Em vez de espremer as colunas até
-          o nome do produto sumir, a tabela ROLA — com a coluna do item e o
-          cabeçalho grudados: quem rola para a direita nunca perde de vista de
-          qual produto e de qual fornecedor é o preço que está lendo. */}
-      <div
-        className={cn(
-          "max-h-[70vh] overflow-auto rounded-[var(--radius-lg)] border border-line bg-surface",
-          mobile ? "hidden" : "hidden md:block",
-        )}
-      >
-        {/* A largura mínima cresceu junto com a coluna de total: espremida,
-            a coluna do item truncava o nome no terceiro caractere. */}
-        <table className="w-full min-w-[52rem] text-sm">
-          <thead className="text-[11px] uppercase tracking-wide text-faint">
-            <tr>
-              {/* Peso declarado: sem largura, o navegador dá à coluna de texto o
-                  que sobra das colunas de número — e sobra pouco.
-                  O canto (item × cabeçalho) precisa de z maior que os dois: é o
-                  único ponto onde as duas âncoras se cruzam. */}
-              <th className="sticky top-0 left-0 z-30 w-[34%] min-w-[16rem] border-b border-line bg-surface-2 px-4 py-2 text-left font-medium">
-                Item
-              </th>
-              <th className="sticky top-0 z-20 border-b border-line bg-surface-2 px-3 py-2 text-right font-medium">
-                Qtd
-              </th>
-              {/* Cabeçalho enxuto: quem é e por quanto fecha. O troféu diz o
-                  resto — quatro linhas de altura por coluna empurravam a
-                  primeira linha de preço para fora da tela. */}
-              {respondidos.map((c) => {
-                const eleito = modo === "fornecedor" && fornecedorUnico === c.id;
-                const melhorGeral = melhorCheio?.id === c.id;
-                const atende = cotacao.itens.filter((i) =>
-                  c.respostas.some((r) => r.quotationItemId === i.id && r.disponivel),
-                ).length;
-                return (
-                  <th
-                    key={c.id}
-                    aria-current={eleito ? "true" : undefined}
-                    title={
-                      cobreTudo(c)
-                        ? `${c.supplierNome} — cotou os ${cotacao.itens.length} itens`
-                        : `${c.supplierNome} — cotou só ${atende} de ${cotacao.itens.length} itens`
-                    }
-                    className={cn(
-                      "sticky top-0 z-20 border-b border-line px-3 py-2 text-right align-top font-medium",
-                      eleito
-                        ? "bg-brand-soft"
-                        : melhorGeral
-                          ? "bg-ok-soft"
-                          : "bg-surface-2",
-                    )}
-                  >
-                    <span className="flex flex-col items-end gap-0.5">
-                      <span className="flex items-center gap-1.5">
-                        {/* Sem logo: o cabeçalho é uma coluna de NÚMEROS, e a
-                            imagem competia com eles pela atenção sem ajudar a
-                            comparar preço. O nome basta para identificar. */}
-                        {melhorGeral && <Trophy size={11} className="shrink-0 text-ok" />}
-                        <span
-                          className={cn(
-                            "max-w-[9rem] truncate normal-case text-[12px]",
-                            eleito ? "font-semibold text-brand" : "text-ink-2",
-                          )}
-                        >
-                          {c.supplierNome}
-                        </span>
-                      </span>
-
-                      <span
-                        className={cn(
-                          "font-mono text-[13px] font-semibold tabular-nums",
-                          melhorGeral ? "text-ok" : "text-ink",
-                        )}
-                      >
-                        {fmtMoney(totalDe(c))}
-                      </span>
-                      {!cobreTudo(c) && (
-                        <span className="text-[10px] normal-case text-accent">
-                          {atende}/{cotacao.itens.length} itens
-                        </span>
-                      )}
-                    </span>
+          <div
+            tabIndex={leitura ? undefined : 0}
+            onKeyDown={leitura ? undefined : aoTeclarMatriz}
+            onFocus={() => {
+              if (!leitura && linhaAtiva === null && linhasNaTela.length > 0) setLinhaAtiva(0);
+            }}
+            aria-label={
+              leitura
+                ? "Preços recebidos"
+                : "Escolha de quem comprar. Setas mudam de item; teclas 1 a 9 escolhem o fornecedor; 0 limpa."
+            }
+            className={cn(
+              "max-h-[70vh] overflow-auto rounded-[var(--radius-lg)] border border-line bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
+              mobile ? "hidden" : "hidden md:block",
+            )}
+          >
+            <table className="w-full min-w-[48rem] text-sm">
+              <thead className="text-[11px] uppercase tracking-wide text-faint">
+                <tr>
+                  <th className="sticky top-0 left-0 z-30 w-[36%] min-w-[15rem] border-b border-line bg-surface-2 px-3 py-2 text-left font-medium">
+                    Item
                   </th>
-                );
-              })}
-            </tr>
-          </thead>
-
-          <tbody className="divide-y divide-line">
-            {cotacao.itens.map((item, linha) => {
-              const melhor = melhorPorItem.get(item.id);
-              // Preços da linha na quantidade escolhida — a base da diferença
-              // que cada célula mostra.
-              const precosDaLinha = respondidos
-                .map((c) => precoDe(item, c))
-                .filter((x): x is number => x !== null);
-              const marcasDivergem = marcasDivergemNoItem(item.id);
-              return (
-                <tr
-                  key={item.id}
-                  // Zebra em vez de pintar cada célula: a faixa separa as
-                  // linhas sem competir com a cor que marca a escolha.
-                  className={linha % 2 === 1 ? "bg-surface-2" : undefined}
-                >
-                  {/* Foto no ITEM, e só nele: é onde ela trabalha — o operador
-                      reconhece o produto pelo rótulo antes de ler o nome.
-                      Fixa na rolagem horizontal: precisa de fundo OPACO próprio
-                      (o zebrado do <tr> é translúcido e deixaria os preços
-                      passarem por baixo). */}
-                  <td
-                    className={cn(
-                      "sticky left-0 z-10 px-4 py-2",
-                      linha % 2 === 1 ? "bg-surface-2" : "bg-surface",
-                    )}
-                  >
-                    <span className="flex items-center gap-2">
-                      <Thumb url={item.imagemUrl} nome={item.descricao} size={28} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-ink">{item.descricao}</span>
-                        {item.sku ? (
-                          <span className="block font-mono text-[11px] text-faint">
-                            {item.sku}
-                          </span>
-                        ) : (
-                          <span className="block text-[11px] text-faint">fora do catálogo</span>
-                        )}
-                      </span>
-                    </span>
-                  </td>
-                  {/* A quantidade que vai no pedido, não a que foi perguntada:
-                      levada uma promoção, elas deixam de ser a mesma coisa e a
-                      cotada continua à vista, riscada. */}
-                  <td className="px-3 py-2 text-right font-mono text-[13px] tabular-nums text-muted">
-                    {quantidadeDe(item) > item.quantidade ? (
-                      <span className="flex flex-col items-end">
-                        <span className="font-semibold text-accent">
-                          {fmtQtd(quantidadeDe(item))}
-                        </span>
-                        <span className="text-[11px] text-faint line-through">
-                          {fmtQtd(item.quantidade)}
-                        </span>
-                      </span>
-                    ) : (
-                      fmtQtd(item.quantidade)
-                    )}
-                    {/* Número sem unidade não diz se são duas garrafas ou duas
-                        caixas de doze — e é o preço disso que está na linha. */}
-                    <span className="block font-sans text-[11px] normal-case text-faint">
-                      {unidadeDaQtd(quantidadeDe(item), item.embalagemNome)}
-                    </span>
-                  </td>
-
-                  {respondidos.map((c) => {
-                    const r = c.respostas.find((x) => x.quotationItemId === item.id);
-                    const escolhido = escolhas[item.id] === c.id;
-                    const ehMelhor = melhor?.conviteId === c.id;
-                    const eleito = modo === "fornecedor" && fornecedorUnico === c.id;
-                    const colunaVencedora = melhorCheio?.id === c.id;
-
-                    if (!r?.disponivel) {
-                      return (
-                        <td
-                          key={c.id}
-                          className={cn(
-                            "px-3 py-2 text-right text-[12px] text-faint",
-                            eleito
-                              ? "bg-brand-soft/40"
-                              : colunaVencedora && "bg-ok-soft/25",
-                          )}
-                        >
-                          não tem
-                        </td>
-                      );
-                    }
-
-                    // Na quantidade escolhida — se ela alcança uma faixa deste
-                    // fornecedor, é o preço da faixa que a célula mostra. Um
-                    // preço na tela e outro no total é o que faz o operador
-                    // parar de confiar no comparativo.
-                    const preco = precoDe(item, c) ?? r.precoUnitario;
-                    const comFaixa = preco < r.precoUnitario;
-                    const dif = diferencaNaLinha(precosDaLinha, preco);
-                    const falta = faltaTexto(r.quantidadeOfertada, item.quantidade);
-                    const marca = marcasDivergem ? r.marca : null;
-
-                    /**
-                     * UMA nota por célula, por gravidade: o que impede a compra
-                     * vem antes do que a barateia, e o preço da escolha vem
-                     * antes de tudo que é só contexto. O resto vive no `title`.
-                     */
-                    const nota = falta
-                      ? { texto: falta, tom: "accent" as const }
-                      : comFaixa
-                        ? { texto: "promoção por volume", tom: "accent" as const }
-                        : marca
-                          ? { texto: marca, tom: "faint" as const }
-                          : // Diferença só na célula ESCOLHIDA que não é a mais
-                            // barata: é o custo consciente da decisão. Em toda
-                            // célula, ela repetia o que a coluna de números já
-                            // diz pela posição.
-                            escolhido && !ehMelhor && dif && !dif.ganho
-                            ? { texto: `+${fmtPreco(dif.valor)}`, tom: "faint" as const }
-                            : null;
-
-                    const detalhes = [
-                      falta,
-                      comFaixa ? "promoção por volume" : null,
-                      r.marca,
-                      dif ? `${dif.ganho ? "−" : "+"}${fmtPreco(dif.valor)} na linha` : null,
-                      `${fmtMoney(preco * quantidadeDe(item))} no total do item`,
-                    ].filter(Boolean);
-
+                  <th className="sticky top-0 z-20 border-b border-line bg-surface-2 px-3 py-2 text-right font-medium">
+                    Qtd
+                  </th>
+                  {respondidos.map((c, coluna) => {
+                    const melhorGeral = melhorCheio?.id === c.id && respondidos.length > 1;
+                    const foco = destaque === c.id;
+                    const eleito = !leitura && modo === "fornecedor" && fornecedorUnico === c.id;
                     return (
-                      <td
+                      <th
                         key={c.id}
+                        onMouseEnter={() => onDestaque?.(c.id)}
+                        onMouseLeave={() => onDestaque?.(null)}
+                        title={[
+                          c.supplierNome,
+                          cobreTudo(c)
+                            ? `cotou os ${cotacao.itens.length} itens`
+                            : `cotou ${c.itensAtendidos} de ${cotacao.itens.length} itens`,
+                          condicaoCurta(c),
+                          !leitura && coluna < 9 ? `tecla ${coluna + 1}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                         className={cn(
-                          "px-3 py-2 text-right",
-                          eleito
-                            ? "bg-brand-soft/40"
-                            : colunaVencedora && "bg-ok-soft/25",
+                          "sticky top-0 z-20 border-b border-line px-3 py-2 text-right font-medium transition-colors",
+                          foco || eleito ? "bg-brand-soft" : "bg-surface-2",
                         )}
                       >
-                        <button
-                          type="button"
-                          disabled={!podePedir || decidida}
-                          onClick={() => {
-                            setModo("manual");
-                            setEscolhas((e) => ({
-                              ...e,
-                              [item.id]: e[item.id] === c.id ? null : c.id,
-                            }));
-                          }}
-                          aria-pressed={escolhido}
-                          title={detalhes.join(" · ")}
-                          className={cn(
-                            "inline-flex flex-col items-end gap-0.5 rounded-[var(--radius)] px-2.5 py-1 transition-colors",
-                            escolhido
-                              ? "bg-brand text-on-brand"
-                              : ehMelhor
-                                ? "text-ok hover:bg-surface-2"
-                                : "text-ink hover:bg-surface-2",
-                            (!podePedir || decidida) && "cursor-default",
-                          )}
-                        >
+                        <span className="flex items-center justify-end gap-1">
+                          {melhorGeral && <Trophy size={11} className="shrink-0 text-ok" aria-hidden />}
                           <span
                             className={cn(
-                              "font-mono text-[13px] tabular-nums",
-                              escolhido || ehMelhor ? "font-semibold" : "font-normal",
+                              "max-w-[9rem] truncate normal-case text-[12px]",
+                              foco || eleito ? "text-brand" : "text-ink-2",
                             )}
                           >
-                            {fmtPreco(preco)}
+                            {c.supplierNome}
                           </span>
-
-                          {nota && (
-                            <span
-                              className={cn(
-                                "text-[10px] font-medium",
-                                escolhido
-                                  ? "text-on-brand/80"
-                                  : nota.tom === "accent"
-                                    ? "text-accent"
-                                    : "text-faint",
-                              )}
-                            >
-                              {nota.texto}
-                            </span>
-                          )}
-                        </button>
-                      </td>
+                        </span>
+                      </th>
                     );
                   })}
-
+                  {aguardando.map((c) => (
+                    <th
+                      key={c.id}
+                      onMouseEnter={() => onDestaque?.(c.id)}
+                      onMouseLeave={() => onDestaque?.(null)}
+                      className={cn(
+                        "sticky top-0 z-20 border-b border-line px-3 py-2 text-right font-medium transition-colors",
+                        destaque === c.id ? "bg-brand-soft" : "bg-surface-2",
+                      )}
+                    >
+                      <span className="block max-w-[9rem] truncate text-[12px] normal-case text-faint">
+                        {c.supplierNome}
+                      </span>
+                    </th>
+                  ))}
                 </tr>
-              );
-            })}
-          </tbody>
+              </thead>
 
-        </table>
-      </div>
+              <tbody>
+                {qtdAtencaoTab > 0 && (
+                  <tr>
+                    <td
+                      colSpan={colunas}
+                      className="border-b border-line bg-accent-soft/40 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-accent"
+                    >
+                      Precisa da sua decisão · {qtdAtencaoTab}
+                    </td>
+                  </tr>
+                )}
+                {linhasNaTela.map((item, linha) => {
+                  const melhor = melhorPorItem.get(item.id);
+                  const precosDaLinha = respondidos
+                    .map((c) => valorDe(item, c))
+                    .filter((x): x is number => x !== null);
+                  const melhorDaLinha = precosDaLinha.length ? Math.min(...precosDaLinha) : 0;
+                  const marcasDivergem = marcasDivergemNoItem(item.id);
+                  const ativa = !leitura && linhaAtiva === linha;
+                  const atencao = leitura ? null : (atencaoPorItem.get(item.id) ?? null);
+                  // Ao abrir os recolhidos, eles ganham o próprio cabeçalho.
+                  const inicioClaros = !leitura && qtdAtencaoTab > 0 && linha === qtdAtencaoTab;
+                  return (
+                    <Fragment key={item.id}>
+                      {inicioClaros && (
+                        <tr>
+                          <td colSpan={colunas} className="border-b border-line px-3 py-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setMostrarClaros(false)}
+                              className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-faint hover:text-ink"
+                            >
+                              <ChevronDown size={12} aria-hidden />
+                              Com vencedor claro · {itensClaros.length}
+                            </button>
+                          </td>
+                        </tr>
+                      )}
+                      <tr
+                        ref={(el) => {
+                          linhasRef.current[linha] = el;
+                        }}
+                        onClick={leitura ? undefined : () => setLinhaAtiva(linha)}
+                        aria-selected={ativa || undefined}
+                        className={cn(
+                          "border-b border-line last:border-b-0",
+                          ativa && "outline-2 -outline-offset-2 outline-brand",
+                        )}
+                      >
+                        <td
+                          className="sticky left-0 z-10 bg-surface px-3 py-1.5"
+                          title={[item.descricao, item.sku ?? "fora do catálogo"].join(" · ")}
+                        >
+                          <span className="flex items-center gap-2">
+                            <Thumb url={item.imagemUrl} nome={item.descricao} size={24} />
+                            <span className="min-w-0 truncate text-[13px] text-ink">{item.descricao}</span>
+                            {atencao && (
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                                <AlertTriangle size={10} aria-hidden />
+                                {atencao.texto}
+                              </span>
+                            )}
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-1.5 text-right text-[12px] text-muted">
+                          <span
+                            className={cn(
+                              "font-mono tabular-nums",
+                              quantidadeDe(item) > item.quantidade ? "font-semibold text-accent" : "text-ink-2",
+                            )}
+                          >
+                            {fmtQtd(quantidadeDe(item))}
+                          </span>{" "}
+                          {unidadeDaQtd(quantidadeDe(item), item.embalagemNome)}
+                        </td>
 
-      {/* Legenda da matriz, em UMA linha: a conclusão à vista, a lista atrás de
-          um clique. Aqui embaixo ela é rodapé de tabela; no topo, como cartão
-          aberto, empurrava a comparação para fora da primeira dobra. */}
-      <div className={cn(mobile ? "hidden" : "hidden md:block")}>
-        <LeituraDaCotacao resumo={resumo} />
-      </div>
+                        {respondidos.map((c) => {
+                          const r = c.respostas.find((x) => x.quotationItemId === item.id);
+                          const foco = destaque === c.id;
+                          if (!r?.disponivel) {
+                            return (
+                              <td
+                                key={c.id}
+                                className={cn(
+                                  "px-3 py-1.5 text-right text-[12px] text-faint transition-colors",
+                                  foco && "bg-brand-soft/40",
+                                )}
+                              >
+                                não tem
+                              </td>
+                            );
+                          }
+                          const preco = precoDe(item, c) ?? r.precoUnitario;
+                          const valor = valorDe(item, c) ?? preco;
+                          const escolhido = !leitura && escolhas[item.id] === c.id;
+                          const ehMelhor = melhor?.conviteId === c.id && precosDaLinha.length > 1;
+                          const tom = precosDaLinha.length > 1 ? calor(valor, melhorDaLinha) : "neutro";
+                          const acimaPct =
+                            precosDaLinha.length > 1 && melhorDaLinha > 0 && valor - melhorDaLinha >= 0.005
+                              ? ((valor - melhorDaLinha) / melhorDaLinha) * 100
+                              : null;
+                          const falta = faltaTexto(r.quantidadeOfertada, item.quantidade);
+                          const comFaixa = preco < r.precoUnitario;
+                          const vari = item.productId
+                            ? variacao(r.precoUnitario, referencias[`${c.supplierId}:${item.productId}`])
+                            : null;
+                          const nota = falta ?? (comFaixa ? "promoção por volume" : marcasDivergem ? r.marca : null);
+                          const titulo = [
+                            criterio === "custo" ? `preço ${fmtPreco(preco)} · efetivo ${fmtPreco(valor)}` : null,
+                            falta,
+                            comFaixa ? "promoção por volume" : null,
+                            r.marca ? `marca ${r.marca}` : null,
+                            vari ? `${vari.texto} contra a última compra` : null,
+                            `${fmtMoney(preco * quantidadeDe(item))} no item`,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ");
 
-      {/* Celular: um produto por vez. */}
-      <div className={cn("flex flex-col gap-3", !mobile && "md:hidden")}>
-        {/* Com lista curta o filtro é mais UI do que ajuda; a partir de cinco
-            itens ele é o que responde "o que ainda falta decidir?". */}
-        {mobile && cotacao.itens.length >= 5 && (
-          <div
-            role="radiogroup"
-            aria-label="Filtrar itens"
-            className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-0.5"
-          >
-            {(Object.keys(ROTULO_FILTRO) as FiltroItens[]).map((f) => {
-              const ativo = filtro === f;
-              const n = contagemFiltro[f];
-              if (n === 0 && f !== "todos") return null;
-              return (
-                <button
-                  key={f}
-                  type="button"
-                  role="radio"
-                  aria-checked={ativo}
-                  onClick={() => setFiltro(f)}
-                  className={cn(
-                    "min-h-11 shrink-0 rounded-full border px-3 text-[13px] font-medium transition-colors",
-                    ativo
-                      ? "border-transparent bg-brand text-on-brand"
-                      : "border-line bg-surface text-ink-2",
-                  )}
-                >
-                  {ROTULO_FILTRO[f]}{" "}
-                  <span
-                    className={cn(
-                      "font-mono tabular-nums",
-                      ativo ? "text-on-brand/80" : "text-faint",
-                    )}
-                  >
-                    {n}
-                  </span>
-                </button>
-              );
-            })}
+                          const conteudo = (
+                            <>
+                              <span className="flex items-center justify-end gap-1.5">
+                                {ehMelhor && (
+                                  <Trophy
+                                    size={11}
+                                    className={cn("shrink-0", escolhido ? "text-on-brand" : "text-ok")}
+                                    aria-label="melhor da linha"
+                                  />
+                                )}
+                                <span
+                                  className={cn(
+                                    "font-mono text-[13px] tabular-nums",
+                                    escolhido || ehMelhor ? "font-semibold" : "",
+                                  )}
+                                >
+                                  {fmtPreco(valor)}
+                                </span>
+                                {acimaPct !== null && (
+                                  <span
+                                    className={cn(
+                                      "font-mono text-[10px] tabular-nums",
+                                      escolhido
+                                        ? "text-on-brand/80"
+                                        : tom === "longe"
+                                          ? "text-danger"
+                                          : tom === "acima"
+                                            ? "text-accent"
+                                            : "text-faint",
+                                    )}
+                                  >
+                                    +{acimaPct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%
+                                  </span>
+                                )}
+                              </span>
+                              {nota && (
+                                <span
+                                  className={cn(
+                                    "block text-[10px]",
+                                    escolhido ? "text-on-brand/80" : "text-accent",
+                                  )}
+                                >
+                                  {nota}
+                                </span>
+                              )}
+                            </>
+                          );
+
+                          return (
+                            <td
+                              key={c.id}
+                              className={cn("px-2 py-1 text-right transition-colors", foco && "bg-brand-soft/40")}
+                            >
+                              {leitura ? (
+                                <span
+                                  title={titulo}
+                                  className={cn("inline-block px-1.5 py-0.5", ehMelhor ? "text-ok" : "text-ink")}
+                                >
+                                  {conteudo}
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setModo("manual");
+                                    setEscolhas((e) => ({
+                                      ...e,
+                                      [item.id]: e[item.id] === c.id ? null : c.id,
+                                    }));
+                                  }}
+                                  aria-pressed={escolhido}
+                                  title={titulo}
+                                  className={cn(
+                                    "inline-block rounded-full px-2.5 py-0.5 transition-[background-color,color,transform] duration-150 active:scale-95 motion-reduce:transition-none motion-reduce:active:scale-100",
+                                    escolhido
+                                      ? "bg-brand text-on-brand shadow-sm"
+                                      : cn(
+                                          "hover:bg-surface-2",
+                                          ehMelhor ? "text-ok" : "text-ink",
+                                          CLASSE_CALOR[tom],
+                                        ),
+                                  )}
+                                >
+                                  {conteudo}
+                                </button>
+                              )}
+                            </td>
+                          );
+                        })}
+                        {aguardando.map((c) => (
+                          <td
+                            key={c.id}
+                            className={cn(
+                              "px-3 py-1.5 text-right text-[12px] text-faint transition-colors",
+                              destaque === c.id && "bg-brand-soft/40",
+                            )}
+                          >
+                            {fechada ? "—" : "…"}
+                          </td>
+                        ))}
+                      </tr>
+                    </Fragment>
+                  );
+                })}
+                {recolher && (
+                  <tr>
+                    <td colSpan={colunas} className="px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={() => setMostrarClaros(true)}
+                        className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ink-2 hover:text-ink"
+                      >
+                        <ChevronRight size={13} aria-hidden />
+                        {itensClaros.length} {itensClaros.length === 1 ? "item" : "itens"} com vencedor
+                        claro
+                        <span className="font-mono tabular-nums text-muted">
+                          · {fmtMoney(totalClaros)}
+                        </span>
+                        <span className="text-brand">mostrar</span>
+                      </button>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
-        )}
 
-        {itensVisiveis.length === 0 ? (
-          <p className="rounded-[var(--radius-lg)] border border-dashed border-line px-4 py-6 text-center text-[13px] text-muted">
-            Nenhum item neste filtro.{" "}
-            <button
-              type="button"
-              onClick={() => setFiltro("todos")}
-              className="font-medium text-brand underline-offset-4 hover:underline"
-            >
-              Ver todos
-            </button>
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-3">
-            {itensVisiveis.map((item) => (
-              <CardItem
-                key={item.id}
-                item={item}
-                quantidade={quantidadeDe(item)}
-                respondidos={respondidos}
-                precoDe={(c) => precoDe(item, c)}
-                melhorConviteId={melhorPorItem.get(item.id)?.conviteId ?? null}
-                escolhido={escolhas[item.id] ?? null}
-                editavel={podePedir && !decidida}
-                mostrarMarca={marcasDivergemNoItem(item.id)}
-                onEscolher={(conviteId) => {
-                  setModo("manual");
-                  setEscolhas((e) => ({
-                    ...e,
-                    [item.id]: e[item.id] === conviteId ? null : conviteId,
-                  }));
-                }}
+          {!mobile && !leitura && (
+            <div className="hidden md:block">
+              <LeituraDaCotacao resumo={resumo} />
+            </div>
+          )}
+
+          {/* Celular: um produto por vez. */}
+          <div className={cn("flex flex-col gap-3", !mobile && "md:hidden")}>
+            {temExtras && (
+              <SeletorCriterio
+                criterio={criterio}
+                onCriterio={trocarCriterio}
+                taxaMes={taxaMes}
+                onTaxaMes={setTaxaMes}
+                taxaPadrao={cotacao.custoCapitalMesPct}
+                podeSalvar={podePedir}
               />
-            ))}
-          </ul>
-        )}
-      </div>
-        </>
-      )}
+            )}
+            {mobile && cotacao.itens.length >= 5 && (
+              <div
+                role="radiogroup"
+                aria-label="Filtrar itens"
+                className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-0.5"
+              >
+                {(Object.keys(ROTULO_FILTRO) as FiltroItens[]).map((f) => {
+                  const ativo = filtro === f;
+                  const n = contagemFiltro[f];
+                  if (n === 0 && f !== "todos") return null;
+                  return (
+                    <button
+                      key={f}
+                      type="button"
+                      role="radio"
+                      aria-checked={ativo}
+                      onClick={() => setFiltro(f)}
+                      className={cn(
+                        "min-h-11 shrink-0 rounded-full border px-3 text-[13px] font-medium transition-colors",
+                        ativo
+                          ? "border-transparent bg-brand text-on-brand"
+                          : "border-line bg-surface text-ink-2",
+                      )}
+                    >
+                      {ROTULO_FILTRO[f]}{" "}
+                      <span className={cn("font-mono tabular-nums", ativo ? "text-on-brand/80" : "text-faint")}>
+                        {n}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
-      {/* A DECISÃO, depois da comparação: a pergunta "como deseja comprar?" só
-          faz sentido para quem já viu os preços. Cada opção vem com o que ela
-          custa, senão o operador escolhe no escuro e descobre a consequência
-          no rodapé. No celular ela continua na folha do rodapé — em 390px uma
-          seção a mais entre a lista e o botão é meia tela de rolagem. */}
-      {!mobile && podePedir && !decidida && respondidos.length > 0 && (
-        <section
-          aria-label="Como deseja comprar"
-          className="rounded-[var(--radius-lg)] border border-line-strong bg-surface px-4 py-3"
-        >
-          <EstrategiaCompra
-            modo={modo}
-            respondidos={respondidos}
-            totalItens={cotacao.itens.length}
-            fornecedorUnico={fornecedorUnico}
-            resultadoMelhor={resultadoMelhor}
-            resultadoUnico={resultadoUnico}
-            idUnicoSugerido={idUnicoSugerido}
-            onMelhorPreco={aplicarMelhorPreco}
-            onFornecedor={aplicarFornecedor}
-          />
-        </section>
+            {itensVisiveis.length === 0 ? (
+              <p className="rounded-[var(--radius-lg)] border border-dashed border-line px-4 py-6 text-center text-[13px] text-muted">
+                Nenhum item neste filtro.{" "}
+                <button
+                  type="button"
+                  onClick={() => setFiltro("todos")}
+                  className="font-medium text-brand underline-offset-4 hover:underline"
+                >
+                  Ver todos
+                </button>
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-3">
+                {itensVisiveis.map((item) => (
+                  <CardItem
+                    key={item.id}
+                    item={item}
+                    quantidade={quantidadeDe(item)}
+                    respondidos={respondidos}
+                    precoDe={(c) => precoDe(item, c)}
+                    valorDe={(c) => valorDe(item, c)}
+                    porCusto={criterio === "custo"}
+                    melhorConviteId={melhorPorItem.get(item.id)?.conviteId ?? null}
+                    escolhido={leitura ? null : (escolhas[item.id] ?? null)}
+                    editavel={editavelMatriz}
+                    mostrarMarca={marcasDivergemNoItem(item.id)}
+                    atencao={leitura ? null : (atencaoPorItem.get(item.id) ?? null)}
+                    onEscolher={(conviteId) => {
+                      setModo("manual");
+                      setEscolhas((e) => ({
+                        ...e,
+                        [item.id]: e[item.id] === conviteId ? null : conviteId,
+                      }));
+                    }}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
+        </>
       )}
 
       {erro && <p className="text-[13px] text-danger">{erro}</p>}
@@ -1029,74 +1516,66 @@ export function ComparativoCotacao({
                   </p>
                   <p className="mt-1 truncate text-[11px] text-muted">{detalheRodape}</p>
                 </div>
-                {/* Gerar pedido é irreversível e o botão está colado no
-                    polegar: no celular ele abre a conferência, não dispara. */}
+                {/* Concluir fecha a cotação e o botão está colado no polegar:
+                    no celular ele abre a conferência, não dispara. */}
                 <button
                   type="button"
-                  onClick={() => setConfirmando(true)}
+                  onClick={abrirConferencia}
                   disabled={pendente || itensEscolhidos === 0}
                   aria-haspopup="dialog"
                   className="min-h-11 shrink-0 rounded-full bg-brand px-5 text-sm font-semibold text-on-brand transition-colors disabled:opacity-50"
                 >
-                  {pendente ? "Gerando…" : umPedidoSo ? "Gerar pedido" : "Gerar pedidos"}
+                  {pendente ? "Concluindo…" : "Concluir cotação"}
                 </button>
               </div>
             </>
           ) : (
-            <>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                {/* O rodapé REPETE a decisão em uma linha — o botão não pode
-                    ser uma ação solta no fim da página: quem chega aqui rolando
-                    precisa ler o que vai comprar antes de gerar. */}
-                <div className="min-w-0">
-                  <p className="flex flex-wrap items-baseline gap-x-2">
-                    <span className="text-[13px] font-medium text-ink">{rotuloModo}</span>
-                    {itensEscolhidos > 0 && (
-                      <span className="font-mono text-[17px] font-semibold tabular-nums text-ink">
-                        {fmtMoney(totalEscolhido)}
-                      </span>
-                    )}
-                    {/* O que dividir a compra rende contra fechar tudo com o
-                        mais barato. Zero não vira selo: "economia de R$ 0,00"
-                        só ensina o operador a ignorar o rótulo. */}
-                    {economiaDividindo > 0.005 && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-ok-soft px-2 py-0.5 text-[12px] font-medium text-ok">
-                        <TrendingDown size={12} />
-                        economia {fmtMoney(economiaDividindo)}
-                      </span>
-                    )}
-                  </p>
-                  <p className="mt-0.5 text-[12px] text-muted">
-                    {itensEscolhidos === 0
-                      ? "Escolha de quem comprar cada item."
-                      : [
-                          `${itensEscolhidos}/${cotacao.itens.length} itens`,
-                          pedidosPrevistos.length > 1
-                            ? `${pedidosPrevistos.length} pedidos`
-                            : pedidosPrevistos.length === 1
-                              ? pedidosPrevistos[0].nome
-                              : null,
-                          foraDoFornecedor > 0 ? `${foraDoFornecedor} sem cotação dele` : null,
-                          comPromocao > 0 ? `${comPromocao} acima do cotado` : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                  </p>
-                </div>
-                {/* Gerar pedido é irreversível e cria documento do lado de fora:
-                    no desktop também passa pela conferência, com o que cada
-                    fornecedor vai receber. */}
-                <button
-                  type="button"
-                  onClick={() => setConfirmando(true)}
-                  disabled={pendente || itensEscolhidos === 0}
-                  aria-haspopup="dialog"
-                  className="shrink-0 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
-                >
-                  {pendente ? "Gerando…" : rotuloGerar}
-                </button>
+            // Uma linha: o total, quem leva quanto, e o botão.
+            <div className="flex items-center gap-3">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="font-mono text-[18px] font-semibold tabular-nums text-ink">
+                  {itensEscolhidos === 0 ? "—" : fmtMoney(totalEscolhido)}
+                </span>
+                {economiaDividindo > 0.005 && (
+                  <span className="inline-flex items-center gap-1 text-[12px] font-medium text-ok">
+                    <TrendingDown size={12} aria-hidden />
+                    {fmtMoney(economiaDividindo)} a menos
+                  </span>
+                )}
+                <span className="text-[12px] text-muted">
+                  {itensEscolhidos}/{cotacao.itens.length} itens
+                </span>
+                {pedidosPrevistos.map((x) => (
+                  <span
+                    key={x.id}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 py-0.5 pl-0.5 pr-2 text-[12px]"
+                  >
+                    <SupplierAvatar nome={x.nome} logoUrl={x.logoUrl} size={16} />
+                    <span className="max-w-[8rem] truncate text-ink-2">{x.nome}</span>
+                    <span className="font-mono tabular-nums text-ink">{fmtMoney(x.total)}</span>
+                  </span>
+                ))}
+                {(foraDoFornecedor > 0 || comPromocao > 0) && (
+                  <span className="text-[12px] text-accent">
+                    {[
+                      foraDoFornecedor > 0 ? `${foraDoFornecedor} sem cotação dele` : null,
+                      comPromocao > 0 ? `${comPromocao} acima do cotado` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                )}
               </div>
-            </>
+              <button
+                type="button"
+                onClick={abrirConferencia}
+                disabled={pendente || itensEscolhidos === 0}
+                aria-haspopup="dialog"
+                className="shrink-0 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
+              >
+                {pendente ? "Concluindo…" : rotuloConcluir}
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -1137,33 +1616,35 @@ export function ComparativoCotacao({
       {!mobile && confirmando && (
         <ConfirmDialog
           tone="brand"
-          title={umPedidoSo ? "Gerar pedido de compra" : `Gerar ${pedidosPrevistos.length} pedidos de compra`}
-          confirmLabel={pendente ? "Gerando…" : umPedidoSo ? "Confirmar e enviar" : "Confirmar e enviar todos"}
+          title="Concluir cotação?"
+          confirmLabel={pendente ? "Concluindo…" : rotuloConfirmar}
           cancelLabel="Voltar"
           pending={pendente}
           onCancel={() => setConfirmando(false)}
-          onConfirm={gerar}
+          onConfirm={concluir}
           description={
             <>
+              <p className="mb-2.5">
+                A cotação será encerrada e{" "}
+                {umPedidoSo ? "o pedido abaixo será criado" : "os pedidos abaixo serão criados"}.
+                Escolha o que fazer com cada um:{" "}
+                <strong className="font-semibold text-ink">enviar agora</strong> abre o envio ao
+                fornecedor em seguida; <strong className="font-semibold text-ink">revisar antes</strong>{" "}
+                deixa o pedido em rascunho para você ajustar.
+              </p>
+
               <ul className="flex flex-col gap-1.5">
                 {pedidosPrevistos.map((x) => (
-                  <li
+                  <LinhaConclusao
                     key={x.id}
-                    className="flex items-center gap-2.5 rounded-[var(--radius)] border border-line px-3 py-2"
-                  >
-                    <SupplierAvatar nome={x.nome} logoUrl={x.logoUrl} size={22} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px] font-medium text-ink">
-                        {x.nome}
-                      </span>
-                      <span className="block text-[11px] text-muted">
-                        {x.itens} {x.itens === 1 ? "item" : "itens"}
-                      </span>
-                    </span>
-                    <span className="shrink-0 font-mono text-[13px] font-semibold tabular-nums text-ink">
-                      {fmtMoney(x.total)}
-                    </span>
-                  </li>
+                    nome={x.nome}
+                    logoUrl={x.logoUrl}
+                    itens={x.itens}
+                    total={x.total}
+                    decisao={x.decisao}
+                    escolha={escolhaDe(x)}
+                    onEscolha={(v) => escolherEnvio(x.id, v)}
+                  />
                 ))}
               </ul>
 
@@ -1184,21 +1665,31 @@ export function ComparativoCotacao({
                 </ul>
               )}
 
+              {/* Com vários fornecedores o total de cada linha não responde
+                  "quanto vai sair desta compra" — a soma responde. */}
+              {pedidosPrevistos.length > 1 && (
+                <p className="mt-2.5 flex items-baseline justify-between border-t border-line pt-2.5">
+                  <span className="text-[13px] font-medium text-ink">Total</span>
+                  <span className="font-mono text-[15px] font-semibold tabular-nums text-ink">
+                    {fmtMoney(totalEscolhido)}
+                  </span>
+                </p>
+              )}
+
               <p className="mt-2.5">
-                Os pedidos são criados e enviados aos fornecedores. A partir daí a cotação fica
-                decidida.
+                Nada sai para o fornecedor sem você confirmar o envio na tela seguinte.
               </p>
             </>
           }
         />
       )}
 
-      {/* ── Folha: conferência antes de gerar (celular) ───── */}
+      {/* ── Folha: conferência antes de concluir (celular) ─── */}
       {mobile && podePedir && !decidida && (
         <BottomSheet
           open={confirmando}
           onClose={() => setConfirmando(false)}
-          titulo={umPedidoSo ? "Gerar pedido de compra" : "Gerar pedidos de compra"}
+          titulo="Concluir cotação?"
           descricao={
             <span className="flex items-baseline gap-2">
               <span>
@@ -1213,37 +1704,32 @@ export function ComparativoCotacao({
           rodape={
             <button
               type="button"
-              onClick={gerar}
+              onClick={concluir}
               disabled={pendente}
               className="min-h-12 w-full rounded-full bg-brand text-sm font-semibold text-on-brand disabled:opacity-50"
             >
-              {pendente
-                ? "Gerando…"
-                : umPedidoSo
-                  ? "Confirmar e enviar o pedido"
-                  : `Confirmar e enviar os ${pedidosPrevistos.length} pedidos`}
+              {pendente ? "Concluindo…" : rotuloConfirmar}
             </button>
           }
         >
+          <p className="mb-3 text-[13px] leading-relaxed text-muted">
+            A cotação será encerrada e{" "}
+            {umPedidoSo ? "o pedido abaixo será criado" : "os pedidos abaixo serão criados"}.
+            Enviar agora abre o envio em seguida; revisar antes deixa em rascunho.
+          </p>
+
           <ul className="flex flex-col gap-2">
             {pedidosPrevistos.map((x) => (
-              <li
+              <LinhaConclusao
                 key={x.id}
-                className="flex items-center gap-2.5 rounded-[var(--radius)] border border-line px-3 py-2.5"
-              >
-                <SupplierAvatar nome={x.nome} logoUrl={x.logoUrl} size={24} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium text-ink">
-                    {x.nome}
-                  </span>
-                  <span className="block text-[11px] text-muted">
-                    {x.itens} {x.itens === 1 ? "item" : "itens"}
-                  </span>
-                </span>
-                <span className="shrink-0 font-mono text-[14px] font-semibold tabular-nums text-ink">
-                  {fmtMoney(x.total)}
-                </span>
-              </li>
+                nome={x.nome}
+                logoUrl={x.logoUrl}
+                itens={x.itens}
+                total={x.total}
+                decisao={x.decisao}
+                escolha={escolhaDe(x)}
+                onEscolha={(v) => escolherEnvio(x.id, v)}
+              />
             ))}
           </ul>
 
@@ -1267,15 +1753,322 @@ export function ComparativoCotacao({
           )}
 
           <p className="mt-3 text-[12px] leading-relaxed text-muted">
-            Os pedidos são criados e enviados aos fornecedores. A partir daí a cotação fica
-            decidida.
+            Nada sai para o fornecedor sem você confirmar o envio.
           </p>
         </BottomSheet>
+      )}
+
+      {/* ── Envio dos pedidos marcados "enviar agora" ─────── */}
+      {enviarIds && (
+        <EnvioPedidoSheet
+          pedidoIds={enviarIds}
+          titulo={enviarIds.length === 1 ? "Enviar o pedido" : "Enviar os pedidos"}
+          descricao="A cotação foi concluída. Escolha para quem vai cada pedido — o que você não enviar agora fica em rascunho."
+          onFechar={() => {
+            setEnviarIds(null);
+            router.refresh();
+          }}
+        />
       )}
     </div>
   );
 }
 
+// ── Linha da conferência de conclusão ───────────────────────
+// Um fornecedor, o que ele leva, e a escolha: enviar agora ou revisar antes.
+// Os avisos ficam na própria linha — são a razão de a sugestão ser "revisar".
+
+function LinhaConclusao({
+  nome,
+  logoUrl,
+  itens,
+  total,
+  decisao,
+  escolha,
+  onEscolha,
+}: {
+  nome: string;
+  logoUrl: string | null;
+  itens: number;
+  total: number;
+  decisao: DecisaoEnvio;
+  escolha: EscolhaEnvio;
+  onEscolha: (v: EscolhaEnvio) => void;
+}) {
+  return (
+    <li className="flex flex-col gap-2 rounded-[var(--radius)] border border-line px-3 py-2.5">
+      <div className="flex items-center gap-2.5">
+        <SupplierAvatar nome={nome} logoUrl={logoUrl} size={24} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] font-medium text-ink">{nome}</span>
+          <span className="block text-[11px] text-muted">
+            {itens} {itens === 1 ? "item" : "itens"}
+          </span>
+        </span>
+        <span className="shrink-0 font-mono text-[14px] font-semibold tabular-nums text-ink">
+          {fmtMoney(total)}
+        </span>
+      </div>
+
+      {decisao.bloqueio ? (
+        <p className="text-[12px] text-accent">{decisao.bloqueio}</p>
+      ) : (
+        <div
+          role="radiogroup"
+          aria-label={`O que fazer com o pedido de ${nome}`}
+          className="flex gap-0.5 self-start rounded-full border border-line bg-surface p-0.5"
+        >
+          {(
+            [
+              { id: "enviar", rotulo: "Enviar agora" },
+              { id: "revisar", rotulo: "Revisar antes" },
+            ] as const
+          ).map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={escolha === o.id}
+              onClick={() => onEscolha(o.id)}
+              className={cn(
+                "min-h-9 rounded-full px-3 text-[12px] font-medium transition-colors",
+                escolha === o.id ? "bg-brand text-on-brand" : "text-ink-2 hover:bg-surface-2",
+              )}
+            >
+              {o.rotulo}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {decisao.avisos.length > 0 && (
+        <ul className="flex flex-col gap-0.5 text-[11px] text-accent">
+          {decisao.avisos.map((a) => (
+            <li key={a}>• {a}</li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+
+// ── Barra de decisão ────────────────────────────────────────
+// "Como comprar" em uma linha: dois caminhos em pílula, cada um com o valor,
+// e a escolha feita à mão aparece como etiqueta — não como terceiro botão.
+// Uma sugestão por vez, logo abaixo, só quando existe.
+
+function BarraDecisao({
+  modo,
+  totalMelhor,
+  pedidosMelhor,
+  opcoesUnico,
+  totalItens,
+  unicoAtual,
+  totalManual,
+  onMelhor,
+  onFornecedor,
+  criterio,
+  recomendacao,
+}: {
+  modo: "melhor" | "fornecedor" | "manual";
+  totalMelhor: number;
+  pedidosMelhor: number;
+  opcoesUnico: { id: string; nome: string; total: number; atende: number }[];
+  totalItens: number;
+  unicoAtual: string | null;
+  totalManual: number | null;
+  onMelhor: () => void;
+  onFornecedor: (conviteId: string) => void;
+  /** Seletor de critério — só quando há algo além do preço a comparar. */
+  criterio: React.ReactNode;
+  recomendacao: { texto: string; acao?: { rotulo: string; onClick: () => void } } | null;
+}) {
+  const unico = opcoesUnico.find((o) => o.id === unicoAtual) ?? opcoesUnico[0];
+  const pill = (ativo: boolean) =>
+    cn(
+      "inline-flex h-9 items-center gap-2 rounded-full border px-3 text-[13px] transition-colors",
+      ativo
+        ? "border-brand bg-brand-soft text-brand"
+        : "border-line bg-surface text-ink-2 hover:border-line-strong hover:bg-surface-2",
+    );
+
+  return (
+    <section aria-label="Como comprar" className="hidden flex-col gap-1.5 md:flex">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="mr-1 text-[11px] font-semibold uppercase tracking-wide text-faint">
+          Como comprar
+        </span>
+        <div role="radiogroup" aria-label="Como comprar" className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={modo === "melhor"}
+            onClick={onMelhor}
+            className={pill(modo === "melhor")}
+          >
+            <span className="font-medium">Melhor preço por item</span>
+            <span className="font-mono font-semibold tabular-nums">{fmtMoney(totalMelhor)}</span>
+            <span className="text-[12px] opacity-80">
+              · {pedidosMelhor} {pedidosMelhor === 1 ? "pedido" : "pedidos"}
+            </span>
+          </button>
+
+          {unico && (
+            <span className={pill(modo === "fornecedor")}>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={modo === "fornecedor"}
+                onClick={() => onFornecedor(unico.id)}
+                className="font-medium"
+              >
+                Tudo com
+              </button>
+              {opcoesUnico.length > 1 ? (
+                <select
+                  aria-label="Fornecedor único"
+                  value={unico.id}
+                  onChange={(e) => onFornecedor(e.target.value)}
+                  className="max-w-[11rem] cursor-pointer truncate rounded-full bg-transparent py-0.5 font-medium outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
+                >
+                  {opcoesUnico.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.nome}
+                      {o.atende < totalItens ? ` (${o.atende}/${totalItens})` : ""}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="font-medium">{unico.nome}</span>
+              )}
+              <span className="font-mono font-semibold tabular-nums">{fmtMoney(unico.total)}</span>
+              {unico.atende < totalItens && (
+                <span className="text-[12px] text-accent">
+                  {unico.atende}/{totalItens} itens
+                </span>
+              )}
+            </span>
+          )}
+
+          {totalManual !== null && (
+            <span
+              role="radio"
+              aria-checked
+              className="inline-flex h-9 items-center gap-2 rounded-full border border-dashed border-brand px-3 text-[13px] text-brand"
+              title="Você mexeu em itens específicos. Escolher um dos caminhos refaz a tabela inteira."
+            >
+              <span className="font-medium">Do meu jeito</span>
+              <span className="font-mono font-semibold tabular-nums">{fmtMoney(totalManual)}</span>
+            </span>
+          )}
+        </div>
+        {criterio && <div className="ml-auto">{criterio}</div>}
+      </div>
+
+      {recomendacao && (
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 pl-0.5 text-[12px] text-muted">
+          <Lightbulb size={13} className="shrink-0 text-brand" aria-hidden />
+          <span>{recomendacao.texto}</span>
+          {recomendacao.acao && (
+            <button
+              type="button"
+              onClick={recomendacao.acao.onClick}
+              className="font-semibold text-brand underline-offset-4 hover:underline"
+            >
+              {recomendacao.acao.rotulo}
+            </button>
+          )}
+        </p>
+      )}
+    </section>
+  );
+}
+
+// ── Seletor de critério ─────────────────────────────────────
+// Só existe quando algum fornecedor mandou algo além do preço que muda a conta
+// (frete, prazos de pagamento diferentes). Compacto: um select e, no custo
+// efetivo, a taxa do dinheiro ao lado.
+
+function SeletorCriterio({
+  criterio,
+  onCriterio,
+  taxaMes,
+  onTaxaMes,
+  taxaPadrao,
+  podeSalvar,
+}: {
+  criterio: Criterio;
+  onCriterio: (c: Criterio) => void;
+  taxaMes: number;
+  onTaxaMes: (v: number) => void;
+  taxaPadrao: number;
+  podeSalvar: boolean;
+}) {
+  const [texto, setTexto] = useState(String(taxaMes).replace(".", ","));
+  const [salvando, startSalvar] = useTransition();
+  const [salvo, setSalvo] = useState(false);
+
+  function mudarTaxa(v: string) {
+    const limpo = v.replace(/[^\d,]/g, "").slice(0, 5);
+    setTexto(limpo);
+    setSalvo(false);
+    const n = Number(limpo.replace(",", "."));
+    if (Number.isFinite(n) && n >= 0 && n <= 20) onTaxaMes(n);
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted">
+      <label className="flex items-center gap-1.5">
+        Comparar por
+        <select
+          value={criterio}
+          onChange={(e) => onCriterio(e.target.value as Criterio)}
+          className="h-8 cursor-pointer rounded-full border border-line bg-surface px-2.5 text-[12px] font-medium text-ink outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
+        >
+          <option value="preco">Preço</option>
+          <option value="custo">Preço + frete e prazo</option>
+        </select>
+      </label>
+      {criterio === "custo" && (
+        <>
+          <label
+            className="flex items-center gap-1"
+            title="Custo do dinheiro da empresa: é ele que transforma prazo de pagamento em desconto."
+          >
+            <input
+              value={texto}
+              onChange={(e) => mudarTaxa(e.target.value)}
+              inputMode="decimal"
+              aria-label="Custo do dinheiro, em % ao mês"
+              className="h-8 w-12 rounded-full border border-line bg-surface px-2 text-right font-mono text-[12px] tabular-nums text-ink"
+            />
+            % a.m.
+          </label>
+          {podeSalvar && taxaMes !== taxaPadrao && !salvo && (
+            <button
+              type="button"
+              disabled={salvando}
+              onClick={() =>
+                startSalvar(async () => {
+                  try {
+                    await salvarCustoCapitalAction(taxaMes);
+                    setSalvo(true);
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : "Não foi possível salvar.");
+                  }
+                })
+              }
+              className="font-medium text-brand underline-offset-4 hover:underline disabled:opacity-50"
+            >
+              {salvando ? "Salvando…" : "usar como padrão"}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 // ── Alternador de lente ─────────────────────────────────────
 // Duas perguntas, não dois modos de comprar: "quanto custa o que eu preciso"
@@ -1357,11 +2150,14 @@ function EstrategiaCompra({
   fornecedorUnico,
   resultadoMelhor,
   resultadoUnico,
+  resultadoManual = null,
   idUnicoSugerido,
   onMelhorPreco,
   onFornecedor,
   comTitulo = true,
 }: {
+  /** Total da escolha feita à mão — só existe quando ela existe. */
+  resultadoManual?: string | null;
   modo: "melhor" | "fornecedor" | "manual";
   respondidos: ConviteCotacao[];
   totalItens: number;
@@ -1380,11 +2176,11 @@ function EstrategiaCompra({
     <div className="flex flex-col gap-2">
       {comTitulo && (
         <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">
-          Como deseja comprar?
+          Como comprar
         </span>
       )}
 
-      <div role="radiogroup" aria-label="Como deseja comprar" className="grid gap-2 sm:grid-cols-2">
+      <div role="radiogroup" aria-label="Como comprar" className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
         <OpcaoCompra
           ativo={modo === "melhor"}
           titulo="Melhor preço por item"
@@ -1400,6 +2196,14 @@ function EstrategiaCompra({
           onClick={() =>
             onFornecedor(fornecedorUnico ?? idUnicoSugerido ?? respondidos[0].id)
           }
+        />
+        <OpcaoCompra
+          ativo={modo === "manual"}
+          titulo="Do meu jeito"
+          descricao="Você escolhe item a item, clicando no preço de quem quer na tabela."
+          resultado={resultadoManual}
+          onClick={() => {}}
+          informativo
         />
       </div>
 
@@ -1443,8 +2247,8 @@ function EstrategiaCompra({
 
       {modo === "manual" && (
         <p className="text-[12px] text-muted">
-          <span className="font-medium text-ink-2">Escolha personalizada</span> — você mexeu em
-          células específicas. Clicar numa das opções acima refaz a seleção.
+          Você mexeu em itens específicos. Clicar em um dos dois primeiros caminhos refaz a seleção
+          da tabela inteira.
         </p>
       )}
     </div>
@@ -1457,6 +2261,7 @@ function OpcaoCompra({
   descricao,
   resultado,
   onClick,
+  informativo = false,
 }: {
   ativo: boolean;
   titulo: string;
@@ -1464,18 +2269,22 @@ function OpcaoCompra({
   /** Quanto custa seguir por aqui. Null quando não há conta a fazer. */
   resultado?: string | null;
   onClick: () => void;
+  /** Não se escolhe clicando: acende sozinho quando a pessoa mexe na tabela. */
+  informativo?: boolean;
 }) {
   return (
     <button
       type="button"
       role="radio"
       aria-checked={ativo}
+      aria-disabled={informativo || undefined}
       onClick={onClick}
       className={cn(
         "flex items-start gap-2 rounded-[var(--radius)] border px-3 py-2 text-left transition-colors",
         ativo
           ? "border-brand bg-brand-soft"
           : "border-line bg-surface hover:border-line-strong hover:bg-surface-2",
+        informativo && !ativo && "cursor-default border-dashed hover:border-line hover:bg-surface",
       )}
     >
       <span
@@ -1537,18 +2346,26 @@ function CardItem({
   quantidade,
   respondidos,
   precoDe,
+  valorDe,
+  porCusto,
   melhorConviteId,
   escolhido,
   editavel,
   mostrarMarca,
+  atencao,
   onEscolher,
 }: {
+  /** Por que este item pede decisão — null quando o vencedor é claro. */
+  atencao: Atencao | null;
   item: ItemCotacao;
   /** Quanto vai ser pedido — sobe quando uma promoção por volume é levada. */
   quantidade: number;
   respondidos: ConviteCotacao[];
   /** Preço deste item naquele fornecedor, já na quantidade escolhida. */
   precoDe: (c: ConviteCotacao) => number | null;
+  /** O número da comparação: preço, ou custo efetivo quando `porCusto`. */
+  valorDe: (c: ConviteCotacao) => number | null;
+  porCusto: boolean;
   melhorConviteId: string | null;
   escolhido: string | null;
   editavel: boolean;
@@ -1560,16 +2377,17 @@ function CardItem({
     convite: c,
     resposta: c.respostas.find((x) => x.quotationItemId === item.id),
     preco: precoDe(c),
+    valor: valorDe(c),
   }));
 
   const disponiveis = linhas
-    .filter((l) => l.resposta?.disponivel && l.preco !== null)
-    .sort((a, b) => (a.preco as number) - (b.preco as number));
+    .filter((l) => l.resposta?.disponivel && l.preco !== null && l.valor !== null)
+    .sort((a, b) => (a.valor as number) - (b.valor as number));
   const ausentes = linhas.filter((l) => !l.resposta?.disponivel);
 
   // Mesma base do desktop: a diferença de cada proposta contra a melhor da
   // linha só existe quando há com o que comparar.
-  const precosDaLinha = disponiveis.map((l) => l.preco as number);
+  const precosDaLinha = disponiveis.map((l) => l.valor as number);
 
   const escolha = disponiveis.find((l) => l.convite.id === escolhido) ?? null;
   const totalItem = escolha ? (escolha.preco as number) * quantidade : null;
@@ -1594,6 +2412,12 @@ function CardItem({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold leading-tight text-ink">{item.descricao}</p>
+          {atencao && (
+            <p className="mt-0.5 flex items-center gap-1 text-[11px] font-medium text-accent">
+              <AlertTriangle size={11} className="shrink-0" aria-hidden />
+              {atencao.texto}
+            </p>
+          )}
           <p className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 font-mono text-[12px] tabular-nums text-muted">
             {quantidade > item.quantidade && (
               <span className="text-faint line-through">{fmtQtd(item.quantidade)}</span>
@@ -1642,13 +2466,14 @@ function CardItem({
 
       {expandido && (
         <ul className="mt-2.5 flex flex-col gap-1.5">
-          {disponiveis.map(({ convite: c, resposta, preco: precoBruto }) => {
+          {disponiveis.map(({ convite: c, resposta, preco: precoBruto, valor: valorBruto }) => {
             const r = resposta!;
             const preco = precoBruto as number;
+            const valor = valorBruto as number;
             const marcado = escolhido === c.id;
             const ehMelhor = melhorConviteId === c.id;
             const falta = faltaTexto(r.quantidadeOfertada, item.quantidade);
-            const dif = diferencaNaLinha(precosDaLinha, preco);
+            const dif = diferencaNaLinha(precosDaLinha, valor);
             const comFaixa = preco < r.precoUnitario;
 
             /**
@@ -1714,8 +2539,18 @@ function CardItem({
 
                   <span className="shrink-0 text-right">
                     <span className="block font-mono text-[15px] font-semibold tabular-nums">
-                      {fmtPreco(preco)}
+                      {fmtPreco(valor)}
                     </span>
+                    {porCusto && Math.abs(valor - preco) >= 0.005 && (
+                      <span
+                        className={cn(
+                          "block font-mono text-[11px] tabular-nums",
+                          marcado ? "text-on-brand/70" : "text-faint",
+                        )}
+                      >
+                        nota {fmtPreco(preco)}
+                      </span>
+                    )}
                     {dif && (
                       <span
                         className={cn(

@@ -10,11 +10,13 @@ import { hrefMobile } from "@/components/mobile/nav";
 describe("statusVisivel", () => {
   it("fora de ABERTA, o estado do banco manda", () => {
     expect(statusVisivel("RASCUNHO", 0, 0).label).toBe("Rascunho");
-    expect(statusVisivel("DECIDIDA", 3, 3).label).toBe("Virou pedido");
+    // "Concluída", não "Virou pedido": a decisão foi tomada, mas o pedido
+    // nasce em rascunho e ainda não saiu para o fornecedor.
+    expect(statusVisivel("DECIDIDA", 3, 3).label).toBe("Concluída");
     expect(statusVisivel("CANCELADA", 3, 0).label).toBe("Cancelada");
     // Encerrada com todo mundo respondendo continua encerrada: quem fechou a
     // cotação não quer vê-la anunciada como "Respondida".
-    expect(statusVisivel("ENCERRADA", 2, 2).label).toBe("Encerrada");
+    expect(statusVisivel("ENCERRADA", 2, 2).label).toBe("Em decisão");
   });
 
   it("aberta sem convidado é só 'Enviada'", () => {

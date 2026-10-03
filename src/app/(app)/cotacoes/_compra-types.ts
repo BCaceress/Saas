@@ -27,6 +27,14 @@ export type CotacaoRow = {
   totalRecusados: number;
   /** Menor soma entre os fornecedores que responderam tudo — null se ninguém fechou. */
   melhorTotal: number | null;
+  /** Resposta mais recente (link ou operador). */
+  ultimaRespostaEm: string | null;
+  /** Pedidos desta cotação em rascunho há mais de um dia. */
+  pedidosParados: number;
+  /** Esta cotação é molde de uma repetição ligada. */
+  repete: boolean;
+  /** Foi montada pela repetição programada. */
+  geradaPorRecorrencia: boolean;
 };
 
 /** Cards do topo da lista de cotações. */
@@ -162,6 +170,8 @@ export type ConviteCotacao = {
   origemResposta: "link" | "manual" | null;
   prazoEntregaDias: number | null;
   condicaoPagamento: string | null;
+  /** Prazo médio em dias, lido de `condicaoPagamento`. null = texto sem número. */
+  prazoPagamentoDias: number | null;
   frete: number | null;
   observacao: string | null;
   purchaseOrderId: string | null;
@@ -189,8 +199,23 @@ export type CotacaoDetalhe = {
   pedeEscala: boolean;
   /** Travas do comprador, do cadastro do tenant. A tela deixa afrouxar na hora. */
   limitesEscala: LimitesEscala;
+  /** Custo do dinheiro da empresa (% a.m.) — desconta o prazo no custo efetivo. */
+  custoCapitalMesPct: number;
+  /** Recorrência que usa esta cotação como molde. null = não se repete. */
+  recorrencia: RecorrenciaCotacao | null;
+  /** Nasceu de uma recorrência (gerada sozinha). */
+  geradaPorRecorrencia: boolean;
   itens: ItemCotacao[];
   convites: ConviteCotacao[];
+};
+
+export type RecorrenciaCotacao = {
+  id: string;
+  /** 0 = domingo … 6 = sábado. */
+  diasSemana: number[];
+  modoQuantidade: "FIXA" | "REPOSICAO";
+  ativo: boolean;
+  ultimaGeracaoEm: string | null;
 };
 
 /** Produto disponível para entrar na lista de itens. */

@@ -188,6 +188,10 @@ model Tenant {
   escalaEconomiaMinPct   Decimal  @default(3) @db.Decimal(5, 2)
   /// Teto de desembolso EXTRA por cotação, em R$. Nulo = sem teto.
   escalaCapitalExtraMax  Decimal? @db.Decimal(12, 2)
+  /// Custo do dinheiro da empresa, em % ao mês. É o que transforma "28 dias
+  /// para pagar" em desconto: R$ 100 daqui a um mês valem menos que R$ 100
+  /// hoje. Usado só no "custo efetivo" do comparativo de cotação.
+  custoCapitalMesPct     Decimal  @default(2) @db.Decimal(5, 2)
 
   // Caixa / PDV (Configurações → Caixa)
   caixaFundoTroco   Decimal? @db.Decimal(10, 2) // sugestão de abertura
@@ -227,6 +231,7 @@ model Tenant {
   memberships       Membership[]
   invites           Invite[]
   quotationLinks    QuotationLink[]
+  purchaseOrderLinks PurchaseOrderLink[]
   subscription      Subscription?
   brands            Brand[]
   categories        Category[]
@@ -1662,6 +1667,7 @@ model PurchaseOrder {
   eventos      PurchaseEvent[]
   titulos      AccountPayable[]
   devolucoes   SupplierReturn[]
+  link         PurchaseOrderLink?
 
   @@unique([tenantId, numero])
   @@index([tenantId])
@@ -3283,6 +3289,7 @@ enum PurchaseEventType {
   TITULOS_GERADOS // contas a pagar emitidas
   DEVOLUCAO_REGISTRADA // mercadoria voltou ao fornecedor
   DOCUMENTO_VINCULADO // XML documentou uma entrada já lançada à mão
+  PEDIDO_CONTESTADO // o fornecedor apontou problema no pedido pelo link
 }
 
 model PurchaseEvent {
@@ -3890,15 +3897,54 @@ model Quotation {
   updatedAt DateTime @default(now()) @updatedAt
   createdBy String?
 
-  site      Site                @relation(fields: [siteId], references: [id])
-  items     QuotationItem[]
-  suppliers QuotationSupplier[]
-  pedidos   PurchaseOrder[]
+  /// Nasceu de uma recorrência (a cotação da semana gerada sozinha). Nulo =
+  /// criada à mão. Sobrevive à recorrência ser apagada.
+  recorrenciaId String?
+
+  site        Site                @relation(fields: [siteId], references: [id])
+  items       QuotationItem[]
+  suppliers   QuotationSupplier[]
+  pedidos     PurchaseOrder[]
+  recorrencia QuotationSchedule?  @relation("GeradaPorRecorrencia", fields: [recorrenciaId], references: [id], onDelete: SetNull)
+  /// Recorrência que usa ESTA cotação como molde (lista + fornecedores).
+  moldeDe     QuotationSchedule?  @relation("MoldeDaRecorrencia")
 
   @@unique([tenantId, numero])
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([siteId])
+  @@index([recorrenciaId])
+}
+
+/// Cotação que se repete. Mercado de bebida cota a mesma cesta toda semana;
+/// em vez de duplicar à mão, a recorrência aponta para uma cotação-MOLDE e,
+/// nos dias marcados, o job diário cria um RASCUNHO com a mesma lista e os
+/// mesmos fornecedores. Nunca envia sozinho: o operador revisa e envia.
+model QuotationSchedule {
+  id          String @id @default(cuid())
+  tenantId    String
+  siteId      String
+  /// Cotação cuja lista e fornecedores são copiados a cada geração.
+  quotationId String @unique
+  titulo      String
+  /// Dias da semana (0 = domingo … 6 = sábado), no fuso de São Paulo.
+  diasSemana  Int[]
+  /// "FIXA" = copia as quantidades do molde. "REPOSICAO" = recalcula pela
+  /// estratégia de estoque da empresa e deixa de fora o que não precisa.
+  modoQuantidade String @default("FIXA")
+  ativo          Boolean @default(true)
+  /// Dia (fuso de SP) da última geração — impede duas cotações no mesmo dia.
+  ultimaGeracaoEm DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+
+  molde   Quotation   @relation("MoldeDaRecorrencia", fields: [quotationId], references: [id], onDelete: Cascade)
+  geradas Quotation[] @relation("GeradaPorRecorrencia")
+
+  @@index([tenantId])
+  @@index([tenantId, ativo])
 }
 
 /// Linha da pergunta: o que se quer comprar e quanto. O produto é opcional —
@@ -3942,6 +3988,16 @@ model QuotationSupplier {
   condicaoPagamento String?
   frete             Decimal? @db.Decimal(12, 2)
   observacao        String? // recado do fornecedor ou motivo da recusa
+
+  /// Prazo de pagamento em DIAS MÉDIOS, derivado de `condicaoPagamento`
+  /// ("28/35/42" → 35, "à vista" → 0). Nulo = não deu para entender o texto.
+  /// É o número que entra no custo efetivo; o texto continua sendo o que o
+  /// fornecedor escreveu.
+  prazoPagamentoDias Int?
+  /// O preço informado já inclui ST/IPI? Nulo = o fornecedor não disse.
+  impostosInclusos   Boolean?
+  /// Quando NÃO inclui: quanto somar, em % sobre o preço. Nulo = não informou.
+  impostosPct        Decimal? @db.Decimal(5, 2)
 
   purchaseOrderId String? // pedido gerado quando esta cotação foi escolhida
 
@@ -4088,6 +4144,34 @@ model QuotationLink {
 
   tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   quotationSupplier QuotationSupplier @relation(fields: [quotationSupplierId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+/// Link público do pedido (/pedido/<token>) — o fornecedor confirma o pedido
+/// ou aponta um problema, sem conta. Tabela de CONTROLE, como QuotationLink:
+/// o token é quem revela o tenant, então é lida por `basePrisma` e fica sem RLS.
+/// Ao contrário da cotação, o token NÃO troca a cada reenvio: o pedido é o
+/// mesmo documento, e o link antigo na conversa continua valendo.
+model PurchaseOrderLink {
+  id              String @id @default(cuid())
+  tenantId        String
+  purchaseOrderId String @unique
+
+  token    String   @unique
+  expiraEm DateTime
+
+  abertoEm     DateTime?
+  confirmadoEm DateTime?
+  contestadoEm DateTime?
+  /// O que o fornecedor escreveu ao apontar o problema.
+  contestacao  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
 }

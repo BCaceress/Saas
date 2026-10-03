@@ -10,8 +10,10 @@ import {
   LayoutGrid,
   List,
   MoreVertical,
+  Inbox,
   Package,
   Plus,
+  Repeat,
   Sparkles,
   Trash2,
   Truck,
@@ -27,6 +29,7 @@ import {
 } from "./_compra-actions";
 import type { CotacaoRow, CotacaoStatus } from "./_compra-types";
 import { statusVisivel } from "./_status";
+import { agruparCaixa, GRUPOS_CAIXA } from "./_caixa";
 
 // ── Lista de cotações ───────────────────────────────────────
 // A cotação é uma pergunta que envelhece: o que importa na lista é o tamanho
@@ -44,7 +47,10 @@ export type Visao = "lista" | "cards";
 /** Nome do cookie que guarda o formato escolhido. Lido em `page.tsx`. */
 export const COOKIE_VISAO = "nohub-cotacoes-visao";
 
-const FILTROS: { id: "ativas" | "todas" | CotacaoStatus; label: string }[] = [
+const FILTROS: { id: "caixa" | "ativas" | "todas" | CotacaoStatus; label: string }[] = [
+  // A pergunta de quem abre a tela é "o que precisa de mim?", não "o que
+  // criei por último" — por isso é o padrão.
+  { id: "caixa", label: "Precisa de você" },
   { id: "ativas", label: "Ativas" },
   { id: "RASCUNHO", label: "Rascunhos" },
   { id: "ABERTA", label: "Aguardando resposta" },
@@ -80,7 +86,11 @@ export function ListaCotacoes({
   const router = useRouter();
   const [pendente, startTransition] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
-  const [filtro, setFiltro] = useState<(typeof FILTROS)[number]["id"]>("ativas");
+  const [filtro, setFiltro] = useState<(typeof FILTROS)[number]["id"]>("caixa");
+  // O relógio da caixa é o da abertura da tela: "respostas nas últimas 24h"
+  // não deve mudar de grupo enquanto a pessoa lê.
+  const [agora] = useState(() => Date.now());
+  const grupos = filtro === "caixa" ? agruparCaixa(linhas, agora) : [];
   const [visao, setVisao] = useState<Visao>(visaoInicial);
   const [menuAberto, setMenuAberto] = useState<string | null>(null);
   const [aExcluir, setAExcluir] = useState<CotacaoRow | null>(null);
@@ -94,6 +104,7 @@ export function ListaCotacoes({
   }
 
   const visiveis = linhas.filter((l) => {
+    if (filtro === "caixa") return false;
     if (filtro === "todas") return true;
     if (filtro === "ativas") return l.status === "RASCUNHO" || l.status === "ABERTA";
     return l.status === filtro;
@@ -219,7 +230,76 @@ export function ListaCotacoes({
         </div>
       </div>
 
-      {visiveis.length === 0 ? (
+      {filtro === "caixa" ? (
+        grupos.length === 0 ? (
+          <EstadoVazio
+            icon={<Inbox size={20} />}
+            titulo={linhas.length === 0 ? "Você ainda não tem cotações" : "Nada esperando por você"}
+            descricao={
+              linhas.length === 0
+                ? "Monte a lista do que você precisa, escolha os fornecedores e deixe eles disputarem o preço."
+                : "Nenhuma cotação pede decisão, envio ou cobrança agora. As concluídas continuam em Todas."
+            }
+            acao={
+              linhas.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setFiltro("todas")}
+                  className="rounded-full border border-line bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
+                >
+                  Ver todas
+                </button>
+              ) : podePedir ? (
+                <button
+                  type="button"
+                  onClick={novaCotacao}
+                  disabled={pendente}
+                  className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-strong disabled:opacity-50"
+                >
+                  {pendente ? "Abrindo…" : "Criar primeira cotação"}
+                </button>
+              ) : undefined
+            }
+          />
+        ) : (
+          <div className="flex flex-col gap-6">
+            {grupos.map((g, gi) => (
+              <section key={g.grupo} aria-labelledby={`grupo-${g.grupo}`}>
+                <div className="mb-2 flex flex-wrap items-baseline gap-x-2">
+                  <h2
+                    id={`grupo-${g.grupo}`}
+                    className="font-display text-[15px] font-semibold text-ink"
+                  >
+                    {GRUPOS_CAIXA[g.grupo].titulo}
+                  </h2>
+                  <span className="font-mono text-[12px] tabular-nums text-faint">
+                    {g.linhas.length}
+                  </span>
+                  <p className="w-full text-[12px] text-muted sm:w-auto">
+                    {GRUPOS_CAIXA[g.grupo].descricao}
+                  </p>
+                </div>
+                <ul
+                  className={cn(
+                    visao === "lista"
+                      ? "flex flex-col gap-2"
+                      : "grid gap-3 sm:grid-cols-2 xl:grid-cols-3",
+                  )}
+                >
+                  {g.linhas.map((l, indice) =>
+                    itemDaLista(
+                      l,
+                      gi === grupos.length - 1 &&
+                        indice >= g.linhas.length - 2 &&
+                        g.linhas.length > 2,
+                    ),
+                  )}
+                </ul>
+              </section>
+            ))}
+          </div>
+        )
+      ) : visiveis.length === 0 ? (
         <EstadoVazio
           icon={<FileQuestion size={20} />}
           titulo="Você ainda não tem cotações"
@@ -245,39 +325,12 @@ export function ListaCotacoes({
               : "grid gap-3 sm:grid-cols-2 xl:grid-cols-3",
           )}
         >
-          {visiveis.map((l, indice) => (
-            <li key={l.id} className="group relative">
-              {visao === "lista" ? (
-                <LinhaCotacao linha={l} multiSite={multiSite} />
-              ) : (
-                <CartaoCotacao linha={l} multiSite={multiSite} />
-              )}
-
-              {podePedir && (
-                <MenuLinha
-                  aberto={menuAberto === l.id}
-                  onAbrir={() => setMenuAberto(menuAberto === l.id ? null : l.id)}
-                  onFechar={() => setMenuAberto(null)}
-                  numero={l.numero}
-                  pendente={pendente}
-                  podeExcluir={l.status === "RASCUNHO"}
-                  onDuplicar={() => duplicar(l.id)}
-                  onExcluir={() => {
-                    setMenuAberto(null);
-                    setAExcluir(l);
-                  }}
-                  emCartao={visao === "cards"}
-                  /* As duas últimas linhas abrem o menu para CIMA: para baixo
-                     ele passaria do fim da lista e ficaria cortado. */
-                  paraCima={
-                    visao === "lista" &&
-                    indice >= visiveis.length - 2 &&
-                    visiveis.length > 2
-                  }
-                />
-              )}
-            </li>
-          ))}
+          {visiveis.map((l, indice) =>
+            itemDaLista(
+              l,
+              indice >= visiveis.length - 2 && visiveis.length > 2,
+            ),
+          )}
         </ul>
       )}
 
@@ -291,6 +344,39 @@ export function ListaCotacoes({
       )}
     </div>
   );
+
+  /** Uma cotação na lista, no formato escolhido, com o menu de ações. */
+  function itemDaLista(l: CotacaoRow, noFim: boolean) {
+    return (
+      <li key={l.id} className="group relative">
+        {visao === "lista" ? (
+          <LinhaCotacao linha={l} multiSite={multiSite} />
+        ) : (
+          <CartaoCotacao linha={l} multiSite={multiSite} />
+        )}
+
+        {podePedir && (
+          <MenuLinha
+            aberto={menuAberto === l.id}
+            onAbrir={() => setMenuAberto(menuAberto === l.id ? null : l.id)}
+            onFechar={() => setMenuAberto(null)}
+            numero={l.numero}
+            pendente={pendente}
+            podeExcluir={l.status === "RASCUNHO"}
+            onDuplicar={() => duplicar(l.id)}
+            onExcluir={() => {
+              setMenuAberto(null);
+              setAExcluir(l);
+            }}
+            emCartao={visao === "cards"}
+            /* As duas últimas linhas abrem o menu para CIMA: para baixo
+               ele passaria do fim da lista e ficaria cortado. */
+            paraCima={visao === "lista" && noFim}
+          />
+        )}
+      </li>
+    );
+  }
 }
 
 function BotaoVisao({
@@ -356,6 +442,16 @@ function Metadados({
       )}
 
       {multiSite && <span className="truncate">{linha.siteNome}</span>}
+
+      {(linha.repete || linha.geradaPorRecorrencia) && (
+        <span
+          className="inline-flex items-center gap-1 text-brand"
+          title={linha.repete ? "Esta cotação se repete" : "Montada pela repetição programada"}
+        >
+          <Repeat size={13} />
+          {linha.repete ? "Repete" : "Automática"}
+        </span>
+      )}
     </p>
   );
 }

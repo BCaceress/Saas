@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Inbox, Send } from "lucide-react";
 import type { ConviteCotacao, CotacaoDetalhe, FornecedorOpcao } from "../_compra-types";
 import type { ResumoCotacao } from "@/lib/compras/cotacao-resumo";
@@ -8,24 +9,22 @@ import { ConvitesCotacao } from "./_convites";
 import { ComparativoCotacao } from "./_comparativo";
 
 // ── Acompanhamento da cotação ───────────────────────────────
-// A tela depois do envio. Era três abas — Itens, Fornecedores, Comparativo —
-// e o comparativo, que é a única razão de a cotação existir, ficava escondido
-// atrás de um clique como se valesse o mesmo que a lista de produtos.
+// Dois momentos, duas telas enxutas — a fase vem do status:
 //
-// Agora é uma tela só, na ordem da pergunta que o comprador faz ao abrir:
+//   ABERTA      → RECEBENDO: faixa de fornecedores + tabela SÓ LEITURA. Nada
+//                 de escolha nem estratégia: o trabalho é esperar e cobrar.
+//   ENCERRADA   → DECIDINDO ("Em decisão"): os links estão fechados, a tabela
+//                 vira seleção, "Como comprar" aparece e o rodapé conclui.
+//   DECIDIDA /  → leitura, como em RECEBENDO.
+//   CANCELADA
 //
-//   quem respondeu? → por quanto? → o que eu decido? → que pedido sai daqui?
-//
-// A faixa de fornecedores é uma LINHA por convidado, colada no topo da matriz:
-// ela dá o estado (voltou, viu, sumiu) e as ações; a matriz dá o preço. Quem
-// separa as duas obriga o comprador a guardar de cabeça quem faltava enquanto
-// lê a tabela.
-//
-// A lista de itens NÃO tem bloco próprio: o comparativo já é ela, linha por
-// linha. Ela só reaparece antes da primeira resposta, dentro do estado vazio —
-// que é quando não existe tabela e ainda dá para mexer no que foi perguntado.
+// O botão "Decidir compra" do cabeçalho é a passagem de um para o outro.
+// Chip e coluna compartilham o destaque: passar o mouse num acende o outro.
+
+export type FaseCotacao = "recebendo" | "decidindo";
 
 export function AcompanhamentoCotacao({
+  referencias,
   cotacao,
   fornecedores,
   resumo,
@@ -38,6 +37,8 @@ export function AcompanhamentoCotacao({
   usaMinimo,
   onCobrar,
 }: {
+  /** Último preço de cada fornecedor por produto (variação no tooltip). */
+  referencias: Record<string, number>;
   cotacao: CotacaoDetalhe;
   fornecedores: FornecedorOpcao[];
   resumo: ResumoCotacao;
@@ -51,26 +52,25 @@ export function AcompanhamentoCotacao({
   /** Cobrar quem não respondeu abre a central de envio, que mora na página. */
   onCobrar: (alvos: ConviteCotacao[]) => void;
 }) {
+  const [destaque, setDestaque] = useState<string | null>(null);
   const respondidos = cotacao.convites.filter((c) => c.status === "RESPONDIDA");
   const aguardando = cotacao.convites.filter((c) => c.status === "ENVIADA");
   const recusados = cotacao.convites.filter((c) => c.status === "RECUSADA");
-  const decidida = cotacao.status === "DECIDIDA";
+  const fase: FaseCotacao = cotacao.status === "ENCERRADA" ? "decidindo" : "recebendo";
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* 1. QUEM ESTÁ NA DISPUTA — faixa compacta, colada na matriz. Ela
-             responde "quem já voltou e o que faço com quem não voltou"; a
-             matriz logo abaixo responde "por quanto". Separadas por meia
-             tela, as duas perguntas viravam duas telas. */}
+    <div className="flex flex-col gap-3">
       <ConvitesCotacao
         cotacao={cotacao}
         fornecedores={fornecedores}
         editavel={editavel}
         podeConvidar={podeConvidar}
         podeRemover={podeRemover}
+        variante="chips"
+        destaque={destaque}
+        onDestaque={setDestaque}
       />
 
-      {/* 2. COMPARAÇÃO E DECISÃO — o corpo da tela. */}
       {respondidos.length === 0 ? (
         <SemRespostas
           cotacao={cotacao}
@@ -79,19 +79,21 @@ export function AcompanhamentoCotacao({
           itensEditaveis={itensEditaveis}
           itensTravados={itensTravados}
           usaMinimo={usaMinimo}
-          onCobrar={podePedir && !decidida ? () => onCobrar(aguardando) : undefined}
+          onCobrar={
+            podePedir && cotacao.status === "ABERTA" ? () => onCobrar(aguardando) : undefined
+          }
         />
       ) : (
-        <ComparativoCotacao cotacao={cotacao} resumo={resumo} podePedir={podePedir} />
+        <ComparativoCotacao
+          cotacao={cotacao}
+          resumo={resumo}
+          podePedir={podePedir && fase === "decidindo"}
+          referencias={referencias}
+          fase={fase}
+          destaque={destaque}
+          onDestaque={setDestaque}
+        />
       )}
-
-      {/* A barra "Itens da cotação" que ficava aqui saiu: o comparativo JÁ é a
-          lista de itens — foto, nome, SKU, quantidade e unidade, linha por
-          linha. Ela abria uma segunda lista dos mesmos produtos.
-
-          O único momento em que a lista faz falta é antes da primeira
-          resposta, quando não existe tabela — e é exatamente onde ela está
-          agora, dentro do estado vazio. */}
     </div>
   );
 }
