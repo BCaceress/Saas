@@ -108,9 +108,8 @@ export const CAMPOS: CampoCsv[] = [
     key: "subcategoria",
     label: "Subcategoria",
     grupo: "identificacao",
-    obrigatorio: true,
-    formato: "prefixo (CER) ou nome (Cervejas) — precisa existir",
-    exemplo: ["Cervejas", "Destilados", "Refrigerantes"],
+    formato: "prefixo (CER) ou nome (Cervejas) — deixe vazio para importar sem subcategoria",
+    exemplo: ["Cervejas", "Destilados", ""],
     aliases: ["subcategoria", "sub categoria", "categoria", "tipo", "secao", "grupo"],
   },
   {

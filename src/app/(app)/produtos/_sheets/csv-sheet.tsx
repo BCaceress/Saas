@@ -81,8 +81,7 @@ export function CsvSheet({
   );
 
   const mapeados = campos.filter((c) => mapping[c.key]);
-  const validas = mapped.filter((r) => r.nome?.trim() && r.subcategoria?.trim()).length;
-  const semSub = mapped.filter((r) => r.nome?.trim() && !r.subcategoria?.trim()).length;
+  const validas = mapped.filter((r) => r.nome?.trim()).length;
 
   function importar() {
     start(async () => {
@@ -156,9 +155,8 @@ export function CsvSheet({
           </div>
 
           <p className="text-xs text-muted">
-            Obrigatórios: <span className="font-medium text-ink-2">nome</span> e{" "}
-            <span className="font-medium text-ink-2">subcategoria</span>. Números em formato
-            brasileiro (7,90). Sim/não aceita sim, não, 1, 0, x.
+            Obrigatório: <span className="font-medium text-ink-2">nome</span>. A subcategoria
+            é opcional. Números em formato brasileiro (7,90). Sim/não aceita sim, não, 1, 0, x.
           </p>
         </div>
       )}
@@ -237,7 +235,7 @@ export function CsvSheet({
                 </thead>
                 <tbody className="divide-y divide-line">
                   {mapped.slice(0, 6).map((r, i) => {
-                    const invalida = !r.nome?.trim() || !r.subcategoria?.trim();
+                    const invalida = !r.nome?.trim();
                     return (
                       <tr key={i} className={invalida ? "bg-danger-soft" : undefined}>
                         {mapeados.map((c) => (
@@ -252,9 +250,7 @@ export function CsvSheet({
               </table>
             </div>
             <p className="mt-2 text-xs text-muted">
-              {semSub > 0
-                ? `${semSub} linha(s) sem subcategoria serão puladas. `
-                : "Linhas em vermelho faltam nome ou subcategoria e serão puladas. "}
+              Linhas em vermelho sem nome serão puladas. A subcategoria pode ficar vazia.
               Produto com código de barras já cadastrado também é recusado — a importação só cria,
               nunca sobrescreve.
             </p>

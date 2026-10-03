@@ -184,14 +184,10 @@ export async function commitImport(
         continue;
       }
 
-      // ── Subcategoria ────────────────────────────────────────
+      // ── Subcategoria (opcional) ─────────────────────────────
       const chaveSub = (row.subcategoria ?? "").trim();
-      if (!chaveSub) {
-        erro("Sem subcategoria.");
-        continue;
-      }
-      let sub = acharSub(chaveSub);
-      if (!sub) {
+      let sub: SubComCategoria | undefined = chaveSub ? acharSub(chaveSub) : undefined;
+      if (chaveSub && !sub) {
         const nomeCat = (row.categoria ?? "").trim();
         if (!opts.criarFaltantes) {
           erro(`Subcategoria "${chaveSub}" não encontrada.`);
@@ -267,7 +263,7 @@ export async function commitImport(
         else aviso(`Fornecedor "${fornecedor}" não encontrado — produto criado sem fornecedor.`);
       }
 
-      let fiscalProfileId: string | null = sub.defaultFiscalProfileId;
+      let fiscalProfileId: string | null = sub?.defaultFiscalProfileId ?? null;
       const perfil = (row.perfilFiscal ?? "").trim();
       if (perfil) {
         const f = acharFiscal(perfil);
@@ -295,7 +291,7 @@ export async function commitImport(
 
       try {
         const sku =
-          skuInformado || (await generateSku(sub.category.skuPrefix, sub.skuPrefix));
+          skuInformado || (await generateSku(sub?.category.skuPrefix ?? "PRO", sub?.skuPrefix ?? "GER"));
 
         const product = await db.product.create({
           data: {
@@ -304,7 +300,7 @@ export async function commitImport(
             nome,
             sku,
             ean,
-            subcategoryId: sub.id,
+            subcategoryId: sub?.id ?? null,
             brandId,
             imagemUrl: row.imagemUrl?.trim() || null,
             ativo: parseBool(row.ativo, true),

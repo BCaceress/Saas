@@ -143,7 +143,7 @@ const acaoDe = (m: { value: Motivo; label: string }): EntradaAcao => ({
 });
 
 const ENTRADA_COMPRA: EntradaAcao[] = MOTIVO_OPTIONS.filter(
-  (m) => m.value === "COMPRA_SEM_PEDIDO",
+  (m) => m.value === "COMPRA_SEM_PEDIDO" || m.value === "ESTOQUE_INICIAL",
 ).map(acaoDe);
 
 const ENTRADA_SEM_CUSTO: EntradaAcao[] = MOTIVO_OPTIONS.filter(
