@@ -1,0 +1,469 @@
+﻿# Mapa produto → categoria › subcategoria. Entrada de `scripts/classificar-produtos.ts`.
+# Colunas: nome do produto <TAB> categoria <TAB> subcategoria. Linha com # é comentário.
+# O casamento é por nome NORMALIZADO (sem acento, minúsculo, espaços colapsados),
+# então diferença de caixa/acento entre este arquivo e o banco não atrapalha.
+Abridor de Garrafa	Utilidades	Acessórios Gerais
+Achoc Po Nescau 350g	Mercearia	Alimentos
+Acucar 1kg Diversos	Mercearia	Alimentos
+Agua 1,5l C/Gas	Bebidas	Águas
+Agua 1,5l S/Gas	Bebidas	Águas
+Agua 500ml C/Gas	Bebidas	Águas
+Agua 500ml S/Gas	Bebidas	Águas
+Agua 5l Santo Anjo	Bebidas	Águas
+Agua Tonica Schwepps 350ml Trad	Bebidas	Refrigerantes e Tônicas
+Aperitivo Campari 748ml	Bebidas	Aperitivos e Conhaques
+Arroz 1kg Branco	Mercearia	Alimentos
+Bala Bombonier	Bomboniere	Balas e Chicletes
+Bala Fini 15g Azeda	Bomboniere	Balas e Chicletes
+Bala Fini 15g Morango	Bomboniere	Balas e Chicletes
+Bala Goma Dori Sortida	Bomboniere	Balas e Chicletes
+Batata Palha 70g Diversos	Mercearia	Alimentos
+Bisc Trakinas 126g Chocolate	Bomboniere	Biscoitos
+Bisc Trakinas 126g Morango	Bomboniere	Biscoitos
+Bombom Ouro Branco 20g	Bomboniere	Chocolates e Bombons
+Bombom Sonho de Valsa 20g	Bomboniere	Chocolates e Bombons
+Cabo Carregador Android	Utilidades	Acessórios Eletrônicos
+Cabo Carregador Iphone	Utilidades	Acessórios Eletrônicos
+Cachaca Taimbe 900ml Bananinha	Bebidas	Cachaças
+Cachaca Velho Barreiro 910ml Trad	Bebidas	Cachaças
+Cafe 250g Caboclo/Melitta	Mercearia	Alimentos
+Caixa Bombom Lacta 250,6g	Bomboniere	Chocolates e Bombons
+Carvao 3kg	Utilidades	Churrasco
+Carvao Narguile Un	Tabacaria	Narguilé
+Cerv Amstel 330ml Ultra Long	Bebidas	Cervejas
+Cerv Amstel 473ml	Bebidas	Cervejas
+Cerv Bohemia 473ml	Bebidas	Cervejas
+Cerv Brahma 350ml Malzbier	Bebidas	Cervejas
+Cerv Brahma 350ml Zero Alcool	Bebidas	Cervejas
+Cerv Brahma 473ml Chopp	Bebidas	Cervejas
+Cerv Brahma 473ml Duplo Malte	Bebidas	Cervejas
+Cerv Budweiser 330ml Long	Bebidas	Cervejas
+Cerv Budweiser 350ml Zero	Bebidas	Cervejas
+Cerv Budweiser 473ml	Bebidas	Cervejas
+Cerv Corona 330ml Long	Bebidas	Cervejas
+Cerv Corona Zero 330ml Long	Bebidas	Cervejas
+Cerv Eisenbahn 473ml	Bebidas	Cervejas
+Cerv Heineken 330ml long	Bebidas	Cervejas
+Cerv Heineken 330ml Zero Alcool Long	Bebidas	Cervejas
+Cerv Heineken 350ml Zero Lata	Bebidas	Cervejas
+Cerv Heineken 473ml	Bebidas	Cervejas
+Cerv Original 473ml	Bebidas	Cervejas
+Cerv Patagonia 473ml Ipa	Bebidas	Cervejas
+Cerv Polar 473ml	Bebidas	Cervejas
+Cerv Schin 473ml	Bebidas	Cervejas
+Cerv Skol 473ml	Bebidas	Cervejas
+Cerv Skol Beats 269ml Green Long	Bebidas	Ice e Beats
+Cerv Skol Beats 269ml GT Long	Bebidas	Ice e Beats
+Cerv Skol Beats 269ml Red Mix Long	Bebidas	Ice e Beats
+Cerv Skol Beats 269ml Senses Long	Bebidas	Ice e Beats
+Cerv Sol 330ml Long Neck	Bebidas	Cervejas
+Cerv Spaten 473ml	Bebidas	Cervejas
+Cerv Stella 330ml Long	Bebidas	Cervejas
+Cerv Stella 330ml Pure Gold	Bebidas	Cervejas
+Cha Matte Leao 1,5l Original	Bebidas	Sucos e Chás
+Chiclet Trident 8g Canela	Bomboniere	Balas e Chicletes
+Chiclet Trident 8g Hortela Azul	Bomboniere	Balas e Chicletes
+Chiclet Trident 8g Melancia	Bomboniere	Balas e Chicletes
+Chiclet Trident 8g Menta Verde	Bomboniere	Balas e Chicletes
+Chiclet Trident 8g Tutti Frutti Rosa	Bomboniere	Balas e Chicletes
+Chiclet Trident 8g XSenses Herbal	Bomboniere	Balas e Chicletes
+Chiclet Trident 8g XSenses Intense	Bomboniere	Balas e Chicletes
+Chiclets Bubbaloo 5g Sortido	Bomboniere	Balas e Chicletes
+Chiclets Tatto	Bomboniere	Balas e Chicletes
+Choc Baton 16g Choc Branco	Bomboniere	Chocolates e Bombons
+Choc Baton 16g Choc Preto	Bomboniere	Chocolates e Bombons
+Choc Lacta 80g Amaro	Bomboniere	Chocolates e Bombons
+Choc Lacta 80g Ao Leite	Bomboniere	Chocolates e Bombons
+Choc Lacta 80g Laka	Bomboniere	Chocolates e Bombons
+Choc Lacta 80g Oreo	Bomboniere	Chocolates e Bombons
+Choc Lacta 80g Shot	Bomboniere	Chocolates e Bombons
+Choc Lacta 98g Ouro Branco	Bomboniere	Chocolates e Bombons
+Choc Lacta 98g Sonho Valsa	Bomboniere	Chocolates e Bombons
+Choc Snickers 40g	Bomboniere	Chocolates e Bombons
+Chopp 1l Bairrista	Bebidas	Cervejas
+Cig Avulso	Tabacaria	Cigarros
+Cig Avulso Mentolado	Tabacaria	Cigarros
+Cig Black Kretek Djarum	Tabacaria	Cigarros
+Cig Black Menta	Tabacaria	Cigarros
+Cig Camel Blue	Tabacaria	Cigarros
+Cig Camel Double Roxo	Tabacaria	Cigarros
+Cig Camel Double Vermelho	Tabacaria	Cigarros
+Cig Camel Kretek	Tabacaria	Cigarros
+Cig Camel Kretek Berry	Tabacaria	Cigarros
+Cig Chesterfield Azul	Tabacaria	Cigarros
+Cig Chesterfield Beats Melancia	Tabacaria	Cigarros
+Cig Chesterfield Remix Roxo	Tabacaria	Cigarros
+Cig Chesterfield Terras Brasileiras	Tabacaria	Cigarros
+Cig Chesterfield Vermelho	Tabacaria	Cigarros
+Cig Dunhill Carlton Azul	Tabacaria	Cigarros
+Cig Dunhill Carlton Verm	Tabacaria	Cigarros
+Cig Dunhill Carlton Voyage Double	Tabacaria	Cigarros
+Cig L&M Azul	Tabacaria	Cigarros
+Cig L&M Forward Black	Tabacaria	Cigarros
+Cig L&M Kretek	Tabacaria	Cigarros
+Cig Lucky Strike Double Ice	Tabacaria	Cigarros
+Cig Lucky Strike Verde Mint	Tabacaria	Cigarros
+Cig Marlboro Double Roxo	Tabacaria	Cigarros
+Cig Marlboro Gold	Tabacaria	Cigarros
+Cig Marlboro Tropical Melancia	Tabacaria	Cigarros
+Cig Marlboro Vermelho	Tabacaria	Cigarros
+Cig Rothmans Azul Box	Tabacaria	Cigarros
+Cola Power Bond	Utilidades	Acessórios Gerais
+Compartimento Tabacaria Cartucho 12	Tabacaria	Dichavadores e Compartimentos
+Compartimento Tabacaria Peq	Tabacaria	Dichavadores e Compartimentos
+Conhaque Dreher 900ml	Bebidas	Aperitivos e Conhaques
+Conno Sabory 75g Brigadeiro	Congelados	Sorvetes e Picolés
+Copao 770ml Descartavel	Utilidades	Descartáveis
+Copao Absolut Tradicional	Bebidas	Copões e Doses
+Copao Bacardi Big Apple	Bebidas	Copões e Doses
+Copao Beefeater Pink	Bebidas	Copões e Doses
+Copao Busca Brisa	Bebidas	Copões e Doses
+Copao Eternity Melancia	Bebidas	Copões e Doses
+Copao Eternity Morango e Pessego	Bebidas	Copões e Doses
+Copao Jack Daniels Apple	Bebidas	Copões e Doses
+Copao Natasha	Bebidas	Copões e Doses
+Copao White Horse	Bebidas	Copões e Doses
+Copo 200ml Descartavel	Utilidades	Descartáveis
+Coquetel 1l Mansao Maromba Dark	Bebidas	Coquetéis
+Coquetel 1l Mansao Maromba Gin Melancia	Bebidas	Coquetéis
+Coquetel 1l Mansao Maromba Job	Bebidas	Coquetéis
+Coquetel 1l Mansao Maromba Tigrinho	Bebidas	Coquetéis
+Coquetel 1l Mansao Maromba Whisky	Bebidas	Coquetéis
+Coquetel Bob Pinga 975ml	Bebidas	Coquetéis
+Coquetel Corote 500ml Blueberry	Bebidas	Coquetéis
+Coquetel Corote 500ml Limao	Bebidas	Coquetéis
+Coquetel Corote 500ml Maracuja	Bebidas	Coquetéis
+Coquetel Corote 500ml Melancia	Bebidas	Coquetéis
+Coquetel Corote 500ml Morango	Bebidas	Coquetéis
+Coquetel Corote 500ml Pessego	Bebidas	Coquetéis
+Creme de Leite 200g Italac	Mercearia	Alimentos
+Creme Dental Closed Up 70g Fresh Verde	Mercearia	Higiene Pessoal
+Cup Noodles 69g Carne	Mercearia	Alimentos
+Cup Noodles 69g Costela	Mercearia	Alimentos
+Cup Noodles 69g Galinha Caipira	Mercearia	Alimentos
+Dest Keep Cooler 275ml Morango	Bebidas	Ice e Beats
+Dest Keep Cooler 275ml Pessego	Bebidas	Ice e Beats
+Dest Keep Cooler 275ml Uva	Bebidas	Ice e Beats
+Deterg Minuano 500ml	Mercearia	Limpeza
+Dichavador Grande Infinito Mario	Tabacaria	Dichavadores e Compartimentos
+Dichavador Oreo	Tabacaria	Dichavadores e Compartimentos
+Dichavador Talisma	Tabacaria	Dichavadores e Compartimentos
+Dichavador Zombies	Tabacaria	Dichavadores e Compartimentos
+Dose Absolut Tradicional	Bebidas	Copões e Doses
+Dose Bacardi Big Apple	Bebidas	Copões e Doses
+Dose Beefeater Pink	Bebidas	Copões e Doses
+Dose Busca Brisa	Bebidas	Copões e Doses
+Dose Eternity Melancia	Bebidas	Copões e Doses
+Dose Eternity Morango e Pessego	Bebidas	Copões e Doses
+Dose Jack Daniel's Apple	Bebidas	Copões e Doses
+Dose Natasha	Bebidas	Copões e Doses
+Dose White Horse	Bebidas	Copões e Doses
+Drops Halls 28g Extra Forte Preto	Bomboniere	Balas e Chicletes
+Drops Halls 28g Menta	Bomboniere	Balas e Chicletes
+Drops Halls 28g Morango	Bomboniere	Balas e Chicletes
+Energ Baly 2l Coco e Acai	Bebidas	Energéticos
+Energ Baly 2l Maca Verde	Bebidas	Energéticos
+Energ Baly 2l Melancia	Bebidas	Energéticos
+Energ Baly 2l Morango	Bebidas	Energéticos
+Energ Baly 2l Tradicional	Bebidas	Energéticos
+Energ Baly 2l Tropical	Bebidas	Energéticos
+Energ Baly 2l Zero Trad	Bebidas	Energéticos
+Energ Baly 473ml Abacaxi Latao	Bebidas	Energéticos
+Energ Baly 473ml Amora Hortela Latao	Bebidas	Energéticos
+Energ Baly 473ml Bergamota	Bebidas	Energéticos
+Energ Baly 473ml Freegells Latao	Bebidas	Energéticos
+Energ Baly 473ml Maca Verde Latao	Bebidas	Energéticos
+Energ Baly 473ml Maca Verde Zero Acucar Latao	Bebidas	Energéticos
+Energ Baly 473ml Melancia Latao	Bebidas	Energéticos
+Energ Baly 473ml Morango	Bebidas	Energéticos
+Energ Baly 473ml Trad Sem Acucar	Bebidas	Energéticos
+Energ Baly 473ml Tradicional Latao	Bebidas	Energéticos
+Energ Baly 473ml Uva Verde	Bebidas	Energéticos
+Energ Copao Baly Maca Verde	Bebidas	Copões e Doses
+Energ Copao Baly Melancia	Bebidas	Copões e Doses
+Energ Copao Baly Morango	Bebidas	Copões e Doses
+Energ Copao Baly Tradicional	Bebidas	Copões e Doses
+Energ Copao Baly Tropical	Bebidas	Copões e Doses
+Energ Monster 473ml Mango Loco	Bebidas	Energéticos
+Energ Monster 473ml Morango	Bebidas	Energéticos
+Energ Monster 473ml Peachy	Bebidas	Energéticos
+Energ Monster 473ml Trad Zero	Bebidas	Energéticos
+Energ Monster 473ml Tradicional	Bebidas	Energéticos
+Energ Monster 473ml Ultra Branco	Bebidas	Energéticos
+Energ Monster 473ml Ultra Fiesta Mango	Bebidas	Energéticos
+Energ Monster 473ml Ultra Roxo	Bebidas	Energéticos
+Energ Red Bull 250ml Melancia	Bebidas	Energéticos
+Energ Red Bull 250ml Pessego e Morango	Bebidas	Energéticos
+Energ Red Bull 250ml Sem Acucar	Bebidas	Energéticos
+Energ Red Bull 250ml Spring Frutas Vermelhas	Bebidas	Energéticos
+Energ Red Bull 250ml Tradicional	Bebidas	Energéticos
+Energ Red Bull 250ml Tropical	Bebidas	Energéticos
+Energ Red Bull 473ml Tradicional	Bebidas	Energéticos
+Erva Mate Ximango 500g Tradicional	Mercearia	Alimentos
+Esponja Louca Assolan	Mercearia	Limpeza
+Espumante Classic 750ml Rose	Bebidas	Vinhos e Espumantes
+Espumante Freixenet 750ml Cordon Negro	Bebidas	Vinhos e Espumantes
+Espumante Freixenet 750ml Delicate	Bebidas	Vinhos e Espumantes
+Espumante Freixenet 750ml Fruity	Bebidas	Vinhos e Espumantes
+Espumante Garibaldi 750ml Moscatel Branco	Bebidas	Vinhos e Espumantes
+Espumante Garibaldi 750ml Rose	Bebidas	Vinhos e Espumantes
+Espumante Gotas Doro 660ml S/Alcool Branco	Bebidas	Vinhos e Espumantes
+Espumante Salton 750 Moscatel Branco	Bebidas	Vinhos e Espumantes
+Espumante Salton 750ml Rose	Bebidas	Vinhos e Espumantes
+Espumante Salton 750ml Zero Alcool Rose	Bebidas	Vinhos e Espumantes
+Espumante San Martin 660ml Moscatel Branco	Bebidas	Vinhos e Espumantes
+Espumante San Martin 660ml Rose	Bebidas	Vinhos e Espumantes
+Essencia Ziggy 50g Banana Tropical	Tabacaria	Narguilé
+Essencia Ziggy 50g Cereja	Tabacaria	Narguilé
+Essencia Ziggy 50g Duas Goiaba	Tabacaria	Narguilé
+Essencia Ziggy 50g Duas Macas Verdes	Tabacaria	Narguilé
+Essencia Ziggy 50g Fresh 66	Tabacaria	Narguilé
+Essencia Ziggy 50g Frutas Roxas	Tabacaria	Narguilé
+Essencia Ziggy 50g Hapocalyx Menta	Tabacaria	Narguilé
+Essencia Ziggy 50g Melancia Bomb	Tabacaria	Narguilé
+Essencia Ziggy 50g Uva	Tabacaria	Narguilé
+Farofa Fritz & Frida 250g	Mercearia	Alimentos
+Feijao 1kg Prato Bom	Mercearia	Alimentos
+Filtro de Papel Melitta 102	Utilidades	Acessórios Gerais
+Fumo Trevo 45g	Tabacaria	Fumos, Sedas e Piteiras
+Gelo 3Gelo 3kg	Congelados	Gelos
+Gelo P/ Copao	Congelados	Gelos
+Gelo Tudo Coco 210g Coco	Congelados	Gelos
+Gelo Tudo Coco 210g Maca Verde	Congelados	Gelos
+Gelo Tudo Coco 210g Maracuja	Congelados	Gelos
+Gelo Tudo Coco 210g Melancia	Congelados	Gelos
+Gelo Tudo Coco 210g Morango	Congelados	Gelos
+Gelo Tudo Coco 700g Coco	Congelados	Gelos
+Gelo Tudo Coco 700g Maca Verde	Congelados	Gelos
+Gelo Tudo Coco 700g Maracuja	Congelados	Gelos
+Gelo Tudo Coco 700g Melancia	Congelados	Gelos
+Gelo Tudo Coco 700g Morango	Congelados	Gelos
+Gin Beefeater 700ml Pink	Bebidas	Gins
+Gin Eternity 900ml Melancia	Bebidas	Gins
+Gin Eternity 900ml Morango e Pessego	Bebidas	Gins
+Gin Intencion 900ml Maca Verde	Bebidas	Gins
+Gin Mix 900ml Maca Verde	Bebidas	Gins
+Gin Mix 900ml Melancia	Bebidas	Gins
+Gin Rocks 1l Doce	Bebidas	Gins
+Gin Rocks 1l Melancia	Bebidas	Gins
+Gin Rocks 1l Seco	Bebidas	Gins
+Gin Tanqueray 750ml London Dry	Bebidas	Gins
+Ice Corote 275ml Gin e Tonica	Bebidas	Ice e Beats
+Ice Corote 275ml Limao	Bebidas	Ice e Beats
+Ice Corote 275ml Pink Lemonade	Bebidas	Ice e Beats
+Ice Corote 275ml Sex On The Beach	Bebidas	Ice e Beats
+Ice Corote 275ml Tropicalia	Bebidas	Ice e Beats
+Ice Smirnoff 275ml Framboesa	Bebidas	Ice e Beats
+Ice Smirnoff 275ml Maca Verde	Bebidas	Ice e Beats
+Ice Smirnoff 275ml Tradicional	Bebidas	Ice e Beats
+Ice Smirnoff 275ml Tropical	Bebidas	Ice e Beats
+Isqueiro Bic Maxi	Tabacaria	Isqueiros
+Isqueiro Bic Mini	Tabacaria	Isqueiros
+Isqueiro Clipper Recarregavel	Tabacaria	Isqueiros
+Isqueiro Cricket Grande	Tabacaria	Isqueiros
+Isqueiro Cricket Mini	Tabacaria	Isqueiros
+Ketchup Oderich 200g Tradicional	Mercearia	Alimentos
+Kit Dichavador Completo	Tabacaria	Dichavadores e Compartimentos
+Leite 1l Integral	Mercearia	Alimentos
+Leite Condensado 395g	Mercearia	Alimentos
+Licor 43 700ml Trad	Bebidas	Licores
+Licor Ballena 750ml Chocolate	Bebidas	Licores
+Licor Ballena 750ml Morango	Bebidas	Licores
+Maionese Liza 196g	Mercearia	Alimentos
+Massa Isabela 400g Espaguete	Mercearia	Alimentos
+Massa Isabela 400g Parafuso	Mercearia	Alimentos
+Milho Bonare 260g	Mercearia	Alimentos
+Milho Pipoca 400g	Mercearia	Alimentos
+Miojo Nissin 80g Carne	Mercearia	Alimentos
+Miojo Nissin 80g Galinha	Mercearia	Alimentos
+Molho Tomate 300g	Mercearia	Alimentos
+Mostarda Mostardog 200g	Mercearia	Alimentos
+Oleo de Soja 900g	Mercearia	Alimentos
+Pacoca 14g Rolha	Bomboniere	Doces
+Papel Aluminio Narguile	Tabacaria	Narguilé
+Papel Higienico 30mt	Mercearia	Higiene Pessoal
+Papel Toalha	Mercearia	Limpeza
+Picole Megalo 60g Bosque Nevado	Congelados	Sorvetes e Picolés
+Picole Megalo 60g Trufado	Congelados	Sorvetes e Picolés
+Picole Picolo 40g Chocolate	Congelados	Sorvetes e Picolés
+Picole Tropical 55g Abacaxi	Congelados	Sorvetes e Picolés
+Pilha Rayovac AA/4	Utilidades	Acessórios Eletrônicos
+Pilha Rayovac AAA/4 Palito	Utilidades	Acessórios Eletrônicos
+Pipoca Yoki 100g Manteiga	Mercearia	Alimentos
+Pirulito	Bomboniere	Balas e Chicletes
+Piteira Bem Bolado	Tabacaria	Fumos, Sedas e Piteiras
+Preserv Prudence 3un Classico	Mercearia	Higiene Pessoal
+Queijo Ralado 40g	Mercearia	Alimentos
+Quentao 1,45l Vale da Italia	Bebidas	Vinhos e Espumantes
+Refr Charrua 2l	Bebidas	Refrigerantes e Tônicas
+Refr Coca Cola 200ml	Bebidas	Refrigerantes e Tônicas
+Refr Coca Cola 2l	Bebidas	Refrigerantes e Tônicas
+Refr Coca Cola 2l Zero	Bebidas	Refrigerantes e Tônicas
+Refr Coca Cola 350ml	Bebidas	Refrigerantes e Tônicas
+Refr Coca Cola 350ml Zero	Bebidas	Refrigerantes e Tônicas
+Refr Coca Cola 3l	Bebidas	Refrigerantes e Tônicas
+Refr Coca Cola 600ml	Bebidas	Refrigerantes e Tônicas
+Refr Coca Cola 600ml Zero	Bebidas	Refrigerantes e Tônicas
+Refr Fanta 2l Laranja	Bebidas	Refrigerantes e Tônicas
+Refr Fanta 2l Laranja Zero	Bebidas	Refrigerantes e Tônicas
+Refr Fanta 2l Uva	Bebidas	Refrigerantes e Tônicas
+Refr Fanta 350ml Laranja	Bebidas	Refrigerantes e Tônicas
+Refr Fanta 350ml Uva	Bebidas	Refrigerantes e Tônicas
+Refr Fanta 600ml Laranja	Bebidas	Refrigerantes e Tônicas
+Refr Fruki 2l Guarana	Bebidas	Refrigerantes e Tônicas
+Refr Gatorade 500ml Laranja	Bebidas	Refrigerantes e Tônicas
+Refr Gatorade 500ml Limao	Bebidas	Refrigerantes e Tônicas
+Refr Gatorade 500ml Morango/Melancia	Bebidas	Refrigerantes e Tônicas
+Refr Gatorade 500ml Uva	Bebidas	Refrigerantes e Tônicas
+Refr Guarana Ant 200ml	Bebidas	Refrigerantes e Tônicas
+Refr Guarana Ant. 2l	Bebidas	Refrigerantes e Tônicas
+Refr Guarana Ant. 350ml	Bebidas	Refrigerantes e Tônicas
+Refr Guarana Ant. 600ml	Bebidas	Refrigerantes e Tônicas
+Refr Guarana Antarctica 2l Zero	Bebidas	Refrigerantes e Tônicas
+Refr Guarana Antarctica 3l	Bebidas	Refrigerantes e Tônicas
+Refr H2O 1,5l Limao	Bebidas	Refrigerantes e Tônicas
+Refr H2O 1,5l Limoneto	Bebidas	Refrigerantes e Tônicas
+Refr H2O 500ml Limao	Bebidas	Refrigerantes e Tônicas
+Refr Pepsi 200ml	Bebidas	Refrigerantes e Tônicas
+Refr Pepsi 2l	Bebidas	Refrigerantes e Tônicas
+Refr Pepsi 2l Black	Bebidas	Refrigerantes e Tônicas
+Refr Pepsi 2l Twist	Bebidas	Refrigerantes e Tônicas
+Refr Pepsi 350ml	Bebidas	Refrigerantes e Tônicas
+Refr Pepsi 350ml Black	Bebidas	Refrigerantes e Tônicas
+Refr Pepsi 3l	Bebidas	Refrigerantes e Tônicas
+Refr Pepsi 600ml	Bebidas	Refrigerantes e Tônicas
+Refr Schweppes 1,5l Citrus	Bebidas	Refrigerantes e Tônicas
+Refr Sprite 2l	Bebidas	Refrigerantes e Tônicas
+Refr Sprite 2l Zero	Bebidas	Refrigerantes e Tônicas
+Refr Sprite 350ml Lata	Bebidas	Refrigerantes e Tônicas
+Refr Sprite 600ml	Bebidas	Refrigerantes e Tônicas
+Rum Bacardi 700ml Big Apple	Bebidas	Runs e Tequilas
+Rum Busca Brisa 1l	Bebidas	Runs e Tequilas
+Sabonete Lux 85g	Mercearia	Higiene Pessoal
+Sal 1kg Grosso	Mercearia	Alimentos
+Sal 1kg Moido	Mercearia	Alimentos
+Salg Cebolitos 60g Trad	Bomboniere	Salgadinhos
+Salg Cheetos 34g Lua	Bomboniere	Salgadinhos
+Salg Cheetos 34g Mix	Bomboniere	Salgadinhos
+Salg Cheetos 39g Onda	Bomboniere	Salgadinhos
+Salg Cheetos 70g Mix	Bomboniere	Salgadinhos
+Salg Cheetos 90g Onda	Bomboniere	Salgadinhos
+Salg Doritos 120g	Bomboniere	Salgadinhos
+Salg Doritos 32g Spicy	Bomboniere	Salgadinhos
+Salg Doritos 32g Trad	Bomboniere	Salgadinhos
+Salg Fandangos 37g Presunto	Bomboniere	Salgadinhos
+Salg Fandangos 37g Queijo	Bomboniere	Salgadinhos
+Salg Fandangos 85g Presunto	Bomboniere	Salgadinhos
+Salg Pingo de Ouro 55g Picanha	Bomboniere	Salgadinhos
+Salg Pingo de Ouro 76g Bacon	Bomboniere	Salgadinhos
+Salg Pringles 104g Original	Bomboniere	Salgadinhos
+Salg Pringles 109g Churrasco	Bomboniere	Salgadinhos
+Salg Pringles 109g Creme e Cebola	Bomboniere	Salgadinhos
+Salg Ruffles 115g Trad	Bomboniere	Salgadinhos
+Salg Ruffles 33g Trad	Bomboniere	Salgadinhos
+Salg Torcida 35g Bacon	Bomboniere	Salgadinhos
+Salg Torcida 35g Churrasco	Bomboniere	Salgadinhos
+Salg Torcida 35g Queijo	Bomboniere	Salgadinhos
+Seda Avulso	Tabacaria	Fumos, Sedas e Piteiras
+Seda Smoking Grande	Tabacaria	Fumos, Sedas e Piteiras
+Seda Smoking Pequena	Tabacaria	Fumos, Sedas e Piteiras
+Seda Zomo 33 Folhas	Tabacaria	Fumos, Sedas e Piteiras
+Sorvete Saboroso 60g Leite Condensado	Congelados	Sorvetes e Picolés
+Sorvete Sabory 2l Chocolate Trufado	Congelados	Sorvetes e Picolés
+Sorvete Sabory 2l Flocos	Congelados	Sorvetes e Picolés
+Sorvete Sabory 2l Napolitano	Congelados	Sorvetes e Picolés
+Suco Del Valle 1l Laranja	Bebidas	Sucos e Chás
+Suco Del Valle 1l Uva	Bebidas	Sucos e Chás
+Suco Kapo 200ml Morango e Laranja	Bebidas	Sucos e Chás
+Suco Kapo 200ml Uva	Bebidas	Sucos e Chás
+Suco Po Tang 18g Abacaxi	Bebidas	Sucos e Chás
+Suco Po Tang 18g Laranja	Bebidas	Sucos e Chás
+Suco Po Tang 18g Morango	Bebidas	Sucos e Chás
+Suco Po Tang 18g Uva	Bebidas	Sucos e Chás
+Tequila Tequilero 750ml Reposado	Bebidas	Runs e Tequilas
+Torrao Boa Vista 80g	Bomboniere	Doces
+Vinagre 750ml	Mercearia	Alimentos
+Vinho Cancao 750ml Tinto Suave	Bebidas	Vinhos e Espumantes
+Vinho Cantina/Dellano 1,45l Tinto Suave	Bebidas	Vinhos e Espumantes
+Vinho Jota Pe 750ml Branco Seco	Bebidas	Vinhos e Espumantes
+Vinho Jota Pe 750ml Branco Suave	Bebidas	Vinhos e Espumantes
+Vinho Jota Pe 750ml Tinto Seco	Bebidas	Vinhos e Espumantes
+Vinho Jota Pe 750ml Tinto Suave	Bebidas	Vinhos e Espumantes
+Vinho Pergola 750ml Tinto Seco	Bebidas	Vinhos e Espumantes
+Vinho Pergola 750ml Tinto Suave	Bebidas	Vinhos e Espumantes
+Vinho San Martin 1,4l Branco Suave	Bebidas	Vinhos e Espumantes
+Vinho San Martin 1,4l Tinto Seco	Bebidas	Vinhos e Espumantes
+Vinho San Martin 1,4l Tinto Suave	Bebidas	Vinhos e Espumantes
+Vinho Sangue de Boi 750ml Tinto Seco	Bebidas	Vinhos e Espumantes
+Vinho Sangue de Boi 750ml Tinto Suave	Bebidas	Vinhos e Espumantes
+Vodka Absolut 1l Tradicional	Bebidas	Vodkas
+Vodka Absolut 750ml Raspberry	Bebidas	Vodkas
+Vodka Intencion 900ml Branca	Bebidas	Vodkas
+Vodka Kislla 900ml Big Apple	Bebidas	Vodkas
+Vodka Kislla 900ml Red Fruits	Bebidas	Vodkas
+Vodka Kislla 900ml Tradicional	Bebidas	Vodkas
+Vodka Kislla Ice 275ml Big Apple	Bebidas	Ice e Beats
+Vodka Kislla Ice 275ml Limao	Bebidas	Ice e Beats
+Vodka Natasha 900ml	Bebidas	Vodkas
+Vodka Orloff 1l	Bebidas	Vodkas
+Vodka Smirnoff 1l	Bebidas	Vodkas
+Wafer Bis 100g Branco	Bomboniere	Chocolates e Bombons
+Wafer Bis 100g Preto	Bomboniere	Chocolates e Bombons
+Whisky Ballantines 1l	Bebidas	Whiskies
+Whisky Ballantines 700ml Sunshine	Bebidas	Whiskies
+Whisky Black Fire 1l Canela	Bebidas	Whiskies
+Whisky Black Fire 1l Country	Bebidas	Whiskies
+Whisky Jack Daniel's 1l Apple	Bebidas	Whiskies
+Whisky Jack Daniel's 1l Blackberry	Bebidas	Whiskies
+Whisky Jack Daniel's 1l Fire	Bebidas	Whiskies
+Whisky Jack Daniel's 1l Honey	Bebidas	Whiskies
+Whisky Jack Daniel's 1l Nº 7 Tradicional	Bebidas	Whiskies
+Whisky Johnnie Walker 1l Red Label	Bebidas	Whiskies
+Whisky Master Gold 900ml	Bebidas	Whiskies
+Whisky Old Parr 750ml	Bebidas	Whiskies
+Whisky Passport 1l	Bebidas	Whiskies
+Whisky Passport 670ml Apple	Bebidas	Whiskies
+Whisky White Horse 1l	Bebidas	Whiskies
+#
+# ── Nomes como estão GRAVADOS no banco ────────────────────────────────────────
+# O catálogo do banco veio de uma importação anterior e usa outra gramatura ou
+# outra marca para o mesmo item da tabela acima ("Choc Lacta 90g Amaro" × "80g",
+# "Deterg Ype 500ml" × "Deterg Minuano 500ml", "Gelo La Festa 190g" × "Gelo Tudo
+# Coco 210g"). A subcategoria é a MESMA nas duas grafias, então classificar por
+# estes nomes é seguro — e é o que faz o produto sair de "Cervejas".
+#
+# Renomear o produto para a grafia nova é decisão do operador, não deste script:
+# o nome é o que aparece no cupom e nas vendas já registradas.
+Acucar 1kg Caravelas	Mercearia	Alimentos
+Agua Tonica 350ml Tradicional	Bebidas	Refrigerantes e Tônicas
+Bombom Ouro Branco	Bomboniere	Chocolates e Bombons
+Bombom Sonho de Valsa	Bomboniere	Chocolates e Bombons
+Caixa Bombom Diversos 251g	Bomboniere	Chocolates e Bombons
+Choc Lacta 90g Amaro	Bomboniere	Chocolates e Bombons
+Choc Lacta 90g Ao Leite	Bomboniere	Chocolates e Bombons
+Choc Lacta 90g Laka	Bomboniere	Chocolates e Bombons
+Choc Lacta 90g Oreo	Bomboniere	Chocolates e Bombons
+Choc Lacta 90g Shot	Bomboniere	Chocolates e Bombons
+Choc Snickers 45g	Bomboniere	Chocolates e Bombons
+Copao Eternity	Bebidas	Copões e Doses
+Deterg Ype 500ml	Mercearia	Limpeza
+Essencia 50g Ziggy	Tabacaria	Narguilé
+Gelo La Festa 190g Coco	Congelados	Gelos
+Gelo La Festa 190g Maca Verde	Congelados	Gelos
+Gelo La Festa 190g Maracuja	Congelados	Gelos
+Gelo La Festa 190g Melancia	Congelados	Gelos
+Gelo La Festa 190g Morango	Congelados	Gelos
+Leite Condensado 340g	Mercearia	Alimentos
+Pacoca 18g Rolha	Bomboniere	Doces
+Salg Cheetos 105g Onda	Bomboniere	Salgadinhos
+Salg Cheetos 40g Lua	Bomboniere	Salgadinhos
+Salg Cheetos 41g Mix	Bomboniere	Salgadinhos
+Salg Cheetos 45g Onda	Bomboniere	Salgadinhos
+Salg Cheetos 82g Mix	Bomboniere	Salgadinhos
+Salg Fandangos 105g Presunto	Bomboniere	Salgadinhos
+Salg Fandangos 45g Presunto	Bomboniere	Salgadinhos
+Salg Fandangos 45g Queijo	Bomboniere	Salgadinhos
+Salg Pingo de Ouro 76g	Bomboniere	Salgadinhos
+Salg Pringles 114g Original	Bomboniere	Salgadinhos
+Wafer Bis 126g Branco	Bomboniere	Chocolates e Bombons
+Wafer Bis 126g Preto	Bomboniere	Chocolates e Bombons
