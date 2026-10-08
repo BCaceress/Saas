@@ -7,6 +7,7 @@ import {
   classificarNivel,
   estaAprendendo,
   mediaDiaria,
+  type BaseSugestao,
   type EstoquePolicy,
   type NivelEstoque,
 } from "@/lib/estoque-estrategia";
@@ -23,12 +24,16 @@ const n = (v: Decimal | null | undefined) => (v == null ? 0 : Number(v));
 //  · MINIMO_IDEAL → piso + alvo, repõe até o ideal;
 //  · ROTATIVIDADE → média diária de venda × dias de cobertura desejados.
 
-export type SugestaoStatus = "ruptura" | "critico" | "abaixo" | "monitorar";
+export type SugestaoStatus = "ruptura" | "critico" | "abaixo" | "monitorar" | "repor";
 
 /**
  * Nível de estoque (régua única, `lib/estoque-estrategia`) → urgência de
  * compra. `null` = não precisa comprar. Saldo negativo é tratado como ruptura:
  * a prateleira está vazia de qualquer jeito, o acerto do saldo é outro assunto.
+ *
+ * O status `repor` não sai daqui: ele é da base "movimentação", onde o produto
+ * entra por faltar quantidade para o período escolhido mesmo com o nível ainda
+ * confortável pela régua da empresa.
  */
 const STATUS_DO_NIVEL: Record<NivelEstoque, SugestaoStatus | null> = {
   negativo: "ruptura",
@@ -98,15 +103,27 @@ export type GrupoReposicao = {
 export type SugestoesReposicao = {
   grupos: GrupoReposicao[];
   policy: EstoquePolicy;
+  /** Como a lista foi calculada — metas da empresa ou movimentação do período. */
+  base: BaseSugestao;
   /** Rotatividade sem histórico suficiente — a tela avisa em vez de bloquear. */
   aprendendo: boolean;
   /** Dias de histórico de venda acumulados. null = nenhuma venda ainda. */
   diasHistorico: number | null;
 };
 
+/**
+ * `base` escolhe a porta de entrada da lista:
+ *  · `metas`        — só quem está fora da meta da empresa (régua do sino);
+ *  · `movimentacao` — quem saiu no período e não tem quantidade para repetir,
+ *                     mesmo sem piso configurado e mesmo em nível confortável.
+ *
+ * Em `movimentacao` a `policy` já chega de `policyMovimentacao()`, com a janela
+ * e a cobertura que o operador escolheu na tela.
+ */
 export async function loadSugestoesReposicao(
   siteId: string | null,
   policy: EstoquePolicy = POLICY_PADRAO,
+  base: BaseSugestao = "metas",
 ): Promise<SugestoesReposicao> {
   const whereSite = siteId ? { siteId } : {};
   const stocks = await db.stock.findMany({
@@ -141,7 +158,7 @@ export async function loadSugestoesReposicao(
     (s) => s.product.ativo && (s.product.tipo === "SIMPLES" || s.product.tipo === "INSUMO"),
   );
   const productIds = estocaveis.map((s) => s.productId);
-  const vazio: SugestoesReposicao = { grupos: [], policy, aprendendo: false, diasHistorico: null };
+  const vazio: SugestoesReposicao = { grupos: [], policy, base, aprendendo: false, diasHistorico: null };
   if (productIds.length === 0) return vazio;
 
   // Janela do histórico: a configurada pela empresa na rotatividade, 30 dias
@@ -281,14 +298,31 @@ export async function loadSugestoesReposicao(
     // como "precisa" muda com a estratégia escolhida pela empresa.
     const c = classificarNivel(policy, { estoque, minimo, ideal, mediaDia });
     const cobertura = c.cobertura;
-    // Sem meta configurada e sem giro não há o que projetar: fora da lista,
-    // mesmo zerado — comprar quanto, com base em quê?
-    if (c.semBase) continue;
-    const status = STATUS_DO_NIVEL[c.nivel];
-    if (!status) continue;
-
     const alvo = alvoReposicao(policy, { minimo, ideal, mediaDia });
     const necessidadeBase = Math.max(0, alvo - estoque - pendente);
+
+    let status: SugestaoStatus;
+    if (base === "movimentacao") {
+      // A porta aqui é a falta, não a gravidade: saiu no período e não tem
+      // quantidade para repetir → entra, ainda que o nível esteja confortável
+      // e ainda que o produto não tenha piso nenhum configurado. Sem saída no
+      // período não há base para projetar nada.
+      //
+      // Quem só não precisa de compra porque TEM pedido a caminho segue na
+      // lista: a tela o mostra em "Já em reposição", e esse "não compre, já
+      // vem" é informação, não ruído.
+      const faltaSemPendente = Math.max(0, alvo - estoque);
+      if (mediaDia <= 0) continue;
+      if (necessidadeBase <= 0 && !(pendente > 0 && faltaSemPendente > 0)) continue;
+      status = STATUS_DO_NIVEL[c.nivel] ?? "repor";
+    } else {
+      // Sem meta configurada e sem giro não há o que projetar: fora da lista,
+      // mesmo zerado — comprar quanto, com base em quê?
+      if (c.semBase) continue;
+      const s = STATUS_DO_NIVEL[c.nivel];
+      if (!s) continue;
+      status = s;
+    }
 
     const pkg = s.product.packagings.find((p) => p.isCompraDefault) ?? s.product.packagings[0] ?? null;
     const fator = pkg ? n(pkg.fatorConversao) || 1 : 1;
@@ -356,7 +390,7 @@ export async function loadSugestoesReposicao(
 
   // Agrupa por fornecedor — mais urgente primeiro dentro do grupo,
   // grupos ordenados por gravidade (nº de rupturas) e valor.
-  const peso: Record<SugestaoStatus, number> = { ruptura: 0, critico: 1, abaixo: 2, monitorar: 3 };
+  const peso: Record<SugestaoStatus, number> = { ruptura: 0, critico: 1, abaixo: 2, monitorar: 3, repor: 4 };
   const grupos = new Map<string, GrupoReposicao>();
   for (const r of rows) {
     const key = r.supplierId ?? "__sem__";
@@ -384,6 +418,7 @@ export async function loadSugestoesReposicao(
   return {
     grupos: lista,
     policy,
+    base,
     aprendendo: estaAprendendo(policy, diasHistorico),
     diasHistorico,
   };

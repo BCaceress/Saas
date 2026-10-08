@@ -158,20 +158,16 @@ export function ListaCotacoes({
         actions={
           podePedir ? (
             <div className="flex items-center gap-2">
-              {/* Reposição inteligente ainda não abriu para o operador — o botão
-                  fica visível para anunciar o que vem, mas desabilitado. */}
-              <button
-                type="button"
-                disabled
-                title="Em breve"
-                className="flex cursor-not-allowed items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-muted opacity-60"
+              {/* O sistema propõe o que comprar a partir do giro; o operador
+                  escolhe o período da movimentação na própria tela. */}
+              <Link
+                href="/cotacoes/reposicao-inteligente"
+                className="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink transition-colors hover:border-brand hover:bg-brand-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
               >
-                <Sparkles size={15} className="text-muted" />
+                <Sparkles size={15} className="text-brand" />
                 <span className="hidden sm:inline">Sugestão de reposição</span>
-                <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-muted">
-                  Em breve
-                </span>
-              </button>
+                <span className="sm:hidden">Sugestão</span>
+              </Link>
               <button
                 type="button"
                 onClick={novaCotacao}

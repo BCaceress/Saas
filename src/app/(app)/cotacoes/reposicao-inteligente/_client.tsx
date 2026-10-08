@@ -20,6 +20,8 @@ import {
 } from "./_shared";
 import { ReplenishmentSummary } from "./_summary";
 import { ReplenishmentFilters } from "./_filters";
+import { BaseCalculo } from "./_base-calculo";
+import type { EscolhaReposicao } from "./_url";
 import { PriorityGroup } from "./_priority-group";
 import { SupplierGroup } from "./_supplier-group";
 import { FloatingPurchaseSummary, type ResumoReposicao } from "./_sidebar";
@@ -33,12 +35,18 @@ import { HistoricoDrawer } from "./_historico";
 export function ReposicaoInteligenteClient({
   grupos,
   policy,
+  policyEmpresa,
+  escolha,
   aprendendo,
   siteId,
   empresa,
 }: {
   grupos: GrupoReposicao[];
+  /** Policy efetiva da lista — já reflete o período escolhido na tela. */
   policy: EstoquePolicy;
+  /** Estratégia configurada pela empresa — rotula a opção "Minhas metas". */
+  policyEmpresa: EstoquePolicy;
+  escolha: EscolhaReposicao;
   /** Rotatividade sem histórico suficiente — avisa, não bloqueia. */
   aprendendo: boolean;
   siteId: string | null;
@@ -89,7 +97,10 @@ export function ReposicaoInteligenteClient({
   }, [ativas, busca, fornecedorFiltro, sel]);
 
   const agora = useMemo(() => ordenarLinhas(filtradas.filter((l) => l.status === "ruptura" || l.status === "critico")), [filtradas]);
-  const breve = useMemo(() => ordenarLinhas(filtradas.filter((l) => l.status === "abaixo" || l.status === "monitorar")), [filtradas]);
+  const breve = useMemo(
+    () => ordenarLinhas(filtradas.filter((l) => l.status !== "ruptura" && l.status !== "critico")),
+    [filtradas],
+  );
   const gruposAgora = useMemo(() => agruparPorFornecedor(agora, sel), [agora, sel]);
   const gruposBreve = useMemo(() => agruparPorFornecedor(breve, sel), [breve, sel]);
 
@@ -222,15 +233,18 @@ export function ReposicaoInteligenteClient({
     return (
       <div className="flex flex-col gap-4">
         {aprendendo && <AvisoAprendizado />}
+        <BaseCalculo escolha={escolha} policyEmpresa={policyEmpresa} />
         <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-line bg-surface py-16 text-center">
           <PartyPopper size={32} className="text-ok" />
           <p className="text-sm font-semibold text-ink">Estoque em dia — nada para repor.</p>
           <p className="max-w-sm text-xs text-muted">
-            {policy.usaGiro
-              ? `Quando o ritmo de venda indicar que o estoque não cobre os próximos ${policy.diasCobertura} dias, a sugestão aparece aqui.`
-              : policy.usaIdeal
-                ? "Quando um produto ficar abaixo do mínimo, do ideal, ou o ritmo de venda indicar que o estoque vai acabar, a sugestão aparece aqui."
-                : "Quando um produto atingir o estoque mínimo, ou o ritmo de venda indicar que o estoque vai acabar, a sugestão aparece aqui."}
+            {escolha.base === "movimentacao"
+              ? `Nada que tenha saído nos últimos ${escolha.janelaDias} dias está faltando. Amplie o período para olhar mais para trás.`
+              : policy.usaGiro
+                ? `Quando o ritmo de venda indicar que o estoque não cobre os próximos ${policy.diasCobertura} dias, a sugestão aparece aqui.`
+                : policy.usaIdeal
+                  ? "Quando um produto ficar abaixo do mínimo, do ideal, ou o ritmo de venda indicar que o estoque vai acabar, a sugestão aparece aqui."
+                  : "Quando um produto atingir o estoque mínimo, ou o ritmo de venda indicar que o estoque vai acabar, a sugestão aparece aqui."}
           </p>
         </div>
       </div>
@@ -256,6 +270,7 @@ export function ReposicaoInteligenteClient({
 
       <div className="flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:items-start">
         <div className="flex min-w-0 flex-col gap-5">
+          <BaseCalculo escolha={escolha} policyEmpresa={policyEmpresa} />
           <ReplenishmentFilters
             busca={busca}
             onBusca={setBusca}
@@ -300,11 +315,13 @@ export function ReposicaoInteligenteClient({
             <PriorityGroup
               titulo="Comprar em breve"
               descricao={
-                policy.usaGiro
-                  ? `Cobertura abaixo dos ${policy.diasCobertura} dias desejados, ainda sem risco imediato.`
-                  : policy.usaIdeal
-                    ? "Abaixo do ideal, ainda sem risco imediato."
-                    : "Chegando no mínimo, ainda sem risco imediato."
+                escolha.base === "movimentacao"
+                  ? `Saiu nos últimos ${escolha.janelaDias} dias e falta quantidade para repetir, ainda sem risco imediato.`
+                  : policy.usaGiro
+                    ? `Cobertura abaixo dos ${policy.diasCobertura} dias desejados, ainda sem risco imediato.`
+                    : policy.usaIdeal
+                      ? "Abaixo do ideal, ainda sem risco imediato."
+                      : "Chegando no mínimo, ainda sem risco imediato."
               }
               tom="warn"
               icon={CircleAlert}

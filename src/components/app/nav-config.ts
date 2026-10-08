@@ -331,7 +331,6 @@ export const NAV_GROUPS: NavGroup[] = [
             label: "Reposição inteligente",
             icon: Recycle,
             enabled: true,
-            ocultoNoMenu: true,
             semAbas: true,
             permissao: "compras.pedir",
             descricao: "Sugestões de compra a partir do giro e da previsão de ruptura.",

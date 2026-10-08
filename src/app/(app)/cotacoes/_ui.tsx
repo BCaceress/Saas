@@ -244,6 +244,9 @@ export const STATUS_REPO = {
   critico: { label: "Crítico", dot: "bg-warn", text: "text-warn", soft: "bg-warn-soft" },
   abaixo: { label: "Abaixo do mínimo", dot: "bg-accent", text: "text-accent", soft: "bg-accent-soft" },
   monitorar: { label: "Abaixo do ideal", dot: "bg-brand", text: "text-brand", soft: "bg-brand-soft" },
+  // Só aparece na base "movimentação": o nível está confortável pela régua da
+  // empresa, mas falta quantidade para repetir o que saiu no período.
+  repor: { label: "Repor o período", dot: "bg-brand", text: "text-brand", soft: "bg-brand-soft" },
 } as const;
 
 export type StatusRepo = keyof typeof STATUS_REPO;
@@ -254,6 +257,7 @@ const STATUS_REPO_GIRO: Record<StatusRepo, string> = {
   critico: "Cobertura crítica",
   abaixo: "Cobertura baixa",
   monitorar: "Cobertura em atenção",
+  repor: "Repor o período",
 };
 
 export function StatusDot({

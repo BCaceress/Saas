@@ -337,3 +337,54 @@ export function fmtCobertura(cobertura: number | null): string {
 export function estaAprendendo(policy: EstoquePolicy, diasDeHistorico: number | null): boolean {
   return policy.usaGiro && (diasDeHistorico == null || diasDeHistorico < APRENDIZADO_DIAS);
 }
+
+// ── Base da sugestão de compra (escolha de tela) ───────────────
+// A estratégia do Tenant responde "o que está fora da meta". Já o operador que
+// senta para comprar costuma raciocinar ao contrário: "saiu isso nos últimos N
+// dias, tenho tanto, compro a diferença". `movimentacao` é essa leitura — com a
+// janela escolhida na própria tela, sem gravar nada em Configurações.
+//
+// Não é matemática nova: é ROTATIVIDADE com janela/cobertura vindas da URL. Com
+// cobertura igual à janela, `alvoReposicao` devolve exatamente o total vendido
+// na janela, e a sugestão vira `vendidoNaJanela − estoque − a caminho`.
+
+export type BaseSugestao = "metas" | "movimentacao";
+
+/** Janelas de movimentação oferecidas na tela de Reposição. */
+export const PERIODOS_MOVIMENTACAO = [7, 15, 30, 60, 90] as const;
+
+/** Coberturas oferecidas junto da janela. `null` = cobrir a própria janela. */
+export const COBERTURAS_MOVIMENTACAO = [7, 15, 30, 45, 60] as const;
+
+export const BASE_LABELS: Record<BaseSugestao, { nome: string; desc: string }> = {
+  metas: {
+    nome: "Minhas metas",
+    desc: "Usa a estratégia configurada em Configurações → Estoque.",
+  },
+  movimentacao: {
+    nome: "Movimentação",
+    desc: "Compara o que saiu no período escolhido com o estoque atual.",
+  },
+};
+
+/**
+ * Policy derivada da escolha de tela. Efêmera: o Tenant não muda, e sair da
+ * tela (ou limpar a URL) volta para a estratégia da empresa.
+ */
+export function policyMovimentacao(
+  base: EstoquePolicy,
+  janelaDias: number,
+  diasCobertura?: number | null,
+): EstoquePolicy {
+  const janela = clampInt(janelaDias, 7, 365, PERIODO_MEDIA_PADRAO);
+  return {
+    ...base,
+    tipo: "ROTATIVIDADE",
+    periodoMediaDias: janela,
+    // Sem cobertura escolhida, cobrir = repor exatamente o que saiu na janela.
+    diasCobertura: clampInt(diasCobertura ?? janela, 1, 365, janela),
+    usaMinimo: false,
+    usaIdeal: false,
+    usaGiro: true,
+  };
+}

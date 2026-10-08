@@ -64,7 +64,7 @@ export function fornecedorEfetivo(l: Linha, supplierId: string | null): Efetivo 
   };
 }
 
-export const PESO: Record<SugestaoRow["status"], number> = { ruptura: 0, critico: 1, abaixo: 2, monitorar: 3 };
+export const PESO: Record<SugestaoRow["status"], number> = { ruptura: 0, critico: 1, abaixo: 2, monitorar: 3, repor: 4 };
 
 /** Nível de prioridade da tela: comprar agora × comprar em breve. */
 export type Prioridade = "agora" | "breve";
