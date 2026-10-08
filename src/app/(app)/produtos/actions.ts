@@ -1158,8 +1158,13 @@ export async function updateProduct(id: string, input: ProductInput) {
     const d = productSchema.parse(input);
     const skuVal = d.sku?.trim() ? d.sku.trim().toUpperCase() : undefined;
 
+    // Marca e local só são MEXIDOS por quem os mandou: o formulário de uma
+    // operação sem marca (Configurações → Campos do cadastro) não envia nada
+    // nesses campos, e gravar null ali apagaria o que já estava preenchido.
+    // `undefined` = não mexe; `""`/`null` = o operador limpou de propósito.
+    const mexeMarca = d.brandId !== undefined || d.marcaNome !== undefined;
     const [brandId, skuConflict] = await Promise.all([
-      resolveBrandId(tid, d.brandId, d.marcaNome),
+      mexeMarca ? resolveBrandId(tid, d.brandId, d.marcaNome) : Promise.resolve(undefined),
       skuVal
         ? db.product.findFirst({ where: { sku: skuVal, id: { not: id } }, select: { id: true } })
         : Promise.resolve(null),
@@ -1215,7 +1220,8 @@ export async function updateProduct(id: string, input: ProductInput) {
         data: {
           estoqueMinimo: d.estoqueMinimo,
           estoqueIdeal: d.estoqueIdeal,
-          locationId: d.locationId ?? null,
+          // Mesma regra da marca: undefined não encosta no local gravado.
+          locationId: d.locationId === undefined ? undefined : d.locationId,
         },
       }),
       syncSalesChannels(tid, id, d.salesChannels),

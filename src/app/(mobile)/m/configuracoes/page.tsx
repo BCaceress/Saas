@@ -4,6 +4,7 @@ import {
   Building2,
   CreditCard,
   Gift,
+  ListChecks,
   MapPin,
   MonitorSmartphone,
   ReceiptText,
@@ -96,6 +97,18 @@ export default async function ConfiguracoesMobilePage() {
           titulo: "Estoque e alertas",
           descricao: "Mínimo padrão, produto parado, validade e contagem.",
           valor: `${tenant.estoqueMinimoPadrao} un. mín.`,
+        },
+        {
+          href: "/m/configuracoes/cadastro",
+          icone: ListChecks,
+          titulo: "Campos do cadastro",
+          descricao: "Marca e local de armazenagem: use ou esconda.",
+          valor: [
+            tenant.usaMarcas ? null : "sem marca",
+            tenant.usaArmazenagem ? null : "sem local",
+          ]
+            .filter(Boolean)
+            .join(" · "),
         },
         {
           href: "/m/configuracoes/caixa",

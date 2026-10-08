@@ -2,6 +2,7 @@ import { requirePermissaoMobile } from "@/lib/guard";
 import { withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { podeEmAlguma } from "@/lib/permissoes";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { MobilePageHeader } from "@/components/mobile/page-header";
 import { loadProdutosLista } from "./_data";
 import { ProdutosClient } from "./_client";
@@ -35,7 +36,7 @@ export default async function ProdutosMobilePage() {
         titulo="Produtos"
         descricao={`${ativos} ${ativos === 1 ? "produto ativo" : "produtos ativos"}`}
       />
-      <ProdutosClient produtos={produtos} />
+      <ProdutosClient produtos={produtos} usaMarcas={camposDoTenant(ctx.tenant).marca} />
     </>
   );
 }

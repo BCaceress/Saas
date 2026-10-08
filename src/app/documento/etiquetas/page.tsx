@@ -3,6 +3,7 @@ import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { podeEmAlguma } from "@/lib/permissoes";
 import { db } from "@/lib/prisma";
 import { brl } from "@/lib/utils";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { eanParaSvg } from "@/lib/barcode-svg";
 import { DocActions } from "../[modelo]/print-button";
 
@@ -75,7 +76,7 @@ export default async function EtiquetasPage({
     return Array.from({ length: pedido.quantidade }, (_, i) => ({
       chave: `${p.id}-${i}`,
       nome: p.nome,
-      marca: p.brand?.nome ?? null,
+      marca: camposDoTenant(ctx.tenant).marca ? p.brand?.nome ?? null : null,
       sku: p.sku,
       ean: p.ean,
       preco: p.precoVenda == null ? null : Number(p.precoVenda),

@@ -19,6 +19,7 @@ import {
 import { cn, brl, margem, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
 import { thumbSrc } from "@/lib/imagem";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
+import { CAMPOS_PADRAO, type CamposCadastro } from "@/lib/cadastro-campos";
 import { Button } from "@/components/ui/button";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -184,10 +185,12 @@ export function ProdutosClient(props: {
   initialFornecedorNome?: string;
   /** Estratégia de estoque — define as colunas do importador de CSV. */
   policy?: EstoquePolicy;
+  /** Campos que a operação usa (Configurações → Campos do cadastro). */
+  campos?: CamposCadastro;
 }) {
   const {
     pagina, consultaInicial,
-    initialFornecedorNome, policy = POLICY_PADRAO,
+    initialFornecedorNome, policy = POLICY_PADRAO, campos = CAMPOS_PADRAO,
   } = props;
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -295,8 +298,26 @@ export function ProdutosClient(props: {
 
   // Preferências de exibição: URL manda (link compartilhável), navegador é o
   // padrão de quem abre /produtos sem parâmetro nenhum.
-  const [cols, setCols] = useState<Record<ColKey, boolean>>(
+  const [colsEscolhidas, setCols] = useState<Record<ColKey, boolean>>(
     () => colsDaString(searchParams.get("cols")) ?? readLS("produtos:cols", DEFAULT_COLS),
+  );
+  // Campo desligado em Configurações não aparece, mesmo que a preferência
+  // salva (localStorage ou `?cols=` de um link antigo) diga que sim. A escolha
+  // do operador fica guardada: religar o campo devolve a coluna como estava.
+  const cols = useMemo(
+    () => ({
+      ...colsEscolhidas,
+      marca: colsEscolhidas.marca && campos.marca,
+      local: colsEscolhidas.local && campos.armazenagem,
+    }),
+    [colsEscolhidas, campos],
+  );
+  const colunasDisponiveis = useMemo(
+    () =>
+      COL_ORDER.filter(
+        (k) => (k !== "marca" || campos.marca) && (k !== "local" || campos.armazenagem),
+      ),
+    [campos],
   );
   const [info, setInfo] = useState<Record<InfoKey, boolean>>(() => {
     const daUrl = searchParams.get("info");
@@ -307,7 +328,9 @@ export function ProdutosClient(props: {
   const [density, setDensity] = useState<Density>(
     () => readLS("produtos:ui", { density: "compact" as Density }).density,
   );
-  useEffect(() => { try { localStorage.setItem("produtos:cols", JSON.stringify(cols)); } catch {} }, [cols]);
+  // Grava a ESCOLHA, não o resultado: salvar o derivado apagaria a preferência
+  // de quem apenas desligou o campo por um tempo em Configurações.
+  useEffect(() => { try { localStorage.setItem("produtos:cols", JSON.stringify(colsEscolhidas)); } catch {} }, [colsEscolhidas]);
   useEffect(() => { try { localStorage.setItem("produtos:info", JSON.stringify(info)); } catch {} }, [info]);
   useEffect(() => { try { localStorage.setItem("produtos:ui", JSON.stringify({ density })); } catch {} }, [density]);
 
@@ -772,9 +795,13 @@ export function ProdutosClient(props: {
                 </Button>
               }
             >
-              <MenuItem icon={<Tag size={15} />} onClick={() => setSheet("brand")}>Marcas</MenuItem>
+              {campos.marca && (
+                <MenuItem icon={<Tag size={15} />} onClick={() => setSheet("brand")}>Marcas</MenuItem>
+              )}
               <MenuItem icon={<FolderTree size={15} />} onClick={() => { ensureExtras(); setSheet("category"); }}>Categorias</MenuItem>
-              <MenuItem icon={<Warehouse size={15} />} onClick={() => { ensureExtras(); setSheet("storage"); }}>Armazenagem</MenuItem>
+              {campos.armazenagem && (
+                <MenuItem icon={<Warehouse size={15} />} onClick={() => { ensureExtras(); setSheet("storage"); }}>Armazenagem</MenuItem>
+              )}
               <MenuItem icon={<Truck size={15} />} onClick={() => { ensureExtras(); setSheet("supplier"); }}>Fornecedores</MenuItem>
               <div className="my-1 h-px bg-line" role="separator" />
               <MenuItem icon={<Upload size={15} />} onClick={() => setSheet("csv")}>Importar CSV</MenuItem>
@@ -924,7 +951,7 @@ export function ProdutosClient(props: {
               }
             >
               <p className="px-2.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-faint">Colunas</p>
-              {COL_ORDER.map((k) => (
+              {colunasDisponiveis.map((k) => (
                 <CheckRow
                   key={k}
                   checked={cols[k]}
@@ -1391,7 +1418,7 @@ export function ProdutosClient(props: {
         )}
         {sheet === "csv" && (
           Csv
-            ? <Csv.CsvSheet open onClose={fecharSheet} policy={policy} />
+            ? <Csv.CsvSheet open onClose={fecharSheet} policy={policy} camposCadastro={campos} />
             : <LoadingSheet title="Importar CSV" onClose={fecharSheet} />
         )}
         {sheet === "imagens" && (
@@ -1419,6 +1446,7 @@ export function ProdutosClient(props: {
                 suppliers={loteOpcoes?.suppliers}
                 fiscais={loteOpcoes?.fiscais}
                 locais={loteOpcoes?.locais}
+                campos={campos}
                 carregandoOpcoes={!loteOpcoes}
                 onAplicado={() => { selecao.limpar(); router.refresh(); }}
               />
@@ -1449,6 +1477,7 @@ export function ProdutosClient(props: {
               open
               onClose={() => setEtiquetasOpen(false)}
               products={etiquetasAlvo}
+              usaMarcas={campos.marca}
             />
           : <LoadingSheet title="Etiquetas" onClose={() => setEtiquetasOpen(false)} />
       )}

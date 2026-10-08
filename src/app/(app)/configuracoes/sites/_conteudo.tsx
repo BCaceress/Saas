@@ -1,19 +1,24 @@
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { SitesManager } from "./_client";
 import { DistribuicaoConfig } from "./_distribuicao-config";
 
 /** Miolo de "Lojas e pontos" — compartilhado pelo desktop e pelo `/m`. */
 export async function ConteudoSites() {
   const ctx = await requireActiveTenant();
+  const campos = camposDoTenant(ctx.tenant);
   const [sites, rawLocations] = await runWithTenant(ctx.tenant.id, async () => {
     return Promise.all([
       db.site.findMany({ orderBy: { createdAt: "asc" } }),
-      db.storageLocation.findMany({
-        orderBy: { nome: "asc" },
-        include: { _count: { select: { stocks: true } } },
-      }),
+      // Sem armazenagem a lista não tem onde mostrar local — a consulta nem sai.
+      campos.armazenagem
+        ? db.storageLocation.findMany({
+            orderBy: { nome: "asc" },
+            include: { _count: { select: { stocks: true } } },
+          })
+        : Promise.resolve([]),
     ]);
   });
 
@@ -54,6 +59,7 @@ export async function ConteudoSites() {
           ativo: s.ativo,
         }))}
         locations={storageLocations}
+        usaArmazenagem={campos.armazenagem}
       />
     </>
   );

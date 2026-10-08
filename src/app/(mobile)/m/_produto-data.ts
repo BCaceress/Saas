@@ -10,6 +10,7 @@ import {
   type EstoquePolicy,
   type NivelCobertura,
 } from "@/lib/estoque-estrategia";
+import type { CamposCadastro } from "@/lib/cadastro-campos";
 
 /**
  * Ficha de UM produto para a superfície mobile.
@@ -193,12 +194,14 @@ export async function montarFicha(
     acessos: Acesso[];
     siteId: string | null;
     policy: EstoquePolicy;
+    /** Campos que a operação usa: o que está desligado não chega à ficha. */
+    campos: CamposCadastro;
     validadeAlertaDias: number;
     casouPor: FichaProduto["casouPor"];
     embalagemCasada?: EmbalagemFicha | null;
   },
 ): Promise<FichaProduto> {
-  const { acessos, siteId, policy } = args;
+  const { acessos, siteId, policy, campos } = args;
 
   // Preço e custo são permissões separadas de propósito: o repositor confere
   // saldo e validade sem enxergar margem.
@@ -218,8 +221,10 @@ export async function montarFicha(
     aberto: n(s.estoqueAberto),
     minimo: n(s.estoqueMinimo),
     ideal: n(s.estoqueIdeal),
-    localNome: s.location?.nome ?? null,
-    localTipo: (s.location?.tipo as TipoLocal | undefined) ?? null,
+    localNome: campos.armazenagem ? s.location?.nome ?? null : null,
+    localTipo: campos.armazenagem
+      ? (s.location?.tipo as TipoLocal | undefined) ?? null
+      : null,
   }));
 
   const totalFechado = saldos.reduce((a, s) => a + s.fechado, 0);
@@ -332,7 +337,7 @@ export async function montarFicha(
     sku: produto.sku,
     ean: produto.ean,
     imagemUrl: produto.imagemUrl,
-    marca: produto.brand?.nome ?? null,
+    marca: campos.marca ? produto.brand?.nome ?? null : null,
     categoria: produto.subcategory?.nome ?? null,
     unidadeBase: produto.unidadeBase,
     ativo: produto.ativo,

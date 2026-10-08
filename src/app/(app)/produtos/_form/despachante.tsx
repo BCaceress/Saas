@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { CadastroProdutoSkeleton } from "./_skeleton";
 import type { ProductPrefill } from "./product-form";
 import type { EstoquePolicy } from "@/lib/estoque-estrategia";
+import type { CamposCadastro } from "@/lib/cadastro-campos";
 import type {
   BrandOpt,
   CategoryOpt,
@@ -74,6 +75,7 @@ export type FormProdutoProps =
       fiscalProfiles: FiscalOpt[];
       defaultEstoqueMinimo?: number;
       policy?: EstoquePolicy;
+      campos?: CamposCadastro;
       prefill?: ProductPrefill;
     }
   | {
@@ -123,6 +125,7 @@ export function FormProduto(props: FormProdutoProps) {
       fiscalProfiles={props.fiscalProfiles}
       defaultEstoqueMinimo={props.defaultEstoqueMinimo}
       policy={props.policy}
+      campos={props.campos}
       prefill={props.prefill}
     />
   );

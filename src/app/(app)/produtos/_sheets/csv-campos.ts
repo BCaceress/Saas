@@ -7,6 +7,7 @@
 
 import { onlyDigits, semAcento } from "@/lib/normalize";
 import type { EstoquePolicy } from "@/lib/estoque-estrategia";
+import { CAMPOS_PADRAO, type CamposCadastro } from "@/lib/cadastro-campos";
 
 export type CsvField =
   // Identificação
@@ -459,16 +460,20 @@ export const OBRIGATORIOS = CAMPOS.filter((c) => c.obrigatorio).map(
 
 /**
  * Campos que a empresa enxerga: quem controla por giro não preenche mínimo nem
- * ideal (o sistema calcula a necessidade pelo histórico). `completo` liga os
- * campos avançados (fiscal por item, medidas, SKU próprio).
+ * ideal (o sistema calcula a necessidade pelo histórico), e quem desligou marca
+ * ou armazenagem não mapeia coluna para elas. `completo` liga os campos
+ * avançados (fiscal por item, medidas, SKU próprio).
  */
 export function camposVisiveis(
   policy: EstoquePolicy,
-  opts?: { completo?: boolean },
+  opts?: { completo?: boolean; campos?: CamposCadastro },
 ): CampoCsv[] {
+  const campos = opts?.campos ?? CAMPOS_PADRAO;
   return CAMPOS.filter((c) => {
     if (c.key === "estoqueMinimo" && !policy.usaMinimo) return false;
     if (c.key === "estoqueIdeal" && !policy.usaIdeal) return false;
+    if (c.key === "marca" && !campos.marca) return false;
+    if (c.key === "localizacao" && !campos.armazenagem) return false;
     if (c.avancado && !opts?.completo) return false;
     return true;
   });

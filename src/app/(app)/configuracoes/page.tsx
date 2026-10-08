@@ -8,6 +8,7 @@ import {
   UserCog,
   Blocks,
   FileInput,
+  ListChecks,
   Warehouse,
   Wallet,
   Bell,
@@ -43,6 +44,12 @@ const CARDS: {
     icon: Wallet,
     title: "Caixa",
     description: "Fundo de troco padrão e limite de dinheiro na gaveta.",
+  },
+  {
+    href: "/configuracoes/cadastro",
+    icon: ListChecks,
+    title: "Campos do cadastro",
+    description: "Esconda marca e local de armazenagem se a operação não usa.",
   },
   {
     href: "/configuracoes/classificacao-fiscal",

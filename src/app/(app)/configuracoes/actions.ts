@@ -174,6 +174,24 @@ export async function updateEstoqueConfig(input: z.input<typeof estoqueConfigSch
   });
 }
 
+// ── Campos do cadastro ──────────────────────────────────────
+
+const camposCadastroSchema = z.object({
+  usaMarcas: z.boolean(),
+  usaArmazenagem: z.boolean(),
+});
+
+export async function updateCamposCadastro(input: z.input<typeof camposCadastroSchema>) {
+  return txGestor(async ({ tenant }) => {
+    const d = camposCadastroSchema.parse(input);
+    await db.tenant.update({ where: { id: tenant.id }, data: d });
+    ok();
+    // Cadastro, listagem de produtos, estoque e edição em lote leem os campos:
+    // todas essas telas mudam de forma quando um deles desliga.
+    revalidatePath("/", "layout");
+  });
+}
+
 // ── Caixa / PDV ─────────────────────────────────────────────
 
 const caixaConfigSchema = z.object({

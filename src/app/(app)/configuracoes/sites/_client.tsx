@@ -75,10 +75,14 @@ export function SitesManager({
   sites: initial,
   allSites,
   locations: locationsInitial,
+  usaArmazenagem = true,
 }: {
   sites: Site[];
   allSites: Site[];
   locations: StorageLoc[];
+  /** Desligado em Configurações → Campos do cadastro: a lista vira só de
+   * estabelecimentos, sem o nível de locais embaixo de cada um. */
+  usaArmazenagem?: boolean;
 }) {
   const [sites, setSites] = useState(initial);
   const [pending, startTransition] = useTransition();
@@ -331,7 +335,9 @@ export function SitesManager({
         <div>
           <h2 className="text-lg font-semibold text-ink">Estabelecimentos</h2>
           <p className="text-xs text-muted">
-            Lojas, pontos e CDs — com os locais de armazenagem de cada um.
+            {usaArmazenagem
+              ? "Lojas, pontos e CDs — com os locais de armazenagem de cada um."
+              : "Lojas, pontos e centros de distribuição."}
           </p>
         </div>
         <button
@@ -619,16 +625,18 @@ export function SitesManager({
             return (
               <div key={s.id} className={cn(idx !== 0 && "border-t border-line")}>
                 <div className="flex items-center gap-4 px-5 py-4 transition-colors hover:bg-surface-2">
-                  <button
-                    onClick={() => toggleExpanded(s.id)}
-                    className="grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-                    title={isExpanded ? "Recolher armazenagem" : "Ver armazenagem"}
-                  >
-                    <ChevronDown
-                      size={16}
-                      className={cn("transition-transform", isExpanded && "rotate-180")}
-                    />
-                  </button>
+                  {usaArmazenagem && (
+                    <button
+                      onClick={() => toggleExpanded(s.id)}
+                      className="grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+                      title={isExpanded ? "Recolher armazenagem" : "Ver armazenagem"}
+                    >
+                      <ChevronDown
+                        size={16}
+                        className={cn("transition-transform", isExpanded && "rotate-180")}
+                      />
+                    </button>
+                  )}
                   <span
                     className={cn(
                       "grid h-9 w-9 shrink-0 place-items-center rounded-xl",
@@ -654,7 +662,7 @@ export function SitesManager({
                     </p>
                     <p className="text-xs text-faint">
                       {s.tipo === "CD" ? "Centro de Distribuição" : "Loja / Ponto"}
-                      {siteLocations.length > 0 && (
+                      {usaArmazenagem && siteLocations.length > 0 && (
                         <span className="ml-2">
                           · {siteLocations.length} local{siteLocations.length !== 1 ? "is" : ""} de armazenagem
                         </span>
@@ -701,7 +709,7 @@ export function SitesManager({
                   </div>
                 </div>
 
-                {isExpanded && (
+                {usaArmazenagem && isExpanded && (
                   <div className="border-t border-line bg-surface-2/40 px-5 py-3 pl-[4.5rem]">
                     <div className="flex items-center justify-between pb-2">
                       <p className="text-xs font-semibold uppercase tracking-wide text-faint">

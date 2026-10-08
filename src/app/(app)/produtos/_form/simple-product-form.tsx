@@ -34,6 +34,7 @@ import { onlyDigits } from "@/lib/normalize";
 import { gtinValido } from "@/lib/codigo-lido";
 import { arquivoParaThumb } from "@/lib/imagem";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
+import { CAMPOS_PADRAO, type CamposCadastro } from "@/lib/cadastro-campos";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Combobox, type ComboOption } from "@/components/ui/combobox";
@@ -197,6 +198,7 @@ export function SimpleProductForm({
   storage,
   defaultEstoqueMinimo,
   policy = POLICY_PADRAO,
+  campos = CAMPOS_PADRAO,
   prefill,
 }: {
   mode: "new" | "edit";
@@ -210,6 +212,8 @@ export function SimpleProductForm({
   defaultEstoqueMinimo?: number;
   /** Estratégia de controle da empresa — decide quais metas aparecem. */
   policy?: EstoquePolicy;
+  /** Campos que a operação usa (Configurações → Campos do cadastro). */
+  campos?: CamposCadastro;
   /** Veio da revisão do catálogo de um fornecedor (encarte/tabela importada
    * sem vínculo). Só faz sentido com `mode: "new"`. */
   prefill?: ProductPrefill;
@@ -521,7 +525,11 @@ export function SimpleProductForm({
   // Saldo inicial sem local, num tenant que TEM locais, é quase sempre
   // esquecimento: o saldo entra órfão e some da contagem por local.
   const inicialSemLocal =
-    mode === "new" && inicialNum > 0 && !locationId && allLocais.length > 0;
+    campos.armazenagem &&
+    mode === "new" &&
+    inicialNum > 0 &&
+    !locationId &&
+    allLocais.length > 0;
   // Nome tem teto de 50 no campo (NOME_MAX). O contador só aparece na reta
   // final: mostrar "3/50" desde a primeira letra é ruído.
   const nomeLen = nome.trim().length;
@@ -790,7 +798,9 @@ export function SimpleProductForm({
         requestAnimationFrame(() => nomeRef.current?.focus());
       } else {
         if (s.nome) setNome(s.nome);
-        if (s.marcaNome) setMarca(s.marcaNome);
+        // Marca desligada: o EAN não preenche às escondidas um campo que o
+        // operador não vê nem confere.
+        if (campos.marca && s.marcaNome) setMarca(s.marcaNome);
         if (s.subcategoryId) setSubcategoryId(s.subcategoryId);
         if (s.imagemUrl) setImagemUrl(s.imagemUrl);
         if (s.restricaoIdade) setIdade(true);
@@ -799,7 +809,7 @@ export function SimpleProductForm({
           : undefined;
         setFoundCard({
           nome: s.nome ?? "",
-          marca: s.marcaNome ?? "",
+          marca: campos.marca ? s.marcaNome ?? "" : "",
           categoria: cat ? `${cat.categoriaNome} · ${cat.nome}` : "",
           imagem: s.imagemUrl ?? "",
           ean: codigo,
@@ -1032,9 +1042,14 @@ export function SimpleProductForm({
       codigos: barras,
       nome,
       subcategoryId,
-      marcaNome: marca || undefined,
+      // Campo desligado não manda nada: `undefined` deixa a marca gravada
+      // intacta (ver `mexeMarca` em updateProduct). Com o campo ligado, string
+      // vazia é o operador limpando de propósito.
+      marcaNome: campos.marca ? marca.trim() : undefined,
       brandId:
-        product?.brandId && product.marca === marca ? product.brandId : undefined,
+        campos.marca && product?.brandId && product.marca === marca
+          ? product.brandId
+          : undefined,
       imagemUrl: imagemUrl || undefined,
       // Produto SIMPLES vende a unidade fechada. Não é escolha: o fracionado
       // por dose é assunto de INSUMO/receita, que tem formulário próprio.
@@ -1053,7 +1068,8 @@ export function SimpleProductForm({
       estoqueMinimo: Math.trunc(n(estoqueMinimo) ?? 0),
       estoqueIdeal: Math.trunc(n(estoqueIdeal) ?? 0),
       estoqueInicial: querInicial ? Math.trunc(n(estoqueInicial) ?? 0) : 0,
-      locationId: locationId || undefined,
+      // `null` limpa; `undefined` (campo desligado) preserva o local gravado.
+      locationId: campos.armazenagem ? locationId || null : undefined,
       packagings: embalagens,
     };
 
@@ -1593,7 +1609,8 @@ export function SimpleProductForm({
                         options={subOptions}
                         placeholder="Busque ou crie…"
                         emptyText="Nenhuma categoria com esse nome."
-                        onCommit={() => focusById("marca")}
+                        // Sem marca na tela, o Enter pula direto para o preço.
+                        onCommit={() => focusById(campos.marca ? "marca" : "preco")}
                         renderCreate={(q, close) => (
                           <CriarSubcategoria
                             nome={q}
@@ -1609,19 +1626,21 @@ export function SimpleProductForm({
                     </div>
                   </Field>
 
-                  <Field label="Marca" htmlFor="marca" className="xl:col-span-3">
-                    <Combobox
-                      id="marca"
-                      value={marca}
-                      onChange={setMarca}
-                      options={brandOptions}
-                      placeholder="Ex.: Heineken"
-                      freeText
-                      onCommit={() => focusById("preco")}
-                      onCreate={(q) => setMarca(q)}
-                      createLabel={(q) => `Criar “${q}”`}
-                    />
-                  </Field>
+                  {campos.marca && (
+                    <Field label="Marca" htmlFor="marca" className="xl:col-span-3">
+                      <Combobox
+                        id="marca"
+                        value={marca}
+                        onChange={setMarca}
+                        options={brandOptions}
+                        placeholder="Ex.: Heineken"
+                        freeText
+                        onCommit={() => focusById("preco")}
+                        onCreate={(q) => setMarca(q)}
+                        createLabel={(q) => `Criar “${q}”`}
+                      />
+                    </Field>
+                  )}
 
                   {/* Preço fica com os outros obrigatórios. Num painel lateral ele
                       ficava longe do nome e da categoria, e no celular caía depois
@@ -1771,44 +1790,47 @@ export function SimpleProductForm({
                 <div className="grid grid-cols-1 items-start gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-12">
                   {/* O campo existe mesmo sem local nenhum cadastrado: escondê-lo
                       fazia quem nunca criou um local nem descobrir que a
-                      funcionalidade existe. */}
-                  <Field
-                    label="Local do estoque"
-                    htmlFor="loc"
-                    // O ícone do tipo aparece no hint porque `select` nativo não
-                    // desenha nada dentro das opções — e a temperatura é o que o
-                    // operador confere de relance.
-                    hint={
-                      localAtual ? (
-                        <span className="flex items-center gap-1.5">
-                          <StorageIcon tipo={localAtual.tipo} size={12} />
-                          <span className={STORAGE_COLOR[localAtual.tipo]}>
-                            {STORAGE_LABEL[localAtual.tipo]}
+                      funcionalidade existe. Quem desligou armazenagem em
+                      Configurações é outro caso — ali a decisão é explícita. */}
+                  {campos.armazenagem && (
+                    <Field
+                      label="Local do estoque"
+                      htmlFor="loc"
+                      // O ícone do tipo aparece no hint porque `select` nativo não
+                      // desenha nada dentro das opções — e a temperatura é o que o
+                      // operador confere de relance.
+                      hint={
+                        localAtual ? (
+                          <span className="flex items-center gap-1.5">
+                            <StorageIcon tipo={localAtual.tipo} size={12} />
+                            <span className={STORAGE_COLOR[localAtual.tipo]}>
+                              {STORAGE_LABEL[localAtual.tipo]}
+                            </span>
                           </span>
-                        </span>
-                      ) : (
-                        "Onde este produto fica guardado."
-                      )
-                    }
-                    className="xl:col-span-3"
-                  >
-                    <Select
-                      id="loc"
-                      value={locationId}
-                      onChange={(e) => setLocation(e.target.value)}
-                      disabled={allLocais.length === 0}
+                        ) : (
+                          "Onde este produto fica guardado."
+                        )
+                      }
+                      className="xl:col-span-3"
                     >
-                      <option value="">
-                        {allLocais.length === 0 ? "Nenhum local cadastrado" : "Sem local"}
-                      </option>
-                      {allLocais.map((l) => (
-                        <option key={l.id} value={l.id}>
-                          {l.nome}
-                          {l.siteNome ? ` — ${l.siteNome}` : ""}
+                      <Select
+                        id="loc"
+                        value={locationId}
+                        onChange={(e) => setLocation(e.target.value)}
+                        disabled={allLocais.length === 0}
+                      >
+                        <option value="">
+                          {allLocais.length === 0 ? "Nenhum local cadastrado" : "Sem local"}
                         </option>
-                      ))}
-                    </Select>
-                  </Field>
+                        {allLocais.map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.nome}
+                            {l.siteNome ? ` — ${l.siteNome}` : ""}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  )}
 
                   {policy.usaMinimo && (
                     <Field label="Estoque mínimo" htmlFor="min" className="xl:col-span-2">
@@ -1874,7 +1896,7 @@ export function SimpleProductForm({
                   )}
                 </div>
 
-                {criandoLocal ? (
+                {campos.armazenagem && (criandoLocal ? (
                   <div className="fade-up flex flex-col gap-3 rounded-[var(--radius)] border border-line bg-surface-2/40 p-3 sm:flex-row sm:items-end">
                     <Field label="Nome do local" htmlFor="novo-local" className="min-w-0 flex-1">
                       <Input
@@ -1958,7 +1980,7 @@ export function SimpleProductForm({
                       ? "Criar o primeiro local de estoque"
                       : "Criar local"}
                   </button>
-                )}
+                ))}
 
                 {inicialSemLocal && (
                   <p className="flex items-start gap-2 text-xs text-warn">

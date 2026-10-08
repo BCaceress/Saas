@@ -23,6 +23,7 @@ import { Input, Select } from "@/components/ui/input";
 import { Field } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
 import { brl, cn, maskMoney, parseMoney } from "@/lib/utils";
+import { CAMPOS_PADRAO, type CamposCadastro } from "@/lib/cadastro-campos";
 import { bulkEditProducts, bulkRenameProducts, desfazerBulkEdit } from "../actions";
 import type {
   BrandOpt, CategoryFilterOpt, FiscalOpt, StorageOpt, SubcategoryFilterOpt, SupplierPickerOpt,
@@ -94,6 +95,7 @@ export function LoteSheet({
   suppliers = [],
   fiscais = [],
   locais = [],
+  campos = CAMPOS_PADRAO,
   carregandoOpcoes = false,
   onAplicado,
 }: {
@@ -108,6 +110,8 @@ export function LoteSheet({
   fiscais?: FiscalOpt[];
   /** Locais de armazenagem ativos — cada um pertence a um site. */
   locais?: StorageOpt[];
+  /** Campos que a operação usa: o que está desligado não vira bloco. */
+  campos?: CamposCadastro;
   /** As três listas acima ainda estão vindo do servidor. */
   carregandoOpcoes?: boolean;
   onAplicado?: () => void;
@@ -476,54 +480,56 @@ export function LoteSheet({
           </p>
         </Bloco>
 
-        {/* ── Marca ── */}
-        <Bloco
-          icon={<Tag size={15} />}
-          titulo="Marca"
-          resumo="Define a mesma marca para todos os selecionados."
-          ligado={mexerMarca}
-          onToggle={() => setMexerMarca((v) => !v)}
-        >
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Marca">
-              <Select
-                value={marcaEscolha}
-                onChange={(e) => setMarcaEscolha(e.target.value)}
-              >
-                <option value="">Sem marca (limpar)</option>
-                {brands.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.nome}
-                  </option>
-                ))}
-                <option value="__nova">＋ Nova marca…</option>
-              </Select>
-            </Field>
-            {marcaEscolha === "__nova" && (
-              <Field label="Nome da nova marca">
-                <Input
-                  value={marcaNova}
-                  onChange={(e) => setMarcaNova(e.target.value)}
-                  placeholder="Ex.: Ambev"
-                  autoFocus
-                />
+        {/* ── Marca ── (só para quem usa marca) */}
+        {campos.marca && (
+          <Bloco
+            icon={<Tag size={15} />}
+            titulo="Marca"
+            resumo="Define a mesma marca para todos os selecionados."
+            ligado={mexerMarca}
+            onToggle={() => setMexerMarca((v) => !v)}
+          >
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Marca">
+                <Select
+                  value={marcaEscolha}
+                  onChange={(e) => setMarcaEscolha(e.target.value)}
+                >
+                  <option value="">Sem marca (limpar)</option>
+                  {brands.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.nome}
+                    </option>
+                  ))}
+                  <option value="__nova">＋ Nova marca…</option>
+                </Select>
               </Field>
+              {marcaEscolha === "__nova" && (
+                <Field label="Nome da nova marca">
+                  <Input
+                    value={marcaNova}
+                    onChange={(e) => setMarcaNova(e.target.value)}
+                    placeholder="Ex.: Ambev"
+                    autoFocus
+                  />
+                </Field>
+              )}
+            </div>
+            {marcaEscolha === "__nova" && (
+              <p className="mt-2 flex items-start gap-1.5 text-xs text-muted">
+                <Plus size={13} className="mt-0.5 shrink-0" />
+                Se já existir uma marca com esse nome, ela é reaproveitada.
+              </p>
             )}
-          </div>
-          {marcaEscolha === "__nova" && (
-            <p className="mt-2 flex items-start gap-1.5 text-xs text-muted">
-              <Plus size={13} className="mt-0.5 shrink-0" />
-              Se já existir uma marca com esse nome, ela é reaproveitada.
-            </p>
-          )}
-          {receitas > 0 && (
-            <p className="mt-2 flex items-start gap-1.5 text-xs text-muted">
-              <Info size={13} className="mt-0.5 shrink-0" />
-              {receitas === 1 ? "1 receita fica" : `${receitas} receitas ficam`} de fora: preparo da
-              casa não tem marca.
-            </p>
-          )}
-        </Bloco>
+            {receitas > 0 && (
+              <p className="mt-2 flex items-start gap-1.5 text-xs text-muted">
+                <Info size={13} className="mt-0.5 shrink-0" />
+                {receitas === 1 ? "1 receita fica" : `${receitas} receitas ficam`} de fora: preparo da
+                casa não tem marca.
+              </p>
+            )}
+          </Bloco>
+        )}
 
         {/* ── Nomes ──
             Único bloco por produto: os demais aplicam o mesmo valor a todos. */}
@@ -746,43 +752,45 @@ export function LoteSheet({
         {/* ── Localização ──
             O local mora no estoque (produto × loja), não no cadastro: por isso
             alcança só a loja dona do local escolhido. */}
-        <Bloco
-          icon={<MapPin size={15} />}
-          titulo="Localização"
-          resumo="Diz onde a mercadoria fica: geladeira, depósito, prateleira."
-          ligado={mexerLocal}
-          carregando={carregandoOpcoes}
-          onToggle={() => setMexerLocal((v) => !v)}
-        >
-          {locaisPorSite.length === 0 ? (
-            <p className="text-xs text-muted">
-              Nenhum local de armazenagem cadastrado. Crie um em Configurações › Lojas.
-            </p>
-          ) : (
-            <>
-              <Field label="Local">
-                <Select value={localId} onChange={(e) => setLocalId(e.target.value)}>
-                  <option value="">Sem local (limpar)</option>
-                  {locaisPorSite.map((g, i) => (
-                    <optgroup key={i} label={g.siteNome}>
-                      {g.itens.map((l) => (
-                        <option key={l.id} value={l.id}>
-                          {l.nome}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </Select>
-              </Field>
-              <p className="mt-2 flex items-start gap-1.5 text-xs text-muted">
-                <Info size={13} className="mt-0.5 shrink-0" />
-                {localId
-                  ? "Vale para o estoque da loja dona do local. Produto sem estoque nessa loja fica como está."
-                  : "Sem local limpa a localização em todas as lojas."}
+        {campos.armazenagem && (
+          <Bloco
+            icon={<MapPin size={15} />}
+            titulo="Localização"
+            resumo="Diz onde a mercadoria fica: geladeira, depósito, prateleira."
+            ligado={mexerLocal}
+            carregando={carregandoOpcoes}
+            onToggle={() => setMexerLocal((v) => !v)}
+          >
+            {locaisPorSite.length === 0 ? (
+              <p className="text-xs text-muted">
+                Nenhum local de armazenagem cadastrado. Crie um em Configurações › Lojas.
               </p>
-            </>
-          )}
-        </Bloco>
+            ) : (
+              <>
+                <Field label="Local">
+                  <Select value={localId} onChange={(e) => setLocalId(e.target.value)}>
+                    <option value="">Sem local (limpar)</option>
+                    {locaisPorSite.map((g, i) => (
+                      <optgroup key={i} label={g.siteNome}>
+                        {g.itens.map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.nome}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </Select>
+                </Field>
+                <p className="mt-2 flex items-start gap-1.5 text-xs text-muted">
+                  <Info size={13} className="mt-0.5 shrink-0" />
+                  {localId
+                    ? "Vale para o estoque da loja dona do local. Produto sem estoque nessa loja fica como está."
+                    : "Sem local limpa a localização em todas as lojas."}
+                </p>
+              </>
+            )}
+          </Bloco>
+        )}
         </Grupo>
 
         {/* ── Fiscal: o que a nota precisa saber ── */}

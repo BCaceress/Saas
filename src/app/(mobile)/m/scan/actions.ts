@@ -12,6 +12,7 @@ import {
   alternativasPorTrechoDeCodigo,
 } from "@/lib/produto-codigo";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { getCosmosByEan, CosmosError } from "@/lib/cosmos";
 import {
   montarFicha,
@@ -93,6 +94,7 @@ export async function buscarPorCodigoAction(codigoRaw: string): Promise<Resultad
           acessos: ctx.acessos,
           siteId,
           policy,
+          campos: camposDoTenant(ctx.tenant),
           validadeAlertaDias: ctx.tenant.validadeAlertaDias || 30,
           casouPor,
         }),
@@ -124,6 +126,7 @@ export async function buscarPorCodigoAction(codigoRaw: string): Promise<Resultad
           acessos: ctx.acessos,
           siteId,
           policy,
+          campos: camposDoTenant(ctx.tenant),
           validadeAlertaDias: ctx.tenant.validadeAlertaDias || 30,
           casouPor: "embalagem",
           embalagemCasada: embalagem,

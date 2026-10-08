@@ -20,7 +20,14 @@ type Filtro = "ativos" | "todos" | "sem-estoque" | "sem-preco";
  * centenas de itens, e ir ao servidor a cada letra digitada custaria mais que
  * carregar a lista uma vez.
  */
-export function ProdutosClient({ produtos }: { produtos: ProdutoLista[] }) {
+export function ProdutosClient({
+  produtos,
+  usaMarcas = true,
+}: {
+  produtos: ProdutoLista[];
+  /** Configurações → Campos do cadastro: sem marca, a linha não a cita. */
+  usaMarcas?: boolean;
+}) {
   const [busca, setBusca] = React.useState("");
   const [filtro, setFiltro] = React.useState<Filtro>("ativos");
 
@@ -72,7 +79,11 @@ export function ProdutosClient({ produtos }: { produtos: ProdutoLista[] }) {
         <input
           value={busca}
           onChange={(e) => setBusca(e.target.value)}
-          placeholder="Buscar por nome, marca, SKU ou código"
+          placeholder={
+            usaMarcas
+              ? "Buscar por nome, marca, SKU ou código"
+              : "Buscar por nome, SKU ou código"
+          }
           aria-label="Buscar produto"
           className="min-h-11 w-full rounded-full border border-line-button bg-surface pr-4 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
         />
@@ -108,7 +119,7 @@ export function ProdutosClient({ produtos }: { produtos: ProdutoLista[] }) {
       ) : (
         <ul className="space-y-2">
           {linhas.map((p) => (
-            <LinhaProduto key={p.id} p={p} />
+            <LinhaProduto key={p.id} p={p} usaMarcas={usaMarcas} />
           ))}
         </ul>
       )}
@@ -116,7 +127,7 @@ export function ProdutosClient({ produtos }: { produtos: ProdutoLista[] }) {
   );
 }
 
-function LinhaProduto({ p }: { p: ProdutoLista }) {
+function LinhaProduto({ p, usaMarcas }: { p: ProdutoLista; usaMarcas: boolean }) {
   return (
     <li>
       <Card className="overflow-hidden">
@@ -142,7 +153,9 @@ function LinhaProduto({ p }: { p: ProdutoLista }) {
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-ink">{p.nome}</p>
             <p className="truncate text-xs text-ink-2">
-              {[p.marca, p.categoria].filter(Boolean).join(" · ") || "Sem marca"}
+              {[usaMarcas ? p.marca : null, p.categoria]
+                .filter(Boolean)
+                .join(" · ") || (usaMarcas ? "Sem marca" : "Sem categoria")}
             </p>
             <p className="truncate font-mono text-[11px] text-muted">
               {p.sku}

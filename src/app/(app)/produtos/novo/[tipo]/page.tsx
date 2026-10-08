@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { normalizeSkuPrefix } from "@/lib/normalize";
 import { FormProduto } from "../../_form/despachante";
 import type { ProductPrefill } from "../../_form/product-form";
@@ -110,6 +111,7 @@ export default async function NovoProdutoPage({
       fiscalProfiles={opts.fiscalOpts}
       defaultEstoqueMinimo={ctx.tenant.estoqueMinimoPadrao}
       policy={policyDoTenant(ctx.tenant)}
+      campos={camposDoTenant(ctx.tenant)}
       prefill={prefill}
     />
   );

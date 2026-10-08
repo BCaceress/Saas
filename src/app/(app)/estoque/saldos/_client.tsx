@@ -67,6 +67,7 @@ import {
   nivelCobertura,
   type EstoquePolicy,
 } from "@/lib/estoque-estrategia";
+import { CAMPOS_PADRAO, type CamposCadastro } from "@/lib/cadastro-campos";
 import { toast } from "@/components/ui/toast";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Sheet } from "@/components/ui/sheet";
@@ -218,6 +219,10 @@ type Status =
 const PolicyCtx = createContext<EstoquePolicy>(POLICY_PADRAO);
 const usePolicy = () => useContext(PolicyCtx);
 
+/** Mesmo motivo do PolicyCtx: a ficha e a célula de local estão fundo abaixo. */
+const CamposCtx = createContext<CamposCadastro>(CAMPOS_PADRAO);
+const useCampos = () => useContext(CamposCtx);
+
 /** Produto marcado para não controlar estoque — some do funil de meta/urgência, só informa qtd comprada. */
 // A consulta já exclui produto inativo e produto sem controle de estoque
 // (loadSaldos). O tratamento segue aqui como rede: se um Stock chegar por outro
@@ -332,12 +337,20 @@ function quaseIdeal(s: SaldoRow, policy: EstoquePolicy): boolean {
   return m > 0 && s.estoqueFechado - s.estoqueIdeal < m;
 }
 
-/** Lacunas de cadastro que atrapalham operação (custo, fornecedor, localização). */
-function dataGaps(s: SaldoRow): ("custo" | "fornecedor" | "local")[] {
+/**
+ * Lacunas de cadastro que atrapalham operação (custo, fornecedor, localização).
+ *
+ * Quem desligou armazenagem não tem lacuna de local: cobrar um campo que a
+ * empresa escolheu não usar transforma a pendência em ruído permanente.
+ */
+function dataGaps(
+  s: SaldoRow,
+  usaArmazenagem = true,
+): ("custo" | "fornecedor" | "local")[] {
   const g: ("custo" | "fornecedor" | "local")[] = [];
   if (s.custoMedio == null) g.push("custo");
   if (!s.temFornecedor) g.push("fornecedor");
-  if (!s.locationNome) g.push("local");
+  if (usaArmazenagem && !s.locationNome) g.push("local");
   return g;
 }
 
@@ -362,7 +375,7 @@ const PRIORITY: Record<Status, number> = {
 
 type ColunaExport = { titulo: string; valor: (s: SaldoRow) => string | number | null };
 
-function colunasExport(policy: EstoquePolicy): ColunaExport[] {
+function colunasExport(policy: EstoquePolicy, campos: CamposCadastro): ColunaExport[] {
   return [
     { titulo: "Produto", valor: (s) => s.nome },
     { titulo: "Tipo", valor: (s) => TIPO_LABEL[s.tipo] ?? s.tipo },
@@ -370,7 +383,7 @@ function colunasExport(policy: EstoquePolicy): ColunaExport[] {
     { titulo: "Codigo de barras", valor: (s) => s.ean ?? "" },
     { titulo: "Categoria", valor: (s) => s.categoriaNome ?? "" },
     { titulo: "Subcategoria", valor: (s) => s.categoria ?? "" },
-    { titulo: "Marca", valor: (s) => s.marca ?? "" },
+    ...(campos.marca ? [{ titulo: "Marca", valor: (s: SaldoRow) => s.marca ?? "" }] : []),
     { titulo: "Fornecedor", valor: (s) => s.fornecedorNome ?? "" },
     { titulo: "Fechado", valor: (s) => s.estoqueFechado },
     { titulo: "Aberto", valor: (s) => s.estoqueAberto },
@@ -386,7 +399,7 @@ function colunasExport(policy: EstoquePolicy): ColunaExport[] {
       : []),
     { titulo: "Custo medio", valor: (s) => s.custoMedio ?? 0 },
     { titulo: "Valor em estoque", valor: (s) => valorEstoque(s) },
-    { titulo: "Local", valor: (s) => s.locationNome ?? "" },
+    ...(campos.armazenagem ? [{ titulo: "Local", valor: (s: SaldoRow) => s.locationNome ?? "" }] : []),
   ];
 }
 
@@ -402,8 +415,8 @@ function baixarArquivo(conteudo: BlobPart, tipo: string, nome: string) {
 }
 
 /** CSV com separador ";" e decimal com vírgula — o que o Excel pt-BR abre direto. */
-function baixarCsv(rows: SaldoRow[], policy: EstoquePolicy) {
-  const colunas = colunasExport(policy);
+function baixarCsv(rows: SaldoRow[], policy: EstoquePolicy, campos: CamposCadastro) {
+  const colunas = colunasExport(policy, campos);
   const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
   const cel = (v: string | number | null) =>
     v == null ? "" : typeof v === "number"
@@ -418,8 +431,8 @@ function baixarCsv(rows: SaldoRow[], policy: EstoquePolicy) {
 }
 
 /** Planilha: número vai como número, para o operador somar sem converter nada. */
-function baixarPlanilha(rows: SaldoRow[], policy: EstoquePolicy) {
-  const colunas = colunasExport(policy);
+function baixarPlanilha(rows: SaldoRow[], policy: EstoquePolicy, campos: CamposCadastro) {
+  const colunas = colunasExport(policy, campos);
   baixarXlsx({
     nomeArquivo: nomeArquivoExport("xlsx"),
     aba: "Saldos",
@@ -458,6 +471,7 @@ export function SaldosView({
   policy = POLICY_PADRAO,
   siteId,
   locais = [],
+  campos = CAMPOS_PADRAO,
   initialQ = "",
   initialFiltro = "todos",
   initialPage = 1,
@@ -468,6 +482,8 @@ export function SaldosView({
   siteId: string | null;
   /** Locais de armazenagem ativos da loja — destinos da alteração em massa. */
   locais?: LocalArmazenagemRow[];
+  /** Campos que a operação usa (Configurações → Campos do cadastro). */
+  campos?: CamposCadastro;
   initialQ?: string;
   initialFiltro?: Filtro;
   initialPage?: number;
@@ -509,8 +525,18 @@ export function SaldosView({
   const abrir = (row: SaldoRow, tab: Tab = "resumo") => setDetalhe({ row, tab });
 
   // Colunas exibidas na tabela — preferência de exibição (como em /produtos).
-  const [cols, setCols] = useState<Record<ColKey, boolean>>(() => readLS("estoque:cols", DEFAULT_COLS));
-  useEffect(() => { try { localStorage.setItem("estoque:cols", JSON.stringify(cols)); } catch {} }, [cols]);
+  // Grava a ESCOLHA e exibe o cruzamento com os campos ligados: desligar
+  // armazenagem some com a coluna sem apagar a preferência de quem religar.
+  const [colsEscolhidas, setCols] = useState<Record<ColKey, boolean>>(() => readLS("estoque:cols", DEFAULT_COLS));
+  useEffect(() => { try { localStorage.setItem("estoque:cols", JSON.stringify(colsEscolhidas)); } catch {} }, [colsEscolhidas]);
+  const cols = useMemo(
+    () => ({ ...colsEscolhidas, local: colsEscolhidas.local && campos.armazenagem }),
+    [colsEscolhidas, campos],
+  );
+  const colunasDisponiveis = useMemo(
+    () => COL_ORDER.filter((k) => k !== "local" || campos.armazenagem),
+    [campos],
+  );
 
   // Densidade: "Densa" tira a miniatura e aperta a linha — quem confere estoque
   // pelo nome/SKU vê o dobro de produtos sem rolar.
@@ -533,10 +559,10 @@ export function SaldosView({
       if (quaseIdeal(s, policy)) quaseIdealN++;
       if (temEstoqueAberto(s)) aberto++;
       if (!s.locationNome) semlocal++;
-      if (dataGaps(s).length > 0) pendencias++;
+      if (dataGaps(s, campos.armazenagem).length > 0) pendencias++;
     }
     return { todos: saldos.length, sem, baixoMinimo, repor, quaseIdeal: quaseIdealN, baixaCobertura: cobertura, aberto, semlocal, pendencias, comEstoque, semMeta };
-  }, [saldos, policy]);
+  }, [saldos, policy, campos]);
 
   // Filtros secundários (painel "Filtros") — categoria/fornecedor/local derivados dos dados.
   const [avComEstoque, setAvComEstoque] = useState(false);
@@ -607,7 +633,7 @@ export function SaldosView({
       if (avComEstoque && semEstoque(s, policy)) return false;
       if (avSemLocal && s.locationNome) return false;
       if (avSemMeta && statusOf(s, policy) !== "semMeta") return false;
-      if (avPendenciaCadastro && dataGaps(s).length === 0) return false;
+      if (avPendenciaCadastro && dataGaps(s, campos.armazenagem).length === 0) return false;
       // "cat:<id>" pega a categoria inteira; qualquer outro valor é subcategoria.
       if (avCategoria) {
         if (avCategoria.startsWith("cat:")) {
@@ -645,7 +671,7 @@ export function SaldosView({
     });
 
     return out;
-  }, [saldos, policy, q, filtro, sort, avComEstoque, avSemLocal, avSemMeta, avPendenciaCadastro, avCategoria, avFornecedor, avLocal]);
+  }, [saldos, policy, campos, q, filtro, sort, avComEstoque, avSemLocal, avSemMeta, avPendenciaCadastro, avCategoria, avFornecedor, avLocal]);
 
   // Paginação — volta à 1ª página quando o conjunto muda. Pula o mount para
   // não descartar a página restaurada da URL.
@@ -741,8 +767,8 @@ export function SaldosView({
   function exportarSelecionados(formato: "csv" | "xlsx") {
     const marcados = new Set(selecao.lista());
     const alvo = marcados.size > 0 ? saldos.filter((s) => marcados.has(s.productId)) : filtrados;
-    if (formato === "xlsx") baixarPlanilha(alvo, policy);
-    else baixarCsv(alvo, policy);
+    if (formato === "xlsx") baixarPlanilha(alvo, policy, campos);
+    else baixarCsv(alvo, policy, campos);
   }
 
   type Pill = { key: Filtro; label: string; count: number; tone: "neutral" | "danger" | "warn" | "brand" };
@@ -757,6 +783,7 @@ export function SaldosView({
 
   return (
    <PolicyCtx.Provider value={policy}>
+   <CamposCtx.Provider value={campos}>
     <SelecaoProvider store={selecao}>
     <div className="flex flex-col gap-4">
       {/* ── Filtros + tabela na mesma superfície (mesmo padrão visual de /produtos) ── */}
@@ -845,7 +872,9 @@ export function SaldosView({
         >
           <div className="px-1 py-0.5">
             <CheckRow checked={avComEstoque} label="Com estoque" onChange={() => setAvComEstoque((v) => !v)} />
-            <CheckRow checked={avSemLocal} label="Sem localização" onChange={() => setAvSemLocal((v) => !v)} />
+            {campos.armazenagem && (
+              <CheckRow checked={avSemLocal} label="Sem localização" onChange={() => setAvSemLocal((v) => !v)} />
+            )}
             {/* "Sem meta" só existe onde há meta a definir. */}
             {!policy.usaGiro && (
               <CheckRow checked={avSemMeta} label="Sem meta definida" onChange={() => setAvSemMeta((v) => !v)} />
@@ -868,7 +897,7 @@ export function SaldosView({
           }
         >
           <p className="px-2.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-faint">Colunas</p>
-          {COL_ORDER.map((k) => (
+          {colunasDisponiveis.map((k) => (
             <CheckRow
               key={k}
               checked={cols[k]}
@@ -1128,6 +1157,7 @@ export function SaldosView({
       </Sheet>
     </div>
     </SelecaoProvider>
+   </CamposCtx.Provider>
    </PolicyCtx.Provider>
   );
 }
@@ -2172,6 +2202,7 @@ function DetalheDrawer({
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [ajuste, setAjuste] = useState(false);
+  const campos = useCampos();
 
   useEffect(() => { if (saldo) { setTab(initialTab); setAjuste(false); } }, [saldo, initialTab]);
 
@@ -2231,7 +2262,7 @@ function DetalheDrawer({
             <ResumoTab
               s={s}
               siteId={siteId}
-              gaps={dataGaps(s)}
+              gaps={dataGaps(s, campos.armazenagem)}
               ajuste={ajuste}
               setAjuste={setAjuste}
               onEditar={onEditar}
@@ -2336,6 +2367,7 @@ function ResumoTab({
   onAjustado: () => void;
 }) {
   const policy = usePolicy();
+  const campos = useCampos();
   const status = PANEL_STATUS[statusOf(s, policy)];
   const un = closedUnitLabel(s);
   const cob = diasCobertura(s, policy);
@@ -2365,7 +2397,7 @@ function ResumoTab({
               {status.label}
             </span>
             <p className="mt-0.5 truncate text-xs text-muted">
-              {[s.marca, s.categoria, TIPO_LABEL[s.tipo] ?? s.tipo].filter(Boolean).join(" · ")}
+              {[campos.marca ? s.marca : null, s.categoria, TIPO_LABEL[s.tipo] ?? s.tipo].filter(Boolean).join(" · ")}
             </p>
           </div>
           <button

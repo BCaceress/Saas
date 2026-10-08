@@ -135,6 +135,14 @@ model Tenant {
   moduloRota            Boolean @default(false)
   moduloAutoatendimento Boolean @default(false)
 
+  // ── Campos do cadastro (Configurações → Campos do cadastro) ──
+  // Quem produz o que vende (padaria, marmita, granel) não tem marca para
+  // informar, e quem opera uma loja só costuma não ter local de armazenagem.
+  // Desligar ESCONDE o campo (cadastro, listagem, edição em lote) — não apaga
+  // Brand nem StorageLocation, e o que já foi preenchido continua no banco.
+  usaMarcas      Boolean @default(true)
+  usaArmazenagem Boolean @default(true)
+
   // Autoatendimento (totem): PIN para sair do modo quiosque. null = saída livre.
   totemPinHash String?
 

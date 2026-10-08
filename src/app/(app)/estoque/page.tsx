@@ -1,6 +1,7 @@
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { loadSaldos, loadLocaisArmazenagem } from "./_data";
 import { filtroValido } from "./_filtros";
 import { SaldosView } from "./saldos/_client";
@@ -13,11 +14,17 @@ export default async function EstoquePage({
 }) {
   const ctx = await requireActiveTenant();
   const policy = policyDoTenant(ctx.tenant);
+  const campos = camposDoTenant(ctx.tenant);
   // Opções do form de reposição são carregadas sob demanda no client
   // (fetchEntradaFormDataAction) — a página só precisa dos saldos.
+  // Sem armazenagem, a consulta dos locais nem acontece: a tela não tem onde
+  // usá-los e seria uma ida ao banco por página aberta.
   const [siteId, saldos, locais] = await withTenant(ctx, async () => {
     const sid = await getActiveSiteId();
-    const [s, l] = await Promise.all([loadSaldos(sid, policy), loadLocaisArmazenagem(sid)]);
+    const [s, l] = await Promise.all([
+      loadSaldos(sid, policy),
+      campos.armazenagem ? loadLocaisArmazenagem(sid) : Promise.resolve([]),
+    ]);
     return [sid, s, l] as const;
   });
 
@@ -37,6 +44,7 @@ export default async function EstoquePage({
       policy={policy}
       siteId={siteId}
       locais={locais}
+      campos={campos}
       initialQ={q}
       initialFiltro={filtro}
       initialPage={pagina}

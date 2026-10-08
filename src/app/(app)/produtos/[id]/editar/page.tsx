@@ -3,6 +3,7 @@ import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { codigosParaExibir } from "@/lib/produto-codigo";
 import { FormProduto } from "../../_form/despachante";
 import { loadProductFormOptions, loadComponentCandidates } from "../../_data";
@@ -365,6 +366,7 @@ export default async function EditarProdutoPage({
       suppliers={data.opts.supplierRows}
       fiscalProfiles={data.opts.fiscalOpts}
       policy={policyDoTenant(ctx.tenant)}
+      campos={camposDoTenant(ctx.tenant)}
     />
   );
 }

@@ -15,6 +15,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
+import { CAMPOS_PADRAO, type CamposCadastro } from "@/lib/cadastro-campos";
 import {
   GRUPOS,
   autoMapear,
@@ -42,10 +43,13 @@ export function CsvSheet({
   open,
   onClose,
   policy = POLICY_PADRAO,
+  camposCadastro = CAMPOS_PADRAO,
 }: {
   open: boolean;
   onClose: () => void;
   policy?: EstoquePolicy;
+  /** Campos que a operação usa — tira marca/localização do mapeamento. */
+  camposCadastro?: CamposCadastro;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -58,10 +62,13 @@ export function CsvSheet({
   // No mapeamento aparecem todos os campos que a empresa usa — se a planilha
   // trouxe a coluna, ela tem onde encaixar.
   const campos = useMemo(
-    () => camposVisiveis(policy, { completo: true }),
-    [policy],
+    () => camposVisiveis(policy, { completo: true, campos: camposCadastro }),
+    [policy, camposCadastro],
   );
-  const basicos = useMemo(() => camposVisiveis(policy), [policy]);
+  const basicos = useMemo(
+    () => camposVisiveis(policy, { campos: camposCadastro }),
+    [policy, camposCadastro],
+  );
 
   function onFile(file: File) {
     setResult(null);

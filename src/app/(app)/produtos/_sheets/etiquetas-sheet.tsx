@@ -160,17 +160,19 @@ function printLabels(products: ProductRow[], modelo: Modelo, papel: Papel, flags
 // ── Side Panel ────────────────────────────────────────────────────────────────
 
 export function EtiquetasSheet({
-  open, onClose, products,
+  open, onClose, products, usaMarcas = true,
 }: {
   open: boolean;
   onClose: () => void;
   products: ProductRow[];
+  /** Sem marca na operação, a etiqueta não oferece imprimir marca. */
+  usaMarcas?: boolean;
 }) {
   const [modelo, setModelo] = useState<Modelo>("gondola");
   const [papel, setPapel] = useState<Papel>("58");
   const [qtyMode, setQtyMode] = useState<"one" | "custom">("one");
   const [qtyCustom, setQtyCustom] = useState(5);
-  const [flags, setFlags] = useState<Flags>({ sku: true, barcode: true, marca: true, preco: true });
+  const [flags, setFlags] = useState<Flags>({ sku: true, barcode: true, marca: usaMarcas, preco: true });
 
   const perQty = qtyMode === "one" ? 1 : Math.max(1, qtyCustom);
   const totalEtiquetas = products.length * perQty;
@@ -278,7 +280,9 @@ export function EtiquetasSheet({
           <div className="space-y-1">
             <CheckRow checked={flags.sku} onChange={() => toggle("sku")} label="Mostrar SKU" />
             <CheckRow checked={flags.barcode} onChange={() => toggle("barcode")} label="Mostrar código de barras" />
-            <CheckRow checked={flags.marca} onChange={() => toggle("marca")} label="Mostrar marca" />
+            {usaMarcas && (
+              <CheckRow checked={flags.marca} onChange={() => toggle("marca")} label="Mostrar marca" />
+            )}
             {modelo === "gondola" && (
               <CheckRow checked={flags.preco} onChange={() => toggle("preco")} label="Mostrar preço" />
             )}

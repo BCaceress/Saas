@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { arquivoParaThumb } from "@/lib/imagem";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
+import { CAMPOS_PADRAO, type CamposCadastro } from "@/lib/cadastro-campos";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Field, Label } from "@/components/ui/misc";
@@ -69,6 +70,8 @@ type FormProps = {
   defaultEstoqueMinimo?: number;
   /** Estratégia de controle de estoque da empresa — decide quais metas aparecem. */
   policy?: EstoquePolicy;
+  /** Campos que a operação usa (Configurações → Campos do cadastro). */
+  campos?: CamposCadastro;
   /** Cadastro veio de um item de catálogo de fornecedor sem vínculo (aba
    * Catálogo do fornecedor → "cadastrar produto novo"). Só SIMPLES usa. */
   prefill?: ProductPrefill;
@@ -177,6 +180,7 @@ function InsumoForm({
   suppliers,
   defaultEstoqueMinimo,
   policy = POLICY_PADRAO,
+  campos = CAMPOS_PADRAO,
 }: Omit<FormProps, "tipo">) {
   const router = useRouter();
   const volta = useVoltaProdutos();
@@ -346,9 +350,10 @@ function InsumoForm({
       ean: ean || undefined,
       nome,
       subcategoryId,
-      marcaNome: marca || undefined,
+      // Campo desligado manda `undefined`: a marca gravada fica como está.
+      marcaNome: campos.marca ? marca.trim() : undefined,
       brandId:
-        product?.brandId && product.marca === marca
+        campos.marca && product?.brandId && product.marca === marca
           ? product.brandId
           : undefined,
       imagemUrl: imagemUrl || undefined,
@@ -367,7 +372,8 @@ function InsumoForm({
       estoqueMinimo: n(estoqueMinimo) ?? 0,
       estoqueIdeal: n(estoqueIdeal) ?? 0,
       estoqueInicial: n(estoqueInicial) ?? 0,
-      locationId: locationId || undefined,
+      // `null` limpa; `undefined` (campo desligado) preserva o que está lá.
+      locationId: campos.armazenagem ? locationId || null : undefined,
       fornecedorPrincipalId: fornecedorPrincipalId || undefined,
       fornecedoresIds: fornecedorPrincipalId ? [fornecedorPrincipalId] : [],
       packagings: packagings
@@ -510,24 +516,26 @@ function InsumoForm({
                     className="font-mono placeholder:font-sans"
                   />
                 </Field>
-                <Field
-                  label="Marca"
-                  htmlFor="marca"
-                  hint="Cria automaticamente se nova."
-                >
-                  <Input
-                    id="marca"
-                    value={marca}
-                    onChange={(e) => setMarca(e.target.value)}
-                    list="brand-list"
-                    placeholder="Ex.: Crystal"
-                  />
-                  <datalist id="brand-list">
-                    {brands.map((b) => (
-                      <option key={b.id} value={b.nome} />
-                    ))}
-                  </datalist>
-                </Field>
+                {campos.marca && (
+                  <Field
+                    label="Marca"
+                    htmlFor="marca"
+                    hint="Cria automaticamente se nova."
+                  >
+                    <Input
+                      id="marca"
+                      value={marca}
+                      onChange={(e) => setMarca(e.target.value)}
+                      list="brand-list"
+                      placeholder="Ex.: Crystal"
+                    />
+                    <datalist id="brand-list">
+                      {brands.map((b) => (
+                        <option key={b.id} value={b.nome} />
+                      ))}
+                    </datalist>
+                  </Field>
+                )}
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -786,7 +794,7 @@ function InsumoForm({
                 </p>
               )}
 
-              {storage.length > 0 && (
+              {campos.armazenagem && storage.length > 0 && (
                 <Field label="Local de armazenagem" htmlFor="loc">
                   <Select
                     id="loc"

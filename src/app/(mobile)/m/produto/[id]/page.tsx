@@ -3,6 +3,7 @@ import { requirePermissaoMobile } from "@/lib/guard";
 import { withTenant } from "@/lib/current-tenant";
 import { getActiveSiteId } from "@/lib/sites";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { db } from "@/lib/prisma";
 import { MobilePageHeader } from "@/components/mobile/page-header";
 import { FichaProdutoView, AcoesFicha } from "@/components/mobile/ficha-produto";
@@ -53,6 +54,7 @@ export default async function ProdutoMobilePage({
       acessos: ctx.acessos,
       siteId,
       policy,
+      campos: camposDoTenant(ctx.tenant),
       validadeAlertaDias: ctx.tenant.validadeAlertaDias || 30,
       casouPor: "id",
     });

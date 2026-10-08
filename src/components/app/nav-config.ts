@@ -8,6 +8,7 @@ import {
   ShoppingBag,
   ClipboardList,
   ClipboardCheck,
+  ListChecks,
   BarChart3,
   Recycle,
   Truck,
@@ -634,6 +635,15 @@ export const NAV_GROUPS: NavGroup[] = [
             ocultoNoMenu: true,
             permissao: "config.gerenciar",
             descricao: "Estratégia de reposição e alerta de validade.",
+          },
+          {
+            href: "/configuracoes/cadastro",
+            label: "Campos do cadastro",
+            icon: ListChecks,
+            enabled: true,
+            ocultoNoMenu: true,
+            permissao: "config.gerenciar",
+            descricao: "Marca e local de armazenagem: usar ou esconder.",
           },
           {
             href: "/configuracoes/fidelizacao",

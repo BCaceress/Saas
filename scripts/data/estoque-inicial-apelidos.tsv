@@ -1,0 +1,78 @@
+# Equivalência "nome no sistema antigo" → "nome no cadastro novo".
+# Colunas: nome no CSV <TAB> nome no banco. Linha com # é comentário.
+# Entrada de `scripts/estoque-inicial.ts`. Casamento por nome normalizado
+# (sem acento, maiúsculas, pontuação virando espaço).
+#
+# O catálogo novo foi recadastrado com gramatura e marca corrigidas, então o
+# nome antigo quase nunca bate. Abaixo, só os pares em que o produto é
+# inequivocamente o mesmo — mesma marca, mesmo sabor, gramatura corrigida.
+# Os duvidosos ficam COMENTADOS no fim: descomente o que você reconhecer.
+
+# ── Gramatura corrigida, mesma marca e sabor ────────────────
+Bombom Ouro Branco 20g	Bombom Ouro Branco
+Bombom Sonho de Valsa 20g	Bombom Sonho de Valsa
+Choc Lacta 80g Amaro	Choc Lacta 90g Amaro
+Choc Lacta 80g Ao Leite	Choc Lacta 90g Ao Leite
+Choc Lacta 80g Laka	Choc Lacta 90g Laka
+Choc Lacta 80g Oreo	Choc Lacta 90g Oreo
+Choc Lacta 80g Shot	Choc Lacta 90g Shot
+Choc Snickers 40g	Choc Snickers 45g
+Leite Condensado 395g	Leite Condensado 340g
+Pacoca 14g Rolha	Pacoca 18g Rolha
+Salg Cheetos 34g Lua	Salg Cheetos 40g Lua
+Salg Cheetos 34g Mix	Salg Cheetos 41g Mix
+Salg Cheetos 39g Onda	Salg Cheetos 45g Onda
+Salg Cheetos 70g Mix	Salg Cheetos 82g Mix
+Salg Cheetos 90g Onda	Salg Cheetos 105g Onda
+Salg Fandangos 37g Presunto	Salg Fandangos 45g Presunto
+Salg Fandangos 37g Queijo	Salg Fandangos 45g Queijo
+Salg Fandangos 85g Presunto	Salg Fandangos 105g Presunto
+Salg Pringles 104g Original	Salg Pringles 114g Original
+Wafer Bis 100g Branco	Wafer Bis 126g Branco
+Wafer Bis 100g Preto	Wafer Bis 126g Preto
+
+# ── Nome encurtado / reescrito, produto idêntico ────────────
+Agua Tonica Schwepps 350ml Trad	Agua Tonica 350ml Tradicional
+Caixa Bombom Lacta 250,6g	Caixa Bombom Diversos 251g
+Salg Pingo de Ouro 76g Bacon	Salg Pingo de Ouro 76g
+
+# ════════════════════════════════════════════════════════════
+# A PARTIR DAQUI É PALPITE — confirme antes de descomentar.
+# ════════════════════════════════════════════════════════════
+
+# Troca de MARCA no recadastro. Se o mercadinho realmente trocou de
+# fornecedor e é a mesma posição de prateleira, descomente.
+# Acucar 1kg Diversos	Açucar 1kg Caravelas
+# Deterg Minuano 500ml	Deterg Ype 500ml
+
+# Marca E gramatura mudaram (Tudo Coco 210g → La Festa 190g). O CSV também
+# traz "Gelo Tudo Coco 700g ...", que casou direto — então o cadastro tem as
+# duas famílias e só a de 210g virou La Festa.
+# Gelo Tudo Coco 210g Coco	Gelo La Festa 190g Coco
+# Gelo Tudo Coco 210g Maca Verde	Gelo La Festa 190g Maca Verde
+# Gelo Tudo Coco 210g Maracuja	Gelo La Festa 190g Maracuja
+# Gelo Tudo Coco 210g Melancia	Gelo La Festa 190g Melancia
+# Gelo Tudo Coco 210g Morango	Gelo La Festa 190g Morango
+
+# O sabor sumiu do cadastro: "Copao Eternity" é um produto só, e o CSV tem
+# Melancia (-2) e Morango e Pessego (-8, esse casou com produto próprio).
+# Copao Eternity Melancia	Copao Eternity
+
+# 9 sabores do CSV para UM cadastro genérico: o saldo seria somado (19 un) e
+# o controle por sabor morre aqui. Melhor cadastrar os sabores.
+# Essencia Ziggy 50g Banana Tropical	Essencia 50g Ziggy
+# Essencia Ziggy 50g Cereja	Essencia 50g Ziggy
+# Essencia Ziggy 50g Duas Goiaba	Essencia 50g Ziggy
+# Essencia Ziggy 50g Duas Macas Verdes	Essencia 50g Ziggy
+# Essencia Ziggy 50g Fresh 66	Essencia 50g Ziggy
+# Essencia Ziggy 50g Frutas Roxas	Essencia 50g Ziggy
+# Essencia Ziggy 50g Hapocalyx Menta	Essencia 50g Ziggy
+# Essencia Ziggy 50g Melancia Bomb	Essencia 50g Ziggy
+# Essencia Ziggy 50g Uva	Essencia 50g Ziggy
+
+# ── Sem par nenhum no cadastro novo (ficam em 0) ────────────
+# Chiclet Trident 8g XSenses Herbal (9)
+# Esponja Louca Assolan (2)
+# Feijao 1kg Prato Bom (1)
+# Queijo Ralado 40g (2)
+# Salg Pingo de Ouro 55g Picanha (3) — o cadastro só tem o 76g, já usado pelo Bacon
