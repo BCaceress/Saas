@@ -272,7 +272,7 @@ export async function dispararAlertasPush(
 }
 
 // ── Disparo imediato ────────────────────────────────────────
-// O cron acima roda de hora em hora e só enxerga o que o computador de alertas
+// O cron acima roda duas vezes por dia e só enxerga o que o computador de alertas
 // vê. Alguns fatos não podem esperar a próxima rodada — a proposta que o
 // fornecedor acabou de mandar pelo link é o caso: a pessoa está com o
 // celular no bolso e o concorrente dele também está respondendo.

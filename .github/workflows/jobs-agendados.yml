@@ -1,0 +1,101 @@
+# Agendador externo dos jobs — existe por causa do plano.
+#
+# O Hobby do Vercel aceita 2 crons por projeto, no máximo 1x/dia. Os dois crons
+# nativos (vercel.json) já estão ocupados pelo dispatcher diário e pelo push da
+# manhã. Este workflow devolve a granularidade sub-diária sem upgrade: chama as
+# rotas individuais de /api/jobs por HTTP, com o mesmo CRON_SECRET.
+#
+# Orçamento de minutos (repo privado = 2.000 min/mês grátis):
+#   intradiário a cada 30 min, 07h-02h BRT  -> 40 runs/dia -> ~1.200 min/mês
+#   disparo do fim do dia 1x/dia            ->  1 run/dia  ->    ~30 min/mês
+# Total ~1.230 de 2.000. Não aumente a frequência sem refazer essa conta: o
+# GitHub cobra 1 minuto cheio por run, mesmo que o curl leve 3 segundos.
+#
+# Limitações aceitas: o schedule do GitHub atrasa (minutos, as vezes mais em
+# horario de pico) e e desligado automaticamente se o repo ficar 60 dias sem
+# commit. Nenhum dos jobs depende de pontualidade — todos são idempotentes e
+# têm caminho primário (polling do PDV, sync sob demanda na tela do fornecedor).
+#
+# Pré-requisitos no repositório (Settings -> Secrets and variables -> Actions):
+#   secret  CRON_SECRET   mesmo valor da env var do projeto no Vercel
+#   var     APP_BASE_URL  ex.: https://nohub.market (sem barra no fim)
+
+name: Jobs agendados
+
+on:
+  schedule:
+    # A cada 30 min das 07h as 02h BRT (10h-23h e 00h-05h UTC).
+    - cron: "*/30 10-23,0-5 * * *"
+    # Fim do dia, 19h45 BRT (22h45 UTC): segundo push (o primeiro é o cron das
+    # 09h no vercel.json) e segunda varredura da distribuição DF-e.
+    # NÃO passe das 20h: a janela padrão do push fecha em 21h exclusivo
+    # (pushHoraFim, src/lib/alertas/push.ts) e o disparo seria descartado.
+    # O :45 evita cair junto com o disparo intradiário dos múltiplos de 30.
+    - cron: "45 22 * * *"
+  workflow_dispatch:
+    inputs:
+      rotas:
+        description: "Rotas a chamar, separadas por espaço (sem /api/jobs/)"
+        required: true
+        default: "fila-fiscal sincronizar-catalogos importar-nfe-email"
+
+# Um disparo por vez: job atrasado não deve rodar junto com o seguinte.
+concurrency:
+  group: jobs-agendados
+  cancel-in-progress: false
+
+jobs:
+  disparar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Definir rotas do disparo
+        id: alvo
+        env:
+          AGENDA: ${{ github.event.schedule }}
+          MANUAL: ${{ inputs.rotas }}
+        run: |
+          case "$AGENDA" in
+            "45 22 * * *") rotas="alertas-push distribuicao-sefaz" ;;
+            "") rotas="$MANUAL" ;;
+            *) rotas="fila-fiscal sincronizar-catalogos importar-nfe-email" ;;
+          esac
+          echo "rotas=$rotas" >> "$GITHUB_OUTPUT"
+          echo "Rotas: $rotas"
+
+      - name: Chamar as rotas
+        env:
+          BASE: ${{ vars.APP_BASE_URL }}
+          SECRET: ${{ secrets.CRON_SECRET }}
+          ROTAS: ${{ steps.alvo.outputs.rotas }}
+        run: |
+          set -u
+          if [ -z "${BASE:-}" ] || [ -z "${SECRET:-}" ]; then
+            echo "::error::APP_BASE_URL (variable) e CRON_SECRET (secret) precisam estar configurados."
+            exit 1
+          fi
+
+          falhas=0
+          for rota in $ROTAS; do
+            url="${BASE%/}/api/jobs/$rota"
+            echo "--- $rota"
+            # --max-time 300 casa com o maxDuration das rotas.
+            # 2 tentativas: cold start do Vercel as vezes derruba a primeira.
+            corpo=$(mktemp)
+            codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+              --retry 2 --retry-delay 10 --retry-all-errors \
+              --max-time 300 \
+              -H "Authorization: Bearer $SECRET" \
+              "$url") || codigo=000
+            echo "HTTP $codigo"
+            head -c 2000 "$corpo"; echo
+            case "$codigo" in
+              2*) ;;
+              *) echo "::error::$rota respondeu $codigo"; falhas=$((falhas + 1)) ;;
+            esac
+          done
+
+          # Falha parcial derruba o workflow: aqui, ao contrário do dispatcher
+          # diário, o sinal de erro é o próprio status do run — é o único lugar
+          # onde alguém vai olhar.
+          [ "$falhas" -eq 0 ] || exit 1
