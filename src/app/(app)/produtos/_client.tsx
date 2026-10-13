@@ -14,7 +14,7 @@ import {
   ArrowUp, ArrowDown, ChevronsUpDown, Globe, SlidersHorizontal, Columns3,
   Download, Rows2, Rows3, LayoutGrid, FilterX, Percent, BottleWine, Printer, ImagePlus,
   Check as CheckIcon,
-  TrendingUp, Clock, FileSpreadsheet, ChevronUp,
+  TrendingUp, Clock, FileSpreadsheet, ChevronUp, Loader2,
 } from "lucide-react";
 import { cn, brl, margem, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
 import { thumbSrc } from "@/lib/imagem";
@@ -2401,19 +2401,40 @@ function ImageViewer({ url, onClose }: { url: string; onClose: () => void }) {
     };
   }, [onClose]);
 
+  const src = thumbSrc(url, 1080);
+  const foto = useFoto(src);
+
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-8"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
+      aria-busy={foto.estado === "carregando"}
     >
-      <div className="absolute inset-0 bg-ink/85 backdrop-blur-sm" aria-hidden />
+      {/* Preto fixo, não `ink`: no tema escuro `ink` é quase branco e lavava a foto. */}
+      <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" aria-hidden />
+      {foto.estado === "carregando" && (
+        <span role="status" className="absolute inset-0 grid place-items-center text-white">
+          <Loader2 size={36} className="animate-spin motion-reduce:animate-none" aria-hidden />
+          <span className="sr-only">Carregando imagem</span>
+        </span>
+      )}
+      {foto.estado === "erro" && (
+        <p className="relative text-sm text-white">
+          Não foi possível carregar a imagem. Feche e tente de novo.
+        </p>
+      )}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={thumbSrc(url, 1080)}
+        {...foto.img}
+        src={src}
         alt=""
-        className="relative max-h-full max-w-full rounded-[var(--radius-lg)] object-contain shadow-2xl"
+        className={cn(
+          "relative max-h-full max-w-full rounded-[var(--radius-lg)] object-contain shadow-2xl",
+          fotoClasse(foto.estado),
+          foto.estado === "erro" && "hidden",
+        )}
         onClick={(e) => e.stopPropagation()}
       />
       <button
