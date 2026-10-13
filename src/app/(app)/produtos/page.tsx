@@ -21,6 +21,7 @@ export default async function ProdutosPage({
   // Campo desligado não filtra: link antigo (ou favorito do navegador) com
   // `?marca=` esconderia produtos por um critério que a tela não mostra mais.
   if (!campos.marca) consulta.marca = "";
+  if (!campos.restricaoIdade) consulta.flags.maiorIdade = false;
 
   // Só a listagem em si: as opções dos filtros vêm do layout, que não
   // re-renderiza quando muda apenas a query string.

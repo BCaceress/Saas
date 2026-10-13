@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { featureAtiva } from "@/lib/planos";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { getActiveSiteId } from "@/lib/sites";
 import { listSitePaymentMethods } from "@/lib/vendas";
 import { db } from "@/lib/prisma";
@@ -60,7 +61,9 @@ export default async function TotemPage() {
         metodosAtivos={metodosAtivos}
         tenantNome={ctx.tenant.nome}
         tenantLogoUrl={ctx.tenant.logoUrl}
-        controleIdade={site?.controleIdade ?? false}
+        controleIdade={
+          camposDoTenant(ctx.tenant).restricaoIdade && (site?.controleIdade ?? false)
+        }
         temPin={!!ctx.tenant.totemPinHash}
         maisVendidos={maisVendidos}
         painelHref={painelHref}

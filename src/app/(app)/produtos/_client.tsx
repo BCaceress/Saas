@@ -7,7 +7,7 @@ import { createPortal } from "react-dom";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Plus, Tag, FolderTree, Warehouse, Truck, Upload, Search, Settings2,
+  Plus, Tag, FolderTree, Warehouse, Truck, Upload, Search, Settings2, Settings,
   Pencil, ChevronDown,
   MoreVertical, EyeOff, Eye, X,
   Barcode, Hash, ChevronLeft, ChevronRight,
@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { cn, brl, margem, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
 import { thumbSrc } from "@/lib/imagem";
-import { FotoEspera, fotoClasse, useFoto } from "@/components/app/foto-thumb";
+import { FotoEspera, fotoClasse, useFoto, useFotoEmFila } from "@/components/app/foto-thumb";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import { CAMPOS_PADRAO, type CamposCadastro } from "@/lib/cadastro-campos";
 import { Button } from "@/components/ui/button";
@@ -59,7 +59,7 @@ import { baixarXlsx } from "@/lib/baixar-xlsx";
 import {
   SEM_MARCA, SEM_TAG,
   type LoteOpcoes,
-  type ProductRow, type ProductPackagingItem, type ProdutoConsulta, type ProdutoFlags,
+  type ProductRow, type ProductBarcodeItem, type ProductPackagingItem, type ProdutoConsulta, type ProdutoFlags,
   type ProdutoGiro, type ProdutoSortDir, type ProdutoSortField,
   type ProdutosPaginaInicial,
 } from "./_types";
@@ -361,19 +361,43 @@ export function ProdutosClient(props: {
       ),
     [campos],
   );
-  const [info, setInfo] = useState<Record<InfoKey, boolean>>(() => {
+  const [infoEscolhida, setInfo] = useState<Record<InfoKey, boolean>>(() => {
     const daUrl = searchParams.get("info");
     if (daUrl == null) return readLS("produtos:info", DEFAULT_INFO);
     const ligadas = new Set(daUrl.split(",").filter(Boolean));
     return Object.fromEntries(INFO_ORDER.map((k) => [k, ligadas.has(k)])) as Record<InfoKey, boolean>;
   });
+  // Mesma regra das colunas: +18 e SKU desligados em Configurações somem da
+  // tela, e a escolha do operador fica guardada para quando religar.
+  const info = useMemo(
+    () => ({
+      restricao: infoEscolhida.restricao && campos.restricaoIdade,
+      sku: infoEscolhida.sku && campos.sku,
+    }),
+    [infoEscolhida, campos],
+  );
+  const infoDisponiveis = useMemo(
+    () =>
+      INFO_ORDER.filter(
+        (k) => (k !== "restricao" || campos.restricaoIdade) && (k !== "sku" || campos.sku),
+      ),
+    [campos],
+  );
+  // Filtro por +18 some junto com o campo.
+  const flagsDisponiveis = useMemo(
+    () =>
+      (Object.keys(FLAG_LABEL) as (keyof ProdutoFlags)[]).filter(
+        (k) => k !== "maiorIdade" || campos.restricaoIdade,
+      ),
+    [campos],
+  );
   const [density, setDensity] = useState<Density>(
     () => readLS("produtos:ui", { density: "compact" as Density }).density,
   );
   // Grava a ESCOLHA, não o resultado: salvar o derivado apagaria a preferência
   // de quem apenas desligou o campo por um tempo em Configurações.
   useEffect(() => { try { localStorage.setItem("produtos:cols", JSON.stringify(colsEscolhidas)); } catch {} }, [colsEscolhidas]);
-  useEffect(() => { try { localStorage.setItem("produtos:info", JSON.stringify(info)); } catch {} }, [info]);
+  useEffect(() => { try { localStorage.setItem("produtos:info", JSON.stringify(infoEscolhida)); } catch {} }, [infoEscolhida]);
   useEffect(() => { try { localStorage.setItem("produtos:ui", JSON.stringify({ density })); } catch {} }, [density]);
 
   /** URL completa da tela: consulta + colunas + informativos. */
@@ -854,6 +878,21 @@ export function ProdutosClient(props: {
               <MenuItem icon={<Upload size={15} />} onClick={() => setSheet("csv")}>Importar CSV</MenuItem>
             </Menu>
 
+            {/* Marca, local, +18 e SKU ligam e desligam em Configurações — e
+                quem sente falta de um campo procura aqui, não lá. Em tela
+                estreita fica só o ícone: o cabeçalho já carrega dois botões. */}
+            <Button
+              variant="secondary"
+              size="sm"
+              className="gap-1.5 border-transparent"
+              title="Configurações de produtos"
+              aria-label="Configurações de produtos"
+              onClick={() => router.push("/configuracoes/cadastro")}
+            >
+              <Settings size={15} />
+              <span className="hidden lg:inline">Configurações de produtos</span>
+            </Button>
+
             <div className="inline-flex shadow-[var(--shadow-1)] rounded-full">
               <Button size="sm" onClick={() => novo("simples")} className="gap-1.5 rounded-r-none shadow-none">
                 <Plus size={15} /> Novo produto
@@ -973,7 +1012,7 @@ export function ProdutosClient(props: {
               }
             >
               <div className="px-1 py-0.5">
-                {(Object.keys(FLAG_LABEL) as (keyof ProdutoFlags)[]).map((k) => (
+                {flagsDisponiveis.map((k) => (
                   <CheckRow
                     key={k}
                     checked={consulta.flags[k]}
@@ -1016,7 +1055,7 @@ export function ProdutosClient(props: {
               ))}
               <div className="my-1 h-px bg-line" role="separator" />
               <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-faint">Informativos</p>
-              {INFO_ORDER.map((k) => (
+              {infoDisponiveis.map((k) => (
                 <CheckRow
                   key={k}
                   checked={info[k]}
@@ -1201,7 +1240,7 @@ export function ProdutosClient(props: {
                                 )}
                               </div>
                               {(info.sku || p.ean) && !denso && (
-                                <BarcodeCell sku={p.sku} ean={p.ean} packagings={p.packagings} showSku={info.sku} />
+                                <BarcodeCell sku={p.sku} ean={p.ean} codigos={p.codigos} packagings={p.packagings} showSku={info.sku} />
                               )}
                             </div>
                           </div>
@@ -1525,6 +1564,7 @@ export function ProdutosClient(props: {
               onClose={() => setEtiquetasOpen(false)}
               products={etiquetasAlvo}
               usaMarcas={campos.marca}
+              usaSku={campos.sku}
             />
           : <LoadingSheet title="Etiquetas" onClose={() => setEtiquetasOpen(false)} />
       )}
@@ -1870,6 +1910,7 @@ function ProductCard({
   info: Record<InfoKey, boolean>;
 }) {
   const giroEstado = useContext(GiroEstadoContext);
+  const tip = useTooltip();
   const level = stockLevel(p);
   const qty = stockQty(p);
   const m = p.tipo === "INSUMO" ? null : margem(p.precoVenda, p.custo);
@@ -1940,7 +1981,13 @@ function ProductCard({
                 <span className="inline-flex items-center gap-1"><Hash size={10} className="shrink-0" />{p.sku}</span>
               )}
               {p.ean && (
-                <span className="inline-flex items-center gap-1"><Barcode size={10} className="shrink-0" />{p.ean}</span>
+                <span
+                  className="inline-flex cursor-help items-center gap-1"
+                  onMouseEnter={(e) => tip.mostrar(e.currentTarget, () => <CodigosTooltip codigos={p.codigos} packagings={p.packagings} />)}
+                  onMouseLeave={tip.esconder}
+                >
+                  <Barcode size={10} className="shrink-0" />{p.ean}
+                </span>
               )}
             </div>
           )}
@@ -2103,7 +2150,8 @@ function Thumb({
   big?: boolean;
 }) {
   const size = big ? "h-12 w-12" : "h-9 w-9";
-  const foto = useFoto(url ?? "");
+  // Em fila: a página pinta e responde ao clique antes de a última foto chegar.
+  const foto = useFotoEmFila(url ? thumbSrc(url, big ? 128 : 96) : "");
   // Foto que não abriu cai no ícone do tipo: quadro quebrado não informa nada
   // e ainda convidaria ao zoom de uma imagem que não existe.
   if (url && foto.estado !== "erro") {
@@ -2123,10 +2171,9 @@ function Thumb({
         */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={thumbSrc(url, big ? 128 : 96)}
           alt=""
-          loading="lazy"
           decoding="async"
+          fetchPriority="low"
           width={big ? 48 : 36}
           height={big ? 48 : 36}
           {...foto.img}
@@ -2322,69 +2369,82 @@ const useTooltip = () => useContext(TooltipCtx);
 
 // ── Célula de códigos de barra com tooltip portal ────────────────────────────
 
+/**
+ * Todos os códigos de barra do produto numa lista só: os da unidade (principal
+ * e apelidos de outras marcas) e os das embalagens fechadas — fardo, caixa.
+ */
+function CodigosTooltip({
+  codigos, packagings,
+}: {
+  codigos: ProductBarcodeItem[];
+  packagings: ProductPackagingItem[];
+}) {
+  const itens = [
+    ...codigos.map((c) => ({
+      label: c.rotulo ?? (c.principal ? "Principal" : "Unidade"),
+      code: c.codigo,
+    })),
+    ...packagings.filter((pk) => !!pk.ean).map((pk) => ({
+      label: `${pk.nome} · ${pk.fatorConversao} un`,
+      code: pk.ean!,
+    })),
+  ];
+  return (
+    <>
+      <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
+        <Barcode size={11} /> Códigos de barra
+      </div>
+      <div className="space-y-1">
+        {itens.map((item, i) => (
+          <div key={`${item.code}-${i}`} className="flex items-baseline justify-between gap-3 text-[11px]">
+            <span className="min-w-0 truncate text-faint">{item.label}</span>
+            <span className="shrink-0 font-mono text-ink">{item.code}</span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function BarcodeCell({
-  sku, ean, packagings, showSku = true,
+  sku, ean, codigos, packagings, showSku = true,
 }: {
   sku: string;
   ean: string | null;
+  codigos: ProductBarcodeItem[];
   packagings: ProductPackagingItem[];
   showSku?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const tip = useTooltip();
 
-  const codes = [
-    ean ? { label: "Unid.", code: ean } : null,
-    ...packagings.filter((pk) => !!pk.ean).map((pk) => ({
-      label: `${pk.nome} ${pk.fatorConversao}x`,
-      code: pk.ean!,
-    })),
-  ].filter(Boolean) as { label: string; code: string }[];
-
-  const hasCodes = codes.length > 0;
+  const hasCodes = codigos.length > 0 || packagings.some((pk) => !!pk.ean);
 
   function handleEnter() {
     if (!hasCodes) return;
-    tip.mostrar(ref.current, () => (
-      <>
-        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
-          <Barcode size={11} /> Códigos de barra
-        </div>
-        <div className="space-y-1">
-          {codes.map((item) => (
-            <div key={item.code} className="flex items-center gap-3 text-[11px]">
-              <span className="w-20 shrink-0 text-faint">{item.label}</span>
-              <span className="font-mono text-ink">{item.code}</span>
-            </div>
-          ))}
-        </div>
-      </>
-    ));
+    tip.mostrar(ref.current, () => <CodigosTooltip codigos={codigos} packagings={packagings} />);
   }
 
   return (
-    <>
-      <div
-        ref={ref}
-        className={cn("mt-0.5 flex items-center gap-3", hasCodes && "cursor-help")}
-        onMouseEnter={handleEnter}
-        onMouseLeave={tip.esconder}
-      >
-        {showSku && (
-          <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-2">
-            <Hash size={10} className="shrink-0 text-muted" />
-            {sku}
-          </span>
-        )}
-        {ean && (
-          <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-2">
-            <Barcode size={10} className="shrink-0 text-muted" />
-            {ean}
-          </span>
-        )}
-      </div>
-
-    </>
+    <div
+      ref={ref}
+      className={cn("mt-0.5 flex items-center gap-3", hasCodes && "cursor-help")}
+      onMouseEnter={handleEnter}
+      onMouseLeave={tip.esconder}
+    >
+      {showSku && (
+        <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-2">
+          <Hash size={10} className="shrink-0 text-muted" />
+          {sku}
+        </span>
+      )}
+      {ean && (
+        <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-2">
+          <Barcode size={10} className="shrink-0 text-muted" />
+          {ean}
+        </span>
+      )}
+    </div>
   );
 }
 

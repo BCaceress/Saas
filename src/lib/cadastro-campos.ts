@@ -19,17 +19,31 @@ export type CamposCadastro = {
   marca: boolean;
   /** Local de armazenagem (geladeira, depósito, prateleira) dentro da loja. */
   armazenagem: boolean;
+  /**
+   * Venda restrita a maiores de 18. Desligado, o cadastro não pergunta e o
+   * PDV/totem não pedem confirmação de idade, em loja nenhuma.
+   */
+  restricaoIdade: boolean;
+  /**
+   * SKU visível. O código interno é gerado sempre — é chave do produto;
+   * desligado, só deixa de aparecer no cadastro, na listagem e na etiqueta.
+   */
+  sku: boolean;
 };
 
 export function camposDoTenant(t: {
   usaMarcas?: boolean | null;
   usaArmazenagem?: boolean | null;
+  usaRestricaoIdade?: boolean | null;
+  usaSku?: boolean | null;
 }): CamposCadastro {
   // `null`/`undefined` = ligado: é o padrão do banco, e esconder campo por
   // dado faltando seria esconder o que a empresa já usa.
   return {
     marca: t.usaMarcas !== false,
     armazenagem: t.usaArmazenagem !== false,
+    restricaoIdade: t.usaRestricaoIdade !== false,
+    sku: t.usaSku !== false,
   };
 }
 

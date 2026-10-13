@@ -101,11 +101,13 @@ export default async function ConfiguracoesMobilePage() {
         {
           href: "/m/configuracoes/cadastro",
           icone: ListChecks,
-          titulo: "Campos do cadastro",
-          descricao: "Marca e local de armazenagem: use ou esconda.",
+          titulo: "Configurações de cadastro de produtos",
+          descricao: "Marca, local, venda +18 e SKU: use ou esconda.",
           valor: [
             tenant.usaMarcas ? null : "sem marca",
             tenant.usaArmazenagem ? null : "sem local",
+            tenant.usaRestricaoIdade ? null : "sem +18",
+            tenant.usaSku ? null : "sem SKU",
           ]
             .filter(Boolean)
             .join(" · "),

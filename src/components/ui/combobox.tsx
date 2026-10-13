@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Check, Plus } from "lucide-react";
+import { ChevronDown, Check, Plus, CornerDownRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type ComboOption = { value: string; label: string; group?: string };
@@ -118,8 +118,16 @@ export function Combobox({
   const listaRef = React.useRef<HTMLDivElement>(null);
   const caixa = useAncora(open, wrapRef);
 
-  const display =
-    options.find((o) => o.value === value)?.label ?? (freeText ? value : "");
+  // Opção agrupada mostra o pai junto no campo fechado ("Bebidas › Cerveja"):
+  // subcategoria sozinha não diz de qual categoria é.
+  const escolhida = options.find((o) => o.value === value);
+  const display = escolhida
+    ? escolhida.group
+      ? `${escolhida.group} › ${escolhida.label}`
+      : escolhida.label
+    : freeText
+      ? value
+      : "";
 
   const filtered = React.useMemo(() => {
     const q = norm(query);
@@ -272,8 +280,16 @@ export function Combobox({
         >
           {rows.map(({ option: o, head }, i) => (
             <React.Fragment key={o.value}>
+              {/* O grupo é o pai, e precisa ler como pai: nome em tamanho de
+                  texto, não de legenda, com uma linha separando do grupo de
+                  cima. As opções abaixo entram recuadas, com a seta. */}
               {head && (
-                <div className="px-2.5 pb-1 pt-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.15em] text-faint">
+                <div
+                  className={cn(
+                    "px-2.5 pb-1 pt-2.5 font-display text-[15px] font-semibold text-ink",
+                    i > 0 && "mt-1 border-t border-line",
+                  )}
+                >
                   {head}
                 </div>
               )}
@@ -287,8 +303,12 @@ export function Combobox({
                 className={cn(
                   "flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-2 text-left text-sm transition-colors",
                   i === active ? "bg-surface-2 text-ink" : "text-ink-2",
+                  o.group && "pl-4",
                 )}
               >
+                {o.group && (
+                  <CornerDownRight size={13} aria-hidden className="shrink-0 text-faint" />
+                )}
                 <span className="min-w-0 flex-1 truncate">{o.label}</span>
                 {o.value === value && (
                   <Check size={14} className="shrink-0 text-brand-strong" />

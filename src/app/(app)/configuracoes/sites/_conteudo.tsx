@@ -60,6 +60,7 @@ export async function ConteudoSites() {
         }))}
         locations={storageLocations}
         usaArmazenagem={campos.armazenagem}
+        usaRestricaoIdade={campos.restricaoIdade}
       />
     </>
   );

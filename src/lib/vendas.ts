@@ -4,6 +4,7 @@ import { aplicarMovimento, registrarProducao } from "./estoque";
 import { emitirHookFiscal } from "./fiscal";
 import { defaultPaymentMethods } from "./presets";
 import { onlyDigits } from "./normalize";
+import { camposDoTenant } from "./cadastro-campos";
 import type { PaymentMethod } from "@/generated/prisma";
 
 // ============================================================
@@ -418,11 +419,19 @@ export async function finalizarVenda(
   if (sale.items.length === 0) throw new Error("Adicione itens antes de finalizar.");
 
   // +18 (§4): só exige confirmação se a loja tiver o controle de idade ativado
-  const site = await comTenant(tenantId, basePrisma.site.findFirst({
-    where: { id: sale.siteId, tenantId },
-    select: { controleIdade: true },
-  }));
-  if (site?.controleIdade) {
+  // — e se a empresa não desligou o controle inteiro em Configurações → Campos
+  // do cadastro (o PDV e o totem deixam de perguntar; o servidor acompanha).
+  const [site, empresa] = await Promise.all([
+    comTenant(tenantId, basePrisma.site.findFirst({
+      where: { id: sale.siteId, tenantId },
+      select: { controleIdade: true },
+    })),
+    basePrisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { usaRestricaoIdade: true },
+    }),
+  ]);
+  if (site?.controleIdade && camposDoTenant(empresa ?? {}).restricaoIdade) {
     const restritos = await comTenant(tenantId, basePrisma.product.count({
       where: { tenantId, restricaoIdade: true, id: { in: sale.items.map((i) => i.productId) } },
     }));

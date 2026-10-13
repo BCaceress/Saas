@@ -1049,7 +1049,9 @@ export function SimpleProductForm({
       focusField("sub");
       return;
     }
-    if (idealAbaixoDoMinimo) {
+    // Só no cadastro: na edição os campos de estoque não estão na tela, e
+    // barrar o Salvar por um campo invisível deixaria o operador sem saída.
+    if (mode === "new" && idealAbaixoDoMinimo) {
       setError("O estoque ideal precisa ser maior que o mínimo.");
       focusField("ideal");
       return;
@@ -1268,7 +1270,7 @@ export function SimpleProductForm({
         breadcrumbs={[{ label: "Produtos", href: volta }, { label: title }]}
         title={title}
         badge={
-          mode === "edit" && product?.sku ? (
+          campos.sku && mode === "edit" && product?.sku ? (
             <SkuTag sku={product.sku} />
           ) : undefined
         }
@@ -1600,11 +1602,13 @@ export function SimpleProductForm({
 
                 <div className="grid grid-cols-1 items-start gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-12">
                   <Field
-                    label="Categoria"
+                    label="Categoria e subcategoria"
                     htmlFor="sub"
                     required
-                    error={faltando.sub ? "Escolha a categoria." : undefined}
-                    className="xl:col-span-3"
+                    error={faltando.sub ? "Escolha a subcategoria." : undefined}
+                    // Uma coluna a mais que os vizinhos: o campo fechado mostra
+                    // "Categoria › Subcategoria".
+                    className="xl:col-span-4"
                   >
                     <div onBlur={() => touch("sub")}>
                       <Combobox
@@ -1613,7 +1617,7 @@ export function SimpleProductForm({
                         onChange={setSubcategoryId}
                         options={subOptions}
                         placeholder="Busque ou crie…"
-                        emptyText="Nenhuma categoria com esse nome."
+                        emptyText="Nenhuma categoria ou subcategoria com esse nome."
                         // Sem marca na tela, o Enter pula direto para o preço.
                         onCommit={() => focusById(campos.marca ? "marca" : "preco")}
                         renderCreate={(q, close) => (
@@ -1681,7 +1685,7 @@ export function SimpleProductForm({
 
                   {/* SKU ao lado do preço: são as duas etiquetas que o operador
                       confere junto — a de prateleira e a de preço. */}
-                  {showSku && (
+                  {campos.sku && showSku && (
                     <Field
                       label="SKU"
                       htmlFor="sku"
@@ -1750,20 +1754,25 @@ export function SimpleProductForm({
                     que pedem confirmação de idade antes de fechar a venda. O
                     enriquecimento por EAN já marca sozinho em bebida alcoólica —
                     o campo existe para conferir e desmarcar. */}
-                <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-ink-2">
-                  <input
-                    type="checkbox"
-                    checked={restricaoIdade}
-                    onChange={(e) => setIdade(e.target.checked)}
-                    className="cursor-pointer accent-[var(--brand)]"
-                  />
-                  Venda restrita a maiores de 18 anos
-                </label>
+                {/* Empresa que não controla +18 (Configurações → Campos do
+                    cadastro) não vê a pergunta; o que já está gravado no
+                    produto viaja de volta intacto. */}
+                {campos.restricaoIdade && (
+                  <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-ink-2">
+                    <input
+                      type="checkbox"
+                      checked={restricaoIdade}
+                      onChange={(e) => setIdade(e.target.checked)}
+                      className="cursor-pointer accent-[var(--brand)]"
+                    />
+                    Venda restrita a maiores de 18 anos
+                  </label>
+                )}
 
                 {/* Saída rara vira link, não campo: o SKU nasce da categoria.
                     (A URL da imagem tem o atalho dela junto do quadro, na faixa
                     de identificação.) */}
-                {!showSku && (
+                {campos.sku && !showSku && (
                   <div className="flex flex-wrap items-center gap-4">
                     <button
                       type="button"
@@ -1780,7 +1789,11 @@ export function SimpleProductForm({
                   Fica no cadastro (e não numa gaveta) porque é a única coisa
                   daqui que a nota NÃO traz: o local é escolha de layout da loja
                   e a contagem inicial é o que faz o mercado que já tem
-                  mercadoria na prateleira sair do zero. */}
+                  mercadoria na prateleira sair do zero.
+                  Só no CADASTRO: na edição a faixa não aparece — local, mínimo
+                  e ideal se ajustam na tela de Estoque, e o que está gravado
+                  viaja de volta como veio. */}
+              {mode === "new" && (
               <div className="flex flex-col gap-4 border-t border-line p-5 sm:p-6">
                 <Eyebrow as="h2">Estoque</Eyebrow>
 
@@ -2003,6 +2016,7 @@ export function SimpleProductForm({
                   </p>
                 )}
               </div>
+              )}
 
               {/* ── Códigos deste produto ──
                   Tudo o que responde por ele, em dois grupos: a unidade (o que

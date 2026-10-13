@@ -179,6 +179,8 @@ export async function updateEstoqueConfig(input: z.input<typeof estoqueConfigSch
 const camposCadastroSchema = z.object({
   usaMarcas: z.boolean(),
   usaArmazenagem: z.boolean(),
+  usaRestricaoIdade: z.boolean(),
+  usaSku: z.boolean(),
 });
 
 export async function updateCamposCadastro(input: z.input<typeof camposCadastroSchema>) {

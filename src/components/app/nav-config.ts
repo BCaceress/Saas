@@ -638,7 +638,7 @@ export const NAV_GROUPS: NavGroup[] = [
           },
           {
             href: "/configuracoes/cadastro",
-            label: "Campos do cadastro",
+            label: "Cadastro de produtos",
             icon: ListChecks,
             enabled: true,
             ocultoNoMenu: true,

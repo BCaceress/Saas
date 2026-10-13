@@ -1,5 +1,6 @@
 import { requireFeature } from "@/lib/guard";
 import { featureAtiva } from "@/lib/planos";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { runWithTenant } from "@/lib/tenant-context";
 import { getActiveSiteId, listSites } from "@/lib/sites";
 import { sessaoAtual, relatorioCaixa } from "@/lib/caixa";
@@ -14,8 +15,13 @@ export default async function VendasPage() {
 
   return runWithTenant(ctx.tenant.id, async () => {
     const siteId = await getActiveSiteId();
+    // Controle +18 desligado na empresa: nenhuma loja pede confirmação de
+    // idade, mesmo com o `controleIdade` dela gravado como ligado.
+    const controlaIdade = camposDoTenant(ctx.tenant).restricaoIdade;
     const [sites, produtos, sessao, metodos, integracao] = await Promise.all([
-      listSites(),
+      listSites().then((l) =>
+        controlaIdade ? l : l.map((s) => ({ ...s, controleIdade: false })),
+      ),
       loadProdutosVenda(siteId),
       siteId ? sessaoAtual(ctx.tenant.id, siteId, ctx.user.id ?? "") : Promise.resolve(null),
       siteId ? listSitePaymentMethods(ctx.tenant.id, siteId) : Promise.resolve([]),

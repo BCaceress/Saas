@@ -146,6 +146,12 @@ model Tenant {
   // Brand nem StorageLocation, e o que já foi preenchido continua no banco.
   usaMarcas      Boolean @default(true)
   usaArmazenagem Boolean @default(true)
+  // Venda +18: desligado, o cadastro não pergunta e o PDV/totem não pedem
+  // confirmação de idade — `Product.restricaoIdade` e `Site.controleIdade`
+  // continuam gravados. SKU: desligado, o código interno segue sendo gerado
+  // (é chave do produto), só deixa de aparecer para o operador.
+  usaRestricaoIdade Boolean @default(true)
+  usaSku            Boolean @default(true)
 
   // Autoatendimento (totem): PIN para sair do modo quiosque. null = saída livre.
   totemPinHash String?

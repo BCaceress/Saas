@@ -184,19 +184,21 @@ function printLabels(
 // ── Side Panel ────────────────────────────────────────────────────────────────
 
 export function EtiquetasSheet({
-  open, onClose, products, usaMarcas = true,
+  open, onClose, products, usaMarcas = true, usaSku = true,
 }: {
   open: boolean;
   onClose: () => void;
   products: ProductRow[];
   /** Sem marca na operação, a etiqueta não oferece imprimir marca. */
   usaMarcas?: boolean;
+  /** SKU escondido na operação: a etiqueta não imprime nem oferece. */
+  usaSku?: boolean;
 }) {
   const [modelo, setModelo] = useState<Modelo>("gondola");
   const [papel, setPapel] = useState<Papel>("58");
   const [qtyMode, setQtyMode] = useState<"one" | "custom">("one");
   const [qtyCustom, setQtyCustom] = useState(5);
-  const [flags, setFlags] = useState<Flags>({ sku: true, barcode: true, marca: usaMarcas, preco: true });
+  const [flags, setFlags] = useState<Flags>({ sku: usaSku, barcode: true, marca: usaMarcas, preco: true });
 
   // Não existe código favorito no cadastro: produto com mais de um código de
   // unidade obriga a escolher aqui qual vai impresso. Chaveado pelo id do
@@ -323,7 +325,9 @@ export function EtiquetasSheet({
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-faint">Informações opcionais</h3>
           <div className="space-y-1">
-            <CheckRow checked={flags.sku} onChange={() => toggle("sku")} label="Mostrar SKU" />
+            {usaSku && (
+              <CheckRow checked={flags.sku} onChange={() => toggle("sku")} label="Mostrar SKU" />
+            )}
             <CheckRow checked={flags.barcode} onChange={() => toggle("barcode")} label="Mostrar código de barras" />
             {usaMarcas && (
               <CheckRow checked={flags.marca} onChange={() => toggle("marca")} label="Mostrar marca" />

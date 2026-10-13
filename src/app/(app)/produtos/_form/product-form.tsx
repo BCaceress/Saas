@@ -462,7 +462,7 @@ function InsumoForm({
         ]}
         title={title}
         badge={
-          mode === "edit" && product?.sku ? (
+          campos.sku && mode === "edit" && product?.sku ? (
             <SkuTag sku={product.sku} />
           ) : undefined
         }
@@ -570,20 +570,22 @@ function InsumoForm({
                     ))}
                   </Select>
                 </div>
-                <Field
-                  label="SKU"
-                  htmlFor="sku"
-                  hint="Vazio = gerado automaticamente ao salvar. Editável."
-                  className="sm:col-span-2"
-                >
-                  <Input
-                    id="sku"
-                    value={sku}
-                    onChange={(e) => setSku(e.target.value.toUpperCase())}
-                    placeholder={skuPreview(subcategoryId)}
-                    className="font-mono placeholder:font-sans placeholder:font-normal placeholder:tracking-normal"
-                  />
-                </Field>
+                {campos.sku && (
+                  <Field
+                    label="SKU"
+                    htmlFor="sku"
+                    hint="Vazio = gerado automaticamente ao salvar. Editável."
+                    className="sm:col-span-2"
+                  >
+                    <Input
+                      id="sku"
+                      value={sku}
+                      onChange={(e) => setSku(e.target.value.toUpperCase())}
+                      placeholder={skuPreview(subcategoryId)}
+                      className="font-mono placeholder:font-sans placeholder:font-normal placeholder:tracking-normal"
+                    />
+                  </Field>
+                )}
               </div>
             </SectionBlock>
 

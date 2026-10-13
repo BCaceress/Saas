@@ -48,7 +48,7 @@ const CARDS: {
   {
     href: "/configuracoes/cadastro",
     icon: ListChecks,
-    title: "Campos do cadastro",
+    title: "Configurações de cadastro de produtos",
     description: "Esconda marca e local de armazenagem se a operação não usa.",
   },
   {

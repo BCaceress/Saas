@@ -76,6 +76,7 @@ export function SitesManager({
   allSites,
   locations: locationsInitial,
   usaArmazenagem = true,
+  usaRestricaoIdade = true,
 }: {
   sites: Site[];
   allSites: Site[];
@@ -83,6 +84,9 @@ export function SitesManager({
   /** Desligado em Configurações → Campos do cadastro: a lista vira só de
    * estabelecimentos, sem o nível de locais embaixo de cada um. */
   usaArmazenagem?: boolean;
+  /** Controle +18 desligado na empresa: a loja não oferece a opção. O valor
+   * gravado segue no banco e volta a valer se a empresa religar. */
+  usaRestricaoIdade?: boolean;
 }) {
   const [sites, setSites] = useState(initial);
   const [pending, startTransition] = useTransition();
@@ -516,7 +520,7 @@ export function SitesManager({
           )}
 
           {/* Venda restrita +18 — só faz sentido em loja (PDV) */}
-          {tipo === "LOJA" && (
+          {usaRestricaoIdade && tipo === "LOJA" && (
             <fieldset className="flex flex-col gap-2 border-t border-line pt-3">
               <legend className="text-xs font-semibold uppercase tracking-wide text-faint">
                 Vendas
