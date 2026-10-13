@@ -28,8 +28,8 @@ import { importarXmlRecebimentoAction } from "@/app/(app)/recebimento/conferenci
 import {
   buscarPorCodigoAction,
   buscarPorNomeAction,
-  consultarEanExternoAction,
-  type ConsultaCosmos,
+  consultarFotoEanAction,
+  type ConsultaFoto,
 } from "./actions";
 import type { FichaProduto, ProdutoResumo } from "../_produto-data";
 
@@ -441,7 +441,7 @@ function ResultadoDaNota({
 
 /**
  * Código lido, produto inexistente. Duas saídas: procurar por nome (pode ser
- * cadastro sem EAN) ou consultar a base pública para saber o que é aquilo.
+ * cadastro sem EAN) ou ver a foto na base pública para saber o que é aquilo.
  *
  * Cadastrar não é opção aqui de propósito — formulário de produto não vai para
  * o celular.
@@ -450,8 +450,8 @@ function NaoEncontrado({ codigo }: { codigo: string }) {
   const [termo, setTermo] = React.useState("");
   const [resultados, setResultados] = React.useState<ProdutoResumo[] | null>(null);
   const [procurando, setProcurando] = React.useState(false);
-  const [cosmos, setCosmos] = React.useState<ConsultaCosmos | null>(null);
-  const [consultandoCosmos, setConsultandoCosmos] = React.useState(false);
+  const [foto, setFoto] = React.useState<ConsultaFoto | null>(null);
+  const [consultandoFoto, setConsultandoFoto] = React.useState(false);
 
   async function procurar(e: React.FormEvent) {
     e.preventDefault();
@@ -465,11 +465,11 @@ function NaoEncontrado({ codigo }: { codigo: string }) {
   }
 
   async function consultarExterno() {
-    setConsultandoCosmos(true);
+    setConsultandoFoto(true);
     try {
-      setCosmos(await consultarEanExternoAction(codigo));
+      setFoto(await consultarFotoEanAction(codigo));
     } finally {
-      setConsultandoCosmos(false);
+      setConsultandoFoto(false);
     }
   }
 
@@ -506,32 +506,38 @@ function NaoEncontrado({ codigo }: { codigo: string }) {
         ))}
 
       <div className="border-t border-line pt-3">
-        {cosmos === null ? (
+        {foto === null ? (
           <Button
             variant="secondary"
             onClick={consultarExterno}
-            disabled={consultandoCosmos}
+            disabled={consultandoFoto}
             className="w-full"
           >
-            {consultandoCosmos ? (
+            {consultandoFoto ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
             ) : (
               <Sparkles className="h-4 w-4" aria-hidden />
             )}
-            Descobrir o que é este código
+            Ver a foto deste código
           </Button>
-        ) : cosmos.ok ? (
+        ) : foto.ok ? (
           <div className="space-y-1">
             <p className="text-xs text-ink-2">Base pública de produtos</p>
-            <p className="font-medium text-ink">{cosmos.nome ?? "Sem descrição"}</p>
-            {cosmos.marca && <p className="text-[13px] text-muted">{cosmos.marca}</p>}
+            {/* <img> cru como no resto do app: a URL é de terceiro e a foto é
+                vista uma vez — não compensa o otimizador. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={foto.imagem}
+              alt="Foto do produto na base pública"
+              className="mx-auto h-44 w-44 rounded-[var(--radius)] border border-line bg-white object-contain"
+            />
             <p className="pt-1 text-xs text-muted">
               Para cadastrar, abra o sistema no computador — o formulário de produto
               não cabe no celular.
             </p>
           </div>
         ) : (
-          <p className="text-[13px] text-muted">{cosmos.erro}</p>
+          <p className="text-[13px] text-muted">{foto.erro}</p>
         )}
       </div>
     </Card>

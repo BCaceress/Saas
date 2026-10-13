@@ -13,7 +13,7 @@ import {
 } from "@/lib/produto-codigo";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { camposDoTenant } from "@/lib/cadastro-campos";
-import { getCosmosByEan, CosmosError } from "@/lib/cosmos";
+import { getImagemCosmosPorEan, CosmosError } from "@/lib/cosmos";
 import {
   montarFicha,
   SELECT_FICHA,
@@ -163,32 +163,26 @@ export async function buscarPorNomeAction(termoRaw: string): Promise<ProdutoResu
   );
 }
 
-export type ConsultaCosmos =
-  | { ok: true; nome: string | null; marca: string | null; imagem: string | null; ncm: string | null }
-  | { ok: false; erro: string };
+export type ConsultaFoto = { ok: true; imagem: string } | { ok: false; erro: string };
 
 /**
- * Consulta o EAN na base pública (Cosmos). Só sob toque explícito: a chamada
- * tem custo por consulta e o token é de servidor — nunca vai ao browser.
+ * Foto do EAN na base pública (CDN da Cosmos) — é o que dá para saber de um
+ * código que a loja não tem: a cara do produto. Só sob toque explícito.
  */
-export async function consultarEanExternoAction(eanRaw: string): Promise<ConsultaCosmos> {
+export async function consultarFotoEanAction(eanRaw: string): Promise<ConsultaFoto> {
   await guardAction("produto.ver", null, { mesmoSuspenso: true });
 
   const ean = onlyDigits(eanRaw);
-  // Cosmos responde por GTIN cadastrado na GS1. Código interno da loja não
-  // existe lá — gastar a consulta para ouvir "não encontrado" é desperdício.
+  // A base responde por GTIN cadastrado na GS1. Código interno da loja não
+  // existe lá — nem adianta perguntar.
   if (gtinValido(ean) === null)
     return { ok: false, erro: "A consulta externa só funciona com EAN/GTIN." };
 
   try {
-    const r = await getCosmosByEan(ean);
-    return {
-      ok: true,
-      nome: r.descricao,
-      marca: r.marca,
-      imagem: r.thumbnail,
-      ncm: r.ncm,
-    };
+    const imagem = await getImagemCosmosPorEan(ean);
+    return imagem
+      ? { ok: true, imagem }
+      : { ok: false, erro: "Sem foto na base pública para este código." };
   } catch (e) {
     if (e instanceof CosmosError) return { ok: false, erro: e.message };
     return { ok: false, erro: "Não foi possível consultar agora." };

@@ -14,7 +14,7 @@ import {
   alternativasPorCodigo,
   alternativasPorTrechoDeCodigo,
 } from "@/lib/produto-codigo";
-import { getCosmosByEan, CosmosError } from "@/lib/cosmos";
+import { getImagemCosmosPorEan } from "@/lib/cosmos";
 import { completeJson, llmConfigured } from "@/lib/llm";
 import { renomearValorDeFiltro } from "@/lib/relatorios/renomear-valor-filtro";
 import {
@@ -1090,7 +1090,9 @@ export async function createProduct(input: ProductInput) {
     if (!sub) throw new Error("Subcategoria inválida.");
     if (skuVal && skuConflict) throw new Error(`SKU "${skuVal}" já está em uso.`);
     await assertCodigosLivres([
-      d.ean,
+      // `ean` é espelho da lista: com `codigos` presente ele já está lá dentro,
+      // e somar os dois acusaria repetido em todo cadastro.
+      ...(d.codigos ? [] : [d.ean]),
       ...(d.codigos ?? []).map((c) => c.codigo),
       ...(d.packagings ?? []).map((pk) => pk.ean),
     ]);
@@ -1172,7 +1174,8 @@ export async function updateProduct(id: string, input: ProductInput) {
     if (skuVal && skuConflict) throw new Error(`SKU "${skuVal}" já está em uso.`);
     await assertCodigosLivres(
       [
-        d.ean,
+        // Idem createProduct: `ean` só conta quando a lista não veio.
+        ...(d.codigos ? [] : [d.ean]),
         ...(d.codigos ?? []).map((c) => c.codigo),
         ...(d.packagings ?? []).map((pk) => pk.ean),
       ],
@@ -2235,36 +2238,16 @@ export async function updateReceita(id: string, input: ReceitaInput) {
   });
 }
 
-// ── Enriquecimento por EAN (Cosmos + LLM) ──────────────────
-export type EanMotivo =
-  | "invalido"
-  | "ja_cadastrado"
-  | "nao_encontrado"
-  | "rate_limit"
-  | "sem_token"
-  | "erro";
-
-export type EanSuggestion = {
-  encontrado: boolean;
-  fonte: "cosmos+llm" | "cosmos" | "nenhuma";
-  /** Quando não encontrado, por quê — usado p/ escolher a notificação no cliente. */
-  motivo?: EanMotivo;
-  /** Produto já existente com esse EAN (quando motivo = ja_cadastrado). */
-  produtoExistente?: { id: string; nome: string; sku: string };
-  nome?: string;
-  marcaNome?: string;
-  subcategoryId?: string | null;
-  fiscalDica?: string;
-  ncm?: string | null;
-  cest?: string | null;
-  pesoGramas?: number | null;
-  alturaCm?: number | null;
-  larguraCm?: number | null;
-  comprimentoCm?: number | null;
-  imagemUrl?: string | null;
-  restricaoIdade?: boolean;
-  erro?: string;
-};
+// ── Foto por EAN (CDN da Cosmos) ───────────────────────────
+/**
+ * O que o código de barras devolve no cadastro: a foto, e só ela. Nome, marca,
+ * categoria e fiscal são do operador (ou do XML da NF-e) — não há mais consulta
+ * externa de dados.
+ */
+export type EanImagem =
+  | { status: "encontrada"; imagemUrl: string }
+  | { status: "sem_imagem" | "invalido" | "erro" }
+  | { status: "ja_cadastrado"; produtoExistente: { id: string; nome: string; sku: string } };
 
 /**
  * Checagem leve de EAN já cadastrado — usada no on-blur do formulário para
@@ -2380,131 +2363,24 @@ export async function sugerirMargemSubcategoria(
   });
 }
 
-export async function enrichEan(eanRaw: string): Promise<EanSuggestion> {
+export async function buscarImagemPorEan(eanRaw: string): Promise<EanImagem> {
   return tx(async () => {
     const ean = onlyDigits(eanRaw);
-    // Aqui o comprimento AINDA importa, e só aqui: Cosmos e LLM respondem por
-    // GTIN cadastrado na GS1. Código interno de balança não existe para eles —
-    // consultar seria gastar cota para ouvir "não encontrado". Gravar esse
-    // código, porém, é livre (ver `normalizarCodigos`).
-    if (gtinValido(ean) === null)
-      return {
-        encontrado: false,
-        fonte: "nenhuma",
-        motivo: "invalido",
-        erro:
-          "A busca automática só funciona com EAN/GTIN (8, 12, 13 ou 14 dígitos). Preencha à mão.",
-      };
+    // Aqui o comprimento AINDA importa, e só aqui: a base de fotos responde por
+    // GTIN cadastrado na GS1. Código interno de balança não existe para ela.
+    // Gravar esse código, porém, é livre (ver `normalizarCodigos`).
+    if (gtinValido(ean) === null) return { status: "invalido" };
 
     // Antes de consultar fora: já existe produto com esse código neste tenant?
     const existente = await produtoPorCodigo(ean);
-    if (existente)
-      return {
-        encontrado: false,
-        fonte: "nenhuma",
-        motivo: "ja_cadastrado",
-        produtoExistente: existente,
-        erro: `Já cadastrado: ${existente.nome} (${existente.sku}).`,
-      };
-
-    let cosmos;
-    try {
-      cosmos = await getCosmosByEan(ean);
-    } catch (e) {
-      if (e instanceof CosmosError) {
-        const motivo: EanMotivo =
-          e.code === "NOT_FOUND"
-            ? "nao_encontrado"
-            : e.code === "RATE_LIMIT"
-              ? "rate_limit"
-              : e.code === "NO_TOKEN"
-                ? "sem_token"
-                : "erro";
-        const msg =
-          e.code === "NOT_FOUND"
-            ? "Código não encontrado. Preencha manualmente."
-            : e.code === "RATE_LIMIT"
-              ? "Limite de consultas atingido. Tente mais tarde ou preencha à mão."
-              : e.code === "NO_TOKEN"
-                ? "Busca por código indisponível (sem token). Preencha à mão."
-                : "Não foi possível consultar agora.";
-        return { encontrado: false, fonte: "nenhuma", motivo, erro: msg };
-      }
-      // Qualquer outra falha (rede, parse, inesperada) — degrada em vez de 500.
-      return {
-        encontrado: false,
-        fonte: "nenhuma",
-        motivo: "erro",
-        erro: "Não foi possível consultar agora. Preencha à mão.",
-      };
-    }
-
-    const base: EanSuggestion = {
-      encontrado: true,
-      fonte: "cosmos",
-      nome: cosmos.descricao ?? undefined,
-      marcaNome: cosmos.marca ?? undefined,
-      ncm: cosmos.ncm,
-      cest: cosmos.cest,
-      pesoGramas: cosmos.pesoLiquidoG ?? cosmos.pesoBrutoG ?? null,
-      alturaCm: cosmos.alturaCm,
-      larguraCm: cosmos.larguraCm,
-      comprimentoCm: cosmos.comprimentoCm,
-      imagemUrl: cosmos.thumbnail,
-      subcategoryId: null,
-    };
-
-    if (!llmConfigured()) return base;
-
-    const [subs, brands] = await Promise.all([
-      // Só o que ainda classifica coisa nova: oferecer subcategoria inativa ao
-      // LLM é pedir que ele sugira uma gaveta que o operador fechou.
-      db.subcategory.findMany({
-        where: { ativo: true, category: { ativo: true } },
-        select: { id: true, nome: true, category: { select: { nome: true } } },
-      }),
-      db.brand.findMany({ select: { nome: true } }),
-    ]);
+    if (existente) return { status: "ja_cadastrado", produtoExistente: existente };
 
     try {
-      const suggestion = await completeJson<{
-        nome: string;
-        subcategoriaId: string | null;
-        marca: string;
-        dicaFiscal: string;
-        restricaoIdade: boolean;
-      }>({
-        system:
-          "Você normaliza dados de produtos de mercado de bebidas no Brasil. " +
-          "Responda SOMENTE com JSON válido, sem texto extra. Use exatamente as opções fornecidas.",
-        user: JSON.stringify({
-          instrucao:
-            "A partir do JSON do produto, devolva: nome (limpo, sem códigos), " +
-            "subcategoriaId (escolha o id mais adequado da lista ou null), " +
-            "marca (nome da marca; pode ser uma das existentes), " +
-            "dicaFiscal (frase curta sobre NCM/CEST), " +
-            "restricaoIdade (true se o produto exige maioridade — bebida alcoólica, cigarro, tabaco, vape, energético alcóolico; false caso contrário).",
-          formato: { nome: "string", subcategoriaId: "string|null", marca: "string", dicaFiscal: "string", restricaoIdade: "boolean" },
-          produto: cosmos.raw,
-          subcategorias: subs.map((s) => ({ id: s.id, nome: `${s.category.nome} › ${s.nome}` })),
-          marcasExistentes: brands.map((b) => b.nome),
-        }),
-      });
-
-      return {
-        ...base,
-        fonte: "cosmos+llm",
-        nome: suggestion.nome || base.nome,
-        marcaNome: suggestion.marca || base.marcaNome,
-        subcategoryId:
-          suggestion.subcategoriaId && subs.some((s) => s.id === suggestion.subcategoriaId)
-            ? suggestion.subcategoriaId
-            : null,
-        fiscalDica: suggestion.dicaFiscal,
-        restricaoIdade: suggestion.restricaoIdade === true,
-      };
+      const imagemUrl = await getImagemCosmosPorEan(ean);
+      return imagemUrl ? { status: "encontrada", imagemUrl } : { status: "sem_imagem" };
     } catch {
-      return base;
+      // Base fora do ar ou recusando — degrada em vez de 500: foto é opcional.
+      return { status: "erro" };
     }
   });
 }

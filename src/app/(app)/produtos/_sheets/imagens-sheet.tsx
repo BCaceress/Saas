@@ -27,16 +27,14 @@ const LOTE = 12;
 
 const MOTIVO: Record<ImagemStatus, string> = {
   encontrada: "",
-  sem_imagem: "Código conhecido, mas sem foto na base.",
-  nao_encontrado: "Código não encontrado na base.",
+  sem_imagem: "Sem foto na base para este código.",
   sem_ean: "Produto sem código de barras.",
-  rate_limit: "Limite de consultas atingido.",
-  sem_token: "Busca por código indisponível (sem token).",
+  rate_limit: "A base de imagens recusou a consulta.",
   erro: "Não foi possível consultar agora.",
 };
 
 /** Falha que não adianta insistir no resto da fila — a busca para aqui. */
-const INTERROMPE: ImagemStatus[] = ["rate_limit", "sem_token"];
+const INTERROMPE: ImagemStatus[] = ["rate_limit"];
 /** Falha pontual: vale um "tentar de novo". */
 const RETENTAVEL: ImagemStatus[] = ["erro", "rate_limit"];
 
@@ -53,7 +51,7 @@ export type ProdutoImagem = {
 
 /**
  * Busca a foto do produto pelo código de barras — o mesmo caminho do cadastro
- * manual (Cosmos), só que em lote e depois do fato: quem importou por CSV entra
+ * manual (CDN da Cosmos), só que em lote e depois do fato: quem importou por CSV entra
  * com o catálogo inteiro sem imagem.
  *
  * Nada é gravado sem revisão: cada resultado vira um cartão que o operador
@@ -424,11 +422,6 @@ function CardSugestao({
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13.5px] font-medium text-ink">{sugestao.nome}</span>
-        {sugestao.descricaoCosmos && sugestao.descricaoCosmos !== sugestao.nome && (
-          <span className="block truncate text-xs text-muted">
-            na base: {sugestao.descricaoCosmos}
-          </span>
-        )}
         <span className="mt-1 flex flex-wrap items-center gap-1.5">
           <SkuTag sku={sugestao.sku} />
           {sugestao.jaTinha && (

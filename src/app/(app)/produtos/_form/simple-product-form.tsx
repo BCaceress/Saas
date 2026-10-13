@@ -6,14 +6,12 @@ import { useRouter } from "next/navigation";
 import {
   ScanBarcode,
   Loader2,
-  CheckCircle2,
   AlertCircle,
   ImagePlus,
   ChevronRight,
   Trash2,
   Plus,
   CornerDownLeft,
-  ArrowUp,
   TrendingUp,
   TrendingDown,
   Truck,
@@ -52,7 +50,7 @@ import { useVoltaProdutos } from "./_volta";
 import {
   createProduct,
   updateProduct,
-  enrichEan,
+  buscarImagemPorEan,
   createCategory,
   createSubcategory,
   checkEanTaken,
@@ -72,8 +70,6 @@ import type {
 } from "../_types";
 import type { ProductPrefill } from "./product-form";
 
-/** Tempo que o card "produto encontrado" fica na tela (o fio de baixo conta). */
-const FOUND_CARD_MS = 7000;
 const DRAFT_KEY = "nohub:rascunho:produto-simples";
 /**
  * Teto do nome. É limite de TELA, não do banco: a etiqueta imprime a 11pt e a
@@ -84,13 +80,45 @@ const DRAFT_KEY = "nohub:rascunho:produto-simples";
  */
 const NOME_MAX = 50;
 
-/** Linha da embalagem de compra: caixa com 12, fardo com 6, engradado com 24. */
-type PkLinha = { nome: string; ean: string; fator: string };
 /**
- * Linha da lista de códigos de barras. `rotulo` é o que o operador escreve
- * para se achar ("União", "balança") — etiqueta, não marca nem fornecedor.
+ * Linha da lista de códigos do produto. Um estado só para tudo o que responde
+ * por ele, mostrado em DOIS grupos — o operador precisa bater o olho e saber
+ * o que passa no caixa e o que só entra pela nota:
+ *
+ * - unidade (`pk` ausente) → o que vende, e que também pode ser comprado
+ *   solto: refrigerante lata; açúcar da marca X, da Y e da Z, que são o mesmo
+ *   item no caixa. Vale sempre 1. Grava em `ProductBarcode`.
+ * - embalagem (`pk`) → fardo ou caixa, só na compra: fardo com 6. Grava em
+ *   `ProductPackaging`, onde o fator multiplica a entrada de estoque.
+ *
+ * O GRUPO decide o tipo, não a quantidade digitada: linha que mudasse de
+ * tabela no meio da digitação pularia de lugar na tela, e embalagem gravada
+ * não pode virar unidade — o id dela é referência solta em cotação, pedido e
+ * recebimento.
+ *
+ * `rotulo` é o que o operador escreve para se achar ("União", "Fardo") — vira
+ * o rótulo do código ou o nome da embalagem.
  */
-type CodLinha = { codigo: string; rotulo: string };
+type Linha = { codigo: string; rotulo: string; fator: string; pk?: boolean };
+const linhaVazia = (codigo = ""): Linha => ({ codigo, rotulo: "", fator: "1" });
+const embalagemVazia = (): Linha => ({ codigo: "", rotulo: "", fator: "", pk: true });
+/** A linha 0 é sempre unidade — é o código do campo do topo. Nunca embalagem. */
+function ehEmbalagem(l: Linha, i: number): boolean {
+  return i > 0 && !!l.pk;
+}
+/**
+ * Garante uma unidade no topo: se a linha 0 saiu, a primeira unidade
+ * sobe; sem nenhuma, nasce uma em branco. Lista vazia esconderia o campo de
+ * código inteiro.
+ */
+function comUnidadeNoTopo(linhas: Linha[]): Linha[] {
+  const i = linhas.findIndex((l) => !l.pk);
+  if (i === 0) return linhas;
+  if (i < 0) return [linhaVazia(), ...linhas];
+  const copia = [...linhas];
+  const [unidade] = copia.splice(i, 1);
+  return [unidade, ...copia];
+}
 /**
  * A linha 0 mantém o id `ean` de sempre: `resetForNext`, o atalho de teclado e
  * o "salvar e cadastrar próximo" apontam para ele desde antes da lista existir.
@@ -98,8 +126,8 @@ type CodLinha = { codigo: string; rotulo: string };
 const idDoCodigo = (i: number) => (i === 0 ? "ean" : `cod-${i}`);
 /** Âncora da gaveta — o formulário precisa abri-la para apontar erro lá dentro. */
 const MAIS_ID = "mais-configuracoes";
-/** Gaveta das embalagens de compra — o aviso do código de barras aponta pra cá. */
-const EMBALAGENS_ID = "embalagens-compra";
+/** Gaveta com todos os códigos do produto — o campo do topo aponta pra cá. */
+const CODIGOS_ID = "codigos-do-produto";
 
 // ── Peças de UI ────────────────────────────────────────────
 
@@ -233,27 +261,48 @@ export function SimpleProductForm({
   //
   // Códigos de barras são uma LISTA, não um campo: o mesmo "açúcar 1 kg" chega
   // com o código da União numa semana e da Caravelas na outra, e são um produto
-  // só na prateleira. A linha 0 é a principal (etiqueta e cEAN da NFC-e).
+  // só na prateleira. O fardo do refrigerante mora na mesma lista, com a
+  // quantidade 6. NÃO há código favorito: a etiqueta pergunta qual imprimir e
+  // a NFC-e declara o que foi bipado na venda. A linha 0 é só a do campo do topo.
   //
   // `ean` continua existindo como atalho para a linha 0 — assim o leitor de
   // rajada, o enriquecimento, o rascunho e a checagem de duplicado seguem
   // mexendo num string, como sempre fizeram.
-  const [codigos, setCodigos] = useState<CodLinha[]>(() => {
-    const doProduto = (product?.codigos ?? []).map((c) => ({
+  const [linhas, setLinhas] = useState<Linha[]>(() => {
+    const unidades: Linha[] = (product?.codigos ?? []).map((c) => ({
       codigo: c.codigo,
       rotulo: c.rotulo ?? "",
+      fator: "1",
     }));
-    if (doProduto.length) return doProduto;
-    return [{ codigo: product?.ean ?? prefill?.ean ?? "", rotulo: "" }];
+    const embalagens: Linha[] = (product?.packagings ?? []).map((pk) => ({
+      codigo: pk.ean ?? "",
+      rotulo: pk.nome ?? "",
+      fator: pk.fatorConversao != null ? String(pk.fatorConversao) : "",
+      pk: true,
+    }));
+    return [
+      ...(unidades.length
+        ? unidades
+        : [linhaVazia(product?.ean ?? prefill?.ean ?? "")]),
+      ...embalagens,
+    ];
   });
-  const ean = codigos[0]?.codigo ?? "";
+  const ean = linhas[0]?.codigo ?? "";
   function setEan(v: string) {
-    setCodigos((prev) =>
-      prev.length
-        ? [{ ...prev[0], codigo: v }, ...prev.slice(1)]
-        : [{ codigo: v, rotulo: "" }],
+    setLinhas((prev) =>
+      prev.length ? [{ ...prev[0], codigo: v }, ...prev.slice(1)] : [linhaVazia(v)],
     );
   }
+  // Índices de cada grupo na lista única — a tela separa, o estado não.
+  const idxUnidades = linhas.flatMap((l, i) => (ehEmbalagem(l, i) ? [] : [i]));
+  const idxEmbalagens = linhas.flatMap((l, i) => (ehEmbalagem(l, i) ? [i] : []));
+  /** Linhas que dizem alguma coisa — é o número que aparece na gaveta fechada. */
+  const linhasPreenchidas = linhas.filter(
+    (l, i) => onlyDigits(l.codigo) || (ehEmbalagem(l, i) && l.rotulo.trim()),
+  ).length;
+  // Nasce aberta quando já há mais de um código: quem edita o açúcar de três
+  // marcas precisa ver as três sem caçar.
+  const [codigosAbertos, setCodigosAbertos] = useState(linhas.length > 1);
   const [codShake, setCodShake] = useState<number | null>(null);
   const [nome, setNome] = useState(product?.nome ?? prefill?.nome ?? "");
   const [sku, setSku] = useState(product?.sku ?? "");
@@ -277,34 +326,34 @@ export function SimpleProductForm({
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const touch = (k: string) => setTouched((t) => ({ ...t, [k]: true }));
 
-  // ── Lista de códigos de barras ──────────────────────────
-  function adicionarCodigo() {
-    setCodigos((prev) => [...prev, { codigo: "", rotulo: "" }]);
+  // ── Lista de códigos do produto ─────────────────────────
+  function adicionarCodigo(embalagem = false) {
+    setLinhas((prev) => [...prev, embalagem ? embalagemVazia() : linhaVazia()]);
+    setCodigosAbertos(true);
     // O foco vai para a linha nova: quem clicou em "outro código" já tem o
     // produto na mão e quer bipar, não caçar o campo.
-    requestAnimationFrame(() => focusById(idDoCodigo(codigos.length)));
+    const nova = linhas.length;
+    requestAnimationFrame(() => focusById(`cod-${nova}`));
   }
-  function mudarCodigo(i: number, patch: Partial<CodLinha>) {
-    setCodigos((prev) => prev.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
+  function mudarLinha(i: number, patch: Partial<Linha>) {
+    setLinhas((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
   }
-  function removerCodigo(i: number) {
-    // Nunca fica sem linha: a lista vazia esconderia o campo de código inteiro,
-    // e o próximo cadastro começaria sem lugar para bipar.
-    setCodigos((prev) =>
-      prev.length <= 1 ? [{ codigo: "", rotulo: "" }] : prev.filter((_, idx) => idx !== i),
-    );
+  function removerLinha(i: number) {
+    setLinhas((prev) => comUnidadeNoTopo(prev.filter((_, idx) => idx !== i)));
+    setLinhaARemover(null);
   }
-  /** Principal é a linha 0 — "tornar principal" é mover para o topo. */
-  function tornarPrincipal(i: number) {
-    setCodigos((prev) => {
-      if (i <= 0 || i >= prev.length) return prev;
-      const copia = [...prev];
-      const [linha] = copia.splice(i, 1);
-      return [linha, ...copia];
-    });
+  // Só a embalagem pede confirmação: tirar um fardo muda como a nota entra no
+  // estoque. Linha em branco ou apelido de unidade some direto.
+  function pedirRemocao(i: number) {
+    const l = linhas[i];
+    if (l && ehEmbalagem(l, i) && (l.codigo.trim() || l.rotulo.trim())) {
+      setLinhaARemover(i);
+      return;
+    }
+    removerLinha(i);
   }
   /**
-   * Checa dono de um código avulso (linha extra). A linha principal tem o seu
+   * Checa dono de um código avulso (linha extra). A linha do topo tem o seu
    * próprio caminho (`onEanBlur`), que também dispara o enriquecimento.
    */
   async function conferirDono(codigoRaw: string) {
@@ -324,34 +373,115 @@ export function SimpleProductForm({
     }
   }
   /**
-   * Leva o operador de "código de barras" para "embalagens de compra" — a
-   * confusão que custa caro. Abre a gaveta, cria a linha se não houver nenhuma
-   * e põe o foco: mandar a pessoa "procurar embaixo" não resolve nada.
+   * Mesmo código em duas linhas: a segunda é que pisca. Vale entre unidade e
+   * embalagem também — o leitor não sabe a diferença, e o mesmo código valendo
+   * 1 e 6 faz o saldo entrar errado.
    */
-  function irParaEmbalagens() {
-    const d = document.getElementById(EMBALAGENS_ID) as HTMLDetailsElement | null;
-    if (d) d.open = true;
-    if (!packagings.length) setPackagings([{ nome: "", ean: "", fator: "" }]);
-    requestAnimationFrame(() => focusField("pk-nome-0"));
-  }
-  /** Mesmo código em duas linhas: a segunda é que pisca. */
   function repetidoNaLista(i: number): boolean {
-    const d = onlyDigits(codigos[i]?.codigo ?? "");
+    const d = onlyDigits(linhas[i]?.codigo ?? "");
     if (!d) return false;
-    return codigos.findIndex((c) => onlyDigits(c.codigo) === d) !== i;
+    return linhas.findIndex((l) => onlyDigits(l.codigo) === d) !== i;
+  }
+  /**
+   * Uma linha da lista de códigos. `cabecalho` liga os rótulos das colunas —
+   * só a primeira linha de cada grupo carrega.
+   */
+  function linhaDeCodigo(i: number, cabecalho: boolean) {
+    const linha = linhas[i];
+    const embalagem = ehEmbalagem(linha, i);
+    const dono = tomados[onlyDigits(linha.codigo)];
+    const repetido = repetidoNaLista(i);
+    return (
+      <div key={i} className="flex flex-col gap-1">
+        <div
+          className={cn(
+            "grid grid-cols-1 items-end gap-x-5 gap-y-3",
+            embalagem
+              ? "sm:grid-cols-[minmax(0,2fr)_5.5rem_minmax(0,2fr)_auto]"
+              : "sm:grid-cols-[minmax(0,2fr)_minmax(0,2fr)_auto]",
+          )}
+        >
+          <Field label={cabecalho ? "Código de barras" : ""} htmlFor={`cod-${i}`}>
+            <Input
+              id={`cod-${i}`}
+              value={linha.codigo}
+              onChange={(e) => mudarLinha(i, { codigo: onlyDigits(e.target.value) })}
+              onBlur={() => conferirDono(linha.codigo)}
+              onKeyDown={enterTo(embalagem ? `fator-${i}` : `rotulo-${i}`)}
+              placeholder="789…"
+              inputMode="numeric"
+              aria-label={`Código de barras ${i + 1}`}
+              className={cn(
+                "font-mono tracking-wide placeholder:font-sans placeholder:tracking-normal",
+                (codShake === i || repetido) && "border-danger",
+                codShake === i && "shake-x",
+              )}
+            />
+          </Field>
+          {embalagem && (
+            <Field label={cabecalho ? "Unidades" : ""} htmlFor={`fator-${i}`}>
+              <Input
+                id={`fator-${i}`}
+                value={linha.fator}
+                onChange={(e) => mudarLinha(i, { fator: soInteiro(e.target.value) })}
+                onKeyDown={enterTo(`rotulo-${i}`)}
+                placeholder="6"
+                inputMode="numeric"
+                aria-label={`Quantas unidades vêm na embalagem ${i + 1}`}
+                className="font-mono"
+              />
+            </Field>
+          )}
+          <Field
+            label={cabecalho ? (embalagem ? "Embalagem" : "Marca") : ""}
+            htmlFor={`rotulo-${i}`}
+          >
+            <Input
+              id={`rotulo-${i}`}
+              value={linha.rotulo}
+              onChange={(e) => mudarLinha(i, { rotulo: e.target.value })}
+              maxLength={embalagem ? undefined : 24}
+              placeholder={embalagem ? "Fardo, caixa…" : "Opcional"}
+              aria-label={
+                embalagem ? `Nome da embalagem ${i + 1}` : `Marca do código ${i + 1}`
+              }
+            />
+          </Field>
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => pedirRemocao(i)}
+              title={embalagem ? "Remover esta embalagem" : "Remover este código"}
+              aria-label={
+                embalagem ? `Remover a embalagem ${i + 1}` : `Remover o código ${i + 1}`
+              }
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line text-faint transition-colors hover:border-danger/40 hover:bg-danger-soft hover:text-danger"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        </div>
+        {(repetido || dono || gtinValido(linha.codigo) === false) && (
+          <p
+            role="status"
+            aria-live="polite"
+            className="flex flex-wrap items-center gap-x-1.5 text-xs text-warn"
+          >
+            <AlertCircle size={12} className="shrink-0" />
+            {repetido
+              ? "Esse código já está em outra linha."
+              : dono
+                ? `Já é de "${dono.nome}" (${dono.sku}).`
+                : "O dígito verificador não fecha — confira antes de salvar."}
+          </p>
+        )}
+      </div>
+    );
   }
 
   // Só depois de identificar o produto o resto da tela aparece — prefill do
   // encarte já identifica, então pula direto pro resto.
-  const [naoEncontrado, setNaoEncontrado] = useState(false);
-  const [foundCard, setFoundCard] = useState<{
-    nome: string;
-    marca: string;
-    categoria: string;
-    imagem: string;
-    ean: string;
-    viaIa: boolean;
-  } | null>(null);
+  const [semFoto, setSemFoto] = useState(false);
 
   // Preço
   const [precoVenda, setPrecoVenda] = useState(moneyToMask(product?.precoVenda));
@@ -375,30 +505,8 @@ export function SimpleProductForm({
   // Venda +18 — não é fiscal: governa o PDV e o totem. O enriquecimento por
   // EAN marca sozinho quando reconhece bebida alcoólica.
   const [restricaoIdade, setIdade] = useState(product?.restricaoIdade ?? false);
-  // Embalagem de compra. Não é pergunta do cadastro — o XML da primeira nota
-  // preenche sozinho —, mas quem tem o fardo na mão e quer bipar hoje precisa
-  // de um lugar para digitar. Fica recolhido.
-  const [pkARemover, setPkARemover] = useState<number | null>(null);
-  const [packagings, setPackagings] = useState<PkLinha[]>(
-    (product?.packagings ?? []).map((pk) => ({
-      nome: pk.nome ?? "",
-      ean: pk.ean ?? "",
-      fator: pk.fatorConversao != null ? String(pk.fatorConversao) : "",
-    })),
-  );
-  function removerPk(i: number) {
-    setPackagings((prev) => prev.filter((_, idx) => idx !== i));
-    setPkARemover(null);
-  }
-  // Linha em branco some direto: não há nada a perder, e confirmar o vazio irrita.
-  function pedirRemocaoPk(i: number) {
-    const pk = packagings[i];
-    if (!pk?.nome.trim() && !pk?.ean.trim() && !pk?.fator.trim()) {
-      removerPk(i);
-      return;
-    }
-    setPkARemover(i);
-  }
+  /** Embalagem esperando confirmação para sair da lista de códigos. */
+  const [linhaARemover, setLinhaARemover] = useState<number | null>(null);
 
   // Locais criados aqui — mesma ideia das categorias: entram na lista antes
   // do refresh, senão o operador cria o local e não consegue selecioná-lo.
@@ -575,13 +683,6 @@ export function SimpleProductForm({
     return `${sub.categorySkuPrefix}-${sub.skuPrefix}-••••`;
   }
 
-  // O card de "produto encontrado" some sozinho — cumpriu o papel dele.
-  useEffect(() => {
-    if (!foundCard) return;
-    const t = setTimeout(() => setFoundCard(null), FOUND_CARD_MS);
-    return () => clearTimeout(t);
-  }, [foundCard]);
-
   useEffect(() => {
     if (!eanShake) return;
     const t = setTimeout(() => setEanShake(false), 400);
@@ -602,6 +703,8 @@ export function SimpleProductForm({
   function revelarSeOculto(el: Element | null) {
     const d = document.getElementById(MAIS_ID) as HTMLDetailsElement | null;
     if (d && el && d.contains(el) && !d.open) d.open = true;
+    const c = document.getElementById(CODIGOS_ID) as HTMLDetailsElement | null;
+    if (c && el && c.contains(el) && !c.open) c.open = true;
   }
 
   // ── Teclado: Enter caminha pelo formulário ──────────────
@@ -659,7 +762,7 @@ export function SimpleProductForm({
 
   const snapshot = {
     ean,
-    codigos,
+    linhas,
     nome,
     sku,
     marca,
@@ -701,11 +804,23 @@ export function SimpleProductForm({
 
   function retomarRascunho() {
     if (!draft) return;
-    const d = draft as Partial<typeof snapshot>;
-    // Rascunho gravado antes da lista existir só tem `ean` — vira a linha 0.
-    setCodigos(
-      d.codigos?.length ? d.codigos : [{ codigo: d.ean ?? "", rotulo: "" }],
+    const d = draft as Partial<typeof snapshot> & {
+      codigos?: { codigo: string; rotulo: string }[];
+    };
+    // Rascunho antigo: antes da lista única só havia `codigos` (todos de
+    // unidade), e antes disso só `ean` — que vira a linha 0.
+    const retomadas: Linha[] = d.linhas?.length
+      ? d.linhas
+      : d.codigos?.length
+        ? d.codigos.map((c) => ({ ...linhaVazia(c.codigo), rotulo: c.rotulo ?? "" }))
+        : [linhaVazia(d.ean ?? "")];
+    setLinhas(
+      comUnidadeNoTopo(
+        // Rascunho de quando a quantidade decidia o tipo: mais de 1 é embalagem.
+        retomadas.map((l) => (Number(l.fator) > 1 ? { ...l, pk: true } : l)),
+      ),
     );
+    setCodigosAbertos(retomadas.length > 1);
     setNome(d.nome ?? "");
     setSku(d.sku ?? "");
     setShowSku(!!d.sku);
@@ -755,68 +870,43 @@ export function SimpleProductForm({
   // ── Ações ───────────────────────────────────────────────
   async function buscarEan(codigoRaw?: string) {
     const codigo = codigoRaw ?? ean;
-    // Só a BUSCA exige GTIN: Cosmos e LLM respondem por código cadastrado na
-    // GS1, e código interno de balança não existe para eles. Gravar sem GTIN é
+    // Só a BUSCA exige GTIN: a base de fotos responde por código cadastrado na
+    // GS1, e código interno de balança não existe para ela. Gravar sem GTIN é
     // livre — o campo não tem comprimento mínimo.
     if (gtinValido(codigo) === null) {
       setEanShake(true);
       toast.error(
-        "Busca automática indisponível",
-        "Ela funciona com EAN/GTIN (8, 12, 13 ou 14 dígitos). Preencha o nome à mão.",
+        "Busca de foto indisponível",
+        "Ela funciona com EAN/GTIN (8, 12, 13 ou 14 dígitos). Envie a imagem à mão.",
       );
       return;
     }
     setError(undefined);
-    setNaoEncontrado(false);
+    setSemFoto(false);
     setEnriching(true);
     try {
-      const s = await enrichEan(codigo);
-      if (!s.encontrado) {
-        switch (s.motivo) {
-          case "invalido":
-            toast.error("Código de barras inválido", s.erro);
-            break;
-          case "ja_cadastrado":
-            toast.error("Código já cadastrado", s.erro);
-            break;
-          case "rate_limit":
-            toast.error(
-              "Limite de consultas atingido",
-              "Tente mais tarde ou preencha à mão.",
-            );
-            break;
-          case "sem_token":
-            toast.error(
-              "Busca indisponível",
-              "Serviço de código de barras sem token. Preencha à mão.",
-            );
-            break;
-          default:
-            break;
-        }
-        setNaoEncontrado(s.motivo === "nao_encontrado" || !s.motivo);
-        requestAnimationFrame(() => nomeRef.current?.focus());
-      } else {
-        if (s.nome) setNome(s.nome);
-        // Marca desligada: o EAN não preenche às escondidas um campo que o
-        // operador não vê nem confere.
-        if (campos.marca && s.marcaNome) setMarca(s.marcaNome);
-        if (s.subcategoryId) setSubcategoryId(s.subcategoryId);
-        if (s.imagemUrl) setImagemUrl(s.imagemUrl);
-        if (s.restricaoIdade) setIdade(true);
-        const cat = s.subcategoryId
-          ? allSubs.find((x) => x.id === s.subcategoryId)
-          : undefined;
-        setFoundCard({
-          nome: s.nome ?? "",
-          marca: campos.marca ? s.marcaNome ?? "" : "",
-          categoria: cat ? `${cat.categoriaNome} · ${cat.nome}` : "",
-          imagem: s.imagemUrl ?? "",
-          ean: codigo,
-          viaIa: s.fonte === "cosmos+llm",
-        });
-        toast.success("Produto encontrado", "Confira e siga o cadastro.");
+      const r = await buscarImagemPorEan(codigo);
+      switch (r.status) {
+        case "encontrada":
+          setImagemUrl(r.imagemUrl);
+          toast.success("Foto encontrada", "Preencha o nome e a categoria.");
+          break;
+        case "ja_cadastrado":
+          toast.error(
+            "Código já cadastrado",
+            `${r.produtoExistente.nome} (${r.produtoExistente.sku}).`,
+          );
+          break;
+        case "sem_imagem":
+          setSemFoto(true);
+          break;
+        case "erro":
+          toast.error("Não foi possível buscar a foto", "Tente de novo ou envie a imagem à mão.");
+          break;
+        default:
+          break;
       }
+      requestAnimationFrame(() => nomeRef.current?.focus());
     } catch {
       setError("Não foi possível buscar agora.");
       toast.error(
@@ -927,7 +1017,8 @@ export function SimpleProductForm({
   }
 
   function resetForNext() {
-    setCodigos([{ codigo: "", rotulo: "" }]);
+    setLinhas([linhaVazia()]);
+    setCodigosAbertos(false);
     setNome("");
     setSku("");
     setMarca("");
@@ -939,8 +1030,7 @@ export function SimpleProductForm({
     setQuerInicial(null);
     setInicial("");
     setTomados({});
-    setFoundCard(null);
-    setNaoEncontrado(false);
+    setSemFoto(false);
     setError(undefined);
   }
 
@@ -976,28 +1066,47 @@ export function SimpleProductForm({
 
     // Linha repetida é erro do dedo, não intenção: o servidor recusaria o
     // cadastro inteiro por isso. Avisa aqui, antes de gastar a gravação.
-    const repetida = codigos.findIndex((_, i) => repetidoNaLista(i));
+    const repetida = linhas.findIndex((_, i) => repetidoNaLista(i));
     if (repetida >= 0) {
       setCodShake(repetida);
       setError("O mesmo código de barras está em duas linhas.");
-      focusField(idDoCodigo(repetida));
+      focusField(`cod-${repetida}`);
       return;
     }
 
-    const barras = codigos
-      .map((c, i) => ({
-        codigo: onlyDigits(c.codigo),
-        rotulo: c.rotulo.trim() || undefined,
+    // Embalagem que já existia e ficou sem quantidade: gravar assim a apagaria
+    // em silêncio, e ela pode estar em pedido ou cotação aberta.
+    const semQuantidade = linhas.findIndex(
+      (l, i) => ehEmbalagem(l, i) && !((n(l.fator) ?? 0) > 0),
+    );
+    if (semQuantidade >= 0) {
+      setError("Informe quantas unidades vêm nessa embalagem — ou remova a linha.");
+      focusField(`fator-${semQuantidade}`);
+      return;
+    }
+
+    // O grupo decide o destino: unidade vira código de barras do produto,
+    // fardo/caixa vira embalagem de compra.
+    const barras = linhas
+      .map((l, i) => ({ l, i }))
+      .filter(({ l, i }) => !ehEmbalagem(l, i))
+      .map(({ l, i }) => ({
+        codigo: onlyDigits(l.codigo),
+        rotulo: l.rotulo.trim() || undefined,
+        // Só alimenta o espelho `Product.ean` no servidor — na tela não
+        // existe favorito.
         principal: i === 0,
       }))
       .filter((c) => c.codigo);
 
-    const embalagens = packagings
-      .filter((p) => p.nome.trim() && (n(p.fator) ?? 0) > 0)
-      .map((p) => ({
-        nome: p.nome.trim(),
-        ean: p.ean.trim() || undefined,
-        fatorConversao: n(p.fator)!,
+    const embalagens = linhas
+      .filter((l, i) => ehEmbalagem(l, i))
+      .map((l) => ({
+        // Sem nome, a quantidade nomeia: a embalagem precisa de um para
+        // aparecer no pedido e na cotação.
+        nome: l.rotulo.trim() || `Embalagem c/ ${n(l.fator)}`,
+        ean: onlyDigits(l.codigo) || undefined,
+        fatorConversao: n(l.fator)!,
       }));
 
     // Campos que este formulário NÃO gerencia mais (fornecedor, variação,
@@ -1267,17 +1376,17 @@ export function SimpleProductForm({
                         começa com um bipe — mas é CAMPO, não portão: quem não tem
                         código segue direto para o nome.
 
-                        É LISTA, e nasce com uma linha só: o cadastro de quem tem
-                        um código fica idêntico ao que sempre foi, e quem precisa
-                        de três clica uma vez. */}
+                        Este campo é a linha 0 da lista de códigos do produto: o
+                        cadastro de quem tem um código só fica idêntico ao que
+                        sempre foi, e quem precisa de três clica uma vez. */}
                     <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2 xl:col-span-4">
                       <div className="flex items-center justify-between gap-2">
                         <Label htmlFor={idDoCodigo(0)}>
-                          {codigos.length > 1 ? "Códigos de barras" : "Código de barras"}
+                          Código de barras
                         </Label>
                         <button
                           type="button"
-                          onClick={adicionarCodigo}
+                          onClick={() => adicionarCodigo()}
                           className="flex shrink-0 items-center gap-1 text-[11px] text-muted underline-offset-2 hover:text-ink hover:underline"
                         >
                           <Plus size={11} /> outro código
@@ -1297,8 +1406,8 @@ export function SimpleProductForm({
                           autoFocus={mode === "new"}
                           value={ean}
                           // Na edição o campo é só um campo: a rajada do leitor
-                          // não pode disparar enriquecimento e reescrever o nome
-                          // que o operador já ajustou.
+                          // não pode disparar a busca e trocar a foto que o
+                          // operador já escolheu.
                           onChange={(e) =>
                             mode === "new"
                               ? onEanChange(e.target.value)
@@ -1325,17 +1434,17 @@ export function SimpleProductForm({
                           <button
                             type="button"
                             onClick={() => buscarEan()}
-                            // Só GTIN tem catálogo externo. Código interno de
+                            // Só GTIN tem foto na base externa. Código interno de
                             // balança grava normalmente — só não tem o que buscar.
                             disabled={enriching || gtinValido(ean) === null}
-                            title="Buscar dados do produto"
-                            aria-label="Buscar dados do produto"
+                            title="Buscar foto do produto"
+                            aria-label="Buscar foto do produto"
                             className="absolute top-1/2 right-1.5 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-[var(--radius-sm)] text-brand-strong transition-colors hover:bg-brand-soft disabled:cursor-not-allowed disabled:text-faint disabled:hover:bg-transparent"
                           >
                             {enriching ? (
                               <Loader2 size={15} className="animate-spin" />
                             ) : (
-                              <Sparkles size={15} />
+                              <ImagePlus size={15} />
                             )}
                           </button>
                         )}
@@ -1346,105 +1455,24 @@ export function SimpleProductForm({
                         )}
                       </div>
 
-                      {/* Linhas extras. Sem enriquecimento de propósito: o nome
-                          e a categoria já foram decididos pelo código principal,
-                          e um segundo bipe não pode reescrever o cadastro. */}
-                      {codigos.slice(1).map((linha, idx) => {
-                        const i = idx + 1;
-                        const digitos = onlyDigits(linha.codigo);
-                        const dono = tomados[digitos];
-                        const repetido = repetidoNaLista(i);
-                        return (
-                          <div key={i} className="flex flex-col gap-1">
-                            <div className="flex items-center gap-1.5">
-                              <div className="relative min-w-0 flex-1">
-                                <ScanBarcode
-                                  size={15}
-                                  aria-hidden
-                                  className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted"
-                                />
-                                <Input
-                                  id={idDoCodigo(i)}
-                                  value={linha.codigo}
-                                  onChange={(e) =>
-                                    mudarCodigo(i, { codigo: onlyDigits(e.target.value) })
-                                  }
-                                  onBlur={() => conferirDono(linha.codigo)}
-                                  onKeyDown={(e) => {
-                                    if (e.key !== "Enter") return;
-                                    e.preventDefault();
-                                    focusById(`rotulo-${i}`);
-                                  }}
-                                  placeholder="Outro código"
-                                  inputMode="numeric"
-                                  aria-label={`Código de barras ${i + 1}`}
-                                  className={cn(
-                                    "pl-9 font-mono tracking-wide placeholder:font-sans placeholder:tracking-normal",
-                                    (codShake === i || repetido) && "border-danger",
-                                    codShake === i && "shake-x",
-                                  )}
-                                />
-                              </div>
-                              <Input
-                                id={`rotulo-${i}`}
-                                value={linha.rotulo}
-                                onChange={(e) => mudarCodigo(i, { rotulo: e.target.value })}
-                                maxLength={24}
-                                placeholder="Marca (opcional)"
-                                aria-label={`Marca do código ${i + 1}`}
-                                className="w-28 shrink-0 sm:w-32"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => tornarPrincipal(i)}
-                                title="Usar na etiqueta e na nota"
-                                aria-label={`Tornar o código ${i + 1} o principal`}
-                                className="grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-                              >
-                                <ArrowUp size={15} />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => removerCodigo(i)}
-                                title="Remover este código"
-                                aria-label={`Remover o código ${i + 1}`}
-                                className="grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] text-muted transition-colors hover:bg-danger-soft hover:text-danger"
-                              >
-                                <Trash2 size={15} />
-                              </button>
-                            </div>
-                            {(repetido || dono || gtinValido(linha.codigo) === false) && (
-                              <p
-                                role="status"
-                                aria-live="polite"
-                                className="flex flex-wrap items-center gap-x-1.5 text-xs text-warn"
-                              >
-                                <AlertCircle size={12} className="shrink-0" />
-                                {repetido
-                                  ? "Esse código já está em outra linha."
-                                  : dono
-                                    ? `Já é de "${dono.nome}" (${dono.sku}).`
-                                    : "O dígito verificador não fecha — confira antes de salvar."}
-                              </p>
-                            )}
-                          </div>
-                        );
-                      })}
-
-                      {/* A confusão que custa caro não é código errado: é código
-                          de FARDO digitado aqui. O saldo passa a entrar dividido
-                          por 12 e ninguém descobre até o inventário não fechar. */}
+                      {/* O topo é só o bipe do primeiro código de unidade. Outras marcas
+                          e o fardo moram na lista lá embaixo, onde a quantidade
+                          de cada código fica escrita — é ela que evita o erro
+                          caro: código de FARDO gravado como unidade, saldo
+                          entrando dividido por 12 até o inventário não fechar. */}
                       <p className="text-xs text-muted">
-                        {codigos.length > 1
-                          ? "Mesma unidade, marcas diferentes — um preço e um saldo. O primeiro vai na etiqueta."
-                          : "Vende a mesma coisa com código de outra marca? Some aqui."}{" "}
-                        Código de fardo ou caixa vai em{" "}
+                        {linhas.length > 1
+                          ? `São ${linhas.length} códigos na `
+                          : "Outra marca do mesmo item, ou o código do fardo? Vai na "}
                         <button
                           type="button"
-                          onClick={irParaEmbalagens}
+                          onClick={() => {
+                            setCodigosAbertos(true);
+                            requestAnimationFrame(() => focusField("cod-0"));
+                          }}
                           className="underline underline-offset-2 hover:text-ink"
                         >
-                          Embalagens de compra
+                          lista de códigos do produto
                         </button>
                         .
                       </p>
@@ -1513,7 +1541,7 @@ export function SimpleProductForm({
 
                     {/* Recados da faixa — atravessam a grade inteira para não
                         empurrar campo nenhum de lugar quando aparecem. */}
-                    {(eanTaken || eanComDigitoErrado || foundCard || naoEncontrado) && (
+                    {(eanTaken || eanComDigitoErrado || semFoto) && (
                       <div
                         // Sem isto, quem usa leitor de tela digita o código e não
                         // fica sabendo que já existe produto com ele.
@@ -1555,32 +1583,9 @@ export function SimpleProductForm({
                           </div>
                         )}
 
-                        {/* O que a busca trouxe cabe numa linha. O card grande com
-                            imagem e contagem regressiva chamava mais atenção que o
-                            próprio formulário. */}
-                        {foundCard && (
-                          <p className="fade-up flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-ok">
-                            <CheckCircle2 size={13} className="shrink-0" />
-                            <span className="font-medium text-ink">{foundCard.nome}</span>
-                            {[foundCard.marca, foundCard.categoria].filter(Boolean).length > 0 && (
-                              <span className="text-muted">
-                                ·{" "}
-                                {[foundCard.marca, foundCard.categoria].filter(Boolean).join(" · ")}
-                              </span>
-                            )}
-                            <span className="flex items-center gap-1 text-muted">
-                              ·{" "}
-                              {foundCard.viaIa && (
-                                <Sparkles size={11} className="text-brand-strong" />
-                              )}
-                              preenchido automaticamente
-                            </span>
-                          </p>
-                        )}
-
-                        {naoEncontrado && !foundCard && (
+                        {semFoto && (
                           <p className="text-xs text-muted">
-                            Produto não encontrado — preencha o nome e a categoria.
+                            Sem foto na base para este código — envie uma imagem ou siga sem ela.
                           </p>
                         )}
                       </div>
@@ -1999,107 +2004,74 @@ export function SimpleProductForm({
                 )}
               </div>
 
-              {/* ── Avançado · códigos de barras de compra ──
-                  Recolhido de propósito: na esmagadora maioria dos cadastros
-                  isto chega assinado no XML da primeira nota. Existe para quem
-                  tem o fardo na mão agora e quer que ele bipe hoje. */}
-              <details id={EMBALAGENS_ID} className="group border-t border-line">
+              {/* ── Códigos deste produto ──
+                  Tudo o que responde por ele, em dois grupos: a unidade (o que
+                  vende — e que a nota também pode trazer solta) e o fardo ou
+                  caixa (só compra). Separados na tela porque a pergunta do
+                  operador é "o que passa no caixa?", e misturados ele teria de
+                  ler a quantidade linha a linha para responder. A primeira
+                  unidade é o mesmo código do campo lá de cima. */}
+              <details
+                id={CODIGOS_ID}
+                open={codigosAbertos}
+                onToggle={(e) => setCodigosAbertos(e.currentTarget.open)}
+                className="group border-t border-line"
+              >
                 <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-4 text-sm text-muted transition-colors hover:text-ink-2 sm:px-6 [&::-webkit-details-marker]:hidden">
                   <ChevronRight
                     size={14}
                     aria-hidden
                     className="shrink-0 transition-transform duration-200 group-open:rotate-90"
                   />
-                  Unidades de compra e códigos de barras
-                  {packagings.length > 0 && (
+                  Códigos de barras deste produto
+                  {linhasPreenchidas > 0 && (
                     <span className="font-mono text-xs text-faint">
-                      · {packagings.length}
+                      · {linhasPreenchidas}
                     </span>
                   )}
                 </summary>
 
-                <div className="flex flex-col gap-3 px-5 pb-5 sm:px-6 sm:pb-6">
-                  <p className="text-xs text-muted">
-                    Como o FORNECEDOR vende — caixa, fardo, milheiro — e quantas unidades
-                    cada uma tem. Estoque e venda continuam em unidade: 1 milheiro de
-                    cigarro entra como 1.000 maços. Em branco, a primeira nota deste
-                    produto preenche sozinha.
-                  </p>
-
-                  {packagings.map((p, i) => (
-                    <div
-                      key={i}
-                      className="grid grid-cols-1 items-end gap-x-5 gap-y-3 sm:grid-cols-[2fr_1fr_2fr_auto]"
-                    >
-                      <Field label={i === 0 ? "Embalagem" : ""} htmlFor={`pk-nome-${i}`}>
-                        <Input
-                          id={`pk-nome-${i}`}
-                          value={p.nome}
-                          onChange={(e) =>
-                            setPackagings((prev) =>
-                              prev.map((x, idx) =>
-                                idx === i ? { ...x, nome: e.target.value } : x,
-                              ),
-                            )
-                          }
-                          placeholder="Caixa"
-                        />
-                      </Field>
-                      <Field label={i === 0 ? "Unidades" : ""} htmlFor={`pk-fator-${i}`}>
-                        <Input
-                          id={`pk-fator-${i}`}
-                          value={p.fator}
-                          onChange={(e) =>
-                            setPackagings((prev) =>
-                              prev.map((x, idx) =>
-                                idx === i ? { ...x, fator: soInteiro(e.target.value) } : x,
-                              ),
-                            )
-                          }
-                          placeholder="12"
-                          inputMode="numeric"
-                          className="font-mono"
-                        />
-                      </Field>
-                      <Field
-                        label={i === 0 ? "Código de barras" : ""}
-                        htmlFor={`pk-ean-${i}`}
-                      >
-                        <Input
-                          id={`pk-ean-${i}`}
-                          value={p.ean}
-                          onChange={(e) =>
-                            setPackagings((prev) =>
-                              prev.map((x, idx) =>
-                                idx === i ? { ...x, ean: e.target.value } : x,
-                              ),
-                            )
-                          }
-                          placeholder="789…"
-                          inputMode="numeric"
-                          className="font-mono placeholder:font-sans"
-                        />
-                      </Field>
-                      <button
-                        type="button"
-                        onClick={() => pedirRemocaoPk(i)}
-                        className="mb-1.5 grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-sm)] border border-line text-faint transition-colors hover:border-danger/40 hover:bg-danger-soft hover:text-danger"
-                        aria-label="Remover embalagem"
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                <div className="flex flex-col px-5 pb-5 sm:px-6 sm:pb-6">
+                  {/* Unidade — o que passa no caixa. */}
+                  <div className="flex flex-col gap-3 pb-5">
+                    <div className="flex flex-col gap-0.5">
+                      <Eyebrow>Unidade · vende e compra</Eyebrow>
+                      <p className="text-xs text-muted">
+                        O código que passa no caixa — e que a nota de compra também
+                        pode trazer. Outra marca do mesmo item entra aqui: mesmo preço,
+                        mesmo saldo.
+                      </p>
                     </div>
-                  ))}
+                    {idxUnidades.map((i, k) => linhaDeCodigo(i, k === 0))}
+                    <button
+                      type="button"
+                      onClick={() => adicionarCodigo()}
+                      className="flex w-fit items-center gap-1 text-xs font-medium text-brand-strong hover:text-brand"
+                    >
+                      <Plus size={13} /> Adicionar código de unidade
+                    </button>
+                  </div>
 
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPackagings((prev) => [...prev, { nome: "", ean: "", fator: "" }])
-                    }
-                    className="flex w-fit items-center gap-1 text-xs font-medium text-brand-strong hover:text-brand"
-                  >
-                    <Plus size={13} /> Adicionar embalagem
-                  </button>
+                  {/* Fardo ou caixa — só entra pela compra. */}
+                  <div className="flex flex-col gap-3 border-t border-line pt-5">
+                    <div className="flex flex-col gap-0.5">
+                      <Eyebrow>Fardo ou caixa · só compra</Eyebrow>
+                      <p className="text-xs text-muted">
+                        Como o fornecedor entrega, e quantas unidades vêm dentro: um
+                        fardo com 6 entra no estoque como 6 unidades. Não passa no
+                        caixa. Em branco, a primeira nota deste produto preenche
+                        sozinha.
+                      </p>
+                    </div>
+                    {idxEmbalagens.map((i, k) => linhaDeCodigo(i, k === 0))}
+                    <button
+                      type="button"
+                      onClick={() => adicionarCodigo(true)}
+                      className="flex w-fit items-center gap-1 text-xs font-medium text-brand-strong hover:text-brand"
+                    >
+                      <Plus size={13} /> Adicionar fardo ou caixa
+                    </button>
+                  </div>
                 </div>
               </details>
             </section>
@@ -2156,22 +2128,22 @@ export function SimpleProductForm({
         </Button>
       </div>
 
-      {pkARemover !== null && (
+      {linhaARemover !== null && (
         <ConfirmDialog
           title="Remover embalagem"
           description={
             <>
               A embalagem{" "}
               <span className="font-medium text-ink">
-                {packagings[pkARemover]?.nome.trim() || "sem nome"}
+                {linhas[linhaARemover]?.rotulo.trim() || "sem nome"}
               </span>{" "}
               sai deste produto. O código de barras dela deixa de bipar na entrada de
               estoque. A remoção só vale depois de salvar o produto.
             </>
           }
           confirmLabel="Remover"
-          onCancel={() => setPkARemover(null)}
-          onConfirm={() => removerPk(pkARemover)}
+          onCancel={() => setLinhaARemover(null)}
+          onConfirm={() => removerLinha(linhaARemover)}
         />
       )}
     </div>

@@ -37,6 +37,15 @@ function genBars(codeRaw: string | null): { w: number; on: boolean }[] {
   return bars;
 }
 
+/**
+ * Códigos de unidade do produto. `ean` é espelho de um deles e só entra para
+ * o cadastro antigo que ainda não tem lista.
+ */
+function codigosDe(p: ProductRow): { codigo: string; rotulo: string | null }[] {
+  if (p.codigos.length) return p.codigos;
+  return p.ean ? [{ codigo: p.ean, rotulo: null }] : [];
+}
+
 function escHtml(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
 }
@@ -54,7 +63,15 @@ function BarcodeBars({ code }: { code: string | null }) {
   );
 }
 
-function LabelPreview({ p, modelo, flags }: { p: ProductRow; modelo: Modelo; flags: Flags }) {
+function LabelPreview({
+  p, modelo, flags, code,
+}: {
+  p: ProductRow;
+  modelo: Modelo;
+  flags: Flags;
+  /** Código escolhido para esta etiqueta — `null` enquanto o operador não decide. */
+  code: string | null;
+}) {
   const vol = formatVolume(p);
   return (
     <div className="mx-auto w-full max-w-64 rounded-[var(--radius)] border border-line bg-white px-4 py-3 text-center text-ink shadow-sm">
@@ -69,10 +86,10 @@ function LabelPreview({ p, modelo, flags }: { p: ProductRow; modelo: Modelo; fla
           {flags.preco && (
             <div className="my-1.5 font-display text-2xl font-extrabold tnum">{brl(p.precoVenda)}</div>
           )}
-          {flags.barcode && p.ean && (
+          {flags.barcode && code && (
             <>
-              <div className="mt-1.5"><BarcodeBars code={p.ean} /></div>
-              <div className="font-mono text-[10px] tracking-widest text-ink-2">{p.ean}</div>
+              <div className="mt-1.5"><BarcodeBars code={code} /></div>
+              <div className="font-mono text-[10px] tracking-widest text-ink-2">{code}</div>
             </>
           )}
           {flags.sku && <div className="mt-1 font-mono text-[10px] text-muted">{p.sku}</div>}
@@ -87,10 +104,10 @@ function LabelPreview({ p, modelo, flags }: { p: ProductRow; modelo: Modelo; fla
               <span className="text-muted">SKU: </span>{p.sku}
             </div>
           )}
-          {flags.barcode && p.ean && (
+          {flags.barcode && code && (
             <>
-              <div className="mt-1.5"><BarcodeBars code={p.ean} /></div>
-              <div className="font-mono text-[10px] tracking-widest text-ink-2">{p.ean}</div>
+              <div className="mt-1.5"><BarcodeBars code={code} /></div>
+              <div className="font-mono text-[10px] tracking-widest text-ink-2">{code}</div>
             </>
           )}
         </>
@@ -101,13 +118,13 @@ function LabelPreview({ p, modelo, flags }: { p: ProductRow; modelo: Modelo; fla
 
 // ── Impressão (janela nova, HTML autocontido) ────────────────────────────────
 
-function labelHtml(p: ProductRow, modelo: Modelo, flags: Flags): string {
+function labelHtml(p: ProductRow, modelo: Modelo, flags: Flags, code: string | null): string {
   const vol = formatVolume(p);
-  const bars = genBars(p.ean)
+  const bars = genBars(code)
     .map((b) => `<span style="display:inline-block;width:${b.w}px;height:100%;background:${b.on ? "#000" : "transparent"}"></span>`)
     .join("");
-  const barBlock = flags.barcode && p.ean
-    ? `<div class="l-bars">${bars}</div><div class="l-code">${escHtml(p.ean)}</div>`
+  const barBlock = flags.barcode && code
+    ? `<div class="l-bars">${bars}</div><div class="l-code">${escHtml(code)}</div>`
     : "";
   const marca = flags.marca && p.marca ? `<div class="l-marca">${escHtml(p.marca)}</div>` : "";
 
@@ -129,7 +146,14 @@ function labelHtml(p: ProductRow, modelo: Modelo, flags: Flags): string {
   </div>`;
 }
 
-function printLabels(products: ProductRow[], modelo: Modelo, papel: Papel, flags: Flags, perQty: number) {
+function printLabels(
+  products: ProductRow[],
+  modelo: Modelo,
+  papel: Papel,
+  flags: Flags,
+  perQty: number,
+  codeOf: (p: ProductRow) => string | null,
+) {
   const paper = papel === "a4" ? "A4" : `${papel}mm auto`;
   const labelWidth = papel === "58" ? "54mm" : papel === "80" ? "76mm" : "50mm";
   const css = `
@@ -146,7 +170,7 @@ function printLabels(products: ProductRow[], modelo: Modelo, papel: Papel, flags
     .l-sku { font-family: 'IBM Plex Mono', monospace; font-size: 8pt; color: #333; margin-top: 1mm; }
   `;
   const body = products
-    .flatMap((p) => Array.from({ length: perQty }, () => labelHtml(p, modelo, flags)))
+    .flatMap((p) => Array.from({ length: perQty }, () => labelHtml(p, modelo, flags, codeOf(p))))
     .join("");
 
   const win = window.open("", "_blank", "width=460,height=680");
@@ -174,6 +198,21 @@ export function EtiquetasSheet({
   const [qtyCustom, setQtyCustom] = useState(5);
   const [flags, setFlags] = useState<Flags>({ sku: true, barcode: true, marca: usaMarcas, preco: true });
 
+  // Não existe código favorito no cadastro: produto com mais de um código de
+  // unidade obriga a escolher aqui qual vai impresso. Chaveado pelo id do
+  // produto — a escolha vale só para esta impressão.
+  const [escolhidos, setEscolhidos] = useState<Record<string, string>>({});
+  /** Código que vai nesta etiqueta. `null` = sem código, ou ainda por escolher. */
+  function codigoDe(p: ProductRow): string | null {
+    const codigos = codigosDe(p);
+    if (codigos.length <= 1) return codigos[0]?.codigo ?? null;
+    const escolhido = escolhidos[p.id];
+    return codigos.some((c) => c.codigo === escolhido) ? escolhido : null;
+  }
+  const comEscolha = products.filter((p) => codigosDe(p).length > 1);
+  const faltaEscolher =
+    flags.barcode && comEscolha.some((p) => codigoDe(p) === null);
+
   const perQty = qtyMode === "one" ? 1 : Math.max(1, qtyCustom);
   const totalEtiquetas = products.length * perQty;
   const preview = products[0];
@@ -183,8 +222,8 @@ export function EtiquetasSheet({
   }
 
   function onImprimir() {
-    if (products.length === 0) return;
-    printLabels(products, modelo, papel, flags, perQty);
+    if (products.length === 0 || faltaEscolher) return;
+    printLabels(products, modelo, papel, flags, perQty, codigoDe);
     onClose();
   }
 
@@ -202,7 +241,13 @@ export function EtiquetasSheet({
           </span>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={onClose}>Cancelar</Button>
-            <Button size="sm" onClick={onImprimir} disabled={products.length === 0} className="gap-1.5">
+            <Button
+              size="sm"
+              onClick={onImprimir}
+              disabled={products.length === 0 || faltaEscolher}
+              title={faltaEscolher ? "Escolha o código de barras de cada produto" : undefined}
+              className="gap-1.5"
+            >
               <Printer size={15} /> Imprimir etiquetas
             </Button>
           </div>
@@ -289,12 +334,57 @@ export function EtiquetasSheet({
           </div>
         </section>
 
+        {/* ── Qual código imprimir ── só aparece para quem tem mais de um. */}
+        {flags.barcode && comEscolha.length > 0 && (
+          <section>
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-faint">
+              Código de barras da etiqueta
+            </h3>
+            <p className="mb-3 text-xs text-muted">
+              {comEscolha.length === 1
+                ? "Este produto tem mais de um código."
+                : "Estes produtos têm mais de um código."}{" "}
+              Escolha o da embalagem que vai receber a etiqueta.
+            </p>
+            <div className="space-y-3">
+              {comEscolha.map((p) => (
+                <div key={p.id}>
+                  <label
+                    htmlFor={`etq-cod-${p.id}`}
+                    className="mb-1.5 block text-sm font-medium text-ink"
+                  >
+                    {p.nome}
+                  </label>
+                  <Select
+                    id={`etq-cod-${p.id}`}
+                    value={codigoDe(p) ?? ""}
+                    onChange={(e) =>
+                      setEscolhidos((prev) => ({ ...prev, [p.id]: e.target.value }))
+                    }
+                    className="h-10 font-mono"
+                  >
+                    <option value="" disabled>
+                      Escolha o código
+                    </option>
+                    {codigosDe(p).map((c) => (
+                      <option key={c.codigo} value={c.codigo}>
+                        {c.codigo}
+                        {c.rotulo ? ` · ${c.rotulo}` : ""}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* ── Pré-visualização ── */}
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-faint">Pré-visualização</h3>
           {preview ? (
             <div className="rounded-[var(--radius)] border border-dashed border-line-strong bg-surface-2 p-5">
-              <LabelPreview p={preview} modelo={modelo} flags={flags} />
+              <LabelPreview p={preview} modelo={modelo} flags={flags} code={codigoDe(preview)} />
               <p className="mt-3 text-center text-[11px] text-faint">
                 Prévia ilustrativa · {preview.nome}
               </p>

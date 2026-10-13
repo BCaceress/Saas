@@ -38,7 +38,7 @@ Toda leitura/escrita de negócio passa pelo contexto de tenant.
 - **HTTP** (integrações externas, CSV, webhooks) → route handlers em `app/api/**`.
 - Nomes de **domínio em português** (produto, fornecedor, estoque); código/infra em
   inglês onde fizer sentido.
-- Tokens de API externos (Cosmos, LLM) **só no servidor** — nunca expostos ao browser.
+- Tokens de API externos (LLM) **só no servidor** — nunca expostos ao browser.
 
 ## UI
 
@@ -78,7 +78,7 @@ src/components/               UI (ui/ = primitivos shadcn; domínio = StockGauge
 ## Variáveis de ambiente
 
 Ver `.env.example`. Resumo: `DATABASE_URL` (pooled) + `DIRECT_URL` (unpooled),
-`APP_DOMAIN`, `AUTH_SECRET` + Google, `COSMOS_*`, `BRASILAPI_URL`, `LLM_PROVIDER`
+`APP_DOMAIN`, `AUTH_SECRET` + Google, `COSMOS_USER_AGENT`, `BRASILAPI_URL`, `LLM_PROVIDER`
 (`anthropic`|`gemini`) + chaves.
 
 ## NÃO FAZER
