@@ -4,7 +4,6 @@ import {
   Fragment,
   forwardRef,
   useEffect,
-  useMemo,
   useRef,
   useState,
   useTransition,
@@ -65,6 +64,7 @@ import {
   type SubcategoriaCadastro,
 } from "@/app/(app)/recebimento/actions";
 import type { SugestaoDePara } from "@/lib/compras/sugestao-de-para";
+import { CONFIANCA } from "@/lib/compras/sugestao-pelo-pedido-regras";
 
 // ============================================================
 // Etapa 1 do recebimento: o que chegou × o que isso é no NoHub.
@@ -106,6 +106,8 @@ export type ItemDePara = {
   productId: string | null;
   productNome: string | null;
   productSku: string | null;
+  /** Marca do produto relacionado — só para a busca da tabela achar por ela. */
+  productMarca?: string | null;
   /**
    * Unidade de MEDIDA do produto (UN, ML, G). NÃO é o que entra numa compra:
    * a entrada soma `estoqueFechado`, que conta unidades fechadas — 12 garrafas
@@ -443,7 +445,39 @@ function palavraDaEmbalagem(item: ItemDePara): string {
 const LIMIAR_BUSCA = 12;
 
 /** As lentes da etapa 1 — o operador trabalha só no que ainda pede ação. */
-type Lente = "TODOS" | "PENDENCIAS" | Pendencia;
+type Lente =
+  | "TODOS"
+  | "PENDENCIAS"
+  | Pendencia
+  // Sem produto, partido em dois trabalhos diferentes: dizer "sim" a um palpite
+  // e procurar no catálogo o que ninguém achou.
+  | "COM_SUGESTAO"
+  | "SEM_CORRESPONDENCIA"
+  | "VINCULADOS";
+
+type Contagens = Record<Pendencia, number> & {
+  COM_SUGESTAO: number;
+  SEM_CORRESPONDENCIA: number;
+  VINCULADOS: number;
+};
+
+/** A linha passa por esta lente? */
+function passaNaLente(lente: Lente, p: Pendencia, temSugestao: boolean): boolean {
+  switch (lente) {
+    case "TODOS":
+      return true;
+    case "PENDENCIAS":
+      return p !== "PRONTO";
+    case "COM_SUGESTAO":
+      return p === "SEM_PRODUTO" && temSugestao;
+    case "SEM_CORRESPONDENCIA":
+      return p === "SEM_PRODUTO" && !temSugestao;
+    case "VINCULADOS":
+      return p !== "SEM_PRODUTO";
+    default:
+      return p === lente;
+  }
+}
 
 /**
  * O resumo de pendências — a única coisa que o operador lê antes de decidir
@@ -462,12 +496,13 @@ function ResumoDePara({
   verTabela,
   onVerTabela,
 }: {
-  contagens: Record<Pendencia, number>;
+  contagens: Contagens;
   total: number;
   lente: Lente;
   onLente: (l: Lente) => void;
   verTabela: boolean;
-  onVerTabela: () => void;
+  /** Ausente = a tabela é a tela: não há o que dobrar. */
+  onVerTabela?: () => void;
 }) {
   const pendencias = total - contagens.PRONTO;
   const pct = total > 0 ? (contagens.PRONTO / total) * 100 : 0;
@@ -517,14 +552,16 @@ function ResumoDePara({
           {/* Nota que chegou inteira relacionada (o comum, depois que o mapa do
               fornecedor aprendeu) abria com 40 linhas cobrindo o trabalho real,
               que é dizer de onde veio a compra. O resumo fica; a tabela dobra. */}
-          <button
-            type="button"
-            onClick={onVerTabela}
-            aria-expanded={verTabela}
-            className="font-medium text-brand underline"
-          >
-            {verTabela ? "ocultar itens" : "ver itens"}
-          </button>
+          {onVerTabela && (
+            <button
+              type="button"
+              onClick={onVerTabela}
+              aria-expanded={verTabela}
+              className="font-medium text-brand underline"
+            >
+              {verTabela ? "ocultar itens" : "ver itens"}
+            </button>
+          )}
         </p>
       </div>
 
@@ -576,11 +613,12 @@ function ResumoDePara({
         {(
           [
             ["TODOS", "Todos", total],
-            ["PENDENCIAS", "Pendências", pendencias],
-            ["SEM_PRODUTO", "Sem produto", contagens.SEM_PRODUTO],
-            ["SEM_EMBALAGEM", "Sem quantidade por embalagem", contagens.SEM_EMBALAGEM],
+            ["PENDENCIAS", "Pendentes", pendencias],
+            ["COM_SUGESTAO", "Com sugestão", contagens.COM_SUGESTAO],
+            ["SEM_CORRESPONDENCIA", "Sem correspondência", contagens.SEM_CORRESPONDENCIA],
+            ["SEM_EMBALAGEM", "Sem conversão", contagens.SEM_EMBALAGEM],
             ["CONFERIR", "Com diferença", contagens.CONFERIR],
-            ["PRONTO", "Prontos", contagens.PRONTO],
+            ["VINCULADOS", "Vinculados", contagens.VINCULADOS],
           ] as const
         )
           .filter(([id, , n]) => id === "TODOS" || n > 0)
@@ -623,6 +661,9 @@ export function TabelaDePara({
   siteId,
   subcategorias,
   atalhosAtivos = true,
+  purchaseOrderId = null,
+  pedidoDasSugestoes = null,
+  sempreAberta = false,
 }: {
   inboundId: string;
   itens: ItemDePara[];
@@ -639,6 +680,15 @@ export function TabelaDePara({
   subcategorias?: SubcategoriaCadastro[];
   /** A tela hospedeira desliga os atalhos quando abre outro diálogo. */
   atalhosAtivos?: boolean;
+  /**
+   * Pedido que a nota fatura, quando o operador já disse qual é. Os produtos
+   * dele entram na disputa dos palpites.
+   */
+  purchaseOrderId?: string | null;
+  /** Com qual pedido o servidor calculou `sugestoesIniciais`. */
+  pedidoDasSugestoes?: string | null;
+  /** A tabela É a etapa: nasce aberta, com busca, e não se dobra. */
+  sempreAberta?: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -667,7 +717,8 @@ export function TabelaDePara({
   const [busca, setBusca] = useState("");
   const [lente, setLente] = useState<Lente>("TODOS");
   /** Nota já inteira relacionada abre dobrada — o resumo basta. */
-  const [verTabela, setVerTabela] = useState(() => itens.some((i) => !i.productId));
+  const [aberta, setVerTabela] = useState(() => itens.some((i) => !i.productId));
+  const verTabela = sempreAberta || aberta;
   const [foco, setFoco] = useState<string | null>(null);
   // O anel só aparece na navegação por teclado: desenhar um em cada linha que
   // o mouse passa transforma feedback em ruído.
@@ -691,16 +742,24 @@ export function TabelaDePara({
    */
   const porCodigo = (sugestoes ?? []).filter((s) => s.motivo === "EAN");
 
-  const contagens = useMemo(() => {
-    const base: Record<Pendencia, number> = {
-      SEM_PRODUTO: 0,
-      SEM_EMBALAGEM: 0,
-      CONFERIR: 0,
-      PRONTO: 0,
-    };
-    for (const i of itens) base[pendenciaDoItem(i)]++;
-    return base;
-  }, [itens]);
+  const sugestaoDe = (itemId: string) => sugestoes?.find((s) => s.itemId === itemId) ?? null;
+
+  const contagens: Contagens = {
+    SEM_PRODUTO: 0,
+    SEM_EMBALAGEM: 0,
+    CONFERIR: 0,
+    PRONTO: 0,
+    COM_SUGESTAO: 0,
+    SEM_CORRESPONDENCIA: 0,
+    VINCULADOS: 0,
+  };
+  for (const i of itens) {
+    const p = pendenciaDoItem(i);
+    contagens[p]++;
+    if (p !== "SEM_PRODUTO") contagens.VINCULADOS++;
+    else if (sugestaoDe(i.id)) contagens.COM_SUGESTAO++;
+    else contagens.SEM_CORRESPONDENCIA++;
+  }
 
   // Lente que esvaziou — o operador resolveu a última pendência dela — deixaria
   // a tela em branco sem explicação. Derivado, não corrigido por efeito: o
@@ -712,11 +771,21 @@ export function TabelaDePara({
 
   const q = busca.trim().toLowerCase();
   const visiveis = itens.filter((i) => {
-    const p = pendenciaDoItem(i);
-    if (lenteAtiva === "PENDENCIAS" && p === "PRONTO") return false;
-    if (lenteAtiva !== "TODOS" && lenteAtiva !== "PENDENCIAS" && p !== lenteAtiva) return false;
+    const s = sugestaoDe(i.id);
+    if (!passaNaLente(lenteAtiva, pendenciaDoItem(i), Boolean(s))) return false;
     if (!q) return true;
-    return [i.descricao, i.codigoFornecedor, i.gtin, i.productNome, i.productSku]
+    // Os dois lados da linha: como o fornecedor escreveu e o que isso é (ou
+    // parece ser) no catálogo — produto, SKU, marca e o palpite ainda aberto.
+    return [
+      i.descricao,
+      i.codigoFornecedor,
+      i.gtin,
+      i.productNome,
+      i.productSku,
+      i.productMarca,
+      s?.nome,
+      s?.sku,
+    ]
       .filter(Boolean)
       .some((c) => String(c).toLowerCase().includes(q));
   });
@@ -738,10 +807,27 @@ export function TabelaDePara({
   /** Refaz os palpites depois de mexer no de-para. */
   function recalcularPalpites() {
     setPalpites(null);
-    sugestoesDaNotaAction(inboundId)
+    sugestoesDaNotaAction(inboundId, purchaseOrderId)
       .then(setPalpites)
       .catch(() => setPalpites([]));
   }
+
+  // O operador trocou de pedido na etapa anterior sem ir ao servidor: os
+  // palpites que vieram prontos foram calculados com outro pedido (ou sem
+  // nenhum). Busca os certos — e o próximo refresh já traz os dois iguais.
+  useEffect(() => {
+    if (purchaseOrderId === pedidoDasSugestoes) return;
+    let vivo = true;
+    sugestoesDaNotaAction(inboundId, purchaseOrderId)
+      .then((lista) => {
+        if (vivo) setPalpites(lista);
+      })
+      // Palpite é atalho: sem ele a linha segue com a busca no catálogo.
+      .catch(() => undefined);
+    return () => {
+      vivo = false;
+    };
+  }, [inboundId, purchaseOrderId, pedidoDasSugestoes]);
 
   /**
    * A próxima linha que ainda pede alguma coisa, tirando a que acabou de ser
@@ -948,11 +1034,11 @@ export function TabelaDePara({
             setVerTabela(true);
           }}
           verTabela={verTabela}
-          onVerTabela={() => setVerTabela((v) => !v)}
+          onVerTabela={sempreAberta ? undefined : () => setVerTabela((v) => !v)}
         />
       )}
 
-      {verTabela && editavel && (porCodigo.length > 0 || itens.length > LIMIAR_BUSCA) && (
+      {verTabela && editavel && (porCodigo.length > 0 || sempreAberta || itens.length > LIMIAR_BUSCA) && (
         <div className="mt-3 mb-2 flex flex-wrap items-center gap-2">
           {/* Trinta linhas com o código de barras do fornecedor batendo são
               trinta cliques para dizer "sim" trinta vezes. EAN é prova — o
@@ -970,8 +1056,8 @@ export function TabelaDePara({
             </Button>
           )}
 
-          {itens.length > LIMIAR_BUSCA && (
-            <div className="relative min-w-0 flex-1 sm:max-w-xs">
+          {(sempreAberta || itens.length > LIMIAR_BUSCA) && (
+            <div className="relative min-w-0 flex-1 sm:max-w-sm">
               <Search
                 size={14}
                 aria-hidden
@@ -980,8 +1066,8 @@ export function TabelaDePara({
               <input
                 value={busca}
                 onChange={(e) => setBusca(e.target.value)}
-                placeholder="Achar item na nota"
-                aria-label="Achar item na nota"
+                placeholder="Descrição, código do fornecedor, EAN, SKU ou marca"
+                aria-label="Buscar item da nota"
                 className="h-9 w-full rounded-full border border-line-button bg-surface pr-3 pl-8 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
               />
             </div>
@@ -1039,7 +1125,7 @@ export function TabelaDePara({
                     focado={foco === i.id && porTeclado}
                     abrirEmbalagem={abrirEmbalagem === i.id}
                     onFecharEmbalagem={() => setAbrirEmbalagem(null)}
-                    sugestao={sugestoes?.find((s) => s.itemId === i.id) ?? null}
+                    sugestao={sugestaoDe(i.id)}
                     buscandoSugestao={sugestoes === null}
                     onFocar={() => {
                       setFoco(i.id);
@@ -1332,12 +1418,23 @@ const LinhaItem = forwardRef<
             >
               <ProdutoThumb url={sugestao.imagemUrl} nome={sugestao.nome} size="xs" />
               <div className="min-w-0">
-                <p className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-brand">
+                {/* Nível e motivo juntos: "confiança baixa" sem o porquê é só um
+                    rótulo, e o porquê sem o nível não diz se dá para confirmar
+                    de olhos fechados. Só a alta entra no lote. */}
+                <p
+                  className={cn(
+                    "flex items-center gap-1.5 text-[11px] font-medium",
+                    CONFIANCA[sugestao.motivo].nivel === "alta"
+                      ? "text-ok"
+                      : CONFIANCA[sugestao.motivo].nivel === "media"
+                        ? "text-brand"
+                        : "text-warn",
+                  )}
+                >
                   <Sparkles size={11} aria-hidden />
-                  {sugestao.motivo === "EAN"
-                    ? "código de barras reconhecido"
-                    : "encontrado pelo nome"}
+                  {CONFIANCA[sugestao.motivo].rotulo}
                 </p>
+                <p className="text-[11px] text-muted">{CONFIANCA[sugestao.motivo].justificativa}</p>
                 <p className="font-medium text-ink">{sugestao.nome}</p>
                 <p className="font-mono text-[11px] text-faint">{sugestao.sku}</p>
                 {sugestao.fatorConversao > 1 && (

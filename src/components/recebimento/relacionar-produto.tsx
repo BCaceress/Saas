@@ -799,6 +799,9 @@ const Resultado = React.forwardRef<
             )}
           </p>
           <p className="truncate font-mono text-[11px] text-muted">
+            {/* A marca vem primeiro e em letra comum: entre dois "Cerveja Long
+                Neck 330ml", é ela que diz qual é qual. */}
+            {p.marca && <span className="font-sans font-medium text-ink-2">{p.marca} · </span>}
             {p.sku}
             {medida ? ` · ${medida}` : ""}
             {p.ean ? ` · ${p.ean}` : ""}
@@ -926,6 +929,7 @@ function ConfirmarVinculo({
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium text-ink">{p.nome}</p>
           <p className="truncate font-mono text-[11px] text-muted">
+            {p.marca && <span className="font-sans font-medium text-ink-2">{p.marca} · </span>}
             {p.sku}
             {medida ? ` · ${medida}` : ""}
             {p.custoMedio > 0 ? ` · médio ${fmtMoney(p.custoMedio)}` : ""}

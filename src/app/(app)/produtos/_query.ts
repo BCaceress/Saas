@@ -44,10 +44,6 @@ export const FILTRO_VAZIO: ProdutoFiltro = {
   siteId: "",
   tag: "",
   status: "ativos",
-  flags: {
-    semImagem: false, semEan: false, semFiscal: false,
-    online: false, maiorIdade: false,
-  },
 };
 
 // ── WHERE ────────────────────────────────────────────────────────────────────
@@ -89,15 +85,6 @@ export function whereDoFiltro(f: ProdutoFiltro): Prisma.ProductWhereInput {
 
   if (f.status === "ativos") and.push({ ativo: true });
   else if (f.status === "inativos") and.push({ ativo: false });
-
-  if (f.flags.semImagem) and.push({ imagemUrl: null });
-  // "Sem código de barras" é não ter NENHUM — nem o espelho nem apelido. Só
-  // olhar `ean` listaria como pendência o produto que tem três códigos e por
-  // algum motivo perdeu o principal.
-  if (f.flags.semEan) and.push({ ean: null, barcodes: { none: {} } });
-  if (f.flags.semFiscal) and.push({ fiscalProfileId: null });
-  if (f.flags.online) and.push({ vendeOnline: true });
-  if (f.flags.maiorIdade) and.push({ restricaoIdade: true });
 
   return and.length ? { AND: and } : {};
 }

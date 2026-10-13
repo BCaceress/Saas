@@ -1,19 +1,13 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
-  ArrowLeft,
   ArrowRightLeft,
-  CircleX,
   Check,
   CheckCheck,
   ClipboardCheck,
-  FilePlus2,
-  FileText,
   History,
-  Link2,
   Loader2,
   PackageOpen,
   PackagePlus,
@@ -22,7 +16,6 @@ import {
   ScanLine,
   Search,
   Send,
-  MoreVertical,
   Undo2,
   TrendingDown,
   TrendingUp,
@@ -31,7 +24,6 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
-import { Menu, MenuItem } from "@/components/ui/menu";
 import { toast } from "@/components/ui/toast";
 import { Scanner } from "@/components/mobile/scanner";
 import { ProdutoThumb } from "@/components/recebimento/produto-thumb";
@@ -39,26 +31,31 @@ import {
   RelacionarProduto,
   type ItemDeNota,
 } from "@/components/recebimento/relacionar-produto";
-import { TabelaDePara } from "@/components/recebimento/tabela-de-para";
 import { PainelNota } from "./_painel-nota";
+import { EntradaDaNota } from "./_entrada";
+import { Fechamento } from "./_fechamento";
+import {
+  Cabecalho,
+  ETAPAS_COM_NOTA,
+  ETAPAS_SEM_NOTA,
+  MedidorRodape,
+  RodapeAcao,
+  Trilho,
+} from "./_partes";
 import { useLeitorTeclado } from "@/lib/hooks/use-leitor-teclado";
 import { variacaoCusto } from "@/lib/compras/conciliacao-regras";
 import { frasesDeConversao, rotuloDaUnidade } from "@/lib/fiscal/unidades";
-import { Metrica, MetricaGrid, fmtMoney, fmtQtd, fmtQuando } from "../../cotacoes/_catalogo/ui";
+import { Metrica, MetricaGrid, fmtMoney, fmtQtd } from "../../cotacoes/_catalogo/ui";
 import {
   aceitarCustoAction,
   devolverDivergenciaAction,
   resumoDivergenciasAction,
-  finalizarRecebimentoAction,
   cancelarRecebimentoAction,
   conferirItemAction,
   conferirTudoAction,
-  criarPedidoDaNotaAction,
   desvincularPedidoAction,
-  receberSemPedidoAction,
   resolverDivergenciaAction,
   restaurarContagemAction,
-  vincularPedidoAction,
   adicionarItemAction,
   removerItemAction,
 } from "../conferencia-actions";
@@ -149,6 +146,8 @@ export function RecebimentoClient({
   podeReceber,
   podeTratarNota,
   podeCriarProduto,
+  podeEditarFornecedor,
+  podeAlterarPreco,
   cega,
   subcategorias,
 }: {
@@ -162,24 +161,37 @@ export function RecebimentoClient({
   /** Decide sobre o DOCUMENTO: descartar, estornar, documentar entrada manual. */
   podeTratarNota: boolean;
   podeCriarProduto: boolean;
+  /** Decide as sugestões de contato que o XML trouxe para o fornecedor. */
+  podeEditarFornecedor: boolean;
+  /** Remarca preço de venda no fechamento. */
+  podeAlterarPreco: boolean;
   /** Conferência cega: esconde pedido e NF até a pessoa contar. */
   cega: boolean;
   subcategorias: SubcategoriaCadastro[];
 }) {
-  // Três portas, uma tela: com pedido é conciliação, sem pedido é a nota
-  // contra a contagem. Só o XML tem porta a escolher — quem clicou "Iniciar
-  // recebimento" num pedido já entra conferindo, e o avulso também.
+  const params = useSearchParams();
+  const { recebimento } = dados;
+  const aberto = recebimento.status !== "FINALIZADO" && recebimento.status !== "CANCELADO";
+
+  // A nota recém-importada ainda não tem conferência: antes de contar caixa é
+  // preciso ler o que ela diz, dizer de qual pedido é e relacionar os produtos.
+  // Quem clicou "Iniciar recebimento" num pedido já entra conferindo, e o
+  // avulso também.
   if (dados.escolherPorta && dados.nota) {
     return (
-      <EscolherPedido
+      <EntradaDaNota
         dados={dados}
         nota={dados.nota}
         podeReceber={podeReceber}
         podeTratarNota={podeTratarNota}
         podeCriarProduto={podeCriarProduto}
+        podeEditarFornecedor={podeEditarFornecedor}
         subcategorias={subcategorias}
       />
     );
+  }
+  if (params.get("etapa") === "fechamento" && aberto && podeReceber && dados.linhas.length > 0) {
+    return <Fechamento dados={dados} podeAlterarPreco={podeAlterarPreco} />;
   }
   return (
     <Conferencia
@@ -190,511 +202,6 @@ export function RecebimentoClient({
       cega={cega}
       subcategorias={subcategorias}
     />
-  );
-}
-
-// ── Sem pedido vinculado ────────────────────────────────────
-
-function EscolherPedido({
-  dados,
-  nota,
-  podeReceber,
-  podeTratarNota,
-  podeCriarProduto,
-  subcategorias,
-}: {
-  dados: RecebimentoView;
-  /** Esta etapa só existe com nota — é ela que está sendo decidida aqui. */
-  nota: NonNullable<RecebimentoView["nota"]>;
-  podeReceber: boolean;
-  podeTratarNota: boolean;
-  podeCriarProduto: boolean;
-  subcategorias: SubcategoriaCadastro[];
-}) {
-  const router = useRouter();
-  const { sugestoes, itensNota } = dados;
-  const [salvando, setSalvando] = React.useState<string | null>(null);
-
-  const semProduto = itensNota.filter((i) => !i.productId);
-  const totalItens = itensNota.reduce((s, i) => s + i.valorTotal, 0);
-
-  async function vincular(purchaseOrderId: string) {
-    setSalvando(purchaseOrderId);
-    try {
-      await vincularPedidoAction({ inboundId: nota.id, purchaseOrderId });
-      toast.success("Nota conciliada com o pedido.", "Confira a mercadoria para receber no estoque.");
-      router.refresh();
-    } catch (e) {
-      toast.error("Não deu para vincular", e instanceof Error ? e.message : "Tente de novo.");
-      setSalvando(null);
-    }
-  }
-
-  async function gerarPedido() {
-    setSalvando("novo");
-    try {
-      await criarPedidoDaNotaAction(nota.id);
-      toast.success("Pedido criado a partir da nota.", "Já nasce conciliado — falta conferir.");
-      router.refresh();
-    } catch (e) {
-      toast.error("Não deu para criar o pedido", e instanceof Error ? e.message : "Tente de novo.");
-      setSalvando(null);
-    }
-  }
-
-  async function receberSemPedido() {
-    setSalvando("sem-pedido");
-    try {
-      await receberSemPedidoAction(nota.id);
-      toast.success("Conferência aberta sem pedido.", "A nota é a referência do que deveria vir.");
-      router.refresh();
-    } catch (e) {
-      toast.error("Não deu para abrir a conferência", e instanceof Error ? e.message : "Tente de novo.");
-      setSalvando(null);
-    }
-  }
-
-  const podeAvancar = semProduto.length === 0;
-  // O que entra no saldo se a nota for recebida como está — a conta que o
-  // operador não faz de cabeça e que muda com cada conversão confirmada.
-  const unidades = itensNota.reduce(
-    (s, i) => s + (i.productId ? i.quantidade * i.fatorConversao : 0),
-    0,
-  );
-
-  /**
-   * De onde veio esta compra. Antes eram três cards lado a lado, cada um com
-   * um parágrafo e um botão próprio: três decisões de peso igual competindo,
-   * e o operador lendo tudo para descobrir qual era a dele. Agora é uma
-   * pergunta com três respostas — só a escolhida se abre, e o botão de agir é
-   * um só, no rodapé.
-   */
-  type Porta = "PEDIDO" | "NOVO" | "SEM_PEDIDO";
-  const [porta, setPorta] = React.useState<Porta | null>(
-    sugestoes.length > 0 ? "PEDIDO" : null,
-  );
-  const [pedidoEscolhido, setPedidoEscolhido] = React.useState<string | null>(
-    sugestoes[0]?.purchaseOrderId ?? null,
-  );
-
-  const itensRef = React.useRef<HTMLDivElement>(null);
-
-  /** A ação que o botão do rodapé dispara, conforme a resposta escolhida. */
-  function seguir() {
-    if (porta === "PEDIDO" && pedidoEscolhido) void vincular(pedidoEscolhido);
-    else if (porta === "NOVO") void gerarPedido();
-    else if (porta === "SEM_PEDIDO") void receberSemPedido();
-  }
-
-  /** Por que o botão do rodapé está travado, quando está. */
-  const impedimento =
-    porta === null
-      ? "Escolha de onde veio esta mercadoria."
-      : porta === "PEDIDO" && !pedidoEscolhido
-        ? "Escolha o pedido que esta nota fatura."
-        : porta === "NOVO" && !podeAvancar
-          ? `${semProduto.length} ${semProduto.length === 1 ? "item precisa" : "itens precisam"} de produto antes de criar o pedido.`
-          : null;
-
-  const CTA: Record<Porta, string> = {
-    PEDIDO: "Vincular e conferir",
-    NOVO: "Criar pedido e conferir",
-    SEM_PEDIDO: "Conferir e receber",
-  };
-
-  return (
-    <div className="flex min-h-full flex-col gap-5">
-      <Cabecalho recebimento={dados.recebimento} nota={nota} pedidoNumero={null} />
-
-      <Trilho etapa={podeAvancar ? 2 : 1} />
-
-      {podeTratarNota && (
-        <PainelNota nota={nota} faltamRelacionar={semProduto.length} emConferencia={false} />
-      )}
-
-      {/* Etapa 1. Nada acontece antes disto: sem produto relacionado não há
-          custo, não há saldo e não há conferência. É a etapa que trava — e por
-          isso vem primeiro, com o que falta no topo da tabela. */}
-      <section ref={itensRef} className="flex flex-col gap-3">
-        <h2 className="font-display text-[15px] font-semibold text-ink">
-          <span className="text-faint">1 · </span>Produtos
-        </h2>
-
-        <TabelaDePara
-          inboundId={nota.id}
-          itens={itensNota}
-          sugestoesIniciais={dados.sugestoesDePara}
-          editavel
-          podeCriarProduto={podeCriarProduto}
-          supplierId={nota.supplierId}
-          siteId={nota.siteId}
-          subcategorias={subcategorias}
-        />
-
-        {/* A nota fecha? Soma dos itens contra o total do XML. Se o parse
-            perdeu uma linha ou o frete entrou fora, é aqui que aparece —
-            depois da entrada vira custo médio e ninguém mais discute. */}
-        <Fechamento itens={totalItens} nota={nota.valorTotal} />
-      </section>
-
-      {/* Etapa 2. Quem não recebe mercadoria não responde esta pergunta:
-          responder decide o que vai movimentar estoque, e essa é a decisão de
-          quem está na doca. */}
-      {!podeReceber ? (
-        <p className="rounded-[var(--radius-lg)] border border-line bg-surface-2 px-4 py-3 text-[13px] text-muted">
-          Você trata a nota: relacionar os itens aos produtos é a sua etapa. Quem recebe a
-          mercadoria diz de onde ela veio e confere o que chegou.
-        </p>
-      ) : (
-        <section className="flex flex-col gap-3">
-          <h2 className="font-display text-[15px] font-semibold text-ink">
-            <span className="text-faint">2 · </span>Existe um pedido para esta compra?
-          </h2>
-
-          <div className="flex flex-col gap-2" role="radiogroup" aria-label="De onde veio esta compra">
-            <OpcaoPorta
-              selecionada={porta === "PEDIDO"}
-              onSelecionar={() => setPorta("PEDIDO")}
-              titulo="Vincular a um pedido existente"
-              ajuda="Use quando esta NF corresponde a uma compra já registrada."
-              desabilitada={sugestoes.length === 0}
-              motivoDesabilitada="Nenhum pedido em aberto deste fornecedor nesta loja."
-            >
-              <ul className="flex flex-col gap-2">
-                {sugestoes.map((s) => (
-                  <li key={s.purchaseOrderId}>
-                    <button
-                      type="button"
-                      onClick={() => setPedidoEscolhido(s.purchaseOrderId)}
-                      aria-pressed={pedidoEscolhido === s.purchaseOrderId}
-                      className={cn(
-                        "flex w-full items-center gap-3 rounded-[var(--radius)] border px-3.5 py-2.5 text-left transition-colors",
-                        pedidoEscolhido === s.purchaseOrderId
-                          ? "border-brand bg-brand-soft/50"
-                          : "border-line hover:bg-surface-2",
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          "grid h-4 w-4 shrink-0 place-items-center rounded-full border",
-                          pedidoEscolhido === s.purchaseOrderId
-                            ? "border-brand bg-brand"
-                            : "border-line-button",
-                        )}
-                        aria-hidden
-                      >
-                        {pedidoEscolhido === s.purchaseOrderId && (
-                          <Check className="h-2.5 w-2.5 text-on-brand" />
-                        )}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate font-mono text-sm font-medium text-ink">
-                          {s.numero}
-                        </span>
-                        <span className="block truncate text-[12px] text-muted">
-                          {s.itens} {s.itens === 1 ? "item" : "itens"} · {fmtMoney(s.valorTotal)} ·{" "}
-                          {fmtQuando(String(s.criadoEm))}
-                        </span>
-                        {s.motivos.length > 0 && (
-                          <span className="mt-0.5 block truncate text-[12px] text-brand">
-                            {s.motivos.join(" · ")}
-                          </span>
-                        )}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </OpcaoPorta>
-
-            <OpcaoPorta
-              selecionada={porta === "NOVO"}
-              onSelecionar={() => setPorta("NOVO")}
-              titulo="Criar pedido com esta NF"
-              ajuda="Use quando a mercadoria chegou sem pedido."
-            >
-              <p className="text-[13px] text-muted">
-                Nenhum pedido foi encontrado. O NoHub pode criar um pedido automaticamente
-                usando os {itensNota.length} itens desta nota — {fmtMoney(totalItens)} em
-                mercadoria, já conciliado e pronto para conferir.
-              </p>
-              {!podeAvancar && (
-                // O pedido é feito DE produtos: nascer com linhas sem catálogo
-                // seria um pedido que não dá para comparar com nada depois.
-                <p className="mt-2 flex items-start gap-2 rounded-[var(--radius)] bg-warn-soft px-3 py-2 text-[12px] text-warn">
-                  <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-                  <span>
-                    {semProduto.length}{" "}
-                    {semProduto.length === 1
-                      ? "item ainda precisa ser relacionado"
-                      : "itens ainda precisam ser relacionados"}{" "}
-                    antes de criar o pedido.
-                  </span>
-                </p>
-              )}
-            </OpcaoPorta>
-
-            <OpcaoPorta
-              selecionada={porta === "SEM_PEDIDO"}
-              onSelecionar={() => setPorta("SEM_PEDIDO")}
-              titulo="Receber sem pedido"
-              ajuda="Apenas confira a NF e lance a mercadoria no estoque."
-            >
-              <p className="text-[13px] text-muted">
-                A mercadoria será lançada diretamente no estoque. A NF-e fica como referência
-                do recebimento — o que não existe é a camada de pedido para comparar preço e
-                quantidade negociados.
-              </p>
-              {!podeAvancar && (
-                // Não bloqueia: com o caminhão na porta, contar primeiro e
-                // relacionar depois é a ordem certa. Mas a entrada não fecha
-                // enquanto sobrar item sem produto, e isso se diz agora.
-                <p className="mt-2 rounded-[var(--radius)] bg-surface-2 px-3 py-2 text-[12px] text-muted">
-                  Dá para conferir já. A entrada no estoque só fecha depois que a etapa 1
-                  terminar.
-                </p>
-              )}
-            </OpcaoPorta>
-          </div>
-        </section>
-      )}
-
-      {/* O botão que faz a coisa acontecer não pode depender de o operador
-          rolar quarenta linhas de volta para achá-lo. */}
-      {podeReceber && (
-        <RodapeAcao>
-          <div className="min-w-0 flex-1">
-            <MedidorRodape
-              total={itensNota.length}
-              feitos={itensNota.length - semProduto.length}
-              atencao={0}
-              rotulo="item com produto"
-              rotuloPlural="itens com produto"
-            />
-            <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted">
-              {podeAvancar ? (
-                <>
-                  <Check className="h-3.5 w-3.5 shrink-0 text-ok" aria-hidden />
-                  <span>
-                    Entram{" "}
-                    <span className="font-mono text-ink-2">+{fmtQtd(unidades)} UN</span> no
-                    estoque quando a conferência fechar.
-                  </span>
-                </>
-              ) : (
-                <>
-                  <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-warn" aria-hidden />
-                  <span>
-                    {semProduto.length}{" "}
-                    {semProduto.length === 1
-                      ? "item sem produto no catálogo"
-                      : "itens sem produto no catálogo"}
-                    .
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      itensRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-                    }
-                    className="font-medium text-brand underline"
-                  >
-                    Ver pendências
-                  </button>
-                </>
-              )}
-            </p>
-          </div>
-
-          <div className="flex w-full shrink-0 flex-col items-stretch gap-1 sm:w-auto sm:items-end">
-            <Button
-              onClick={seguir}
-              disabled={salvando !== null || impedimento !== null}
-              className="w-full sm:w-auto"
-            >
-              {salvando !== null ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-              ) : porta === "NOVO" ? (
-                <FilePlus2 className="h-4 w-4" aria-hidden />
-              ) : porta === "PEDIDO" ? (
-                <Link2 className="h-4 w-4" aria-hidden />
-              ) : (
-                <ClipboardCheck className="h-4 w-4" aria-hidden />
-              )}
-              {salvando !== null ? "Abrindo conferência…" : porta ? CTA[porta] : "Conferir recebimento"}
-            </Button>
-            {impedimento && (
-              <p className="text-[11px] text-muted sm:text-right">{impedimento}</p>
-            )}
-          </div>
-        </RodapeAcao>
-      )}
-    </div>
-  );
-}
-
-/**
- * Uma resposta da pergunta "de onde veio esta compra?".
- *
- * Fechada é uma linha: título e para que serve. Aberta traz o que aquela
- * resposta precisa — a lista de pedidos, o aviso do que falta. O detalhe das
- * outras duas não fica competindo com a que a pessoa escolheu.
- */
-function OpcaoPorta({
-  selecionada,
-  onSelecionar,
-  titulo,
-  ajuda,
-  desabilitada,
-  motivoDesabilitada,
-  children,
-}: {
-  selecionada: boolean;
-  onSelecionar: () => void;
-  titulo: string;
-  ajuda: string;
-  desabilitada?: boolean;
-  motivoDesabilitada?: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <div
-      className={cn(
-        "rounded-[var(--radius-lg)] border transition-colors",
-        selecionada ? "border-brand bg-brand-soft/25" : "border-line bg-surface",
-        desabilitada && "opacity-60",
-      )}
-    >
-      <button
-        type="button"
-        role="radio"
-        aria-checked={selecionada}
-        disabled={desabilitada}
-        onClick={onSelecionar}
-        className="flex w-full items-start gap-3 px-4 py-3 text-left disabled:cursor-not-allowed"
-      >
-        <span
-          className={cn(
-            "mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border",
-            selecionada ? "border-brand bg-brand" : "border-line-button",
-          )}
-          aria-hidden
-        >
-          {selecionada && <Check className="h-2.5 w-2.5 text-on-brand" />}
-        </span>
-        <span className="min-w-0">
-          <span className="block text-[14px] font-semibold text-ink">{titulo}</span>
-          <span className="block text-[12px] text-muted">
-            {desabilitada ? (motivoDesabilitada ?? ajuda) : ajuda}
-          </span>
-        </span>
-      </button>
-      {selecionada && !desabilitada && children && (
-        <div className="border-t border-line/70 px-4 py-3">{children}</div>
-      )}
-    </div>
-  );
-}
-
-/**
- * A nota fecha com ela mesma?
- *
- * A soma dos itens raramente é igual ao total da NF-e — frete, ST e IPI entram
- * fora da mercadoria. O que importa não é o zero: é a diferença ter TAMANHO de
- * imposto, e não de item faltando. Acima de 15% o parse provavelmente perdeu
- * linha, e receber assim põe no estoque uma mercadoria que ninguém conferiu.
- */
-function Fechamento({ itens, nota }: { itens: number; nota: number }) {
-  const dif = nota - itens;
-  const pct = nota > 0 ? Math.abs(dif) / nota : 0;
-  const suspeito = pct >= 0.15;
-
-  return (
-    <p
-      className={cn(
-        "flex flex-wrap items-center gap-x-4 gap-y-1 rounded-[var(--radius)] border px-3.5 py-2.5 text-[12px]",
-        suspeito ? "border-warn/40 bg-warn-soft text-warn" : "border-line bg-surface-2 text-muted",
-      )}
-    >
-      <span>
-        Itens: <span className="font-mono text-ink-2">{fmtMoney(itens)}</span>
-      </span>
-      <span>
-        Total da nota: <span className="font-mono text-ink-2">{fmtMoney(nota)}</span>
-      </span>
-      <span>
-        Diferença: <span className="font-mono">{fmtMoney(dif)}</span>
-      </span>
-      <span className={suspeito ? "font-medium" : "text-faint"}>
-        {suspeito
-          ? "Diferença grande para ser só frete e imposto — confira se falta item."
-          : "Compatível com frete, ST e IPI."}
-      </span>
-    </p>
-  );
-}
-
-/**
- * O trilho do recebimento. Três etapas, sempre as mesmas, sempre visíveis: o
- * operador precisa saber em que pé está uma nota que abriu ontem e voltou a
- * abrir hoje — e o que ainda falta antes de a mercadoria virar saldo.
- */
-const ETAPAS = [
-  { n: 1 as const, titulo: "Produtos", ajuda: "Relacione os itens da NF aos produtos do NoHub" },
-  { n: 2 as const, titulo: "Compra", ajuda: "Informe de onde veio esta mercadoria" },
-  { n: 3 as const, titulo: "Conferência", ajuda: "Confira e dê entrada no estoque" },
-];
-
-function Trilho({ etapa }: { etapa: 1 | 2 | 3 }) {
-  const atualInfo = ETAPAS.find((e) => e.n === etapa)!;
-
-  return (
-    <div className="flex flex-col gap-1">
-      <ol className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        {ETAPAS.map((e, i) => {
-          const feita = e.n < etapa;
-          const atual = e.n === etapa;
-          return (
-            <React.Fragment key={e.n}>
-              {i > 0 && (
-                <span className="text-faint" aria-hidden>
-                  →
-                </span>
-              )}
-              <li
-                className={cn(
-                  "flex items-center gap-1.5 rounded-full px-2 py-1",
-                  // Só a etapa atual ganha fundo: um trilho em que os três
-                  // passos pesam igual não diz onde a pessoa está.
-                  atual && "bg-brand-soft",
-                )}
-              >
-                <span
-                  className={cn(
-                    "grid h-5 w-5 place-items-center rounded-full text-[11px] font-semibold",
-                    atual && "bg-brand text-on-brand",
-                    feita && "bg-ok-soft text-ok",
-                    !atual && !feita && "bg-surface-2 text-faint",
-                  )}
-                  aria-hidden
-                >
-                  {feita ? <Check className="h-3 w-3" /> : e.n}
-                </span>
-                <span
-                  className={cn(
-                    "text-[12px]",
-                    atual ? "font-semibold text-ink" : feita ? "text-muted" : "text-faint",
-                  )}
-                  aria-current={atual ? "step" : undefined}
-                >
-                  {e.titulo}
-                </span>
-              </li>
-            </React.Fragment>
-          );
-        })}
-      </ol>
-      <p className="text-[13px] text-muted">{atualInfo.ajuda}</p>
-    </div>
   );
 }
 
@@ -723,8 +230,6 @@ function Conferencia({
     recebimento.status === "FINALIZADO" ||
     recebimento.status === "CANCELADO" ||
     !podeReceber;
-  /** Uma frase para o que não bateu — pedida uma vez, no fechamento. */
-  const [motivoDivergencia, setMotivoDivergencia] = React.useState("");
 
   // Cópia local para o bipe e os campos responderem na hora; o servidor é a
   // verdade e o refresh reconcilia.
@@ -741,7 +246,6 @@ function Conferencia({
   const [busca, setBusca] = React.useState("");
   const [filtro, setFiltro] = React.useState<Filtro>("TODOS");
   const [camera, setCamera] = React.useState(false);
-  const [confirmando, setConfirmando] = React.useState(false);
   const [cancelando, setCancelando] = React.useState(false);
   const [motivoCancelamento, setMotivoCancelamento] = React.useState("");
   const [enviando, setEnviando] = React.useState(false);
@@ -792,21 +296,6 @@ function Conferencia({
   /** Tudo que ainda espera uma decisão da pessoa antes de receber. */
   const pendencias = divergentes.length + resumo.produtosNovos;
 
-  /**
-   * Linhas contadas diferente do esperado e ainda sem explicação — mesma régua
-   * que o servidor aplica ao fechar. Uma frase resolve o recebimento inteiro:
-   * pedir justificativa item a item para uma carga que veio pela metade é o
-   * tipo de formulário que faz o operador desistir e lançar tudo à mão.
-   */
-  const esperadoDe = (l: LinhaRecebimento) => l.qtdFaturada || l.qtdPedida;
-  const naoExplicadas = linhas.filter(
-    (l) =>
-      !l.motivoDivergencia &&
-      l.resolucao !== "ACEITO" &&
-      l.resolucao !== "IGNORADO" &&
-      Math.abs((l.qtdRecebida ?? esperadoDe(l)) - esperadoDe(l)) > 0.001,
-  );
-  const precisaMotivo = naoExplicadas.length > 0;
 
   // Um índice de código → item, com o fator de cada embalagem: bipar a caixa
   // soma 12, bipar a unidade soma 1. É a diferença entre conferir um fardo e
@@ -936,27 +425,15 @@ function Conferencia({
     }
   }
 
-  async function confirmarEntrada() {
-    setEnviando(true);
-    try {
-      const r = await finalizarRecebimentoAction({
-        receiptId: recebimento.id,
-        motivoDivergencia: motivoDivergencia.trim() || null,
-      });
-      toast.success(
-        `Recebimento ${r.numero} finalizado.`,
-        pedido
-          ? r.pedidoCompleto
-            ? `Estoque atualizado. Pedido ${pedido.numero} recebido por completo.`
-            : `Estoque atualizado. Pedido ${pedido.numero} segue aberto para o que falta.`
-          : "Estoque e custo médio atualizados.",
-      );
-      setConfirmando(false);
-      router.refresh();
-    } catch (e) {
-      toast.error("Não foi possível receber", e instanceof Error ? e.message : "Tente de novo.");
-      setEnviando(false);
-    }
+  /**
+   * Fechar é a próxima etapa, não um botão: estoque, custo, preço e contas a
+   * pagar mudam juntos, e cada um merece ser lido antes de ser gravado. Vai
+   * pelo servidor de propósito — a contagem grava sozinha a cada campo, e o
+   * fechamento precisa ler o que ficou gravado, não a cópia desta tela.
+   */
+  const gravando = Object.values(salvandoLinha).includes("salvando");
+  function irParaFechamento() {
+    router.push(`/recebimento/${recebimento.id}?etapa=fechamento`);
   }
 
   /**
@@ -1061,7 +538,13 @@ function Conferencia({
         onCancelar={encerrada ? undefined : () => setCancelando(true)}
       />
 
-      {!encerrada && <Trilho etapa={3} />}
+      {!encerrada && (
+        <Trilho
+          etapas={nota ? ETAPAS_COM_NOTA : ETAPAS_SEM_NOTA}
+          atual="conferencia"
+          avisos={{ produtos: resumo.produtosNovos }}
+        />
+      )}
 
       {podeTratarNota && nota && (
         <PainelNota
@@ -1436,12 +919,12 @@ function Conferencia({
 
           <div className="flex w-full shrink-0 flex-col items-stretch gap-1 sm:w-auto sm:items-end">
             <Button
-              onClick={() => setConfirmando(true)}
-              disabled={enviando}
+              onClick={irParaFechamento}
+              disabled={enviando || gravando || linhas.length === 0}
               className="w-full sm:w-auto"
             >
               <ClipboardCheck className="h-4 w-4" aria-hidden />
-              Receber no estoque
+              Revisar e receber
             </Button>
             <p className="text-[11px] text-muted sm:text-right">
               <span className="font-mono text-ink-2">+{fmtQtd(entraNoEstoque)} UN</span> no
@@ -1450,75 +933,6 @@ function Conferencia({
           </div>
         </RodapeAcao>
       )}
-
-      <Sheet
-        open={confirmando}
-        onClose={() => setConfirmando(false)}
-        title="Receber no estoque"
-        description={
-          semPedido
-            ? "Isto atualiza saldo, custo médio e histórico de compras. A NF-e fica como documento desta entrada. Não dá para desfazer por aqui."
-            : "Isto atualiza saldo, custo médio, histórico de compras e o status do pedido. Não dá para desfazer por aqui."
-        }
-        width="sm"
-        footer={
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => setConfirmando(false)} className="flex-1">
-              Voltar
-            </Button>
-            <Button
-              onClick={() => void confirmarEntrada()}
-              disabled={enviando || (precisaMotivo && motivoDivergencia.trim().length < 3)}
-              className="flex-1"
-            >
-              {enviando && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
-              Confirmar
-            </Button>
-          </div>
-        }
-      >
-        <div className="space-y-3 text-[13px] text-ink-2">
-          <p>
-            Entram <strong className="text-ink">{linhas.filter((l) => (l.qtdRecebida ?? l.qtdFaturada) > 0).length}</strong>{" "}
-            itens, pelo custo da nota.
-          </p>
-          {linhas.length - conferidos > 0 && (
-            <p className="rounded-[var(--radius)] bg-accent-soft px-3 py-2 text-accent">
-              {linhas.length - conferidos}{" "}
-              {linhas.length - conferidos === 1 ? "item não foi conferido" : "itens não foram conferidos"}{" "}
-              — entram com a quantidade que a nota informa.
-            </p>
-          )}
-          {divergentes.length > 0 && (
-            <p className="rounded-[var(--radius)] bg-danger-soft px-3 py-2 text-danger">
-              {divergentes.length}{" "}
-              {divergentes.length === 1 ? "divergência segue aberta" : "divergências seguem abertas"}.
-              Elas ficam registradas no histórico deste recebimento.
-            </p>
-          )}
-
-          {/* Uma frase, uma vez. Sem ela, a diferença vira daqui a três meses a
-              palavra do estoquista contra a do fornecedor. */}
-          {precisaMotivo && (
-            <label className="block">
-              <span className="mb-1 block text-[13px] font-medium text-ink">
-                O que aconteceu com {naoExplicadas.length === 1 ? "a linha" : "as"}{" "}
-                {naoExplicadas.length === 1 ? "que não bateu" : `${naoExplicadas.length} linhas que não bateram`}?
-              </span>
-              <textarea
-                value={motivoDivergencia}
-                onChange={(e) => setMotivoDivergencia(e.target.value)}
-                rows={2}
-                placeholder="Ex.: veio só metade da carga, o resto o motorista traz amanhã."
-                className="w-full rounded-[var(--radius)] border border-line-button bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
-              />
-              <span className="mt-1 block text-[12px] text-muted">
-                Fica na história do recebimento e do pedido.
-              </span>
-            </label>
-          )}
-        </div>
-      </Sheet>
 
       <Sheet
         open={cancelando}
@@ -1585,244 +999,6 @@ function Conferencia({
           subcategorias={subcategorias}
         />
       )}
-    </div>
-  );
-}
-
-// ── Rodapé de ação ──────────────────────────────────────────
-
-/**
- * A barra que fecha as duas etapas.
- *
- * `sticky`, não `fixed`: fixo se ancora na viewport inteira, passa por baixo
- * da sidebar e obriga a chutar um `pb-24` que o texto de duas linhas do
- * celular estoura — escondendo o último item da nota.
- *
- * Uma casca só para as duas etapas. Antes cada uma desenhava a sua: mesma
- * altura, mesmo botão, e os números do topo repetidos aqui embaixo em corpo
- * menor. Agora o rodapé responde só duas coisas — quanto falta e o que
- * acontece ao apertar —, e os totais ficam onde já estavam.
- */
-function RodapeAcao({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="sticky bottom-0 z-30 -mx-1 mt-auto sm:-mx-2">
-      {/* Véu curto: diz que a lista continua por baixo da barra, em vez de a
-          última linha parecer cortada por um traço. */}
-      <div
-        aria-hidden
-        className="pointer-events-none h-5 bg-gradient-to-b from-transparent to-surface"
-      />
-      <div className="border-t border-line bg-surface/95 px-4 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-5xl flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
-          {children}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * "12 de 40" é um número que se lê; a barra é um estado que se vê.
- *
- * Dois saldos na mesma régua, como o medidor de estoque do produto: o que já
- * foi feito e, dentro dele, o que ainda pede decisão. Quem está na doca olha
- * de longe, com a caixa na mão — texto de 13px não se lê nessa distância.
- *
- * Serve as duas etapas: relacionar produto e contar mercadoria são a mesma
- * pergunta ("quanto falta para poder receber?") em momentos diferentes.
- */
-function MedidorRodape({
-  total,
-  feitos,
-  atencao,
-  rotulo,
-  rotuloPlural,
-}: {
-  total: number;
-  feitos: number;
-  /** Subconjunto de `feitos` que ainda espera uma decisão. */
-  atencao: number;
-  rotulo: string;
-  rotuloPlural: string;
-}) {
-  const pctFeito = total > 0 ? (feitos / total) * 100 : 0;
-  const pctAtencao = total > 0 ? (Math.min(atencao, feitos) / total) * 100 : 0;
-
-  return (
-    <div>
-      <p className="flex items-baseline gap-2 font-display text-[15px] font-semibold text-ink">
-        <span className="tabular-nums">
-          {feitos} de {total}
-        </span>
-        <span className="text-[13px] font-normal text-muted">
-          {total === 1 ? rotulo : rotuloPlural}
-        </span>
-      </p>
-      <div
-        className="mt-1.5 flex h-1.5 w-full overflow-hidden rounded-full bg-surface-2"
-        role="progressbar"
-        aria-valuenow={feitos}
-        aria-valuemin={0}
-        aria-valuemax={total}
-        aria-label={rotuloPlural}
-      >
-        {/* A fatia de atenção é subconjunto da feita — some da barra verde
-            para não somar mais de 100%. */}
-        <span
-          className="h-full bg-ok transition-[width] duration-300 motion-reduce:transition-none"
-          style={{ width: `${pctFeito - pctAtencao}%` }}
-        />
-        <span
-          className="h-full bg-accent transition-[width] duration-300 motion-reduce:transition-none"
-          style={{ width: `${pctAtencao}%` }}
-        />
-      </div>
-    </div>
-  );
-}
-
-// ── Cabeçalho ───────────────────────────────────────────────
-
-function Cabecalho({
-  recebimento,
-  nota,
-  pedidoNumero,
-  semPedido,
-  onDesvincular,
-  onCancelar,
-}: {
-  recebimento: RecebimentoView["recebimento"];
-  /** Nulo é caso normal: recebimento de pedido sem XML, ou avulso. */
-  nota: RecebimentoView["nota"];
-  pedidoNumero: string | null;
-  /** Conferência aberta sem pedido — o rótulo do voltar muda com isso. */
-  semPedido?: boolean;
-  onDesvincular?: () => void;
-  /** Abandonar a conferência sem mover estoque. */
-  onCancelar?: () => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-start gap-3">
-      <Link
-        href="/pedidos"
-        className="mt-1 grid h-9 w-9 shrink-0 place-items-center rounded-full border border-line-button text-ink-2 hover:bg-surface-2"
-        aria-label="Voltar para os pedidos de compra"
-      >
-        <ArrowLeft className="h-4 w-4" aria-hidden />
-      </Link>
-
-      {/* Hierarquia: quem mandou > qual papel > quanto. O nome do fornecedor é
-          o que o operador procura na tela cheia de notas; "Recebimento
-          inteligente" é onde ele está, não o que ele está olhando. */}
-      <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
-          <span className="font-mono">{recebimento.numero}</span>
-          <span aria-hidden>·</span>
-          <span>Recebimento</span>
-        </p>
-        <h1 className="truncate font-display text-[20px] font-semibold text-ink">
-          {recebimento.supplierNome ?? "Sem fornecedor"}
-        </h1>
-        <p className="truncate text-[13px] text-muted">
-          {nota ? (
-            <span className="font-mono">
-              NF {nota.numero}/{nota.serie}
-            </span>
-          ) : recebimento.numeroNota ? (
-            <span className="font-mono">NF {recebimento.numeroNota} (sem XML)</span>
-          ) : (
-            <span>Sem nota fiscal</span>
-          )}
-          {" · "}
-          {recebimento.siteNome}
-          {pedidoNumero && (
-            <>
-              {" · pedido "}
-              <span className="font-mono text-ink-2">{pedidoNumero}</span>
-            </>
-          )}
-        </p>
-        {semPedido && (
-          <p className="mt-1 text-[12px] text-muted">
-            Sem pedido — a nota é a referência do que deveria vir.
-          </p>
-        )}
-        {!nota && !pedidoNumero && (
-          <p className="mt-1 text-[12px] text-muted">
-            Recebimento avulso — sem pedido e sem nota. Some o que chegou.
-          </p>
-        )}
-        {!nota && pedidoNumero && (
-          <p className="mt-1 text-[12px] text-muted">
-            Sem XML por enquanto. Você pode receber assim e vincular a NF-e quando ela chegar.
-          </p>
-        )}
-        {nota?.vinculoAutomatico && pedidoNumero && (
-          <p className="mt-1 text-[12px] text-brand">
-            Pedido {pedidoNumero} encontrado automaticamente pela nota.
-          </p>
-        )}
-        {nota && nota.duplicatas.length > 0 && (
-          <p className="mt-1 text-[12px] text-muted">
-            {nota.duplicatas.length === 1 ? "Vencimento" : `${nota.duplicatas.length} parcelas`}:{" "}
-            {nota.duplicatas
-              .map(
-                (d) =>
-                  `${new Date(d.vencimento).toLocaleDateString("pt-BR")} ${fmtMoney(d.valor)}`,
-              )
-              .join(" · ")}
-          </p>
-        )}
-      </div>
-
-      <div className="flex shrink-0 items-start gap-3">
-        {nota && (
-          <p className="text-right">
-            <span className="block font-mono text-[20px] font-semibold text-ink">
-              {fmtMoney(nota.valorTotal)}
-            </span>
-            <span className="block text-[11px] text-faint">total da nota</span>
-          </p>
-        )}
-
-        {/* O que não é a decisão da vez sai do caminho. Baixar o XML e trocar
-            a forma de receber são coisas que se faz uma vez por nota — não
-            merecem competir com o botão de receber. */}
-        <Menu
-          trigger={
-            <button
-              type="button"
-              className="grid h-9 w-9 place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2"
-              aria-label="Mais opções desta nota"
-            >
-              <MoreVertical className="h-4 w-4" aria-hidden />
-            </button>
-          }
-        >
-          {nota?.temXml && (
-            // O contador pede o XML, e sem isto o operador volta ao e-mail do
-            // fornecedor procurar o anexo que já está guardado aqui.
-            <MenuItem
-              icon={<FileText size={15} />}
-              onClick={() => {
-                window.location.href = `/api/fiscal/entrada/${nota.id}/xml`;
-              }}
-            >
-              Baixar XML
-            </MenuItem>
-          )}
-          {onDesvincular && (pedidoNumero || semPedido) && (
-            <MenuItem icon={<Undo2 size={15} />} onClick={onDesvincular}>
-              {pedidoNumero ? "Trocar pedido" : "Trocar forma de receber"}
-            </MenuItem>
-          )}
-          {onCancelar && (
-            <MenuItem icon={<CircleX size={15} />} onClick={onCancelar} danger>
-              Cancelar recebimento
-            </MenuItem>
-          )}
-        </Menu>
-      </div>
     </div>
   );
 }

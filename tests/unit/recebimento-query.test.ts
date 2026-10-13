@@ -1,28 +1,28 @@
 import { describe, it, expect } from "vitest";
 import {
-  ABA_PADRAO,
-  abaDePedidos,
+  abasDeRecebimento,
   filtrosAtivos,
   filtrosDaUrl,
   montarPagina,
+  mostraPedidos,
   periodoAplicavel,
   placeholderBusca,
   REC_FILTROS_VAZIO,
   REC_LIMITE_PADRAO,
-  REC_TABS,
+  REC_RECORTES,
+  soPedidos,
   urlDosFiltros,
 } from "@/app/(app)/recebimento/_query";
 
-// /recebimento mostra UMA ABA POR VEZ, e a aba mora na URL — é ela que decide
-// qual consulta o servidor roda. Estes testes travam esse contrato: se os dois
-// lados divergirem, a tela mostra um recorte e o banco devolve outro, e nada
-// quebra alto o bastante para alguém notar.
+// /recebimento abre em TODOS e o status é um filtro de seleção múltipla que
+// mora na URL — é ele que decide o que o servidor consulta. Estes testes travam
+// esse contrato: se os dois lados divergirem, a tela mostra um recorte e o
+// banco devolve outro, e nada quebra alto o bastante para alguém notar.
 
 describe("filtrosDaUrl", () => {
-  it("sem parâmetros, abre em Aguardando — nunca no histórico", () => {
+  it("sem parâmetros, mostra todos", () => {
     const f = filtrosDaUrl({});
-    expect(f.aba).toBe("aguardando");
-    expect(f.aba).toBe(ABA_PADRAO);
+    expect(f.abas).toEqual([]);
     expect(f.pagina).toBe(1);
     expect(f.limite).toBe(REC_LIMITE_PADRAO);
   });
@@ -30,17 +30,36 @@ describe("filtrosDaUrl", () => {
   // O parâmetro continua chamando `status` na URL de propósito: links antigos
   // (o alerta de /pedidos, favoritos do operador) precisam cair no lugar certo.
   it("aceita o recorte legado ?status=sem-nfe", () => {
-    expect(filtrosDaUrl({ status: "sem-nfe" }).aba).toBe("sem-nfe");
+    expect(filtrosDaUrl({ status: "sem-nfe" }).abas).toEqual(["sem-nfe"]);
   });
 
-  it("recorte desconhecido cai na aba padrão, não numa lista vazia", () => {
-    expect(filtrosDaUrl({ status: "tudo" }).aba).toBe(ABA_PADRAO);
-    expect(filtrosDaUrl({ status: "" }).aba).toBe(ABA_PADRAO);
+  it("aceita vários status, sempre na ordem canônica e sem repetição", () => {
+    expect(filtrosDaUrl({ status: "divergencia,aguardando,divergencia" }).abas).toEqual([
+      "aguardando",
+      "divergencia",
+    ]);
+    expect(filtrosDaUrl({ status: ["concluidos", "andamento"] }).abas).toEqual([
+      "andamento",
+      "concluidos",
+    ]);
+  });
+
+  it("status desconhecido é ignorado — cai em todos, não numa lista vazia", () => {
+    expect(filtrosDaUrl({ status: "tudo" }).abas).toEqual([]);
+    expect(filtrosDaUrl({ status: "" }).abas).toEqual([]);
+    expect(filtrosDaUrl({ status: "tudo,andamento" }).abas).toEqual(["andamento"]);
   });
 
   // Quem chega buscando procura UM registro, que pode ser de meses atrás.
   it("busca na URL derruba o período padrão", () => {
     expect(filtrosDaUrl({ q: "REC-00054" }).periodo).toBe("");
+  });
+
+  it("ordem da data: mais recente primeiro, salvo pedido explícito", () => {
+    expect(filtrosDaUrl({}).ordem).toBe("desc");
+    expect(filtrosDaUrl({ ordem: "asc" }).ordem).toBe("asc");
+    expect(filtrosDaUrl({ ordem: "qualquer" }).ordem).toBe("desc");
+    expect(urlDosFiltros({ ...REC_FILTROS_VAZIO, ordem: "asc" })).toBe("?ordem=asc");
   });
 
   it("só aceita os tamanhos de página oferecidos", () => {
@@ -56,57 +75,75 @@ describe("urlDosFiltros", () => {
   });
 
   it("ida e volta preservam o recorte", () => {
-    const f = { ...REC_FILTROS_VAZIO, aba: "concluidos" as const, q: "AMBEV", pagina: 3, limite: 50 };
+    const f = {
+      ...REC_FILTROS_VAZIO,
+      abas: ["andamento" as const, "concluidos" as const],
+      q: "AMBEV",
+      pagina: 3,
+      limite: 50,
+    };
     const url = urlDosFiltros(f);
     const sp = Object.fromEntries(new URLSearchParams(url.slice(1)));
     const volta = filtrosDaUrl(sp);
-    expect(volta.aba).toBe("concluidos");
+    expect(volta.abas).toEqual(["andamento", "concluidos"]);
     expect(volta.q).toBe("AMBEV");
     expect(volta.pagina).toBe(3);
     expect(volta.limite).toBe(50);
   });
 });
 
-describe("as abas", () => {
-  it("não existe aba 'Tudo' — cada aba é uma consulta só", () => {
-    expect(REC_TABS.map((t) => t.aba)).toEqual([
+describe("os recortes", () => {
+  it("as opções do filtro, na ordem de quem precisa agir", () => {
+    expect(REC_RECORTES.map((t) => t.aba)).toEqual([
       "aguardando",
       "andamento",
       "divergencia",
       "concluidos",
       "avulsos",
+      "sem-nfe",
     ]);
   });
 
-  it("só Aguardando mostra pedidos; o resto mostra recebimentos", () => {
-    expect(abaDePedidos("aguardando")).toBe(true);
-    expect(abaDePedidos("andamento")).toBe(false);
-    expect(abaDePedidos("concluidos")).toBe(false);
+  it("pedidos entram em 'todos' e quando Aguardando está marcado", () => {
+    expect(mostraPedidos([])).toBe(true);
+    expect(mostraPedidos(["aguardando", "concluidos"])).toBe(true);
+    expect(mostraPedidos(["andamento"])).toBe(false);
+  });
+
+  it("só Aguardando sozinho troca a lista paginada para pedidos", () => {
+    expect(soPedidos(["aguardando"])).toBe(true);
+    expect(soPedidos([])).toBe(false);
+    expect(soPedidos(["aguardando", "andamento"])).toBe(false);
+  });
+
+  it("Aguardando não vira recorte de recebimento", () => {
+    expect(abasDeRecebimento(["aguardando", "divergencia"])).toEqual(["divergencia"]);
+    expect(abasDeRecebimento([])).toEqual([]);
   });
 
   // Esconder uma conferência aberta há 40 dias por causa de um filtro padrão de
   // 30 dias transformaria o filtro num apagador de pendência.
-  it("período recorta histórico, não trabalho", () => {
-    expect(periodoAplicavel("concluidos")).toBe(true);
-    expect(periodoAplicavel("avulsos")).toBe(true);
-    expect(periodoAplicavel("aguardando")).toBe(false);
-    expect(periodoAplicavel("andamento")).toBe(false);
-    expect(periodoAplicavel("divergencia")).toBe(false);
-    expect(periodoAplicavel("sem-nfe")).toBe(false);
+  it("período só aparece quando há histórico na tela", () => {
+    expect(periodoAplicavel([])).toBe(true);
+    expect(periodoAplicavel(["concluidos"])).toBe(true);
+    expect(periodoAplicavel(["andamento", "avulsos"])).toBe(true);
+    expect(periodoAplicavel(["aguardando"])).toBe(false);
+    expect(periodoAplicavel(["andamento", "divergencia"])).toBe(false);
+    expect(periodoAplicavel(["sem-nfe"])).toBe(false);
   });
 
-  it("a aba não conta como filtro ativo — ela é onde a pessoa está", () => {
-    expect(filtrosAtivos({ ...REC_FILTROS_VAZIO, aba: "concluidos" })).toBe(false);
+  it("status marcado conta como filtro ativo", () => {
+    expect(filtrosAtivos(REC_FILTROS_VAZIO)).toBe(false);
+    expect(filtrosAtivos({ ...REC_FILTROS_VAZIO, abas: ["concluidos"] })).toBe(true);
     expect(filtrosAtivos({ ...REC_FILTROS_VAZIO, q: "REC-1" })).toBe(true);
-    // Período fora da aba onde ele vale não recorta nada, então não conta.
-    expect(filtrosAtivos({ ...REC_FILTROS_VAZIO, aba: "andamento", periodo: "7" })).toBe(false);
-    expect(filtrosAtivos({ ...REC_FILTROS_VAZIO, aba: "concluidos", periodo: "7" })).toBe(true);
+    expect(filtrosAtivos({ ...REC_FILTROS_VAZIO, periodo: "7" })).toBe(true);
   });
 
-  it("a busca promete só o que a aba tem", () => {
-    expect(placeholderBusca("aguardando")).toContain("pedido");
-    expect(placeholderBusca("aguardando")).not.toContain("NF-e");
-    expect(placeholderBusca("concluidos")).toContain("NF-e");
+  it("a busca promete só o que a tela tem", () => {
+    expect(placeholderBusca(["aguardando"])).toContain("pedido");
+    expect(placeholderBusca(["aguardando"])).not.toContain("NF-e");
+    expect(placeholderBusca([])).toContain("NF-e");
+    expect(placeholderBusca(["concluidos"])).toContain("NF-e");
   });
 });
 

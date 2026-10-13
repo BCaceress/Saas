@@ -3,6 +3,10 @@ import { db } from "@/lib/prisma";
 import { sugerirPedidos, type SugestaoPedido } from "@/lib/compras/conciliacao";
 import { listarEventosDoRecebimento, type EventoPedido } from "@/lib/compras/eventos";
 import { sugestoesDaNota, type SugestaoDePara } from "@/lib/compras/sugestao-de-para";
+import {
+  resumoSincronizacaoDaNota,
+  type ResumoSincronizacao,
+} from "@/lib/fornecedores/sincronizacao-xml";
 import type { ItemDePara } from "@/components/recebimento/tabela-de-para";
 import type {
   FiscalInboundStatus,
@@ -64,6 +68,14 @@ export type LinhaRecebimento = {
    * a substituição silenciosa do que o fornecedor faturou.
    */
   xml: { quantidade: number; unidade: string; fatorConversao: number } | null;
+  /**
+   * O cadastro do produto ANTES desta entrada — o fechamento compara o custo
+   * que a nota traz com o que valia até aqui, e mostra a margem que sobra.
+   */
+  precoVenda: number | null;
+  custoMedio: number | null;
+  /** Insumo é de uso interno: não tem preço de venda para remarcar. */
+  vendavel: boolean;
 };
 
 export type NotaRecebimento = {
@@ -163,11 +175,22 @@ export type RecebimentoView = {
   semPedido: boolean;
   sugestoes: SugestaoPedido[];
   /**
+   * O que esta nota fez pelo cadastro do fornecedor — criou, atualizou, ou
+   * deixou uma sugestão esperando decisão. Só enquanto a nota está sendo lida.
+   */
+  fornecedor: ResumoSincronizacao | null;
+  /**
    * Palpites de de-para já prontos. Vêm do servidor porque buscá-los no
    * cliente fazia a tabela pintar três estados até chegar onde já dava para
    * nascer: "sem produto" → "procurando…" → o palpite.
    */
   sugestoesDePara: SugestaoDePara[];
+  /**
+   * O pedido que entrou no cálculo de `sugestoesDePara` — os produtos dele
+   * disputam os palpites. A tela compara com o pedido escolhido para saber se
+   * precisa refazer a conta.
+   */
+  pedidoDasSugestoes: string | null;
   /** Só preenchido enquanto a nota não entrou em conferência. */
   itensNota: ItemNotaView[];
   linhas: LinhaRecebimento[];
@@ -188,6 +211,13 @@ const iso = (d: Date | null) => (d ? d.toISOString() : null);
 export async function carregarRecebimento(
   tenantId: string,
   receiptId: string,
+  opts: {
+    /**
+     * A resposta da etapa "Pedido", como está na URL: o id de um pedido, "sem"
+     * ou "novo". Ainda não foi gravada — só orienta os palpites de produto.
+     */
+    origem?: string | null;
+  } = {},
 ): Promise<RecebimentoView | null> {
   const receipt = await db.goodsReceipt.findFirst({
     where: { id: receiptId },
@@ -357,6 +387,7 @@ export async function carregarRecebimento(
       productId: i.productId,
       productNome: p?.nome ?? null,
       productSku: p?.sku ?? null,
+      productMarca: p?.marca ?? null,
       productUnidade: p?.unidadeBase ?? null,
       productConteudo: p?.conteudoPorUnidade ?? null,
       productImagemUrl: p?.imagemUrl ?? null,
@@ -410,6 +441,9 @@ export async function carregarRecebimento(
             fatorConversao: Number(doXml.fatorConversao),
           }
         : null,
+      precoVenda: p?.precoVenda ?? null,
+      custoMedio: p ? p.custoMedio : null,
+      vendavel: p ? p.tipo !== "INSUMO" : false,
     };
   });
 
@@ -432,6 +466,16 @@ export async function carregarRecebimento(
       0,
     ),
   };
+
+  const sugestoes = escolherPorta && inboundId ? await sugerirPedidos(inboundId) : [];
+  // Mesma regra da tela: sem resposta na URL vale o pedido mais parecido; quem
+  // respondeu "sem pedido" não quer palpite de pedido nenhum.
+  const pedidoDasSugestoes =
+    opts.origem === "sem" || opts.origem === "novo"
+      ? null
+      : (sugestoes.find((s) => s.purchaseOrderId === opts.origem)?.purchaseOrderId ??
+        sugestoes[0]?.purchaseOrderId ??
+        null);
 
   return {
     recebimento: {
@@ -496,12 +540,14 @@ export async function carregarRecebimento(
     semPedido,
     // Enquanto a porta não foi escolhida a tela vira "de qual pedido é isto?" —
     // as sugestões são o conteúdo principal, então valem a consulta.
-    sugestoes: escolherPorta && inboundId ? await sugerirPedidos(inboundId) : [],
+    sugestoes,
+    pedidoDasSugestoes,
+    fornecedor: escolherPorta && inboundId ? await resumoSincronizacaoDaNota(inboundId) : null,
     // Só antes da porta: depois dela o de-para pendente aparece na conferência,
     // e são N buscas ranqueadas que ninguém pediu.
     sugestoesDePara:
       escolherPorta && inboundId && itensNota.some((i) => !i.productId)
-        ? await sugestoesDaNota(inboundId)
+        ? await sugestoesDaNota(inboundId, { purchaseOrderId: pedidoDasSugestoes })
         : [],
     itensNota,
     linhas,
@@ -523,6 +569,9 @@ type ProdutoView = {
   conteudoPorUnidade: number | null;
   /** Base do alerta de custo fora da curva na tabela de de-para. */
   custoMedio: number;
+  precoVenda: number | null;
+  tipo: string;
+  marca: string | null;
   /** Apelidos de código: mesma unidade, marcas diferentes. */
   codigos: { codigo: string }[];
   /** NCM que vale hoje: o do perfil do produto ou o herdado da subcategoria. */
@@ -545,6 +594,9 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
       unidadeBase: true,
       conteudoPorUnidade: true,
       custoMedio: true,
+      precoVenda: true,
+      tipo: true,
+      brand: { select: { nome: true } },
       fiscalProfile: { select: { ncm: true } },
       subcategory: { select: { defaultFiscalProfile: { select: { ncm: true } } } },
       packagings: { select: { id: true, nome: true, ean: true, fatorConversao: true } },
@@ -562,6 +614,9 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
         conteudoPorUnidade:
           p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
         custoMedio: Number(p.custoMedio),
+        precoVenda: p.precoVenda == null ? null : Number(p.precoVenda),
+        tipo: p.tipo,
+        marca: p.brand?.nome ?? null,
         codigos: p.barcodes,
         // O perfil do produto manda; sem ele vale o padrão da subcategoria, que
         // é o que a emissão usa. Comparar com a nota só faz sentido contra o

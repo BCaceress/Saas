@@ -59,7 +59,7 @@ import { baixarXlsx } from "@/lib/baixar-xlsx";
 import {
   SEM_MARCA, SEM_TAG,
   type LoteOpcoes,
-  type ProductRow, type ProductBarcodeItem, type ProductPackagingItem, type ProdutoConsulta, type ProdutoFlags,
+  type ProductRow, type ProductBarcodeItem, type ProductPackagingItem, type ProdutoConsulta,
   type ProdutoGiro, type ProdutoSortDir, type ProdutoSortField,
   type ProdutosPaginaInicial,
 } from "./_types";
@@ -151,11 +151,6 @@ function AbertaBadge({ size = 16 }: { size?: number }) {
     </span>
   );
 }
-
-const FLAG_LABEL: Record<keyof ProdutoFlags, string> = {
-  semImagem: "Sem imagem", semEan: "Sem código de barras",
-  semFiscal: "Sem perfil fiscal", online: "Vende online", maiorIdade: "Restrição +18",
-};
 
 const TIPO_FILTRO_LABEL: Record<string, string> = {
   SIMPLES: "Simples", COMBO: "Combo", PERSONALIZADO: "Receita", INSUMO: "Insumo",
@@ -383,14 +378,6 @@ export function ProdutosClient(props: {
       ),
     [campos],
   );
-  // Filtro por +18 some junto com o campo.
-  const flagsDisponiveis = useMemo(
-    () =>
-      (Object.keys(FLAG_LABEL) as (keyof ProdutoFlags)[]).filter(
-        (k) => k !== "maiorIdade" || campos.restricaoIdade,
-      ),
-    [campos],
-  );
   const [density, setDensity] = useState<Density>(
     () => readLS("produtos:ui", { density: "compact" as Density }).density,
   );
@@ -483,15 +470,6 @@ export function ProdutosClient(props: {
     if (patch.pagina === undefined) selecao.limpar();
   }, [selecao]);
 
-  const aplicarFlag = useCallback((k: keyof ProdutoFlags, valor?: boolean) => {
-    setConsulta((c) => ({
-      ...c,
-      pagina: 1,
-      flags: { ...c.flags, [k]: valor ?? !c.flags[k] },
-    }));
-    selecao.limpar();
-  }, [selecao]);
-
   function toggleSort(field: ProdutoSortField) {
     setConsulta((c) => ({
       ...c,
@@ -513,10 +491,6 @@ export function ProdutosClient(props: {
       ...c,
       q: "", tipo: "", sub: "", marca: "", fornecedorId: "", siteId: "", tag: "",
       status: STATUS_PADRAO,
-      flags: {
-        semImagem: false, semEan: false, semFiscal: false,
-        online: false, maiorIdade: false,
-      },
       pagina: 1,
     }));
     selecao.limpar();
@@ -832,13 +806,8 @@ export function ProdutosClient(props: {
         limpar: () => aplicar({ status: STATUS_PADRAO }),
       });
     }
-    (Object.keys(FLAG_LABEL) as (keyof ProdutoFlags)[]).forEach((k) => {
-      if (consulta.flags[k]) {
-        lista.push({ key: k, label: FLAG_LABEL[k], limpar: () => aplicarFlag(k, false) });
-      }
-    });
     return lista;
-  }, [consulta, categoryOpts, subOpts, brandOpts, siteOpts, tagOpts, initialFornecedorNome, aplicar, aplicarFlag]);
+  }, [consulta, categoryOpts, subOpts, brandOpts, siteOpts, tagOpts, initialFornecedorNome, aplicar]);
 
   return (
     <GiroEstadoContext.Provider value={giroEstado}>
@@ -907,6 +876,7 @@ export function ProdutosClient(props: {
               >
                 <MenuItem icon={<TipoIcone tipo="SIMPLES" size={15} />} onClick={() => novo("simples")}>Produto simples</MenuItem>
                 <MenuItem icon={<TipoIcone tipo="COMBO" size={15} />} onClick={() => novo("combo")}>Kit / combo</MenuItem>
+                <MenuItem icon={<TipoIcone tipo="PERSONALIZADO" size={15} />} onClick={() => novo("personalizado")}>Receita</MenuItem>
                 <MenuItem icon={<TipoIcone tipo="INSUMO" size={15} />} onClick={() => novo("insumo")}>Insumo</MenuItem>
               </Menu>
             </div>
@@ -988,40 +958,6 @@ export function ProdutosClient(props: {
               <option value="ativos">Ativos</option>
               <option value="inativos">Inativos</option>
             </Select>
-
-            {/* Mais filtros (booleanos de higiene/negócio) */}
-            <Menu
-              align="end"
-              trigger={
-                <button
-                  type="button"
-                  className={cn(
-                    "inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors",
-                    Object.values(consulta.flags).some(Boolean)
-                      ? "border-brand/40 bg-brand-soft text-brand-strong"
-                      : "border-line bg-surface text-ink-2 hover:bg-surface-2",
-                  )}
-                >
-                  <SlidersHorizontal size={14} /> Mais filtros
-                  {Object.values(consulta.flags).filter(Boolean).length > 0 && (
-                    <span className="grid h-4 min-w-4 place-items-center rounded-full bg-brand px-1 text-[10px] font-bold text-on-brand">
-                      {Object.values(consulta.flags).filter(Boolean).length}
-                    </span>
-                  )}
-                </button>
-              }
-            >
-              <div className="px-1 py-0.5">
-                {flagsDisponiveis.map((k) => (
-                  <CheckRow
-                    key={k}
-                    checked={consulta.flags[k]}
-                    label={FLAG_LABEL[k]}
-                    onChange={() => aplicarFlag(k)}
-                  />
-                ))}
-              </div>
-            </Menu>
 
             {/* Colunas + densidade */}
             <Menu

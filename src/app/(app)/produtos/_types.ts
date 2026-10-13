@@ -119,15 +119,6 @@ export type ProdutoSortField =
   | "margem" | "estoque" | "fornecedor" | "vendas" | "parado";
 export type ProdutoSortDir = "asc" | "desc";
 
-/** Filtros booleanos de higiene/negócio da listagem. */
-export type ProdutoFlags = {
-  semImagem: boolean;
-  semEan: boolean;
-  semFiscal: boolean;
-  online: boolean;
-  maiorIdade: boolean;
-};
-
 export type ProdutoFiltro = {
   q: string;
   tipo: string;
@@ -142,7 +133,6 @@ export type ProdutoFiltro = {
   tag: string;
   /** "ativos" | "inativos" */
   status: string;
-  flags: ProdutoFlags;
 };
 
 export type ProdutoConsulta = ProdutoFiltro & {

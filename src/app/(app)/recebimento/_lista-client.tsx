@@ -1,17 +1,21 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  ArrowRight,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
+  Clock,
   FileClock,
   FileText,
   FileUp,
   Gift,
   Loader2,
+  MoreVertical,
   PackageCheck,
   Receipt,
   Search,
@@ -23,9 +27,11 @@ import {
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/misc";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import { Sheet } from "@/components/ui/sheet";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon, navDescricao } from "@/components/app/nav-config";
+import { maskCnpj } from "@/lib/masks";
 import { cn } from "@/lib/utils";
 import { EstadoVazio } from "../cotacoes/_catalogo/ui";
 import { fmtMoney, fmtQtd, relDia, Thumb } from "../cotacoes/_ui";
@@ -34,14 +40,16 @@ import { TransferReceber, type Transfer } from "../pedidos/_recebimentos";
 import { itensDoRecebimentoAction } from "./lista-actions";
 import { iniciarRecebimentoAction } from "./conferencia-actions";
 import { toast } from "@/components/ui/toast";
+import { MultiSelect } from "@/components/ui/multi-select";
 import {
-  abaDePedidos,
   filtrosAtivos,
   periodoAplicavel,
   placeholderBusca,
+  REC_ABAS,
   REC_FILTROS_VAZIO,
   REC_LIMITES,
-  REC_TABS,
+  REC_RECORTES,
+  soPedidos,
   urlDosFiltros,
   type Pagina,
   type RecAba,
@@ -56,16 +64,16 @@ import type {
 
 // ── Tela de Recebimentos ────────────────────────────────────────
 //
-// UMA ABA POR VEZ, uma lista por vez. Antes as três listas (aguardando, em
-// conferência, concluídos) apareciam empilhadas na mesma tela: quem abria para
-// ver o que precisa receber recebia junto o histórico inteiro, que cresce para
-// sempre. Agora cada aba é uma consulta própria, paginada no banco, e a tela
-// abre em "Aguardando recebimento" — o que exige ação hoje.
+// A tela abre em TODOS. O status é um filtro de seleção múltipla, ao lado do
+// fornecedor: nada marcado = tudo; marcados = a união deles. Tudo paginado no
+// banco — o histórico continua recortado pelo período.
 //
-// E as abas não mostram a mesma coisa, de propósito:
+// E os recortes não mostram a mesma coisa, de propósito:
 //
 //   Aguardando  → PEDIDOS. Não são recebimentos: são o botão que cria um.
-//   As demais   → RECEBIMENTOS. /pedidos responde "o que eu comprei?", esta
+//                 Quando dividem a tela com recebimentos, sobem num bloco
+//                 curto no topo; sozinhos, viram a lista paginada.
+//   Os demais   → RECEBIMENTOS. /pedidos responde "o que eu comprei?", esta
 //                 responde "o que chegou?".
 
 const PERIODOS = [
@@ -75,7 +83,12 @@ const PERIODOS = [
   { value: "", label: "Tudo" },
 ];
 
-/** O vazio de cada aba diz o que fazer, não "nenhum resultado". */
+const VAZIO_TODOS = {
+  titulo: "Nenhum recebimento por aqui ainda",
+  descricao: "Quando um pedido sair para entrega ou uma mercadoria chegar, aparece aqui.",
+};
+
+/** O vazio de cada recorte diz o que fazer, não "nenhum resultado". */
 const VAZIO: Record<RecAba, { titulo: string; descricao: string }> = {
   aguardando: {
     titulo: "Nenhum pedido aguardando recebimento",
@@ -110,18 +123,24 @@ export function RecebimentosView({
   resumo,
   fornecedores,
   filtros,
+  multiLoja,
   podeReceber,
   podeAvulso,
 }: {
-  /** A página da aba "Aguardando" — pedidos, não recebimentos. Vazia nas outras. */
+  /**
+   * Pedidos aguardando — não são recebimentos. Com só "Aguardando" marcado é a
+   * lista paginada; dividindo a tela, é o bloco do topo (primeiros N + total).
+   */
   aguardando: Pagina<AguardandoRow>;
-  /** A página das demais abas. Vazia na aba "Aguardando". */
+  /** A página de recebimentos. Vazia com só "Aguardando" marcado. */
   recebimentos: Pagina<RecebimentoRow>;
   /** Transferências entre lojas esperando conferência na loja ativa. */
   transferencias: Transfer[];
   resumo: ResumoRecebimentos;
   fornecedores: { id: string; nome: string }[];
   filtros: RecFiltros;
+  /** O tenant tem mais de uma loja — só aí a coluna Loja aparece. */
+  multiLoja: boolean;
   podeReceber: boolean;
   podeAvulso: boolean;
 }) {
@@ -132,17 +151,26 @@ export function RecebimentosView({
   const [busca, setBusca] = useState(filtros.q);
   const [navegando, iniciarNavegacao] = useTransition();
 
-  const ehPedidos = abaDePedidos(filtros.aba);
-  const pagina: Pagina<AguardandoRow | RecebimentoRow> = ehPedidos ? aguardando : recebimentos;
+  // O marcado responde no clique; a lista chega quando o servidor devolver.
+  const [abasMarcadas, marcarAbas] = useOptimistic(filtros.abas);
 
-  // A aba mora na URL: o servidor precisa lê-la para consultar SÓ ela, e de
-  // quebra o recorte fica compartilhável e sobrevive ao F5.
+  const ehPedidos = soPedidos(filtros.abas);
+  const pagina: Pagina<AguardandoRow | RecebimentoRow> = ehPedidos ? aguardando : recebimentos;
+  // Pedidos dividindo a tela com recebimentos: bloco curto no topo.
+  const pedidosNoTopo = !ehPedidos && aguardando.items.length > 0;
+  const umSo = filtros.abas.length === 1 ? filtros.abas[0] : null;
+
+  // O recorte mora na URL: o servidor precisa lê-lo para consultar SÓ ele, e de
+  // quebra fica compartilhável e sobrevive ao F5.
   const irPara = (patch: Partial<RecFiltros>) => {
     const f: RecFiltros = { ...filtros, ...patch };
-    // Trocar de aba com a página 3 aberta mostraria "nenhum resultado" para um
-    // recorte que tem resultados — só a página é que não existe mais.
+    // Trocar o filtro com a página 3 aberta mostraria "nenhum resultado" para
+    // um recorte que tem resultados — só a página é que não existe mais.
     if (!("pagina" in patch)) f.pagina = 1;
-    iniciarNavegacao(() => router.push(`/recebimento${urlDosFiltros(f)}`, { scroll: false }));
+    iniciarNavegacao(() => {
+      if (patch.abas) marcarAbas(patch.abas);
+      router.push(`/recebimento${urlDosFiltros(f)}`, { scroll: false });
+    });
   };
 
   const contagens: Record<string, number> = {
@@ -151,8 +179,21 @@ export function RecebimentosView({
     divergencia: resumo.divergencia,
   };
 
-  const mostraTransferencias = ehPedidos && transferencias.length > 0;
-  const vazio = pagina.items.length === 0 && !mostraTransferencias;
+  const limpar = () => {
+    setBusca("");
+    irPara({ ...REC_FILTROS_VAZIO, limite: filtros.limite });
+  };
+
+  const mostraTransferencias = transferencias.length > 0;
+  const vazio = pagina.items.length === 0 && !mostraTransferencias && !pedidosNoTopo;
+  const vazioTexto = umSo ? VAZIO[umSo] : VAZIO_TODOS;
+  // Um status só, sem mais nada, tem o seu próprio vazio; qualquer recorte por
+  // cima disso é "nada bate com estes filtros".
+  const recortado =
+    filtros.abas.length > 1 ||
+    filtros.q.trim() !== "" ||
+    filtros.supplierId !== "" ||
+    (periodoAplicavel(filtros.abas) && filtros.periodo !== REC_FILTROS_VAZIO.periodo);
 
   return (
     <div className="flex flex-col gap-5">
@@ -187,135 +228,96 @@ export function RecebimentosView({
 
       <Resumo resumo={resumo} filtros={filtros} />
 
-      {/* Abas — o recorte da tela. Uma consulta cada, uma lista por vez.
-          A busca divide a linha com elas: procurar UM recebimento é a primeira
-          coisa que se faz aqui, e enterrar o campo na linha de baixo custava um
-          pulo de olho toda vez. */}
-      <div className="flex flex-col gap-2.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <form
-            className="relative order-1 w-full min-w-0 sm:w-72 sm:shrink-0"
-            onSubmit={(e) => {
-              e.preventDefault();
-              irPara({ q: busca.trim() });
-            }}
-          >
-            <Search
-              size={15}
-              className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-faint"
-              aria-hidden
-            />
-            <input
-              value={busca}
-              onChange={(e) => setBusca(e.target.value)}
-              placeholder={placeholderBusca(filtros.aba)}
-              aria-label={placeholderBusca(filtros.aba)}
-              className="h-9 w-full rounded-full border border-line-button bg-surface pr-8 pl-9 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
-            />
-            {busca && (
-              <button
-                type="button"
-                onClick={() => {
-                  setBusca("");
-                  irPara({ q: "" });
-                }}
-                aria-label="Limpar busca"
-                className="absolute top-1/2 right-2.5 -translate-y-1/2 cursor-pointer text-faint hover:text-ink"
-              >
-                <X size={14} />
-              </button>
-            )}
-          </form>
-
-          <div
-            role="tablist"
-            aria-label="Recorte dos recebimentos"
-            className="order-2 -mx-1 flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto px-1 pb-1 sm:justify-end"
-          >
-          {REC_TABS.map((t) => {
-            const ativa = filtros.aba === t.aba;
-            const n = t.contador ? contagens[t.contador] : null;
-            return (
-              <button
-                key={t.aba}
-                type="button"
-                role="tab"
-                aria-selected={ativa}
-                onClick={() => irPara({ aba: t.aba })}
-                className={cn(
-                  "shrink-0 cursor-pointer rounded-full border px-3 py-1.5 text-[12px] font-medium transition-colors focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none",
-                  ativa
-                    ? "border-brand bg-brand text-on-brand"
-                    : "border-line bg-surface text-ink-2 hover:bg-surface-2",
-                )}
-              >
-                {t.label}
-                {n !== null && n > 0 && (
-                  <span className={cn("ml-1.5 tabular-nums", ativa ? "opacity-80" : "text-muted")}>
-                    ({n})
-                  </span>
-                )}
-              </button>
-            );
-          })}
-          {/* Recorte sem aba própria: chega pelo indicador "Sem NF-e" e por
-              links de fora. Só aparece enquanto está ativo, para a pessoa saber
-              onde está — e como sair. */}
-          {filtros.aba === "sem-nfe" && (
-            <span className="shrink-0 rounded-full border border-accent bg-accent-soft px-3 py-1.5 text-[12px] font-medium text-accent">
-              Sem NF-e
-            </span>
-          )}
-          </div>
-        </div>
-
-        {/* Filtros — contextuais à aba selecionada. A linha só existe quando
-            tem o que mostrar: um espaçamento vazio abaixo das abas parece
-            defeito de layout. */}
-        {(fornecedores.length > 0 || periodoAplicavel(filtros.aba) || filtrosAtivos(filtros)) && (
-        <div className="flex flex-wrap items-center gap-2">
-          {fornecedores.length > 0 && (
-            <select
-              value={filtros.supplierId}
-              onChange={(e) => irPara({ supplierId: e.target.value })}
-              aria-label="Filtrar por fornecedor"
-              className="h-9 cursor-pointer rounded-full border border-line bg-surface px-3.5 text-[13px] text-ink focus-visible:border-brand focus-visible:outline-none"
-            >
-              <option value="">Todos os fornecedores</option>
-              {fornecedores.map((f) => (
-                <option key={f.id} value={f.id}>{f.nome}</option>
-              ))}
-            </select>
-          )}
-
-          {/* O período recorta histórico. Nas abas de trabalho ele só serviria
-              para esconder pendência — por isso nem aparece. */}
-          {periodoAplicavel(filtros.aba) && (
-            <select
-              value={filtros.periodo}
-              onChange={(e) => irPara({ periodo: e.target.value })}
-              aria-label="Período"
-              className="h-9 cursor-pointer rounded-full border border-line bg-surface px-3.5 text-[13px] text-ink focus-visible:border-brand focus-visible:outline-none"
-            >
-              {PERIODOS.map((p) => (
-                <option key={p.value} value={p.value}>{p.label}</option>
-              ))}
-            </select>
-          )}
-
-          {filtrosAtivos(filtros) && (
+      {/* Busca e filtros numa linha só: procurar UM recebimento é a primeira
+          coisa que se faz aqui, e o status divide a linha com o fornecedor —
+          são os dois recortes que o operador combina. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <form
+          className="relative w-full min-w-0 sm:w-72 sm:shrink-0"
+          onSubmit={(e) => {
+            e.preventDefault();
+            irPara({ q: busca.trim() });
+          }}
+        >
+          <Search
+            size={15}
+            className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-faint"
+            aria-hidden
+          />
+          <input
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder={placeholderBusca(filtros.abas)}
+            aria-label={placeholderBusca(filtros.abas)}
+            className="h-9 w-full rounded-full border border-line-button bg-surface pr-8 pl-9 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
+          />
+          {busca && (
             <button
               type="button"
               onClick={() => {
                 setBusca("");
-                irPara({ ...REC_FILTROS_VAZIO, aba: filtros.aba });
+                irPara({ q: "" });
               }}
-              className="ml-auto cursor-pointer text-xs font-medium text-muted transition-colors hover:text-ink"
+              aria-label="Limpar busca"
+              className="absolute top-1/2 right-2.5 -translate-y-1/2 cursor-pointer text-faint hover:text-ink"
             >
-              Limpar filtros
+              <X size={14} />
             </button>
           )}
-        </div>
+        </form>
+
+        <MultiSelect
+          className="w-full sm:w-56"
+          ariaLabel="Filtrar por status"
+          placeholder="Todos os status"
+          plural="status"
+          value={abasMarcadas}
+          // Sempre na ordem canônica: a mesma seleção gera a mesma URL.
+          onChange={(v) => irPara({ abas: REC_ABAS.filter((a) => v.includes(a)) })}
+          options={REC_RECORTES.map((t) => ({
+            value: t.aba,
+            label: t.label,
+            count: t.contador ? contagens[t.contador] : null,
+          }))}
+        />
+
+        {fornecedores.length > 0 && (
+          <select
+            value={filtros.supplierId}
+            onChange={(e) => irPara({ supplierId: e.target.value })}
+            aria-label="Filtrar por fornecedor"
+            className="h-9 w-full cursor-pointer rounded-full border border-line bg-surface px-3.5 text-[13px] text-ink focus-visible:border-brand focus-visible:outline-none sm:w-auto sm:max-w-64"
+          >
+            <option value="">Todos os fornecedores</option>
+            {fornecedores.map((f) => (
+              <option key={f.id} value={f.id}>{f.nome}</option>
+            ))}
+          </select>
+        )}
+
+        {/* O período recorta histórico. Com só trabalho aberto na tela ele
+            serviria apenas para esconder pendência — por isso nem aparece. */}
+        {periodoAplicavel(filtros.abas) && (
+          <select
+            value={filtros.periodo}
+            onChange={(e) => irPara({ periodo: e.target.value })}
+            aria-label="Período"
+            className="h-9 cursor-pointer rounded-full border border-line bg-surface px-3.5 text-[13px] text-ink focus-visible:border-brand focus-visible:outline-none"
+          >
+            {PERIODOS.map((p) => (
+              <option key={p.value} value={p.value}>{p.label}</option>
+            ))}
+          </select>
+        )}
+
+        {filtrosAtivos(filtros) && (
+          <button
+            type="button"
+            onClick={limpar}
+            className="ml-auto cursor-pointer text-xs font-medium text-muted transition-colors hover:text-ink"
+          >
+            Limpar filtros
+          </button>
         )}
       </div>
 
@@ -323,7 +325,7 @@ export function RecebimentosView({
           estoque à mão e o que falta é VINCULAR o XML ao recebimento que já
           existe. Abrir um recebimento novo faria a mesma carga entrar duas
           vezes — por isso a instrução vive aqui, onde a fila está. */}
-      {filtros.aba === "sem-nfe" && recebimentos.total > 0 && (
+      {umSo === "sem-nfe" && recebimentos.total > 0 && (
         <div className="flex items-start gap-2.5 rounded-[var(--radius-lg)] border border-accent/40 bg-accent-soft px-4 py-3 text-sm text-accent">
           <FileClock size={16} className="mt-0.5 shrink-0" aria-hidden />
           <p className="min-w-56 flex-1">
@@ -386,30 +388,48 @@ export function RecebimentosView({
           </Grupo>
         )}
 
+        {pedidosNoTopo && (
+          <Grupo
+            titulo="Aguardando recebimento"
+            contagem={`${aguardando.total} ${aguardando.total === 1 ? "pedido" : "pedidos"}`}
+            hint="Pedidos com mercadoria a chegar."
+          >
+            {aguardando.items.map((a) => (
+              <LinhaAguardando key={a.pedidoId} a={a} podeReceber={podeReceber} />
+            ))}
+            {aguardando.total > aguardando.items.length && (
+              <li className="px-4 py-2.5">
+                <button
+                  type="button"
+                  onClick={() => irPara({ abas: ["aguardando"] })}
+                  className="cursor-pointer text-[13px] font-medium text-brand transition-colors hover:text-brand-strong"
+                >
+                  Ver os {aguardando.total} pedidos aguardando
+                </button>
+              </li>
+            )}
+          </Grupo>
+        )}
+
         {vazio ? (
           <EstadoVazio
             icon={<PackageCheck size={20} />}
-            titulo={
-              filtrosAtivos(filtros) ? "Nada neste recorte" : VAZIO[filtros.aba].titulo
-            }
+            titulo={recortado ? "Nada neste recorte" : vazioTexto.titulo}
             descricao={
-              filtrosAtivos(filtros)
+              recortado
                 ? "Nenhum registro bate com estes filtros. Amplie o período ou limpe a busca."
-                : VAZIO[filtros.aba].descricao
+                : vazioTexto.descricao
             }
             acao={
-              filtrosAtivos(filtros) ? (
+              recortado ? (
                 <button
                   type="button"
-                  onClick={() => {
-                    setBusca("");
-                    irPara({ ...REC_FILTROS_VAZIO, aba: filtros.aba });
-                  }}
+                  onClick={limpar}
                   className="cursor-pointer rounded-full border border-line bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-2"
                 >
                   Limpar filtros
                 </button>
-              ) : podeReceber && filtros.aba !== "aguardando" ? (
+              ) : podeReceber && umSo !== "aguardando" ? (
                 <button
                   type="button"
                   onClick={() => setRecebendo(true)}
@@ -420,23 +440,48 @@ export function RecebimentosView({
               ) : null
             }
           />
-        ) : (
-          <>
+        ) : pagina.items.length === 0 ? null : (
+          <section className="flex flex-col gap-2">
+            {/* Com blocos acima, a lista precisa de nome — senão parece a
+                continuação dos pedidos. */}
+            {(pedidosNoTopo || mostraTransferencias) && (
+              <div className="flex flex-wrap items-baseline gap-x-2.5 px-1">
+                <h2 className="font-display text-sm font-semibold text-ink">
+                  {ehPedidos ? "Pedidos aguardando" : "Recebimentos"}
+                </h2>
+                <span className="text-[12px] tabular-nums text-muted">{pagina.total}</span>
+              </div>
+            )}
             <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
-              <ul className="divide-y divide-line">
-                {ehPedidos
-                  ? aguardando.items.map((a) => (
-                      <LinhaAguardando key={a.pedidoId} a={a} podeReceber={podeReceber} />
-                    ))
-                  : recebimentos.items.map((r) => (
+              {ehPedidos ? (
+                <ul className="divide-y divide-line">
+                  {aguardando.items.map((a) => (
+                    <LinhaAguardando key={a.pedidoId} a={a} podeReceber={podeReceber} />
+                  ))}
+                </ul>
+              ) : (
+                <>
+                  <TabelaRecebimentos
+                    linhas={recebimentos.items}
+                    multiLoja={multiLoja}
+                    ordem={filtros.ordem}
+                    focoDivergencia={umSo === "divergencia"}
+                    onOrdem={() => irPara({ ordem: filtros.ordem === "asc" ? "desc" : "asc" })}
+                    onAbrir={setDetalhe}
+                  />
+                  <ul className="divide-y divide-line md:hidden">
+                    {recebimentos.items.map((r) => (
                       <LinhaRecebimento
                         key={r.id}
                         r={r}
-                        aba={filtros.aba}
+                        focoDivergencia={umSo === "divergencia"}
+                        linkDireto={umSo === "divergencia" || umSo === "avulsos"}
                         onAbrir={() => setDetalhe(r)}
                       />
                     ))}
-              </ul>
+                  </ul>
+                </>
+              )}
             </div>
 
             <Paginacao
@@ -445,7 +490,7 @@ export function RecebimentosView({
               onPagina={(p) => irPara({ pagina: p })}
               onLimite={(l) => irPara({ limite: l })}
             />
-          </>
+          </section>
         )}
       </div>
 
@@ -478,7 +523,7 @@ export function RecebimentosView({
 
 function Resumo({ resumo, filtros }: { resumo: ResumoRecebimentos; filtros: RecFiltros }) {
   const atalho = (aba: RecAba) =>
-    `/recebimento${urlDosFiltros({ ...REC_FILTROS_VAZIO, aba, supplierId: filtros.supplierId })}`;
+    `/recebimento${urlDosFiltros({ ...REC_FILTROS_VAZIO, abas: [aba], supplierId: filtros.supplierId })}`;
 
   const items = [
     {
@@ -806,11 +851,15 @@ function LinhaAguardando({ a, podeReceber }: { a: AguardandoRow; podeReceber: bo
 
 function LinhaRecebimento({
   r,
-  aba,
+  focoDivergencia,
+  linkDireto,
   onAbrir,
 }: {
   r: RecebimentoRow;
-  aba: RecAba;
+  /** A tela está só em "Com divergência": a linha abre pelo que faltou. */
+  focoDivergencia: boolean;
+  /** A consulta leva direto ao recebimento, sem o painel de itens. */
+  linkDireto: boolean;
   onAbrir: () => void;
 }) {
   const status = STATUS_META[r.status];
@@ -818,7 +867,7 @@ function LinhaRecebimento({
     r.status === "PENDENTE" || r.status === "EM_CONFERENCIA" || r.status === "DIVERGENCIA";
   // Na aba de divergência a pergunta é "quanto faltou?" — o número que responde
   // isso vem antes de qualquer outro detalhe da linha.
-  const faltou = aba === "divergencia" ? r.esperado - r.unidades : 0;
+  const faltou = focoDivergencia ? r.esperado - r.unidades : 0;
 
   return (
     <li
@@ -866,7 +915,7 @@ function LinhaRecebimento({
             </span>
           )}
 
-          {r.divergencias > 0 && aba !== "divergencia" && (
+          {r.divergencias > 0 && !focoDivergencia && (
             <Badge tone="accent">
               <TriangleAlert size={11} />
               {r.divergencias} {r.divergencias === 1 ? "divergência" : "divergências"}
@@ -876,7 +925,7 @@ function LinhaRecebimento({
 
         <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
           <span>{r.data.toLocaleDateString("pt-BR")}</span>
-          {aba === "divergencia" ? (
+          {focoDivergencia ? (
             <span className="tabular-nums">
               Pedido: {fmtQtd(r.esperado)} · Recebido: {fmtQtd(r.unidades)}
             </span>
@@ -900,7 +949,7 @@ function LinhaRecebimento({
           )}
         </p>
 
-        {aba === "divergencia" && Math.abs(faltou) > 0.001 && (
+        {focoDivergencia && Math.abs(faltou) > 0.001 && (
           <p className="mt-1 inline-flex items-center gap-1.5 text-[12px] font-medium text-accent">
             <TriangleAlert size={12} className="shrink-0" aria-hidden />
             {fmtQtd(Math.abs(faltou))} {Math.abs(faltou) === 1 ? "unidade" : "unidades"}{" "}
@@ -908,7 +957,7 @@ function LinhaRecebimento({
           </p>
         )}
 
-        {r.divergenciaMotivo && aba === "divergencia" && (
+        {r.divergenciaMotivo && focoDivergencia && (
           <p className="mt-1 text-[12px] text-muted">{r.divergenciaMotivo}</p>
         )}
 
@@ -933,7 +982,7 @@ function LinhaRecebimento({
         >
           Continuar
         </Link>
-      ) : aba === "divergencia" || aba === "avulsos" ? (
+      ) : linkDireto ? (
         <Link
           href={r.href}
           className="shrink-0 cursor-pointer rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-2"
@@ -950,6 +999,240 @@ function LinhaRecebimento({
         </button>
       )}
     </li>
+  );
+}
+
+// ── Tabela de recebimentos (desktop) ────────────────────────────
+//
+// Em tela larga cada recebimento é uma linha de tabela: número, fornecedor,
+// documento, data, valor, status e a ação — colunas fixas, para o olho descer
+// por uma só. No celular a mesma lista vira cartão (`LinhaRecebimento`): oito
+// colunas não cabem em 360px e rolar para o lado esconde justamente a ação.
+
+const TH = "px-4 py-2.5 font-medium whitespace-nowrap";
+const TD = "px-4 py-3 align-middle";
+
+function TabelaRecebimentos({
+  linhas,
+  multiLoja,
+  ordem,
+  focoDivergencia,
+  onOrdem,
+  onAbrir,
+}: {
+  linhas: RecebimentoRow[];
+  /** Com uma loja só, a coluna diria a mesma coisa em todas as linhas. */
+  multiLoja: boolean;
+  ordem: RecFiltros["ordem"];
+  focoDivergencia: boolean;
+  onOrdem: () => void;
+  onAbrir: (r: RecebimentoRow) => void;
+}) {
+  const router = useRouter();
+
+  return (
+    <div className="hidden overflow-x-auto md:block">
+      <table className="w-full text-left text-sm">
+        <thead>
+          <tr className="border-b border-line bg-surface-2/50 text-[11px] tracking-wide text-faint uppercase">
+            <th scope="col" className={TH}>Recebimento</th>
+            <th scope="col" className={TH}>Fornecedor</th>
+            <th scope="col" className={TH}>Documento</th>
+            <th
+              scope="col"
+              className={TH}
+              aria-sort={ordem === "asc" ? "ascending" : "descending"}
+            >
+              <button
+                type="button"
+                onClick={onOrdem}
+                title={ordem === "asc" ? "Mais antigos primeiro" : "Mais recentes primeiro"}
+                className="-mx-1 inline-flex cursor-pointer items-center gap-1 rounded-sm px-1 font-medium tracking-wide uppercase transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
+              >
+                Data
+                <ChevronDown
+                  size={13}
+                  className={cn(
+                    "transition-transform motion-reduce:transition-none",
+                    ordem === "asc" && "rotate-180",
+                  )}
+                  aria-hidden
+                />
+              </button>
+            </th>
+            {multiLoja && <th scope="col" className={TH}>Loja</th>}
+            <th scope="col" className={cn(TH, "text-right")}>Valor</th>
+            <th scope="col" className={TH}>Status</th>
+            <th scope="col" className={cn(TH, "text-right")}>Ação</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-line">
+          {linhas.map((r) => {
+            const status = STATUS_META[r.status];
+            const emAndamento =
+              r.status === "PENDENTE" || r.status === "EM_CONFERENCIA" || r.status === "DIVERGENCIA";
+            const faltou = focoDivergencia ? r.esperado - r.unidades : 0;
+
+            return (
+              <tr
+                key={r.id}
+                className={cn(
+                  "transition-colors hover:bg-surface-2/40",
+                  r.status === "ESTORNADO" && "opacity-60",
+                )}
+              >
+                <td className={TD}>
+                  <Link
+                    href={r.href}
+                    className="font-mono text-[13px] font-semibold whitespace-nowrap text-ink transition-colors hover:text-brand"
+                  >
+                    {r.numero}
+                  </Link>
+                  <span className="block text-[11px] text-muted">
+                    {r.avulso ? (
+                      <span title="Mercadoria que chegou sem pedido de compra por trás.">
+                        Sem pedido
+                      </span>
+                    ) : r.pedidoNumero ? (
+                      <Link
+                        href={`/pedidos?q=${encodeURIComponent(r.pedidoNumero)}`}
+                        className="font-mono transition-colors hover:text-brand"
+                      >
+                        {r.pedidoNumero}
+                      </Link>
+                    ) : null}
+                  </span>
+                </td>
+
+                <td className={cn(TD, "max-w-64")}>
+                  <span className="block truncate font-medium text-ink">{r.supplierNome}</span>
+                  {r.supplierCnpj && (
+                    <span className="block font-mono text-[11px] whitespace-nowrap text-faint">
+                      CNPJ {maskCnpj(r.supplierCnpj)}
+                    </span>
+                  )}
+                </td>
+
+                <td className={cn(TD, "whitespace-nowrap")}>
+                  {r.notaNumero ? (
+                    <>
+                      <span className="block font-mono text-[13px] font-medium text-ink">
+                        {r.inboundId ? "NF-e" : "NF"} {r.notaNumero}
+                      </span>
+                      {!r.inboundId && (
+                        <span className="block text-[11px] text-faint">Sem XML</span>
+                      )}
+                    </>
+                  ) : r.semDocumento ? (
+                    <span
+                      className="text-[12px] font-medium text-accent"
+                      title="Entrou sem documento fiscal. Quando o XML chegar, vincule em vez de receber de novo."
+                    >
+                      Aguardando NF-e
+                    </span>
+                  ) : (
+                    <span className="text-[12px] text-faint">Sem NF-e</span>
+                  )}
+                </td>
+
+                <td className={cn(TD, "whitespace-nowrap tabular-nums text-ink-2")}>
+                  {r.data.toLocaleDateString("pt-BR")}
+                </td>
+
+                {multiLoja && (
+                  <td className={cn(TD, "max-w-40 truncate text-ink-2")}>{r.siteNome ?? "—"}</td>
+                )}
+
+                <td
+                  className={cn(
+                    TD,
+                    "text-right font-display font-semibold whitespace-nowrap tabular-nums text-ink",
+                  )}
+                >
+                  {fmtMoney(r.valor)}
+                  {r.temBonificacao && (
+                    <span
+                      title="Inclui bonificação"
+                      aria-label="Inclui bonificação"
+                      className="ml-1.5 inline-block align-middle text-violet"
+                    >
+                      <Gift size={12} />
+                    </span>
+                  )}
+                </td>
+
+                <td className={TD}>
+                  <div className="flex flex-col items-start gap-1">
+                    <Badge tone={status.tone} title={r.estornoMotivo ?? undefined}>
+                      {emAndamento && <Clock size={11} aria-hidden />}
+                      {status.label}
+                    </Badge>
+                    {r.divergencias > 0 && !focoDivergencia && (
+                      <span className="inline-flex items-center gap-1 text-[11px] whitespace-nowrap text-accent">
+                        <TriangleAlert size={11} aria-hidden />
+                        {r.divergencias} {r.divergencias === 1 ? "divergência" : "divergências"}
+                      </span>
+                    )}
+                    {focoDivergencia && Math.abs(faltou) > 0.001 && (
+                      <span className="text-[11px] whitespace-nowrap text-accent">
+                        {fmtQtd(Math.abs(faltou))} {faltou > 0 ? "a menos" : "a mais"}
+                      </span>
+                    )}
+                  </div>
+                </td>
+
+                <td className={TD}>
+                  <div className="flex items-center justify-end gap-1.5">
+                    {/* A ação depende do estado: o que está na doca pede
+                        continuação; o que já entrou pede consulta. */}
+                    {emAndamento ? (
+                      <Link
+                        href={r.href}
+                        className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-brand px-3.5 py-1.5 text-xs font-semibold text-on-brand transition-colors hover:bg-brand-strong"
+                      >
+                        Continuar <ArrowRight size={13} aria-hidden />
+                      </Link>
+                    ) : (
+                      <Link
+                        href={r.href}
+                        className="shrink-0 cursor-pointer rounded-full border border-line bg-surface px-3.5 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-2"
+                      >
+                        Abrir
+                      </Link>
+                    )}
+                    <Menu
+                      trigger={
+                        <button
+                          type="button"
+                          aria-label={`Mais opções de ${r.numero}`}
+                          className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
+                        >
+                          <MoreVertical size={15} aria-hidden />
+                        </button>
+                      }
+                    >
+                      <MenuItem icon={<PackageCheck size={15} />} onClick={() => onAbrir(r)}>
+                        Ver itens
+                      </MenuItem>
+                      {r.pedidoNumero && (
+                        <MenuItem
+                          icon={<FileText size={15} />}
+                          onClick={() =>
+                            router.push(`/pedidos?q=${encodeURIComponent(r.pedidoNumero ?? "")}`)
+                          }
+                        >
+                          Ver pedido
+                        </MenuItem>
+                      )}
+                    </Menu>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

@@ -276,7 +276,9 @@ function XmlDropzone({
         <input
           ref={inputRef}
           type="file"
-          accept=".xml,.zip,text/xml,application/xml,application/zip"
+          // Só extensões: com tipo MIME no `accept`, o Chrome no Windows resolve
+          // cada um no registro antes de abrir o seletor — e trava a janela.
+          accept=".xml,.zip"
           multiple
           className="hidden"
           onChange={(e) => e.target.files && onArquivos(e.target.files)}

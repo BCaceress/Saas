@@ -86,7 +86,15 @@ export function PainelNota({
   nota,
   faltamRelacionar,
   emConferencia,
+  children,
 }: {
+  /**
+   * Quem desenha em volta. Ausente, o painel é o card de sempre. Presente, ele
+   * só entrega as peças — os avisos do documento e as ações dele — e a tela
+   * decide onde cada uma mora: na etapa da nota os avisos ficam à vista e as
+   * ações descem para os detalhes fiscais, sem um card a mais competindo.
+   */
+  children?: (partes: { alertas: React.ReactNode; acoes: React.ReactNode }) => React.ReactNode;
   nota: NotaRecebimento;
   /** Itens sem produto no catálogo — trava a entrada direta. */
   faltamRelacionar: number;
@@ -201,173 +209,154 @@ export function PainelNota({
     else desvincular(texto);
   }
 
-  return (
+  const acoes = (
+    <div className="flex flex-wrap items-center gap-2">
+      {editavel && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => pedirMotivo("DESCARTAR")}
+          disabled={pending}
+        >
+          <Trash2 size={15} /> Descartar
+        </Button>
+      )}
+      {/* O resto das decisões do documento entra no menu. "Dar entrada
+          sem conferir" em botão no topo da tela era um atalho com peso
+          de caminho principal: pulava a conferência inteira com um
+          clique, ao lado do que o operador clica o tempo todo. */}
+      <Menu
+        trigger={
+          <button
+            type="button"
+            disabled={pending}
+            className="grid h-8 w-8 place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
+            aria-label="Mais opções do documento"
+          >
+            <MoreVertical size={15} aria-hidden />
+          </button>
+        }
+      >
+        {/* Atalho, não caminho: nota de serviço, frete ou compra que o
+            operador já conferiu no papel não precisa de contagem. Some
+            assim que há conferência aberta — aí o botão da etapa 3 manda. */}
+        {editavel && !emConferencia && (
+          <MenuItem
+            icon={<PackageCheck size={15} />}
+            disabled={pending || faltamRelacionar > 0}
+            onClick={() => setConfirmandoEntrada(true)}
+          >
+            Dar entrada sem conferir
+          </MenuItem>
+        )}
+        {/* Desfazer é operação de verdade, não “registre um ajuste”:
+            volta o saldo, cancela os títulos e libera a nota. */}
+        {nota.status === "RECEBIDO" && (
+          <MenuItem
+            icon={<Undo2 size={15} />}
+            disabled={pending}
+            onClick={() => pedirMotivo("ESTORNAR")}
+          >
+            Estornar entrada
+          </MenuItem>
+        )}
+        {nota.status === "VINCULADO" && (
+          <MenuItem
+            icon={<Unlink size={15} />}
+            disabled={pending}
+            onClick={() => pedirMotivo("DESVINCULAR")}
+          >
+            Desfazer vínculo
+          </MenuItem>
+        )}
+        {editavel && emConferencia && nota.status !== "RECEBIDO" && (
+          <MenuItem disabled>Conferência aberta — dê entrada pela etapa 3</MenuItem>
+        )}
+      </Menu>
+    </div>
+  );
+
+  // O que o documento tem a dizer antes de qualquer decisão: por que foi
+  // descartado, por que não mexe em estoque, e a entrada manual que ele pode
+  // estar repetindo.
+  const alertas = (
     <>
-      <section className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4">
-        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-          <div className="min-w-0">
-            <h2 className="flex items-center gap-2 font-display text-[14px] font-semibold text-ink">
-              <Receipt size={15} className="shrink-0 text-faint" aria-hidden />
-              Nota fiscal {nota.numero}/{nota.serie}
-            </h2>
-            <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] text-faint">
-              <span>{maskCnpj(nota.cnpj)}</span>
-              {nota.uf && <span>· {nota.uf}</span>}
-              <span className="break-all">· {nota.chave}</span>
-              <button
-                type="button"
-                onClick={() => {
-                  void navigator.clipboard?.writeText(nota.chave);
-                  toast.success("Chave copiada.");
-                }}
-                className="cursor-pointer text-muted transition-colors hover:text-brand"
-                aria-label="Copiar chave de acesso"
-                title="Copiar chave de acesso"
-              >
-                <Copy size={12} />
-              </button>
-            </p>
-          </div>
+      {nota.status === "DESCARTADO" && nota.observacao && (
+        <p className="text-[13px] text-muted">Motivo do descarte: {nota.observacao}</p>
+      )}
 
-          <div className="flex flex-wrap items-center gap-2">
-            {editavel && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => pedirMotivo("DESCARTAR")}
-                disabled={pending}
-              >
-                <Trash2 size={15} /> Descartar
-              </Button>
-            )}
-            {/* O resto das decisões do documento entra no menu. "Dar entrada
-                sem conferir" em botão no topo da tela era um atalho com peso
-                de caminho principal: pulava a conferência inteira com um
-                clique, ao lado do que o operador clica o tempo todo. */}
-            <Menu
-              trigger={
-                <button
-                  type="button"
-                  disabled={pending}
-                  className="grid h-8 w-8 place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
-                  aria-label="Mais opções do documento"
-                >
-                  <MoreVertical size={15} aria-hidden />
-                </button>
-              }
-            >
-              {/* Atalho, não caminho: nota de serviço, frete ou compra que o
-                  operador já conferiu no papel não precisa de contagem. Some
-                  assim que há conferência aberta — aí o botão da etapa 3 manda. */}
-              {editavel && !emConferencia && (
-                <MenuItem
-                  icon={<PackageCheck size={15} />}
-                  disabled={pending || faltamRelacionar > 0}
-                  onClick={() => setConfirmandoEntrada(true)}
-                >
-                  Dar entrada sem conferir
-                </MenuItem>
-              )}
-              {/* Desfazer é operação de verdade, não “registre um ajuste”:
-                  volta o saldo, cancela os títulos e libera a nota. */}
-              {nota.status === "RECEBIDO" && (
-                <MenuItem
-                  icon={<Undo2 size={15} />}
-                  disabled={pending}
-                  onClick={() => pedirMotivo("ESTORNAR")}
-                >
-                  Estornar entrada
-                </MenuItem>
-              )}
-              {nota.status === "VINCULADO" && (
-                <MenuItem
-                  icon={<Unlink size={15} />}
-                  disabled={pending}
-                  onClick={() => pedirMotivo("DESVINCULAR")}
-                >
-                  Desfazer vínculo
-                </MenuItem>
-              )}
-              {editavel && emConferencia && nota.status !== "RECEBIDO" && (
-                <MenuItem disabled>Conferência aberta — dê entrada pela etapa 3</MenuItem>
-              )}
-            </Menu>
-          </div>
-        </div>
+      {nota.semEstoqueMotivo && (
+        <p className="flex items-start gap-2 rounded-[var(--radius-md)] border border-line bg-surface-2 px-3.5 py-3 text-[13px] text-muted">
+          <Receipt size={15} className="mt-0.5 shrink-0 text-faint" />
+          <span>
+            {nota.semEstoqueMotivo}
+            {nota.status === "SEM_ESTOQUE" &&
+              " O valor entrou em Contas a pagar — nada foi somado ao saldo."}
+          </span>
+        </p>
+      )}
 
-        {nota.status === "DESCARTADO" && nota.observacao && (
-          <p className="text-[13px] text-muted">Motivo do descarte: {nota.observacao}</p>
-        )}
-
-        {nota.semEstoqueMotivo && (
-          <p className="flex items-start gap-2 rounded-[var(--radius-md)] border border-line bg-surface-2 px-3.5 py-3 text-[13px] text-muted">
-            <Receipt size={15} className="mt-0.5 shrink-0 text-faint" />
-            <span>
-              {nota.semEstoqueMotivo}
-              {nota.status === "SEM_ESTOQUE" &&
-                " O valor entrou em Contas a pagar — nada foi somado ao saldo."}
-            </span>
+      {editavel && candidatas && candidatas.length > 0 && (
+        <div className="flex flex-col gap-2.5 rounded-[var(--radius-md)] border border-accent/40 bg-accent-soft p-3.5">
+          <p className="flex items-start gap-2 text-sm font-medium text-accent">
+            <Copy size={15} className="mt-0.5 shrink-0" />
+            Esta mercadoria já pode ter entrado à mão
           </p>
-        )}
-
-        {editavel && candidatas && candidatas.length > 0 && (
-          <div className="flex flex-col gap-2.5 rounded-[var(--radius-md)] border border-accent/40 bg-accent-soft p-3.5">
-            <p className="flex items-start gap-2 text-sm font-medium text-accent">
-              <Copy size={15} className="mt-0.5 shrink-0" />
-              Esta mercadoria já pode ter entrado à mão
-            </p>
-            <p className="text-xs text-accent/90">
-              Se uma destas entradas é esta mesma nota, vincule as duas: o documento fica
-              registrado e o estoque não sobe de novo. Se são compras diferentes, é só receber
-              normalmente.
-            </p>
-            <ul className="flex flex-col gap-1.5">
-              {candidatas.map((c) => (
-                <li
-                  key={c.purchaseId}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-line bg-surface px-3 py-2"
+          <p className="text-xs text-accent/90">
+            Se uma destas entradas é esta mesma nota, vincule as duas: o documento fica
+            registrado e o estoque não sobe de novo. Se são compras diferentes, é só receber
+            normalmente.
+          </p>
+          <ul className="flex flex-col gap-1.5">
+            {candidatas.map((c) => (
+              <li
+                key={c.purchaseId}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-line bg-surface px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm text-ink">
+                    Entrada de {new Date(c.data).toLocaleDateString("pt-BR")} ·{" "}
+                    <span className="font-mono">{fmtMoney(c.valorTotal)}</span>
+                    <span className="ml-2 text-[11px] text-muted">
+                      {c.itens} {c.itens === 1 ? "item" : "itens"}
+                    </span>
+                  </p>
+                  <p className="text-[11px] text-muted">{c.motivos.join(" · ")}</p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={pending}
+                  onClick={() =>
+                    start(async () => {
+                      try {
+                        await vincularEntradaManualAction({
+                          inboundId: nota.id,
+                          purchaseId: c.purchaseId,
+                        });
+                        toast.success(
+                          "Nota vinculada à entrada.",
+                          "O estoque não foi movimentado de novo.",
+                        );
+                        router.refresh();
+                      } catch (e) {
+                        toast.error(e instanceof Error ? e.message : "Falha ao vincular.");
+                      }
+                    })
+                  }
                 >
-                  <div className="min-w-0">
-                    <p className="text-sm text-ink">
-                      Entrada de {new Date(c.data).toLocaleDateString("pt-BR")} ·{" "}
-                      <span className="font-mono">{fmtMoney(c.valorTotal)}</span>
-                      <span className="ml-2 text-[11px] text-muted">
-                        {c.itens} {c.itens === 1 ? "item" : "itens"}
-                      </span>
-                    </p>
-                    <p className="text-[11px] text-muted">{c.motivos.join(" · ")}</p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={pending}
-                    onClick={() =>
-                      start(async () => {
-                        try {
-                          await vincularEntradaManualAction({
-                            inboundId: nota.id,
-                            purchaseId: c.purchaseId,
-                          });
-                          toast.success(
-                            "Nota vinculada à entrada.",
-                            "O estoque não foi movimentado de novo.",
-                          );
-                          router.refresh();
-                        } catch (e) {
-                          toast.error(e instanceof Error ? e.message : "Falha ao vincular.");
-                        }
-                      })
-                    }
-                  >
-                    É esta entrada
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </section>
+                  É esta entrada
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
+  );
 
+  const modais = (
+    <>
       {confirmandoEntrada && (
         <Modal
           open
@@ -443,6 +432,53 @@ export function PainelNota({
           </div>
         </Modal>
       )}
+    </>
+  );
+
+  if (children) {
+    return (
+      <>
+        {children({ alertas, acoes })}
+        {modais}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <section className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4">
+        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+          <div className="min-w-0">
+            <h2 className="flex items-center gap-2 font-display text-[14px] font-semibold text-ink">
+              <Receipt size={15} className="shrink-0 text-faint" aria-hidden />
+              Nota fiscal {nota.numero}/{nota.serie}
+            </h2>
+            <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] text-faint">
+              <span>{maskCnpj(nota.cnpj)}</span>
+              {nota.uf && <span>· {nota.uf}</span>}
+              <span className="break-all">· {nota.chave}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(nota.chave);
+                  toast.success("Chave copiada.");
+                }}
+                className="cursor-pointer text-muted transition-colors hover:text-brand"
+                aria-label="Copiar chave de acesso"
+                title="Copiar chave de acesso"
+              >
+                <Copy size={12} />
+              </button>
+            </p>
+          </div>
+
+          {acoes}
+        </div>
+
+        {alertas}
+      </section>
+
+      {modais}
     </>
   );
 }

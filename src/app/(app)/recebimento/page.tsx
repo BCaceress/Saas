@@ -1,6 +1,6 @@
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { podeEmAlguma } from "@/lib/permissoes";
-import { getActiveSiteId } from "@/lib/sites";
+import { getActiveSiteId, listSites } from "@/lib/sites";
 import { loadTransferenciasAReceber } from "../estoque/_data";
 import {
   loadAguardandoRecebimento,
@@ -10,7 +10,7 @@ import {
   type AguardandoRow,
   type RecebimentoRow,
 } from "./_lista";
-import { abaDePedidos, filtrosDaUrl, paginaVazia } from "./_query";
+import { filtrosDaUrl, mostraPedidos, paginaVazia, PEDIDOS_NO_TOPO, soPedidos } from "./_query";
 import { RecebimentosView } from "./_lista-client";
 
 // Recebimentos — o que chegou na loja. Cada linha é UM recebimento: o mesmo
@@ -18,9 +18,10 @@ import { RecebimentosView } from "./_lista-client";
 // chegou?", separada de "o que pedimos?" (/pedidos) e "que documento fiscal
 // chegou?" (/fiscal/notas-recebidas).
 //
-// UMA ABA POR VEZ: a página consulta o recorte selecionado e mais nenhum. Abrir
-// a tela nunca lê o histórico de concluídos — ele cresce para sempre, e é
-// exatamente a lista que ninguém precisa ver para começar o dia.
+// A tela abre em TODOS; o status é um filtro de seleção múltipla. Pedidos
+// aguardando e recebimentos são tabelas diferentes: quando dividem a tela, os
+// pedidos sobem num bloco curto no topo e a lista paginada é a de recebimentos;
+// com só "Aguardando" marcado, a lista paginada passa a ser a de pedidos.
 
 export default async function RecebimentosPage({
   searchParams,
@@ -29,16 +30,22 @@ export default async function RecebimentosPage({
 }) {
   const ctx = await requireActiveTenant();
   const filtros = filtrosDaUrl(await searchParams);
-  const abaPedidos = abaDePedidos(filtros.aba);
+  const apenasPedidos = soPedidos(filtros.abas);
+  // O bloco de pedidos no topo só existe na primeira página: repeti-lo a cada
+  // página empurraria os recebimentos para baixo sem mostrar nada novo.
+  const comPedidos = apenasPedidos || (mostraPedidos(filtros.abas) && filtros.pagina === 1);
   const janela = { skip: (filtros.pagina - 1) * filtros.limite, take: filtros.limite };
 
   const dados = await withTenant(ctx, async () => {
     const activeSiteId = await getActiveSiteId();
-    const [aguardando, recebimentos, fornecedores, resumo, transferencias] = await Promise.all([
-      abaPedidos
-        ? loadAguardandoRecebimento(filtros, janela)
+    const [aguardando, recebimentos, fornecedores, resumo, transferencias, sites] = await Promise.all([
+      comPedidos
+        ? loadAguardandoRecebimento(
+            filtros,
+            apenasPedidos ? janela : { skip: 0, take: PEDIDOS_NO_TOPO },
+          )
         : Promise.resolve(paginaVazia<AguardandoRow>(filtros)),
-      abaPedidos
+      apenasPedidos
         ? Promise.resolve(paginaVazia<RecebimentoRow>(filtros))
         : loadRecebimentos(filtros, janela),
       loadFornecedoresComRecebimento(),
@@ -46,11 +53,12 @@ export default async function RecebimentosPage({
       // não são resumo, são ruído.
       resumoRecebimentos(),
       // Transferência entre lojas também é mercadoria chegando na doca —
-      // morava em /pedidos, onde não é pedido de compra nenhum. Só cabe na aba
+      // morava em /pedidos, onde não é pedido de compra nenhum. Só cabe junto
       // de quem está esperando mercadoria.
-      abaPedidos ? loadTransferenciasAReceber(activeSiteId) : Promise.resolve([]),
+      comPedidos ? loadTransferenciasAReceber(activeSiteId) : Promise.resolve([]),
+      listSites(),
     ]);
-    return { aguardando, recebimentos, fornecedores, resumo, transferencias };
+    return { aguardando, recebimentos, fornecedores, resumo, transferencias, sites };
   });
 
   const transferenciasSerial = dados.transferencias.map((t) => ({
@@ -66,6 +74,8 @@ export default async function RecebimentosPage({
       resumo={dados.resumo}
       fornecedores={dados.fornecedores}
       filtros={filtros}
+      // Com uma loja só, a coluna diria a mesma coisa em todas as linhas.
+      multiLoja={dados.sites.length > 1}
       podeReceber={podeEmAlguma(ctx.acessos, "compras.receber")}
       podeAvulso={podeEmAlguma(ctx.acessos, "estoque.ajustar")}
     />

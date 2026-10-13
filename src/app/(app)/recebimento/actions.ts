@@ -105,8 +105,12 @@ export async function donoDoCodigoAction(gtin: string) {
  * ter criado embalagem/EAN que muda o palpite das outras. A carga inicial vem
  * pronta do servidor (ver `_data.ts`) — esta action é só para o depois.
  */
-export async function sugestoesDaNotaAction(inboundId: string): Promise<SugestaoDePara[]> {
-  return ler(() => sugestoesDaNota(inboundId));
+export async function sugestoesDaNotaAction(
+  inboundId: string,
+  /** Pedido que a nota fatura — os produtos dele entram como palpite. */
+  purchaseOrderId?: string | null,
+): Promise<SugestaoDePara[]> {
+  return ler(() => sugestoesDaNota(inboundId, { purchaseOrderId }));
 }
 
 // ── Relacionar ──────────────────────────────────────────────

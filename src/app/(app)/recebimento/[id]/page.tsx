@@ -18,10 +18,13 @@ export const metadata = { title: "Recebimento" };
  */
 export default async function RecebimentoDetalhePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ origem?: string }>;
 }) {
   const { id } = await params;
+  const { origem } = await searchParams;
   const ctx = await requireActiveTenant();
   // O recebimento é assunto das duas pontas: quem confere na doca e quem trata
   // o XML no escritório. Exigir só `compras.receber` trancava o contador para
@@ -33,6 +36,11 @@ export default async function RecebimentoDetalhePage({
   // Cadastro rápido de produto (item da nota sem catálogo) exige permissão
   // própria — quem só confere na porta pode não poder criar produto.
   const podeCriarProduto = podeEmAlguma(ctx.acessos, "produto.editar");
+  // As duas decisões que o recebimento provoca FORA dele: aceitar o contato que
+  // o XML trouxe para o fornecedor e remarcar preço de venda no fechamento.
+  // Quem não pode vê a informação, sem o botão.
+  const podeEditarFornecedor = podeEmAlguma(ctx.acessos, "fornecedor.editar");
+  const podeAlterarPreco = podeEmAlguma(ctx.acessos, "produto.preco");
 
   const destino = await withTenant(ctx, async () => {
     const existe = await db.goodsReceipt.findFirst({ where: { id }, select: { id: true } });
@@ -50,7 +58,7 @@ export default async function RecebimentoDetalhePage({
 
   const [dados, subcategorias] = await withTenant(ctx, () =>
     Promise.all([
-      carregarRecebimento(ctx.tenant.id, id),
+      carregarRecebimento(ctx.tenant.id, id, { origem: origem ?? null }),
       podeCriarProduto ? listarSubcategoriasParaCadastro() : Promise.resolve([]),
     ]),
   );
@@ -62,6 +70,8 @@ export default async function RecebimentoDetalhePage({
       podeReceber={podeReceber}
       podeTratarNota={podeTratarNota}
       podeCriarProduto={podeCriarProduto}
+      podeEditarFornecedor={podeEditarFornecedor}
+      podeAlterarPreco={podeAlterarPreco}
       cega={ctx.tenant.conferenciaCega}
       subcategorias={subcategorias}
     />

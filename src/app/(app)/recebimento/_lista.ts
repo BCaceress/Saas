@@ -2,17 +2,23 @@ import "server-only";
 import { db, basePrisma } from "@/lib/prisma";
 import type { GoodsReceiptOrigem, GoodsReceiptStatus, Prisma } from "@/generated/prisma";
 import { RECEBIMENTOS_ABERTOS } from "@/lib/compras/recebimento";
-import { montarPagina, periodoAplicavel, type Pagina, type RecFiltros } from "./_query";
+import {
+  abasDeRecebimento,
+  montarPagina,
+  type Pagina,
+  type RecAba,
+  type RecFiltros,
+} from "./_query";
 
 // ── Leitura de /recebimento ─────────────────────────────────────
 //
-// A tela é UMA ABA POR VEZ, e cada aba é uma consulta própria, paginada no
-// banco. Ninguém aqui busca "tudo" para separar depois no navegador: o
-// histórico de concluídos cresce para sempre, e ler o passado inteiro para
-// desenhar vinte linhas é o jeito de a tela ficar lenta justamente na loja que
-// mais recebe.
+// A tela abre em TODOS e o status é um filtro de seleção múltipla — mas tudo
+// continua paginado no banco. Ninguém aqui busca a lista inteira para separar
+// depois no navegador: o histórico de concluídos cresce para sempre, e ler o
+// passado inteiro para desenhar vinte linhas é o jeito de a tela ficar lenta
+// justamente na loja que mais recebe.
 //
-// As abas não mostram a mesma coisa, de propósito:
+// Os recortes não mostram a mesma coisa, de propósito:
 //
 //  1. Aguardando — PEDIDOS com mercadoria esperada e nenhuma conferência
 //     aberta. Não é recebimento nenhum: é o que está prestes a virar um. E é
@@ -33,6 +39,8 @@ export type RecebimentoRow = {
   numero: string;
   data: Date;
   supplierNome: string;
+  /** Só dígitos. Nulo no fornecedor livre (avulso digitado à mão). */
+  supplierCnpj: string | null;
   siteNome: string | null;
   origem: GoodsReceiptOrigem;
   valor: number;
@@ -219,7 +227,41 @@ const RECEBIMENTO_DIVERGENTE: Prisma.GoodsReceiptWhereInput = {
 const ABERTOS_E_FINALIZADO: GoodsReceiptStatus[] = [...RECEBIMENTOS_ABERTOS, "FINALIZADO"];
 
 /**
- * O WHERE da aba de recebimentos.
+ * O recorte de UM status, completo em si mesmo — para poder ser unido (OR) aos
+ * outros quando o operador marca mais de um.
+ *
+ * O período entra só onde recorta histórico: esconder uma conferência aberta
+ * há 40 dias seria esconder justamente a que ninguém pode perder de vista.
+ */
+function recorteDaAba(aba: RecAba, desde: Date | null): Prisma.GoodsReceiptWhereInput {
+  const noPeriodo = desde ? { iniciadoEm: { gte: desde } } : {};
+  switch (aba) {
+    case "andamento":
+      return { status: { in: RECEBIMENTOS_ABERTOS } };
+    case "divergencia":
+      // Divergência não é só a conferência parada nela: a que foi finalizada
+      // com diferença registrada continua sendo problema de alguém.
+      return { status: { in: ABERTOS_E_FINALIZADO }, ...RECEBIMENTO_DIVERGENTE };
+    case "concluidos":
+      return { status: { in: ["FINALIZADO", "CANCELADO"] }, ...noPeriodo };
+    case "avulsos":
+      // Avulso é origem, não estado — vale aberto e finalizado.
+      return { purchaseOrderId: null, status: { in: ABERTOS_E_FINALIZADO }, ...noPeriodo };
+    case "sem-nfe":
+      // Finalizado esperando documento é a pendência que ninguém vê até a nota
+      // chegar e alguém receber a mesma mercadoria pela segunda vez.
+      return {
+        status: "FINALIZADO",
+        inboundId: null,
+        entradas: { some: { aguardandoDocumento: true, chaveNfe: null } },
+      };
+    default:
+      return {};
+  }
+}
+
+/**
+ * O WHERE dos recebimentos: a união dos recortes marcados.
  *
  * O recorte vive aqui, nunca num `filter()` depois da consulta: cortar em
  * memória o que o banco já cortou por `take` esconde linhas que existem, sem
@@ -227,46 +269,22 @@ const ABERTOS_E_FINALIZADO: GoodsReceiptStatus[] = [...RECEBIMENTOS_ABERTOS, "FI
  */
 function whereRecebimentos(filtro: RecFiltros): Prisma.GoodsReceiptWhereInput {
   const termo = filtro.q.trim();
-  const and: Prisma.GoodsReceiptWhereInput[] = [];
+  const dias = Number(filtro.periodo);
+  const desde = dias > 0 ? new Date(Date.now() - dias * 86_400_000) : null;
+
+  const abas = abasDeRecebimento(filtro.abas);
+  // Nada marcado = todos: o que está aberto aparece sempre, o histórico
+  // respeita o período.
+  const recortes = (abas.length > 0 ? abas : (["andamento", "concluidos"] as RecAba[])).map((a) =>
+    recorteDaAba(a, desde),
+  );
+
+  const and: Prisma.GoodsReceiptWhereInput[] = [
+    recortes.length === 1 ? recortes[0] : { OR: recortes },
+  ];
   const where: Prisma.GoodsReceiptWhereInput = {
     ...(filtro.supplierId ? { supplierId: filtro.supplierId } : {}),
   };
-
-  switch (filtro.aba) {
-    case "andamento":
-      where.status = { in: RECEBIMENTOS_ABERTOS };
-      break;
-    case "divergencia":
-      // Divergência não é só a conferência parada nela: a que foi finalizada
-      // com diferença registrada continua sendo problema de alguém.
-      where.status = { in: ABERTOS_E_FINALIZADO };
-      and.push(RECEBIMENTO_DIVERGENTE);
-      break;
-    case "concluidos":
-      where.status = { in: ["FINALIZADO", "CANCELADO"] };
-      break;
-    case "avulsos":
-      // Avulso é origem, não estado — vale aberto e finalizado.
-      where.purchaseOrderId = null;
-      where.status = { in: ABERTOS_E_FINALIZADO };
-      break;
-    case "sem-nfe":
-      // Finalizado esperando documento é a pendência que ninguém vê até a nota
-      // chegar e alguém receber a mesma mercadoria pela segunda vez.
-      where.status = "FINALIZADO";
-      where.inboundId = null;
-      where.entradas = { some: { aguardandoDocumento: true, chaveNfe: null } };
-      break;
-    default:
-      where.status = { in: ABERTOS_E_FINALIZADO };
-  }
-
-  // O período recorta histórico, não trabalho: esconder uma conferência aberta
-  // há 40 dias seria esconder justamente a que ninguém pode perder de vista.
-  if (periodoAplicavel(filtro.aba) && filtro.periodo) {
-    const dias = Number(filtro.periodo);
-    if (dias > 0) where.iniciadoEm = { gte: new Date(Date.now() - dias * 86_400_000) };
-  }
 
   if (termo) {
     and.push({
@@ -282,7 +300,7 @@ function whereRecebimentos(filtro: RecFiltros): Prisma.GoodsReceiptWhereInput {
     });
   }
 
-  if (and.length > 0) where.AND = and;
+  where.AND = and;
   return where;
 }
 
@@ -299,7 +317,7 @@ const selectRecebimento = {
   createdBy: true,
   purchaseOrderId: true,
   inboundId: true,
-  supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+  supplier: { select: { razaoSocial: true, nomeFantasia: true, cnpj: true } },
   site: { select: { nome: true } },
   purchaseOrder: { select: { numero: true } },
   inbound: { select: { id: true, numero: true, serie: true } },
@@ -335,6 +353,7 @@ function paraLinha(r: ReceiptCru, usuarios: Map<string, string>): RecebimentoRow
     data: r.finalizadoEm ?? r.iniciadoEm,
     supplierNome:
       r.supplier?.nomeFantasia || r.supplier?.razaoSocial || r.fornecedorLivre || "Sem fornecedor",
+    supplierCnpj: r.supplier?.cnpj ?? null,
     siteNome: r.site?.nome ?? null,
     origem: r.origem,
     valor: r.itens.reduce(
@@ -367,10 +386,10 @@ function paraLinha(r: ReceiptCru, usuarios: Map<string, string>): RecebimentoRow
 }
 
 /**
- * Uma página de recebimentos da aba pedida — e só dela.
+ * Uma página de recebimentos dos recortes marcados (ou de todos).
  *
  * A mesma função serve "em conferência", "com divergência", "concluídos",
- * "avulsos" e "sem NF-e": o que muda entre elas é o WHERE, não a leitura.
+ * "avulsos" e "sem NF-e": o que muda entre eles é o WHERE, não a leitura.
  */
 export async function loadRecebimentos(
   filtro: RecFiltros,
@@ -382,7 +401,7 @@ export async function loadRecebimentos(
     db.goodsReceipt.findMany({
       where,
       select: selectRecebimento,
-      orderBy: { iniciadoEm: "desc" },
+      orderBy: { iniciadoEm: filtro.ordem },
       skip: opts.skip,
       take: opts.take,
     }),

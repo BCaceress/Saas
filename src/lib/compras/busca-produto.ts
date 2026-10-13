@@ -38,6 +38,8 @@ export type ProdutoBuscado = {
   unidadeBase: string;
   /** Quanto cabe numa unidade fechada, na `unidadeBase` (1000 ml na garrafa). */
   conteudoPorUnidade: number | null;
+  /** Marca — o que separa dois produtos de mesmo nome e mesmo volume. */
+  marca: string | null;
   /** Códigos da unidade de venda — o principal e os apelidos de outras marcas. */
   codigos: { codigo: string }[];
   embalagens: { id: string; nome: string; ean: string | null; fator: number }[];
@@ -88,6 +90,9 @@ export async function buscarProdutosParaRelacionar(
         OR: [
           { nome: { contains: t, mode: "insensitive" as const } },
           { sku: { contains: t, mode: "insensitive" as const } },
+          // Marca também é como o operador procura: "heineken" acha o long
+          // neck mesmo quando o cadastro se chama só "Cerveja Long Neck 330ml".
+          { brand: { is: { nome: { contains: t, mode: "insensitive" as const } } } },
         ],
       })),
     });
@@ -120,6 +125,7 @@ export async function buscarProdutosParaRelacionar(
       custoMedio: true,
       unidadeBase: true,
       conteudoPorUnidade: true,
+      brand: { select: { nome: true } },
       // Apelidos de código: sem eles o ranqueamento daria 0 ponto a um bipe
       // que casou exato, e o produto certo cairia fora do LIMIT.
       barcodes: { select: { codigo: true } },
@@ -137,6 +143,7 @@ export async function buscarProdutosParaRelacionar(
     custoMedio: Number(p.custoMedio ?? 0),
     unidadeBase: p.unidadeBase,
     conteudoPorUnidade: p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
+    marca: p.brand?.nome ?? null,
     codigos: p.barcodes,
     embalagens: p.packagings.map((e) => ({
       id: e.id,
@@ -225,6 +232,7 @@ async function produtosPorId(
       custoMedio: true,
       unidadeBase: true,
       conteudoPorUnidade: true,
+      brand: { select: { nome: true } },
       // Apelidos de código: sem eles o ranqueamento daria 0 ponto a um bipe
       // que casou exato, e o produto certo cairia fora do LIMIT.
       barcodes: { select: { codigo: true } },
@@ -247,6 +255,7 @@ async function produtosPorId(
       custoMedio: Number(p.custoMedio ?? 0),
       unidadeBase: p.unidadeBase,
       conteudoPorUnidade: p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
+    marca: p.brand?.nome ?? null,
       codigos: p.barcodes,
       embalagens: p.packagings.map((e) => ({
         id: e.id,

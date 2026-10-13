@@ -40,13 +40,6 @@ export function lerConsulta(p: Params, fornecedorIdInicial?: string): ProdutoCon
     siteId: str(p, "loja"),
     tag: str(p, "tag"),
     status: str(p, "status") || STATUS_PADRAO,
-    flags: {
-      semImagem: str(p, "f_semImagem") === "1",
-      semEan: str(p, "f_semEan") === "1",
-      semFiscal: str(p, "f_semFiscal") === "1",
-      online: str(p, "f_online") === "1",
-      maiorIdade: str(p, "f_maiorIdade") === "1",
-    },
     sort: (SORTS.includes(str(p, "sort") as ProdutoSortField)
       ? (str(p, "sort") as ProdutoSortField)
       : SORT_PADRAO),
@@ -67,9 +60,6 @@ export function consultaParaParams(c: ProdutoConsulta): URLSearchParams {
   if (c.siteId) p.set("loja", c.siteId);
   if (c.tag) p.set("tag", c.tag);
   if (c.status !== STATUS_PADRAO) p.set("status", c.status);
-  (Object.keys(c.flags) as (keyof ProdutoFiltro["flags"])[]).forEach((k) => {
-    if (c.flags[k]) p.set(`f_${k}`, "1");
-  });
   if (c.sort !== SORT_PADRAO) p.set("sort", c.sort);
   if (c.dir !== DIR_PADRAO) p.set("dir", c.dir);
   if (c.porPagina !== POR_PAGINA_PADRAO) p.set("pp", String(c.porPagina));
@@ -88,7 +78,6 @@ export function soFiltro(c: ProdutoConsulta): ProdutoFiltro {
     siteId: c.siteId,
     tag: c.tag,
     status: c.status,
-    flags: c.flags,
   };
 }
 
@@ -102,7 +91,6 @@ export function contarFiltros(c: ProdutoFiltro): number {
     (c.fornecedorId ? 1 : 0) +
     (c.siteId ? 1 : 0) +
     (c.tag ? 1 : 0) +
-    (c.status !== STATUS_PADRAO ? 1 : 0) +
-    Object.values(c.flags).filter(Boolean).length
+    (c.status !== STATUS_PADRAO ? 1 : 0)
   );
 }

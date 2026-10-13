@@ -569,3 +569,72 @@ export async function vincularSincronizacaoAoInbound(chave: string, inboundId: s
     data: { inboundId },
   });
 }
+
+/**
+ * O resumo da sincronização de UMA nota, relido do banco.
+ *
+ * `sincronizarFornecedorComNota` devolve isto na hora da importação, e só quem
+ * fez o upload via — a nota que chegou por e-mail ou pela SEFAZ nunca mostrou a
+ * ninguém o que mudou no cadastro. A tela de recebimento lê daqui, então o
+ * operador vê o fornecedor da nota não importa por onde ela entrou.
+ */
+export async function resumoSincronizacaoDaNota(
+  inboundId: string,
+): Promise<ResumoSincronizacao | null> {
+  const nota = await db.fiscalInbound.findFirst({
+    where: { id: inboundId },
+    select: {
+      numero: true,
+      serie: true,
+      dataEmissao: true,
+      valorTotal: true,
+      emitCnpj: true,
+      emitRazaoSocial: true,
+      supplierId: true,
+      supplier: {
+        select: { razaoSocial: true, nomeFantasia: true, prazoMedioDias: true },
+      },
+    },
+  });
+  if (!nota?.supplierId) return null;
+
+  const supplierId = nota.supplierId;
+  const notaNumero = `${nota.numero}/${nota.serie}`;
+
+  const [aplicadas, sugestoes, produtosTotal, produtosNovos] = await Promise.all([
+    db.supplierSyncChange.findMany({
+      where: { inboundId, tipo: "AUTOMATICO", status: "APLICADA" },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, campo: true, rotulo: true, valorAnterior: true, valorNovo: true },
+    }),
+    listarSugestoesPendentes(supplierId),
+    db.supplierProductHistory.count({ where: { supplierId } }),
+    db.supplierProductHistory.count({ where: { supplierId, vezes: 1, ultimaNota: notaNumero } }),
+  ]);
+
+  return {
+    supplierId,
+    nome: nota.supplier?.nomeFantasia || nota.supplier?.razaoSocial || nota.emitRazaoSocial,
+    cnpj: nota.emitCnpj,
+    criado: aplicadas.some((a) => a.campo === "cadastro"),
+    // "Fornecedor criado" já vira selo no card — repetir na lista seria ruído.
+    automaticas: aplicadas
+      .filter((a) => a.campo !== "cadastro")
+      .map((a) => ({
+        id: a.id,
+        campo: a.campo,
+        rotulo: a.rotulo,
+        antes: a.valorAnterior,
+        depois: a.valorNovo,
+      })),
+    sugestoes,
+    historico: {
+      notaNumero,
+      dataEmissao: nota.dataEmissao.toISOString(),
+      valorTotal: Number(nota.valorTotal),
+      produtosNovos,
+      produtosTotal,
+      prazoMedioDias: nota.supplier?.prazoMedioDias ?? null,
+    },
+  };
+}
