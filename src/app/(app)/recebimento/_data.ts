@@ -68,14 +68,6 @@ export type LinhaRecebimento = {
    * a substituição silenciosa do que o fornecedor faturou.
    */
   xml: { quantidade: number; unidade: string; fatorConversao: number } | null;
-  /**
-   * O cadastro do produto ANTES desta entrada — o fechamento compara o custo
-   * que a nota traz com o que valia até aqui, e mostra a margem que sobra.
-   */
-  precoVenda: number | null;
-  custoMedio: number | null;
-  /** Insumo é de uso interno: não tem preço de venda para remarcar. */
-  vendavel: boolean;
 };
 
 export type NotaRecebimento = {
@@ -441,9 +433,6 @@ export async function carregarRecebimento(
             fatorConversao: Number(doXml.fatorConversao),
           }
         : null,
-      precoVenda: p?.precoVenda ?? null,
-      custoMedio: p ? p.custoMedio : null,
-      vendavel: p ? p.tipo !== "INSUMO" : false,
     };
   });
 
@@ -569,8 +558,6 @@ type ProdutoView = {
   conteudoPorUnidade: number | null;
   /** Base do alerta de custo fora da curva na tabela de de-para. */
   custoMedio: number;
-  precoVenda: number | null;
-  tipo: string;
   marca: string | null;
   /** Apelidos de código: mesma unidade, marcas diferentes. */
   codigos: { codigo: string }[];
@@ -594,8 +581,6 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
       unidadeBase: true,
       conteudoPorUnidade: true,
       custoMedio: true,
-      precoVenda: true,
-      tipo: true,
       brand: { select: { nome: true } },
       fiscalProfile: { select: { ncm: true } },
       subcategory: { select: { defaultFiscalProfile: { select: { ncm: true } } } },
@@ -614,8 +599,6 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
         conteudoPorUnidade:
           p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
         custoMedio: Number(p.custoMedio),
-        precoVenda: p.precoVenda == null ? null : Number(p.precoVenda),
-        tipo: p.tipo,
         marca: p.brand?.nome ?? null,
         codigos: p.barcodes,
         // O perfil do produto manda; sem ele vale o padrão da subcategoria, que

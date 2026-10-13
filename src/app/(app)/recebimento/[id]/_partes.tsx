@@ -10,26 +10,27 @@ import type { RecebimentoView } from "../_data";
 
 // ============================================================
 // As peças que todas as etapas do recebimento usam: o cabeçalho, o trilho e o
-// rodapé de ação. Moram fora de `_client.tsx` porque a entrada da nota, a
-// conferência e o fechamento são telas diferentes do mesmo recebimento — e as
-// três precisam dizer onde a pessoa está do mesmo jeito.
+// rodapé de ação. Moram fora de `_client.tsx` porque a entrada da nota e a
+// conferência são telas diferentes do mesmo recebimento — e as duas precisam
+// dizer onde a pessoa está do mesmo jeito.
 // ============================================================
 
 // ── Trilho ──────────────────────────────────────────────────
 
-export type EtapaId = "nota" | "pedido" | "produtos" | "conferencia" | "fechamento";
+export type EtapaId = "nota" | "pedido" | "produtos" | "conferencia";
 
 const ETAPAS: Record<EtapaId, { titulo: string; ajuda: string }> = {
   nota: { titulo: "Nota", ajuda: "Confira o que o NoHub leu do XML" },
   pedido: { titulo: "Pedido", ajuda: "Diga se esta nota fatura um pedido seu" },
   produtos: { titulo: "Produtos", ajuda: "Relacione os itens da nota aos seus produtos" },
-  conferencia: { titulo: "Conferência", ajuda: "Conte o que chegou" },
-  fechamento: { titulo: "Fechamento", ajuda: "Revise estoque, custos, preços e contas a pagar" },
+  conferencia: { titulo: "Conferência", ajuda: "Conte o que chegou e receba no estoque" },
 };
 
-/** Recebimento sem XML não tem nota a ler nem de-para a fazer. */
-export const ETAPAS_COM_NOTA: EtapaId[] = ["nota", "pedido", "produtos", "conferencia", "fechamento"];
-export const ETAPAS_SEM_NOTA: EtapaId[] = ["conferencia", "fechamento"];
+/**
+ * A conferência é a última etapa: confirmar a entrada é o botão dela, não uma
+ * tela a mais. Preço de venda se cuida no cadastro do produto.
+ */
+export const ETAPAS_COM_NOTA: EtapaId[] = ["nota", "pedido", "produtos", "conferencia"];
 
 /**
  * O trilho do recebimento. As etapas são sempre as mesmas e sempre visíveis: o

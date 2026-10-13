@@ -32,7 +32,6 @@ import {
   cancelarRecebimento,
 } from "@/lib/compras/recebimento";
 import type { ActiveTenant } from "@/lib/current-tenant";
-import { podeEmAlguma, SemPermissaoError } from "@/lib/permissoes";
 
 // ── Ações da doca ───────────────────────────────────────────
 //
@@ -511,27 +510,17 @@ export async function aceitarCustoAction(input: { receiptId: string; itemId: str
 const finalizarSchema = z.object({
   receiptId: z.string().min(1),
   motivoDivergencia: z.string().trim().max(240).nullable().optional(),
-  /**
-   * Preços de venda que o operador decidiu remarcar no fechamento, olhando o
-   * custo desta compra. Só os que ele mexeu — produto fora da lista não muda.
-   */
-  precos: z
-    .array(z.object({ productId: z.string().min(1), preco: z.number().positive().max(999_999) }))
-    .max(500)
-    .optional(),
 });
 
-/** O único ponto em que a mercadoria entra no estoque. */
+/**
+ * O único ponto em que a mercadoria entra no estoque.
+ *
+ * Preço de venda não passa por aqui: ele mora no cadastro do produto, e o
+ * recebimento só atualiza estoque e custo.
+ */
 export async function finalizarRecebimentoAction(input: z.input<typeof finalizarSchema>) {
   return tx(async (ctx) => {
     const d = finalizarSchema.parse(input);
-    const precos = d.precos ?? [];
-    // Antes de mover estoque: descobrir a falta de permissão depois deixaria a
-    // entrada feita e o preço por remarcar, sem a tela que mostrava a conta.
-    if (precos.length > 0 && !podeEmAlguma(ctx.acessos, "produto.preco")) {
-      throw new SemPermissaoError();
-    }
-
     const r = await finalizarRecebimento({
       tenantId: ctx.tenant.id,
       receiptId: d.receiptId,
@@ -539,33 +528,10 @@ export async function finalizarRecebimentoAction(input: z.input<typeof finalizar
       userId: ctx.user.id,
     });
 
-    // Só produto que ESTE recebimento trouxe: a lista vem do navegador, e o
-    // fechamento de uma nota não é porta para remarcar o catálogo inteiro.
-    let precosAtualizados = 0;
-    if (precos.length > 0) {
-      const recebidos = new Set(
-        (
-          await db.purchaseReconciliationItem.findMany({
-            where: { receiptId: d.receiptId, productId: { not: null } },
-            select: { productId: true },
-          })
-        ).map((l) => l.productId),
-      );
-      for (const p of precos) {
-        if (!recebidos.has(p.productId)) continue;
-        const feito = await db.product.updateMany({
-          where: { id: p.productId, tipo: { not: "INSUMO" } },
-          data: { precoVenda: p.preco },
-        });
-        precosAtualizados += feito.count;
-      }
-      if (precosAtualizados > 0) revalidatePath("/produtos");
-    }
-
     revalidar(d.receiptId);
     revalidatePath("/estoque");
     revalidatePath("/inicio");
-    return { ...r, precosAtualizados };
+    return r;
   });
 }
 

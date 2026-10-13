@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   ArrowRightLeft,
   Check,
@@ -33,11 +33,9 @@ import {
 } from "@/components/recebimento/relacionar-produto";
 import { PainelNota } from "./_painel-nota";
 import { EntradaDaNota } from "./_entrada";
-import { Fechamento } from "./_fechamento";
 import {
   Cabecalho,
   ETAPAS_COM_NOTA,
-  ETAPAS_SEM_NOTA,
   MedidorRodape,
   RodapeAcao,
   Trilho,
@@ -54,6 +52,7 @@ import {
   conferirItemAction,
   conferirTudoAction,
   desvincularPedidoAction,
+  finalizarRecebimentoAction,
   resolverDivergenciaAction,
   restaurarContagemAction,
   adicionarItemAction,
@@ -130,6 +129,14 @@ function variacaoDaLinha(l: LinhaRecebimento): number | null {
   return variacaoCusto(l.custoPedido, l.custoFaturado);
 }
 
+/**
+ * O que a linha esperava e o que entra se a entrada for confirmada agora —
+ * mesma régua do servidor (`esperadoDaLinha`): a nota manda; sem ela, o pedido.
+ * Linha sem contagem entra pelo esperado.
+ */
+const esperadoDe = (l: LinhaRecebimento) => l.qtdFaturada || l.qtdPedida;
+const entrando = (l: LinhaRecebimento) => l.qtdRecebida ?? esperadoDe(l);
+
 const pct = (v: number) => `${v > 0 ? "▲" : "▼"}${Math.abs(v).toFixed(1).replace(".", ",")}%`;
 
 /** Linha conciliada → o que o painel de relacionar precisa saber dela. */
@@ -147,7 +154,6 @@ export function RecebimentoClient({
   podeTratarNota,
   podeCriarProduto,
   podeEditarFornecedor,
-  podeAlterarPreco,
   cega,
   subcategorias,
 }: {
@@ -163,16 +169,10 @@ export function RecebimentoClient({
   podeCriarProduto: boolean;
   /** Decide as sugestões de contato que o XML trouxe para o fornecedor. */
   podeEditarFornecedor: boolean;
-  /** Remarca preço de venda no fechamento. */
-  podeAlterarPreco: boolean;
   /** Conferência cega: esconde pedido e NF até a pessoa contar. */
   cega: boolean;
   subcategorias: SubcategoriaCadastro[];
 }) {
-  const params = useSearchParams();
-  const { recebimento } = dados;
-  const aberto = recebimento.status !== "FINALIZADO" && recebimento.status !== "CANCELADO";
-
   // A nota recém-importada ainda não tem conferência: antes de contar caixa é
   // preciso ler o que ela diz, dizer de qual pedido é e relacionar os produtos.
   // Quem clicou "Iniciar recebimento" num pedido já entra conferindo, e o
@@ -189,9 +189,6 @@ export function RecebimentoClient({
         subcategorias={subcategorias}
       />
     );
-  }
-  if (params.get("etapa") === "fechamento" && aberto && podeReceber && dados.linhas.length > 0) {
-    return <Fechamento dados={dados} podeAlterarPreco={podeAlterarPreco} />;
   }
   return (
     <Conferencia
@@ -249,6 +246,8 @@ function Conferencia({
   const [cancelando, setCancelando] = React.useState(false);
   const [motivoCancelamento, setMotivoCancelamento] = React.useState("");
   const [enviando, setEnviando] = React.useState(false);
+  const [confirmando, setConfirmando] = React.useState(false);
+  const [motivoEntrada, setMotivoEntrada] = React.useState("");
   const [verTimeline, setVerTimeline] = React.useState(false);
   /** Os itens que já fecharam ficam dobrados até alguém querer reler. */
   const [verFechados, setVerFechados] = React.useState(false);
@@ -290,12 +289,34 @@ function Conferencia({
   const divergentes = linhas.filter((l) => STATUS_INFO[l.status].grave && !l.resolucao);
   const impacto = resumo.impactoCusto;
   // O que vira saldo se a entrada for confirmada agora: o contado, quando
-  // alguém contou; o faturado, quando ninguém contou. É a mesma regra que o
-  // servidor aplica em `confirmarEntradaAction` — a tela só a mostra antes.
-  const entraNoEstoque = linhas.reduce((s, l) => s + (l.qtdRecebida ?? l.qtdFaturada), 0);
+  // alguém contou; o esperado, quando ninguém contou. É a mesma regra que o
+  // servidor aplica em `finalizarRecebimento` — a tela só a mostra antes.
+  const itensEntrando = linhas.filter((l) => entrando(l) > 0);
+  const entraNoEstoque = itensEntrando.reduce((s, l) => s + entrando(l), 0);
   /** Tudo que ainda espera uma decisão da pessoa antes de receber. */
   const pendencias = divergentes.length + resumo.produtosNovos;
-
+  const semProduto = itensEntrando.filter((l) => !l.productId).length;
+  // Mesma régua do servidor (`divergenciasDaConferencia`): contado diferente do
+  // esperado e ainda sem explicação. Uma frase resolve todas de uma vez.
+  const naoExplicadas = linhas.filter(
+    (l) =>
+      !l.motivoDivergencia &&
+      l.resolucao !== "ACEITO" &&
+      l.resolucao !== "IGNORADO" &&
+      Math.abs(entrando(l) - esperadoDe(l)) > 0.001,
+  );
+  /** O que o servidor recusaria — dito antes do clique, não depois. */
+  const impedimento =
+    semProduto > 0
+      ? `${semProduto} ${semProduto === 1 ? "item ainda não tem" : "itens ainda não têm"} produto relacionado — relacione antes de receber.`
+      : linhas.length > 0 && itensEntrando.length === 0
+        ? "Nenhum item foi recebido — nada a dar entrada."
+        : null;
+  const valorTitulos = nota
+    ? nota.duplicatas.length > 0
+      ? nota.duplicatas.reduce((s, d) => s + d.valor, 0)
+      : nota.valorTotal
+    : 0;
 
   // Um índice de código → item, com o fator de cada embalagem: bipar a caixa
   // soma 12, bipar a unidade soma 1. É a diferença entre conferir um fardo e
@@ -426,14 +447,34 @@ function Conferencia({
   }
 
   /**
-   * Fechar é a próxima etapa, não um botão: estoque, custo, preço e contas a
-   * pagar mudam juntos, e cada um merece ser lido antes de ser gravado. Vai
-   * pelo servidor de propósito — a contagem grava sozinha a cada campo, e o
-   * fechamento precisa ler o que ficou gravado, não a cópia desta tela.
+   * Receber é o botão da conferência, com uma confirmação curta: estoque,
+   * custo e contas a pagar mudam juntos. Preço de venda fica de fora — ele mora
+   * no cadastro do produto. A contagem grava sozinha a cada campo, e o servidor
+   * lê o que ficou gravado; por isso o botão espera a última gravação.
    */
   const gravando = Object.values(salvandoLinha).includes("salvando");
-  function irParaFechamento() {
-    router.push(`/recebimento/${recebimento.id}?etapa=fechamento`);
+  async function receber() {
+    setEnviando(true);
+    try {
+      const r = await finalizarRecebimentoAction({
+        receiptId: recebimento.id,
+        motivoDivergencia: motivoEntrada.trim() || null,
+      });
+      toast.success(
+        `Recebimento ${r.numero} finalizado.`,
+        pedido
+          ? r.pedidoCompleto
+            ? `Estoque atualizado. Pedido ${pedido.numero} recebido por completo.`
+            : `Estoque atualizado. Pedido ${pedido.numero} segue aberto para o que falta.`
+          : "Estoque e custo atualizados.",
+      );
+      setConfirmando(false);
+      router.refresh();
+    } catch (e) {
+      toast.error("Não foi possível receber", e instanceof Error ? e.message : "Tente de novo.");
+    } finally {
+      setEnviando(false);
+    }
   }
 
   /**
@@ -538,9 +579,11 @@ function Conferencia({
         onCancelar={encerrada ? undefined : () => setCancelando(true)}
       />
 
-      {!encerrada && (
+      {/* Sem XML a conferência é a tela inteira: trilho de um passo só não diz
+          nada. */}
+      {!encerrada && nota && (
         <Trilho
-          etapas={nota ? ETAPAS_COM_NOTA : ETAPAS_SEM_NOTA}
+          etapas={ETAPAS_COM_NOTA}
           atual="conferencia"
           avisos={{ produtos: resumo.produtosNovos }}
         />
@@ -894,7 +937,12 @@ function Conferencia({
                 consequência de apertar o botão — repetir "R$ 1.234,00" em
                 corpo 12 não é resumo, é ruído em cima da decisão. */}
             <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted">
-              {pendencias > 0 ? (
+              {impedimento ? (
+                <>
+                  <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-warn" aria-hidden />
+                  <span>{impedimento}</span>
+                </>
+              ) : pendencias > 0 ? (
                 <>
                   <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden />
                   <span>
@@ -905,7 +953,7 @@ function Conferencia({
               ) : conferidos === linhas.length ? (
                 <>
                   <Check className="h-3.5 w-3.5 shrink-0 text-ok" aria-hidden />
-                  <span>Tudo conferido. Falta apenas confirmar a entrada física.</span>
+                  <span>Tudo conferido. Falta apenas receber no estoque.</span>
                 </>
               ) : (
                 <span>
@@ -919,12 +967,12 @@ function Conferencia({
 
           <div className="flex w-full shrink-0 flex-col items-stretch gap-1 sm:w-auto sm:items-end">
             <Button
-              onClick={irParaFechamento}
-              disabled={enviando || gravando || linhas.length === 0}
+              onClick={() => setConfirmando(true)}
+              disabled={enviando || gravando || linhas.length === 0 || impedimento !== null}
               className="w-full sm:w-auto"
             >
               <ClipboardCheck className="h-4 w-4" aria-hidden />
-              Revisar e receber
+              Receber no estoque
             </Button>
             <p className="text-[11px] text-muted sm:text-right">
               <span className="font-mono text-ink-2">+{fmtQtd(entraNoEstoque)} UN</span> no
@@ -933,6 +981,102 @@ function Conferencia({
           </div>
         </RodapeAcao>
       )}
+
+      <Sheet
+        open={confirmando}
+        onClose={() => setConfirmando(false)}
+        title="Receber no estoque"
+        description="A mercadoria vira saldo e o custo médio é recalculado. O preço de venda não muda — continua o do cadastro do produto."
+        width="sm"
+        footer={
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => setConfirmando(false)} className="flex-1">
+              Voltar
+            </Button>
+            <Button
+              onClick={() => void receber()}
+              disabled={
+                enviando || gravando || (naoExplicadas.length > 0 && motivoEntrada.trim().length < 3)
+              }
+              className="flex-1"
+            >
+              {enviando && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+              {enviando ? "Recebendo…" : "Confirmar entrada"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <dl className="divide-y divide-line rounded-[var(--radius)] border border-line text-[13px]">
+            <div className="flex items-baseline justify-between gap-3 px-3 py-2">
+              <dt className="text-muted">Estoque · {recebimento.siteNome}</dt>
+              <dd className="text-right font-mono text-ink">
+                +{fmtQtd(entraNoEstoque)} UN em {itensEntrando.length}{" "}
+                {itensEntrando.length === 1 ? "item" : "itens"}
+              </dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-3 px-3 py-2">
+              <dt className="text-muted">Contas a pagar</dt>
+              <dd className="text-right text-ink">
+                {nota ? (
+                  <>
+                    <span className="font-mono">{fmtMoney(valorTitulos)}</span>
+                    {nota.duplicatas.length > 1 && ` em ${nota.duplicatas.length} títulos`}
+                  </>
+                ) : (
+                  <span className="text-muted">sem NF-e, nenhum título agora</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+
+          {conferidos < linhas.length && (
+            <p className="rounded-[var(--radius)] bg-accent-soft px-3 py-2 text-[13px] text-accent">
+              {linhas.length - conferidos}{" "}
+              {linhas.length - conferidos === 1
+                ? "item não foi contado — entra"
+                : "itens não foram contados — entram"}{" "}
+              com a quantidade {nota ? "da nota" : "do pedido"}.
+            </p>
+          )}
+
+          {naoExplicadas.length > 0 && (
+            // Uma frase, uma vez. Sem ela, a diferença vira daqui a três meses
+            // a palavra do estoquista contra a do fornecedor.
+            <label className="block">
+              <span className="mb-1 block text-[13px] font-medium text-ink">
+                O que aconteceu com{" "}
+                {naoExplicadas.length === 1
+                  ? "a linha que não bateu"
+                  : `as ${naoExplicadas.length} linhas que não bateram`}
+                ?
+              </span>
+              <ul className="mb-2 space-y-0.5 text-[12px] text-muted">
+                {naoExplicadas.slice(0, 4).map((l) => (
+                  <li key={l.id} className="flex flex-wrap gap-x-2">
+                    <span className="min-w-0 truncate text-ink-2">{l.descricao}</span>
+                    <span className="font-mono">
+                      esperado {fmtQtd(esperadoDe(l))} · contado {fmtQtd(entrando(l))}
+                    </span>
+                  </li>
+                ))}
+                {naoExplicadas.length > 4 && <li>e mais {naoExplicadas.length - 4}.</li>}
+              </ul>
+              <textarea
+                value={motivoEntrada}
+                onChange={(e) => setMotivoEntrada(e.target.value)}
+                rows={2}
+                maxLength={240}
+                placeholder="Ex.: veio só metade da carga, o resto o motorista traz amanhã."
+                className="w-full rounded-[var(--radius)] border border-line-button bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
+              />
+              <span className="mt-1 block text-[12px] text-muted">
+                Fica na história do recebimento{pedido ? " e do pedido" : ""}.
+              </span>
+            </label>
+          )}
+        </div>
+      </Sheet>
 
       <Sheet
         open={cancelando}

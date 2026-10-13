@@ -48,7 +48,7 @@ export function esperadoDaLinha(l: Pick<LinhaConferida, "qtdPedida" | "qtdFatura
  * "AJUSTADO" NÃO conta como explicação: ele só registra que alguém digitou um
  * número diferente do esperado. O que encerra a pendência é uma frase — a do
  * item (`motivoDivergencia`, escrita ao resolver a linha) ou a do recebimento
- * inteiro, pedida uma única vez no fechamento. Sem isso, a diferença vira,
+ * inteiro, pedida uma única vez ao confirmar a entrada. Sem isso, a diferença vira,
  * meses depois, a palavra do estoquista contra a do fornecedor.
  *
  * Linha nunca contada não é divergência: ela entra pelo esperado.

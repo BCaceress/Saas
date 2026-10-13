@@ -36,11 +36,9 @@ export default async function RecebimentoDetalhePage({
   // Cadastro rápido de produto (item da nota sem catálogo) exige permissão
   // própria — quem só confere na porta pode não poder criar produto.
   const podeCriarProduto = podeEmAlguma(ctx.acessos, "produto.editar");
-  // As duas decisões que o recebimento provoca FORA dele: aceitar o contato que
-  // o XML trouxe para o fornecedor e remarcar preço de venda no fechamento.
-  // Quem não pode vê a informação, sem o botão.
+  // A decisão que o recebimento provoca FORA dele: aceitar o contato que o XML
+  // trouxe para o fornecedor. Quem não pode vê a informação, sem o botão.
   const podeEditarFornecedor = podeEmAlguma(ctx.acessos, "fornecedor.editar");
-  const podeAlterarPreco = podeEmAlguma(ctx.acessos, "produto.preco");
 
   const destino = await withTenant(ctx, async () => {
     const existe = await db.goodsReceipt.findFirst({ where: { id }, select: { id: true } });
@@ -71,7 +69,6 @@ export default async function RecebimentoDetalhePage({
       podeTratarNota={podeTratarNota}
       podeCriarProduto={podeCriarProduto}
       podeEditarFornecedor={podeEditarFornecedor}
-      podeAlterarPreco={podeAlterarPreco}
       cega={ctx.tenant.conferenciaCega}
       subcategorias={subcategorias}
     />
