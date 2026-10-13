@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { cn, brl, margem, maskMoney, moneyToMask, parseMoney } from "@/lib/utils";
 import { thumbSrc } from "@/lib/imagem";
+import { FotoEspera, fotoClasse, useFoto } from "@/components/app/foto-thumb";
 import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
 import { CAMPOS_PADRAO, type CamposCadastro } from "@/lib/cadastro-campos";
 import { Button } from "@/components/ui/button";
@@ -49,7 +50,7 @@ import {
   COL_LABEL, COL_ORDER, DEFAULT_COLS, DEFAULT_INFO, INFO_LABEL, INFO_ORDER,
   type ColKey, type Density, type InfoKey,
 } from "./_colunas";
-import { CardsSkeleton } from "./_skeleton";
+import { CardsSkeleton, SkBarra } from "./_skeleton";
 import {
   SelecaoProvider, useNovaSelecao, useQtdDaPagina, useQtdSelecionada, useSelecao, useSelecionado,
 } from "@/components/app/selecao";
@@ -60,7 +61,7 @@ import {
   type LoteOpcoes,
   type ProductRow, type ProductPackagingItem, type ProdutoConsulta, type ProdutoFlags,
   type ProdutoGiro, type ProdutoSortDir, type ProdutoSortField,
-  type ProdutosPagina,
+  type ProdutosPaginaInicial,
 } from "./_types";
 import type { GerenciarExtras } from "./_data";
 
@@ -179,8 +180,48 @@ function colsDaString(s: string | null): Record<ColKey, boolean> | null {
   return Object.fromEntries(COL_ORDER.map((k) => [k, ligadas.has(k)])) as Record<ColKey, boolean>;
 }
 
+/** Onde está o giro da página: a caminho, entregue, ou a consulta falhou. */
+type GiroEstado = "pendente" | "ok" | "erro";
+
+/**
+ * Estado do giro para as células que o desenham. Contexto e não prop: quem lê
+ * está três níveis abaixo (linha da tabela, card, lista virtualizada) e nenhum
+ * dos intermediários tem o que fazer com a informação.
+ */
+const GiroEstadoContext = createContext<GiroEstado>("ok");
+
+const GIRO_VAZIO: Record<string, ProdutoGiro> = {};
+
+/**
+ * Giro que o RSC mandou como promessa: a tabela pinta sem ele e as colunas de
+ * vendas/parado se preenchem quando chega.
+ *
+ * O resultado fica amarrado à promessa que o produziu — trocar de filtro
+ * entrega outra, e o giro da consulta anterior não pode vazar para as linhas
+ * novas enquanto o delas não resolve.
+ */
+function useGiro(promessa: ProdutosPaginaInicial["giro"]) {
+  const [res, setRes] = useState<{
+    de: ProdutosPaginaInicial["giro"];
+    valor: Record<string, ProdutoGiro> | null;
+  } | null>(null);
+
+  useEffect(() => {
+    let vivo = true;
+    promessa.then(
+      (valor) => { if (vivo) setRes({ de: promessa, valor }); },
+      () => { if (vivo) setRes({ de: promessa, valor: null }); },
+    );
+    return () => { vivo = false; };
+  }, [promessa]);
+
+  const atual = res?.de === promessa ? res : null;
+  const estado: GiroEstado = !atual ? "pendente" : atual.valor ? "ok" : "erro";
+  return { giro: atual?.valor ?? GIRO_VAZIO, estado };
+}
+
 export function ProdutosClient(props: {
-  pagina: ProdutosPagina;
+  pagina: ProdutosPaginaInicial;
   consultaInicial: ProdutoConsulta;
   initialFornecedorNome?: string;
   /** Estratégia de estoque — define as colunas do importador de CSV. */
@@ -199,7 +240,8 @@ export function ProdutosClient(props: {
 
   // Vêm do layout: não se refazem a cada mudança de filtro.
   const { categoryOpts, subOpts, brandOpts, siteOpts, tagOpts } = useOpcoes();
-  const { rows, giro, total, totalGeral } = pagina;
+  const { rows, total, totalGeral } = pagina;
+  const { giro, estado: giroEstado } = useGiro(pagina.giro);
 
   const [sheet, setSheet] = useState<SheetKind>(null);
   const fecharSheet = useCallback(() => setSheet(null), []);
@@ -599,7 +641,11 @@ export function ProdutosClient(props: {
     setOcupado(true);
     try {
       const { linhas, giroExport } = selecao.tamanho
-        ? { linhas: await linhasDaSelecao(), giroExport: giro }
+        ? {
+            linhas: await linhasDaSelecao(),
+            // Clique antes do giro chegar: a planilha espera por ele em vez de sair zerada.
+            giroExport: (await pagina.giro.catch(() => null)) ?? giro,
+          }
         : await linhasParaExport(soFiltro(consulta), consulta.sort, consulta.dir).then((r) => ({
             linhas: r.rows,
             giroExport: r.giro,
@@ -771,6 +817,7 @@ export function ProdutosClient(props: {
   }, [consulta, categoryOpts, subOpts, brandOpts, siteOpts, tagOpts, initialFornecedorNome, aplicar, aplicarFlag]);
 
   return (
+    <GiroEstadoContext.Provider value={giroEstado}>
     <SelecaoProvider store={selecao}>
     <TooltipLayer>
       <PageHeader
@@ -1508,6 +1555,7 @@ export function ProdutosClient(props: {
       {imageUrl && <ImageViewer url={imageUrl} onClose={() => setImageUrl(null)} />}
     </TooltipLayer>
     </SelecaoProvider>
+    </GiroEstadoContext.Provider>
   );
 }
 
@@ -1821,6 +1869,7 @@ function ProductCard({
   cols: Record<ColKey, boolean>;
   info: Record<InfoKey, boolean>;
 }) {
+  const giroEstado = useContext(GiroEstadoContext);
   const level = stockLevel(p);
   const qty = stockQty(p);
   const m = p.tipo === "INSUMO" ? null : margem(p.precoVenda, p.custo);
@@ -1930,13 +1979,20 @@ function ProductCard({
             {cols.vendas && p.tipo !== "INSUMO" && (
               <span className="inline-flex items-center gap-1 border-l border-line pl-3 text-muted">
                 <TrendingUp size={11} className="shrink-0 text-faint" />
-                <span className="font-mono tnum">{giro?.vendas30d ?? 0}</span> em 30d
+                {giroEstado === "ok" ? (
+                  <><span className="font-mono tnum">{giro?.vendas30d ?? 0}</span> em 30d</>
+                ) : giroEstado === "pendente" ? (
+                  <span aria-hidden className="sk-shimmer inline-block h-2.5 w-12 rounded-full" />
+                ) : "—"}
               </span>
             )}
             {cols.parado && p.tipo !== "INSUMO" && (
               <span className="inline-flex items-center gap-1 border-l border-line pl-3 text-muted">
                 <Clock size={11} className="shrink-0 text-faint" />
-                {giro?.diasSemVenda == null ? "nunca vendeu" : `${giro.diasSemVenda}d parado`}
+                {giroEstado === "pendente" ? (
+                  <span aria-hidden className="sk-shimmer inline-block h-2.5 w-14 rounded-full" />
+                ) : giroEstado === "erro" ? "—"
+                  : giro?.diasSemVenda == null ? "nunca vendeu" : `${giro.diasSemVenda}d parado`}
               </span>
             )}
           </div>
@@ -2047,13 +2103,17 @@ function Thumb({
   big?: boolean;
 }) {
   const size = big ? "h-12 w-12" : "h-9 w-9";
-  if (url) {
+  const foto = useFoto(url ?? "");
+  // Foto que não abriu cai no ícone do tipo: quadro quebrado não informa nada
+  // e ainda convidaria ao zoom de uma imagem que não existe.
+  if (url && foto.estado !== "erro") {
     return (
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); onClickImage?.(); }}
         className={cn("relative shrink-0 cursor-zoom-in overflow-hidden rounded-[var(--radius-sm)] border border-line group/img", size)}
       >
+        {foto.estado === "carregando" && <FotoEspera />}
         {/*
           `<img>` cru em vez de next/image: a foto pode vir de qualquer host
           (base de EAN, URL colada pelo operador, data: de upload) e o
@@ -2069,7 +2129,8 @@ function Thumb({
           decoding="async"
           width={big ? 48 : 36}
           height={big ? 48 : 36}
-          className="h-full w-full object-cover"
+          {...foto.img}
+          className={cn("relative h-full w-full object-cover", fotoClasse(foto.estado))}
         />
         <span className="absolute inset-0 grid place-items-center bg-ink/25 opacity-0 transition-opacity group-hover/img:opacity-100">
           <Eye size={big ? 16 : 13} className="text-white drop-shadow" />
@@ -2445,7 +2506,9 @@ function StockCell({ p, level }: { p: ProductRow; level: "ok" | "warn" | "danger
 // ── Células de giro ──────────────────────────────────────────────────────────
 
 function VendasCell({ giro, tipo }: { giro?: ProdutoGiro; tipo: string }) {
-  if (tipo === "INSUMO") return <span className="text-[11px] text-faint">—</span>;
+  const estado = useContext(GiroEstadoContext);
+  if (tipo === "INSUMO" || estado === "erro") return <span className="text-[11px] text-faint">—</span>;
+  if (estado === "pendente") return <SkBarra className="h-3 w-8" />;
   const n = giro?.vendas30d ?? 0;
   return (
     <span className={cn("font-mono text-[13px] tnum", n > 0 ? "font-medium text-ink" : "text-faint")}>
@@ -2455,7 +2518,9 @@ function VendasCell({ giro, tipo }: { giro?: ProdutoGiro; tipo: string }) {
 }
 
 function ParadoCell({ giro, tipo }: { giro?: ProdutoGiro; tipo: string }) {
-  if (tipo === "INSUMO") return <span className="text-[11px] text-faint">—</span>;
+  const estado = useContext(GiroEstadoContext);
+  if (tipo === "INSUMO" || estado === "erro") return <span className="text-[11px] text-faint">—</span>;
+  if (estado === "pendente") return <SkBarra className="h-3 w-12" />;
   const d = giro?.diasSemVenda;
   if (d == null) return <span className="text-[11px] text-muted">nunca vendeu</span>;
   return (

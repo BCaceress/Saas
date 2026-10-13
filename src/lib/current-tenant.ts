@@ -45,12 +45,13 @@ export const getActiveTenant = cache(async function getActiveTenant(): Promise<A
   const sub = getSubdomainFromHost(h.get("host"));
   if (!sub) return null;
 
-  const session = await auth();
+  // Sessão e tenant não dependem um do outro: juntos, uma espera a menos antes
+  // de qualquer dado da página.
+  const [session, tenant] = await Promise.all([
+    auth(),
+    basePrisma.tenant.findUnique({ where: { subdomain: sub } }),
+  ]);
   if (!session?.user?.id) return null;
-
-  const tenant = await basePrisma.tenant.findUnique({
-    where: { subdomain: sub },
-  });
   if (!tenant) return null;
 
   const membership = await basePrisma.membership.findUnique({

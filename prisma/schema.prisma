@@ -21,6 +21,10 @@
 generator client {
   provider = "prisma-client-js"
   output   = "../src/generated/prisma"
+  // Libera `relationLoadStrategy: "join"` (relações num SELECT só, em vez de um
+  // por relação). Ligar a flag troca o PADRÃO do Prisma para "join" em tudo —
+  // `src/lib/prisma.ts` devolve o padrão a "query"; join é escolha por consulta.
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {

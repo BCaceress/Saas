@@ -78,6 +78,35 @@ export default async function EditarProdutoPage({
               where: { groupId: null },
               select: { componentProductId: true, quantidade: true },
             },
+            componentGroups: {
+              orderBy: { ordem: "asc" },
+              select: {
+                id: true,
+                nome: true,
+                obrigatoria: true,
+                tipoSelecao: true,
+                maxSelecoes: true,
+                ordem: true,
+                components: {
+                  select: {
+                    componentProductId: true,
+                    quantidade: true,
+                    isDefault: true,
+                    acrescimoPreco: true,
+                  },
+                },
+              },
+            },
+            variants: {
+              orderBy: { fatorEscala: "asc" },
+              select: {
+                id: true,
+                nome: true,
+                fatorEscala: true,
+                precoVenda: true,
+                isDefault: true,
+              },
+            },
           },
         }),
         loadComponentCandidates(),
@@ -102,6 +131,27 @@ export default async function EditarProdutoPage({
         components: p.components.map((c) => ({
           componentProductId: c.componentProductId,
           quantidade: dec(c.quantidade) ?? 1,
+        })),
+        groups: p.componentGroups.map((g) => ({
+          id: g.id,
+          nome: g.nome,
+          obrigatoria: g.obrigatoria,
+          tipoSelecao: g.tipoSelecao as SelectionType,
+          maxSelecoes: g.maxSelecoes,
+          ordem: g.ordem,
+          items: g.components.map((c) => ({
+            componentProductId: c.componentProductId,
+            quantidade: dec(c.quantidade) ?? 1,
+            isDefault: c.isDefault,
+            acrescimoPreco: dec(c.acrescimoPreco),
+          })),
+        })),
+        variants: p.variants.map((v) => ({
+          id: v.id,
+          nome: v.nome,
+          fatorEscala: dec(v.fatorEscala) ?? 1,
+          precoVenda: dec(v.precoVenda),
+          isDefault: v.isDefault,
         })),
         salesChannels: canais(p.salesChannels),
       };

@@ -273,6 +273,20 @@ export async function criarVenda(
   return sale.id;
 }
 
+/** Fator de escala da variação escolhida (1 quando o produto é de tamanho único). */
+async function fatorDaVariacao(
+  tenantId: string,
+  variantId: string | null,
+): Promise<number> {
+  if (!variantId) return 1;
+  const v = await comTenant(tenantId, basePrisma.productVariant.findFirst({
+    where: { id: variantId, tenantId },
+    select: { fatorEscala: true },
+  }));
+  const fator = num(v?.fatorEscala);
+  return fator > 0 ? fator : 1;
+}
+
 // ── Motor de baixa (§5) ─────────────────────────────────────
 // Para cada item, no site da venda: SIMPLES -> SAIDA; COMBO -> SAIDA por
 // componente; PERSONALIZADO -> Production (motor de saldo aberto da Fase 3).
@@ -301,7 +315,16 @@ async function aplicarBaixaItem(
       tipo: true,
       custoMedio: true,
       components: {
-        where: { groupId: null },
+        // Itens fixos (sem grupo) sempre entram. Com grupos de escolha, entram
+        // também os que o cliente escolheu — o que não foi escolhido não baixa.
+        where: item.selectedComponentIds?.length
+          ? {
+              OR: [
+                { groupId: null },
+                { componentProductId: { in: item.selectedComponentIds } },
+              ],
+            }
+          : { groupId: null },
         select: {
           quantidade: true,
           unidade: true,
@@ -326,8 +349,10 @@ async function aplicarBaixaItem(
   }
 
   if (product.tipo === "COMBO") {
+    // Tamanho do kit escala a ficha inteira (Kit 8 = fator 2 sobre o Kit 4).
+    const fator = await fatorDaVariacao(tenantId, item.variantId);
     for (const comp of product.components) {
-      const dose = num(comp.quantidade) * qtd;
+      const dose = num(comp.quantidade) * qtd * fator;
       const isUn = comp.unidade === "UN";
       const saldo = await disponibilidadeSimples(tenantId, siteId, comp.component.id);
       const faltou = isUn && saldo < dose;

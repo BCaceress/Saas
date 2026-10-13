@@ -27,7 +27,18 @@ export type ComponentGroupVenda = {
     acrescimoPreco: number | null;
     imagemUrl: string | null;
     disponivel: boolean;
+    /** Quantidade que a opção entrega na `unidade` (dose do drink, un do kit). */
+    quantidade: number;
+    unidade: string;
   }[];
+};
+
+/** Item que o composto entrega sem escolha — a base da receita/kit. */
+export type ComponenteFixoVenda = {
+  componentProductId: string;
+  nome: string;
+  quantidade: number;
+  unidade: string;
 };
 
 export type ProdutoVenda = {
@@ -52,8 +63,12 @@ export type ProdutoVenda = {
   imagemUrl: string | null;
   categoria: string | null;
   modoPreparo: string | null;
+  /** Capacidade do copo (PERSONALIZADO/DRINK) — baliza o medidor de montagem. */
+  copoMl: number | null;
   variants: VariantVenda[];
   groups?: ComponentGroupVenda[];
+  /** Itens fixos (sem grupo) — compõem a montagem junto com as escolhas. */
+  componentesFixos: ComponenteFixoVenda[];
 };
 
 /** Produtos vendáveis no site (SIMPLES/COMBO/PERSONALIZADO ativos; INSUMO fora). */
@@ -84,6 +99,7 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
       unidadeBase: true,
       imagemUrl: true,
       modoPreparo: true,
+      copoMl: true,
       subcategory: { select: { category: { select: { nome: true } } } },
       variants: {
         where: { ativo: true },
@@ -95,7 +111,9 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
         where: { groupId: null },
         select: {
           componentProductId: true,
-          component: { select: { stocks: stockSel } },
+          quantidade: true,
+          unidade: true,
+          component: { select: { nome: true, stocks: stockSel } },
         },
       },
       componentGroups: {
@@ -111,6 +129,8 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
               componentProductId: true,
               isDefault: true,
               acrescimoPreco: true,
+              quantidade: true,
+              unidade: true,
               component: {
                 select: { nome: true, precoVenda: true, imagemUrl: true, stocks: stockSel },
               },
@@ -159,7 +179,17 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
       imagemUrl: p.imagemUrl,
       modoPreparo: p.modoPreparo,
       categoria: p.subcategory?.category?.nome ?? null,
+      copoMl: p.copoMl != null ? num(p.copoMl) : null,
       estoqueFechado: p.tipo === "SIMPLES" ? num(p.stocks[0]?.estoqueFechado) : null,
+      componentesFixos:
+        p.tipo === "SIMPLES"
+          ? []
+          : p.components.map((c) => ({
+              componentProductId: c.componentProductId,
+              nome: c.component.nome,
+              quantidade: num(c.quantidade),
+              unidade: c.unidade,
+            })),
       variants: p.variants.map((v) => ({
         id: v.id,
         nome: v.nome,
@@ -167,9 +197,12 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
         fatorEscala: num(v.fatorEscala),
         volumeMl: v.volumeMl != null ? num(v.volumeMl) : null,
       })),
+      // COMBO também tem grupos de escolha (qual vodka entra no kit) — só o
+      // SIMPLES nunca tem.
       groups:
-        p.tipo === "PERSONALIZADO"
-          ? p.componentGroups.map((g) => ({
+        p.tipo === "SIMPLES"
+          ? undefined
+          : p.componentGroups.map((g) => ({
               id: g.id,
               nome: g.nome,
               obrigatoria: g.obrigatoria,
@@ -183,9 +216,10 @@ export async function loadProdutosVenda(siteId: string | null): Promise<ProdutoV
                 acrescimoPreco: c.acrescimoPreco != null ? num(c.acrescimoPreco) : null,
                 imagemUrl: c.component.imagemUrl,
                 disponivel: temSaldo(c.component.stocks),
+                quantidade: num(c.quantidade),
+                unidade: c.unidade,
               })),
-            }))
-          : undefined,
+            })),
     };
   });
 }

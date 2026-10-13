@@ -18,7 +18,7 @@ import { getCosmosByEan, CosmosError } from "@/lib/cosmos";
 import { completeJson, llmConfigured } from "@/lib/llm";
 import { renomearValorDeFiltro } from "@/lib/relatorios/renomear-valor-filtro";
 import {
-  PRODUCT_INCLUDE,
+  PRODUCT_SELECT,
   toProductRow,
   loadProductInsights,
   loadGerenciarExtras,
@@ -28,7 +28,7 @@ import {
 import { invalidarOpcoesFiltro } from "./_query";
 import { invalidarOpcoesFormulario } from "./_data";
 import type { ProductRow } from "./_types";
-import type { StorageType } from "@/generated/prisma";
+import type { StorageType, BaseUnit } from "@/generated/prisma";
 
 /**
  * Roda `fn` no contexto de tenant do usuário logado e entrega o tenantId.
@@ -88,7 +88,7 @@ export async function searchProducts(queryRaw: string): Promise<ProductRow[]> {
       },
       orderBy: { nome: "asc" },
       take: 8,
-      include: PRODUCT_INCLUDE,
+      select: PRODUCT_SELECT,
     });
 
     return products.map((p) => toProductRow(p));
@@ -1749,6 +1749,34 @@ const comboComponentSchema = z.object({
   quantidade: z.number().positive(),
 });
 
+/**
+ * Item de um grupo de escolha do kit (ex.: qual vodka entra).
+ * Sempre UN — kit entrega unidade fechada; dose fracionada é de receita.
+ */
+const comboGroupItemSchema = z.object({
+  componentProductId: z.string().min(1),
+  quantidade: z.number().positive().default(1),
+  isDefault: z.boolean().default(false),
+  acrescimoPreco: z.number().nonnegative().optional().nullable(),
+});
+
+const comboGroupSchema = z.object({
+  nome: z.string().min(1, "Informe o nome do grupo."),
+  obrigatoria: z.boolean().default(true),
+  tipoSelecao: z.enum(["UNICA", "MULTIPLA"]).default("UNICA"),
+  maxSelecoes: z.number().int().positive().optional().nullable(),
+  ordem: z.number().int().default(0),
+  items: z.array(comboGroupItemSchema).min(1, "Cada grupo precisa de ao menos um item."),
+});
+
+/** Tamanho do kit — fator de escala sobre as quantidades da ficha (§5). */
+const comboVariantSchema = z.object({
+  nome: z.string().min(1),
+  fatorEscala: z.number().positive().default(1),
+  precoVenda: z.number().nonnegative().optional().nullable(),
+  isDefault: z.boolean().default(false),
+});
+
 const comboSchema = z.object({
   nome: z.string().min(2, "Informe o nome do combo."),
   subcategoryId: z.string().optional(),
@@ -1765,13 +1793,69 @@ const comboSchema = z.object({
   comprimentoCm: z.number().positive().optional().nullable(),
   descricaoOnline: z.string().optional(),
   tags: z.array(z.string()).optional(),
-  components: z
-    .array(comboComponentSchema)
-    .min(1, "Adicione ao menos um item ao combo."),
+  // Itens fixos do kit. Vazio é válido quando todo o kit é escolha do cliente
+  // (só grupos) — a validação de "tem ao menos um item" é feita junto.
+  components: z.array(comboComponentSchema).optional().default([]),
+  groups: z.array(comboGroupSchema).optional().default([]),
+  variants: z.array(comboVariantSchema).optional().default([]),
   salesChannels: z.array(salesChannelSchema).optional().default([]),
 });
 
 export type ComboInput = z.input<typeof comboSchema>;
+
+/** Grupo de escolha persistível — forma comum a combo (UN) e receita (UN/ML/G). */
+type GrupoPersistivel = {
+  nome: string;
+  obrigatoria: boolean;
+  tipoSelecao: "UNICA" | "MULTIPLA";
+  maxSelecoes?: number | null;
+  ordem: number;
+  items: {
+    componentProductId: string;
+    quantidade: number;
+    unidade?: BaseUnit;
+    isDefault: boolean;
+    acrescimoPreco?: number | null;
+  }[];
+};
+
+/**
+ * Cria os grupos de escolha e seus itens sob um produto composto.
+ * `unidadePadrao` cobre o combo, cujos itens são sempre unidade fechada.
+ */
+async function criarGruposDeEscolha(
+  tid: string,
+  parentProductId: string,
+  groups: GrupoPersistivel[],
+  unidadePadrao: BaseUnit = "UN",
+) {
+  for (const group of groups) {
+    const g = await db.productComponentGroup.create({
+      data: {
+        tenantId: tid,
+        parentProductId,
+        nome: group.nome.trim(),
+        obrigatoria: group.obrigatoria,
+        tipoSelecao: group.tipoSelecao,
+        maxSelecoes: group.maxSelecoes ?? null,
+        ordem: group.ordem,
+      },
+    });
+    await db.productComponent.createMany({
+      data: group.items.map((item) => ({
+        tenantId: tid,
+        parentProductId,
+        componentProductId: item.componentProductId,
+        quantidade: item.quantidade,
+        unidade: item.unidade ?? unidadePadrao,
+        groupId: g.id,
+        isDefault: item.isDefault,
+        acrescenta: (item.acrescimoPreco ?? 0) > 0,
+        acrescimoPreco: item.acrescimoPreco ?? null,
+      })),
+    });
+  }
+}
 
 /**
  * Combo/receita herdam +18 se QUALQUER componente for restrito (ou marcado à mão).
@@ -1808,7 +1892,11 @@ export async function createCombo(input: ComboInput) {
         })
       : null;
 
-    const { restricaoIdade } = await validateComponentProducts(d.components, d.restricaoIdade);
+    const { restricaoIdade } = await validateComponentProducts(
+      d.components,
+      d.restricaoIdade,
+      d.groups.map((g) => g.items),
+    );
     const sku = await generateSku(sub?.category.skuPrefix ?? "KIT", sub?.skuPrefix ?? "CMB");
     const brandId = await resolveBrandId(tid, d.brandId, d.marcaNome);
 
@@ -1844,6 +1932,15 @@ export async function createCombo(input: ComboInput) {
       },
     });
 
+    await criarGruposDeEscolha(tid, product.id, d.groups);
+
+    const variants = normalizeVariants(d.variants);
+    if (variants.length) {
+      await db.productVariant.createMany({
+        data: variants.map((v) => ({ tenantId: tid, productId: product.id, ...v })),
+      });
+    }
+
     if (d.tags?.length) await attachTags(tid, product.id, d.tags);
     await syncSalesChannels(tid, product.id, d.salesChannels);
 
@@ -1855,7 +1952,11 @@ export async function createCombo(input: ComboInput) {
 export async function updateCombo(id: string, input: ComboInput) {
   return tx(async (tid) => {
     const d = comboSchema.parse(input);
-    const { restricaoIdade } = await validateComponentProducts(d.components, d.restricaoIdade);
+    const { restricaoIdade } = await validateComponentProducts(
+      d.components,
+      d.restricaoIdade,
+      d.groups.map((g) => g.items),
+    );
     const brandId = await resolveBrandId(tid, d.brandId, d.marcaNome);
 
     await db.product.update({
@@ -1877,17 +1978,34 @@ export async function updateCombo(id: string, input: ComboInput) {
       },
     });
 
-    // Sincroniza componentes: substitui o conjunto (delete + recreate).
+    // Sincroniza a ficha: substitui o conjunto (delete + recreate). Apagar os
+    // grupos levaria os itens por cascade, mas o delete explícito dos
+    // componentes vem primeiro para não deixar item solto órfão.
     await db.productComponent.deleteMany({ where: { parentProductId: id } });
-    await db.productComponent.createMany({
-      data: d.components.map((c) => ({
-        tenantId: tid,
-        parentProductId: id,
-        componentProductId: c.componentProductId,
-        quantidade: c.quantidade,
-        unidade: "UN" as const,
-      })),
-    });
+    await db.productComponentGroup.deleteMany({ where: { parentProductId: id } });
+
+    if (d.components.length > 0) {
+      await db.productComponent.createMany({
+        data: d.components.map((c) => ({
+          tenantId: tid,
+          parentProductId: id,
+          componentProductId: c.componentProductId,
+          quantidade: c.quantidade,
+          unidade: "UN" as const,
+        })),
+      });
+    }
+
+    await criarGruposDeEscolha(tid, id, d.groups);
+
+    // Tamanhos do kit: substitui o conjunto.
+    await db.productVariant.deleteMany({ where: { productId: id } });
+    const variants = normalizeVariants(d.variants);
+    if (variants.length) {
+      await db.productVariant.createMany({
+        data: variants.map((v) => ({ tenantId: tid, productId: id, ...v })),
+      });
+    }
 
     await syncSalesChannels(tid, id, d.salesChannels);
     ok();
@@ -1956,7 +2074,15 @@ export type ReceitaInput = z.input<typeof receitaSchema>;
  * Normaliza as variações: nomes únicos e exatamente uma `isDefault` (se houver).
  * Devolve [] quando a receita é de tamanho único.
  */
-function normalizeVariants(variants: z.infer<typeof receitaVariantSchema>[]) {
+function normalizeVariants(
+  variants: {
+    nome: string;
+    volumeMl?: number | null;
+    fatorEscala: number;
+    precoVenda?: number | null;
+    isDefault: boolean;
+  }[],
+) {
   if (variants.length === 0) return [];
   const nomes = new Set<string>();
   for (const v of variants) {
@@ -2027,33 +2153,7 @@ export async function createReceita(input: ReceitaInput) {
       },
     });
 
-    // Cria grupos e seus itens
-    for (const group of d.groups) {
-      const g = await db.productComponentGroup.create({
-        data: {
-          tenantId: tid,
-          parentProductId: product.id,
-          nome: group.nome.trim(),
-          obrigatoria: group.obrigatoria,
-          tipoSelecao: group.tipoSelecao,
-          maxSelecoes: group.maxSelecoes ?? null,
-          ordem: group.ordem,
-        },
-      });
-      await db.productComponent.createMany({
-        data: group.items.map((item) => ({
-          tenantId: tid,
-          parentProductId: product.id,
-          componentProductId: item.componentProductId,
-          quantidade: item.quantidade,
-          unidade: item.unidade,
-          groupId: g.id,
-          isDefault: item.isDefault,
-          acrescenta: (item.acrescimoPreco ?? 0) > 0,
-          acrescimoPreco: item.acrescimoPreco ?? null,
-        })),
-      });
-    }
+    await criarGruposDeEscolha(tid, product.id, d.groups);
 
     const variants = normalizeVariants(d.variants);
     if (variants.length) {
@@ -2119,33 +2219,7 @@ export async function updateReceita(id: string, input: ReceitaInput) {
       });
     }
 
-    // Recria grupos e seus itens
-    for (const group of d.groups) {
-      const g = await db.productComponentGroup.create({
-        data: {
-          tenantId: tid,
-          parentProductId: id,
-          nome: group.nome.trim(),
-          obrigatoria: group.obrigatoria,
-          tipoSelecao: group.tipoSelecao,
-          maxSelecoes: group.maxSelecoes ?? null,
-          ordem: group.ordem,
-        },
-      });
-      await db.productComponent.createMany({
-        data: group.items.map((item) => ({
-          tenantId: tid,
-          parentProductId: id,
-          componentProductId: item.componentProductId,
-          quantidade: item.quantidade,
-          unidade: item.unidade,
-          groupId: g.id,
-          isDefault: item.isDefault,
-          acrescenta: (item.acrescimoPreco ?? 0) > 0,
-          acrescimoPreco: item.acrescimoPreco ?? null,
-        })),
-      });
-    }
+    await criarGruposDeEscolha(tid, id, d.groups);
 
     // Sincroniza variações: substitui o conjunto.
     await db.productVariant.deleteMany({ where: { productId: id } });

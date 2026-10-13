@@ -18,6 +18,8 @@ import {
   type PerfilTotem, type ResultadoTotem, type PixTotem,
 } from "./actions";
 import { PixQr } from "@/components/app/pix-qr";
+import { MontagemVisual } from "@/components/app/montagem-visual";
+import { montarCamadas } from "@/lib/montagem";
 import { useEhCelular } from "@/components/mobile/use-media-query";
 import { iconeCategoria, termosSugeridos, fmtVolume, norm } from "./_catalog";
 
@@ -710,7 +712,8 @@ function Loja({
 
   // Toque no card: personalizado abre o modal de montagem; o resto adiciona direto.
   function pick(p: ProdutoVenda) {
-    if (p.tipo === "PERSONALIZADO" && p.groups?.length) { setPersonalizando(p); return; }
+    // Vale para receita e para kit: quem tem grupo de escolha abre a montagem.
+    if (p.groups?.length) { setPersonalizando(p); return; }
     add(p);
   }
 
@@ -1010,6 +1013,11 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
   const imgPrincipal = p.imagemUrl ?? [...escolhidos].reverse().find((i) => i.imagemUrl)?.imagemUrl ?? null;
   const vol = volumeBase(p);
 
+  // O cliente vê o copo (ou a caixa) se montando a cada toque. O totem não
+  // escolhe tamanho, então a ficha vale como está (fator 1).
+  const ehCombo = p.tipo === "COMBO";
+  const camadas = montarCamadas(p.componentesFixos, groups, sel);
+
   const subtitulo = (g: ComponentGroupVenda) =>
     g.tipoSelecao === "UNICA"
       ? (g.obrigatoria ? "Escolha 1 opção" : "Opcional — escolha 1 se quiser")
@@ -1078,6 +1086,20 @@ function PersonalizarModal({ p, onFechar, onConfirmar }: {
                 etapa, e quem está no passo 4 já não lembra o que escolheu no 1.
                 Só aparece depois da primeira escolha — antes disso não há o que
                 resumir. */}
+            {camadas.length > 0 && (
+              <div className="rounded-2xl border border-line bg-canvas p-4">
+                <p className="mb-3 font-display text-sm font-bold uppercase tracking-wide text-muted">
+                  {ehCombo ? "Na caixa" : "No copo"}
+                </p>
+                <MontagemVisual
+                  modo={ehCombo ? "bandeja" : "copo"}
+                  camadas={camadas}
+                  capacidadeMl={p.copoMl}
+                  tamanhoNome={null}
+                />
+              </div>
+            )}
+
             {escolhidos.length > 0 && (
               <div className="rounded-2xl border border-line bg-canvas p-4 motion-safe:animate-in motion-safe:fade-in">
                 <p className="font-display text-sm font-bold uppercase tracking-wide text-muted">Sua montagem</p>
@@ -1474,7 +1496,7 @@ function Grade({ produtos, onPick, qtd }: { produtos: ProdutoVenda[]; onPick: (p
    contrário) + nome (2 linhas fixas) + volume + preço + botão +. */
 function Card({ p, onPick, noCarrinho }: { p: ProdutoVenda; onPick: (p: ProdutoVenda) => void; noCarrinho: number }) {
   const vol = volumeBase(p);
-  const personalizavel = p.tipo === "PERSONALIZADO" && (p.groups?.length ?? 0) > 0;
+  const personalizavel = (p.groups?.length ?? 0) > 0;
   const [flash, setFlash] = useState(false);
 
   function toque() {

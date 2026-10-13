@@ -2,7 +2,7 @@ import { requireActiveTenant } from "@/lib/current-tenant";
 import { runWithTenant } from "@/lib/tenant-context";
 import { policyDoTenant } from "@/lib/estoque-estrategia";
 import { camposDoTenant } from "@/lib/cadastro-campos";
-import { consultarProdutos } from "./_query";
+import { carregarGiro, consultarLinhas } from "./_query";
 import { lerConsulta } from "./_url";
 import { ProdutosClient } from "./_client";
 
@@ -24,7 +24,18 @@ export default async function ProdutosPage({
 
   // Só a listagem em si: as opções dos filtros vêm do layout, que não
   // re-renderiza quando muda apenas a query string.
-  const pagina = await runWithTenant(ctx.tenant.id, () => consultarProdutos(consulta));
+  //
+  // O giro NÃO é aguardado: a promessa vai para o cliente e as colunas de
+  // vendas/parado se preenchem quando ela resolver. Nasce dentro do
+  // `runWithTenant` porque é ali que a consulta lê o tenant do contexto.
+  const pagina = await runWithTenant(ctx.tenant.id, async () => {
+    const linhas = await consultarLinhas(consulta);
+    const giro = carregarGiro(linhas.rows.map((r) => r.id)).catch((e) => {
+      console.error("[produtos] giro da listagem falhou", e);
+      return null;
+    });
+    return { ...linhas, giro };
+  });
 
   return (
     <ProdutosClient

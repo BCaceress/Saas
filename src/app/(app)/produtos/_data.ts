@@ -3,6 +3,7 @@ import { db } from "@/lib/prisma";
 import { runWithTenant } from "@/lib/tenant-context";
 import { derive, type DeriveComponent } from "@/lib/derive";
 import { codigosParaExibir } from "@/lib/produto-codigo";
+import { urlImagemProduto } from "@/lib/imagem";
 import type { Prisma } from "@/generated/prisma";
 import type {
   BrandOpt,
@@ -20,28 +21,97 @@ import type {
 const dec = (v: { toNumber: () => number } | null | undefined) =>
   v == null ? null : v.toNumber();
 
-/** Include usado tanto na listagem de /produtos quanto na busca global do navbar. */
-export const PRODUCT_INCLUDE = {
-  brand: true,
-  subcategory: { include: { category: true } },
+/**
+ * Select usado tanto na listagem de /produtos quanto na busca global do navbar.
+ *
+ * `select` coluna a coluna, não `include`: o include trazia TODAS as colunas de
+ * marca, categoria, estoque, embalagem, fornecedor e — o pior — do produto
+ * inteiro de cada componente de combo, para `toProductRow` ler meia dúzia.
+ * Campo novo em `ProductRow` entra aqui também; o `tsc` acusa se faltar.
+ */
+export const PRODUCT_SELECT = {
+  id: true,
+  tipo: true,
+  nome: true,
+  sku: true,
+  ean: true,
+  imagemUrl: true,
+  updatedAt: true,
+  brandId: true,
+  subcategoryId: true,
+  precoVenda: true,
+  custo: true,
+  ativo: true,
+  restricaoIdade: true,
+  controlaEstoque: true,
+  unidadeBase: true,
+  vendaUnidade: true,
+  fracionavel: true,
+  conteudoPorUnidade: true,
+  dosePadrao: true,
+  vendeOnline: true,
+  pesoGramas: true,
+  alturaCm: true,
+  larguraCm: true,
+  comprimentoCm: true,
+  descricaoOnline: true,
+  fiscalProfileId: true,
+  gtinTributavel: true,
+  unidadeTributavel: true,
+  fatorConversaoTrib: true,
+  codigoAnp: true,
+  brand: { select: { nome: true } },
+  subcategory: {
+    select: { nome: true, categoryId: true, category: { select: { nome: true } } },
+  },
   stocks: {
-    include: {
+    select: {
+      siteId: true,
+      locationId: true,
+      estoqueFechado: true,
+      estoqueAberto: true,
+      estoqueMinimo: true,
+      estoqueIdeal: true,
       site: { select: { nome: true, ativo: true } },
       location: { select: { nome: true, tipo: true, ativo: true } },
     },
   },
   // Principal primeiro, depois ordem de cadastro: a lista na tela tem de sair
   // na mesma ordem em que o operador a montou.
-  barcodes: { orderBy: [{ principal: "desc" }, { createdAt: "asc" }] },
-  packagings: { orderBy: { nome: "asc" } },
-  suppliers: {
-    include: { supplier: { select: { razaoSocial: true, nomeFantasia: true } } },
-    orderBy: { isPrincipal: "desc" },
+  barcodes: {
+    orderBy: [{ principal: "desc" }, { createdAt: "asc" }],
+    select: { codigo: true, rotulo: true, principal: true },
   },
-  components: { include: { component: { include: { stocks: true } } } },
-} satisfies Prisma.ProductInclude;
+  packagings: {
+    orderBy: { nome: "asc" },
+    select: { id: true, nome: true, ean: true, fatorConversao: true },
+  },
+  suppliers: {
+    orderBy: { isPrincipal: "desc" },
+    select: {
+      supplierId: true,
+      isPrincipal: true,
+      custoFornecedor: true,
+      supplier: { select: { razaoSocial: true, nomeFantasia: true } },
+    },
+  },
+  components: {
+    select: {
+      quantidade: true,
+      unidade: true,
+      component: {
+        select: {
+          custo: true,
+          precoVenda: true,
+          conteudoPorUnidade: true,
+          stocks: { select: { estoqueFechado: true, estoqueAberto: true } },
+        },
+      },
+    },
+  },
+} satisfies Prisma.ProductSelect;
 
-type ProductWithRelations = Prisma.ProductGetPayload<{ include: typeof PRODUCT_INCLUDE }>;
+type ProductWithRelations = Prisma.ProductGetPayload<{ select: typeof PRODUCT_SELECT }>;
 
 /** Mapeia um Product (com relações) para o shape usado na UI (§6: combos/receitas derivam custo/disponibilidade). */
 export function toProductRow(p: ProductWithRelations): ProductRow {
@@ -71,7 +141,8 @@ export function toProductRow(p: ProductWithRelations): ProductRow {
     nome: p.nome,
     sku: p.sku,
     ean: p.ean,
-    imagemUrl: p.imagemUrl,
+    // Foto embutida não viaja na linha — vai o caminho, a imagem chega depois.
+    imagemUrl: urlImagemProduto(p.id, p.imagemUrl, p.updatedAt),
     marca: p.brand?.nome ?? null,
     brandId: p.brandId,
     subcategoriaNome: p.subcategory?.nome ?? "",

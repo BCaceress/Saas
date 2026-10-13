@@ -45,6 +45,8 @@ import {
 } from "./actions";
 import type { IntegracaoPdv } from "@/lib/pagamentos";
 import type { ComponentGroupVenda, ProdutoVenda } from "./_data";
+import { MontagemVisual } from "@/components/app/montagem-visual";
+import { montarCamadas } from "@/lib/montagem";
 import type { PaymentMethod } from "@/generated/prisma";
 import type { CustomerRow } from "../clientes/_types";
 import {
@@ -1715,8 +1717,14 @@ function initSelections(produto: ProdutoVenda | null): Record<string, string[]> 
   return sels;
 }
 
-/** Renderize com `key={produto?.id}` — o estado inicial deriva do produto. */
-export function PersonalizadoModal({
+/**
+ * Montagem de produto composto no PDV: receita (PERSONALIZADO) e kit (COMBO).
+ * Os dois perguntam a mesma coisa — tamanho e grupos de escolha —, só mudam a
+ * unidade (dose em ml no copo, unidade fechada no kit) e a representação.
+ *
+ * Renderize com `key={produto?.id}` — o estado inicial deriva do produto.
+ */
+export function MontagemModal({
   produto,
   onClose,
   onAdd,
@@ -1771,6 +1779,17 @@ export function PersonalizadoModal({
 
   const preco = precoBase + acrescimoTotal;
   const total = preco * qty;
+
+  // Montagem visual: itens fixos da ficha + o que foi escolhido, tudo escalado
+  // pelo tamanho. Kit vira bandeja de vãos; receita, camadas no copo.
+  const ehCombo = produto.tipo === "COMBO";
+  const camadas = montarCamadas(
+    produto.componentesFixos,
+    produto.groups ?? [],
+    selections,
+    variant?.fatorEscala ?? 1,
+  );
+  const capacidadeMl = variant?.volumeMl ?? produto.copoMl;
 
   function toggleSelection(g: ComponentGroupVenda, itemId: string) {
     const current = selections[g.id] ?? [];
@@ -1988,11 +2007,11 @@ export function PersonalizadoModal({
                   <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
                   <div className="absolute inset-x-0 bottom-0 flex items-end gap-2.5 px-4 pb-3.5">
                     <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/15 text-white backdrop-blur-sm">
-                      <Sparkles size={16} />
+                      {ehCombo ? <Layers size={16} /> : <Sparkles size={16} />}
                     </span>
                     <div className="min-w-0">
                       <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-white/60">
-                        Personalizado
+                        {ehCombo ? "Kit / combo" : "Personalizado"}
                       </p>
                       <h2 className="truncate text-lg font-bold leading-tight text-white">
                         {produto.nome}
@@ -2011,11 +2030,11 @@ export function PersonalizadoModal({
               ) : (
                 <div className="flex items-center gap-3 border-b border-line bg-surface-2 px-4 py-3.5">
                   <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-soft text-brand">
-                    <Sparkles size={16} />
+                    {ehCombo ? <Layers size={16} /> : <Sparkles size={16} />}
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-muted">
-                      Personalizado
+                      {ehCombo ? "Kit / combo" : "Personalizado"}
                     </p>
                     <h2 className="truncate text-[15px] font-semibold text-ink">
                       {produto.nome}
@@ -2034,8 +2053,22 @@ export function PersonalizadoModal({
 
               <div className="px-4 py-3.5">
                 <p className="text-[13px] leading-snug text-muted">
-                  {produto.modoPreparo || "Monte do seu jeito."}
+                  {produto.modoPreparo ||
+                    (ehCombo ? "Monte o kit." : "Monte do seu jeito.")}
                 </p>
+              </div>
+
+              {/* O que as escolhas colocam no copo / na caixa */}
+              <div className="mx-4 mb-4 rounded-[var(--radius-lg)] border border-line bg-surface p-3.5">
+                <p className="mb-3 font-mono text-[10px] font-semibold uppercase tracking-[0.15em] text-muted">
+                  {ehCombo ? "Na caixa" : "No copo"}
+                </p>
+                <MontagemVisual
+                  modo={ehCombo ? "bandeja" : "copo"}
+                  camadas={camadas}
+                  capacidadeMl={capacidadeMl}
+                  tamanhoNome={variant?.nome ?? null}
+                />
               </div>
 
               <div className="mx-4 mb-4 rounded-[var(--radius-lg)] border border-line bg-surface-2 p-3.5">

@@ -59,6 +59,45 @@ export function thumbSrc(url: string, larguraPx: number): string {
   return `/_next/image?url=${encodeURIComponent(url)}&w=${larguraValida(larguraPx)}&q=75`;
 }
 
+// ── Foto embutida (data:) fora do payload ────────────────────────────────────
+
+/**
+ * Endereço que a LISTAGEM manda no lugar da foto.
+ *
+ * Upload do operador mora em `Product.imagemUrl` como `data:` (~20 KB; legado
+ * até 2 MB). Devolvido cru, ele viaja dentro do payload RSC e segura a tabela
+ * inteira até o último byte da última foto. Aqui a linha leva só um caminho
+ * curto: os dados chegam primeiro e cada foto é baixada depois, pela rota
+ * `/api/produtos/<id>/imagem`, com cache do navegador.
+ *
+ * `v` muda quando o produto muda — é o que permite cachear como imutável.
+ * URL remota passa intacta (o browser já a busca fora do payload).
+ *
+ * Só para EXIBIÇÃO: o formulário de edição lê a coluna direto, porque regravar
+ * este caminho no banco trocaria a foto por um link para ela mesma.
+ */
+export function urlImagemProduto(
+  id: string,
+  imagemUrl: string | null,
+  updatedAt: Date,
+): string | null {
+  if (!imagemUrl) return null;
+  if (!imagemUrl.startsWith("data:")) return imagemUrl;
+  return `/api/produtos/${id}/imagem?v=${updatedAt.getTime().toString(36)}`;
+}
+
+/**
+ * Formatos que a rota de imagem serve. SVG fica de fora de propósito: aberto
+ * direto na aba ele executa script na origem do app.
+ */
+const DATA_IMAGEM = /^data:(image\/(?:webp|png|jpeg|gif|avif));base64,([A-Za-z0-9+/=]+)$/;
+
+/** Separa tipo e conteúdo de um `data:` de imagem; `null` se não for um. */
+export function lerDataImagem(dataUrl: string): { contentType: string; base64: string } | null {
+  const m = DATA_IMAGEM.exec(dataUrl);
+  return m ? { contentType: m[1], base64: m[2] } : null;
+}
+
 // ── Upload ───────────────────────────────────────────────────────────────────
 
 /** Lado maior da foto guardada. 512 cobre o zoom da ficha sem inchar a coluna. */

@@ -67,7 +67,7 @@ type PendenteEstoque = {
   disponivel: number;
 };
 import { brl, mascararCpf, parseCentavos, type CartItem, type ClienteSel } from "./_shared";
-import { PagamentoModal, ClienteModal, PersonalizadoModal } from "./_modais";
+import { PagamentoModal, ClienteModal, MontagemModal } from "./_modais";
 import { FilaAutoatendimentoPanel } from "./_fila";
 import { NotaFiscalChip } from "./_nota-fiscal";
 import { HistoricoVendasModal } from "./_historico";
@@ -435,7 +435,12 @@ export function PdvClient({
   }
 
   function escolher(p: ProdutoVenda, qty = 1, codigoBarras: string | null = null) {
-    if (p.tipo === "PERSONALIZADO") {
+    // Composto com algo a escolher (tamanho ou grupo) abre a montagem. Kit sem
+    // escolha nenhuma continua indo direto para o carrinho.
+    const precisaMontar =
+      p.tipo === "PERSONALIZADO" ||
+      (p.tipo === "COMBO" && ((p.groups?.length ?? 0) > 0 || p.variants.length > 0));
+    if (precisaMontar) {
       setPdvModal(p);
       setBusca("");
     } else {
@@ -1771,7 +1776,7 @@ export function PdvClient({
         </div>
       )}
 
-      <PersonalizadoModal
+      <MontagemModal
         key={pdvModal?.id ?? "vazio"}
         produto={pdvModal}
         onClose={() => setPdvModal(null)}

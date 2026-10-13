@@ -26,7 +26,7 @@ Arranjo em vigor no `vercel.json`:
 | Cron | Schedule (UTC) | Cobre |
 | --- | --- | --- |
 | `/api/jobs/diario` | `0 7 * * *` (04h BRT) | fila-fiscal + snapshot-estoque + assinaturas + sincronizar-catalogos + importar-nfe-email + distribuicao-sefaz, em sequência |
-| `/api/jobs/alertas-push` | `0 12 * * *` (09h BRT) | push da manhã (o da noite vem do GitHub Actions) |
+| `/api/jobs/alertas-push` | `0 12 * * *` (09h BRT) | push da manhã (único disparo do dia) |
 
 `/api/jobs/diario` é só um dispatcher: chama as mesmas funções de lib das rotas
 individuais, isola falha por job e devolve 200 com `falhas: n` no corpo — 5 de 6
@@ -34,8 +34,9 @@ jobs OK não deve marcar o cron como quebrado. As sete rotas individuais
 **continuam existindo** e podem ser chamadas à mão a qualquer momento.
 
 Schedule sub-diário no `vercel.json` faz o deploy ser **recusado** com link para
-"Usage and pricing for cron jobs" — não é aviso, é erro de build. A granularidade
-perdida pelo dispatcher volta pelo GitHub Actions (seção abaixo).
+"Usage and pricing for cron jobs" — não é aviso, é erro de build. Enquanto o
+plano for Hobby, tudo roda 1×/dia: o ritmo desejado da tabela acima não é
+atendido.
 
 ## Voltar ao agendamento real
 
@@ -45,10 +46,15 @@ Quando o projeto virar **Pro** (40 crons, precisão de minuto):
 2. Apague `src/app/api/jobs/diario/` e `vercel.crons.pro.json`.
 3. Deploy. As sete rotas já estão prontas — nada mais muda.
 
-## Agendador externo: GitHub Actions
+## Agendador externo: GitHub Actions (desligado)
 
-`.github/workflows/jobs-agendados.yml` devolve o ritmo sub-diário sem upgrade.
-Chama as rotas individuais por HTTP com o mesmo `CRON_SECRET`:
+`.github/workflows/jobs-agendados.yml` chama as rotas individuais por HTTP com o
+mesmo `CRON_SECRET`. **Os disparos agendados estão comentados desde out/2026** —
+não são necessários por enquanto. O workflow continua rodando à mão: aba
+**Actions → Jobs agendados → Run workflow**, com a lista de rotas no campo
+`rotas`.
+
+Para religar, descomente o bloco `schedule` do arquivo:
 
 | Schedule (UTC) | Rotas |
 | --- | --- |
@@ -59,10 +65,8 @@ O disparo do fim do dia não pode passar das 20h BRT: a janela padrão do push
 fecha em 21h **exclusivo** (`pushHoraFim`, `src/lib/alertas/push.ts`) e o job
 sairia pulando todo tenant que não mexeu na configuração.
 
-Também roda à mão: aba **Actions → Jobs agendados → Run workflow**, com a lista
-de rotas no campo `rotas`.
-
-Configure uma vez em **Settings → Secrets and variables → Actions**:
+Antes de religar, configure em **Settings → Secrets and variables → Actions** —
+sem isso todo run falha e o GitHub manda e-mail a cada disparo:
 
 | Tipo | Nome | Valor |
 | --- | --- | --- |
@@ -70,23 +74,9 @@ Configure uma vez em **Settings → Secrets and variables → Actions**:
 | Variable | `APP_BASE_URL` | `https://<host-de-produção>` (sem barra no fim) |
 
 **Orçamento de minutos** — repo privado tem 2.000 min/mês grátis e o GitHub cobra
-1 minuto cheio por run, mesmo que o curl leve 3 segundos:
-
-| Schedule | Runs/mês | Minutos |
-| --- | --- | --- |
-| 30 min, 20h/dia | ~1.200 | ~1.200 |
-| fim do dia | 30 | ~30 |
-| **total** | | **~1.230 de 2.000** |
-
-Não aumente a frequência sem refazer essa conta — foi o que matou a ideia de
-`*/10 * * * *` (~4.300 min/mês). Se precisar de 10 min de verdade, troque por um
-agendador HTTP que não cobra minuto (cron-job.org, EasyCron) apontando para as
-mesmas rotas com o header `Authorization: Bearer $CRON_SECRET`.
-
-Duas limitações aceitas: o schedule do GitHub atrasa alguns minutos (mais em
-horário de pico) e é **desligado automaticamente se o repo ficar 60 dias sem
-commit**. Nenhum job depende de pontualidade — todos são idempotentes e têm
-caminho primário (polling do PDV, sync sob demanda na tela do fornecedor).
+1 minuto cheio por run, mesmo que o curl leve 3 segundos. Com os dois schedules
+ligados são ~1.230 min/mês. Não aumente a frequência sem refazer essa conta —
+foi o que matou a ideia de `*/10 * * * *` (~4.300 min/mês).
 
 ## Testar à mão
 

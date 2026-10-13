@@ -5,9 +5,10 @@ import { dispararAlertasPush } from "@/lib/alertas/push";
 /**
  * Notificações de alerta nos aparelhos inscritos.
  *
- * Roda duas vezes por dia: 09h BRT pelo cron do Vercel (vercel.json) e 19h45 BRT
- * pelo GitHub Actions (.github/workflows/jobs-agendados.yml) — este segundo não
- * pode passar das 20h, senão cai fora da janela padrão e é descartado.
+ * Roda uma vez por dia: 09h BRT pelo cron do Vercel (vercel.json). O segundo
+ * disparo, 19h45 BRT pelo GitHub Actions (.github/workflows/jobs-agendados.yml),
+ * está desligado — ao religar, não pode passar das 20h, senão cai fora da
+ * janela padrão e é descartado.
  *
  * NÃO é de hora em hora de propósito: notificação de ERP que toca demais vira notificação desligada, e
  * o sino continua sendo o canal de tudo — o push é só para o que não pode

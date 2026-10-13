@@ -5,7 +5,7 @@ import { requireTenantId, runWithTenant } from "@/lib/tenant-context";
 import { derive, type DeriveComponent } from "@/lib/derive";
 import { margem } from "@/lib/utils";
 import { alternativasPorTrechoDeCodigo } from "@/lib/produto-codigo";
-import { PRODUCT_INCLUDE, toProductRow, invalidarOpcoesFormulario } from "./_data";
+import { PRODUCT_SELECT, toProductRow, invalidarOpcoesFormulario } from "./_data";
 import {
   SEM_MARCA,
   SEM_TAG,
@@ -497,43 +497,79 @@ async function consultarOpcoesFiltro(): Promise<OpcoesFiltroDados> {
 
 // ── Consulta principal ───────────────────────────────────────────────────────
 
-export async function consultarProdutos(c: ProdutoConsulta): Promise<ProdutosPagina> {
+/**
+ * A página da listagem carrega sete relações por produto. No padrão do Prisma
+ * isso são ~9 consultas em fila na mesma transação; com JOIN é uma. Medido
+ * contra o Neon (50 linhas): 645 ms → 244 ms, mesmo resultado.
+ *
+ * Só na página (até 200 linhas). Export e seleção total seguem no padrão: aos
+ * milhares, agregar tudo em JSON num SELECT só não foi medido.
+ */
+const EM_UM_SELECT = { relationLoadStrategy: "join" } as const;
+
+/**
+ * Linhas e totais da página, SEM o giro.
+ *
+ * Separado para a tela poder pintar a tabela e deixar o giro chegar depois
+ * (`page.tsx`): ele varre o histórico de vendas dos produtos da página e era a
+ * última espera antes da primeira linha aparecer.
+ *
+ * As contagens correm JUNTO com a busca da página, não antes. A página pedida
+ * só não vale quando passa do fim (filtro encolheu, link antigo) — aí, e só aí,
+ * uma segunda busca traz a última página de verdade.
+ */
+export async function consultarLinhas(c: ProdutoConsulta): Promise<Omit<ProdutosPagina, "giro">> {
   const where = whereDoFiltro(c);
   const porPagina = Math.min(Math.max(c.porPagina || 50, 1), 200);
   const ordemDb = ORDER_DB[c.sort]?.(c.dir);
+  const pedida = Math.max(c.pagina || 1, 1);
 
-  const [total, totalGeral] = await Promise.all([
-    db.product.count({ where }),
-    db.product.count({}),
-  ]);
+  const contagens = Promise.all([db.product.count({ where }), db.product.count({})]);
+  const paginaValida = (total: number) =>
+    Math.min(pedida, Math.max(1, Math.ceil(total / porPagina)));
 
-  const totalPaginas = Math.max(1, Math.ceil(total / porPagina));
-  const pagina = Math.min(Math.max(c.pagina || 1, 1), totalPaginas);
-  const skip = (pagina - 1) * porPagina;
+  let brutos: Prisma.ProductGetPayload<{ select: typeof PRODUCT_SELECT }>[];
+  let total: number;
+  let totalGeral: number;
 
-  let brutos: Prisma.ProductGetPayload<{ include: typeof PRODUCT_INCLUDE }>[];
   if (ordemDb) {
-    brutos = await db.product.findMany({
-      where,
-      orderBy: ordemDb,
-      skip,
-      take: porPagina,
-      include: PRODUCT_INCLUDE,
-    });
+    const buscar = (pagina: number) =>
+      db.product.findMany({
+        ...EM_UM_SELECT,
+        where,
+        orderBy: ordemDb,
+        skip: (pagina - 1) * porPagina,
+        take: porPagina,
+        select: PRODUCT_SELECT,
+      });
+    const [[t, tg], primeira] = await Promise.all([contagens, buscar(pedida)]);
+    [total, totalGeral] = [t, tg];
+    const pagina = paginaValida(total);
+    brutos = pagina === pedida ? primeira : await buscar(pagina);
   } else {
-    const ordenados = await idsOrdenados(where, c.sort, c.dir);
+    const [[t, tg], ordenados] = await Promise.all([contagens, idsOrdenados(where, c.sort, c.dir)]);
+    [total, totalGeral] = [t, tg];
+    const skip = (paginaValida(total) - 1) * porPagina;
     const idsPagina = ordenados.slice(skip, skip + porPagina);
     const fatia = idsPagina.length
-      ? await db.product.findMany({ where: { id: { in: idsPagina } }, include: PRODUCT_INCLUDE })
+      ? await db.product.findMany({
+          ...EM_UM_SELECT,
+          where: { id: { in: idsPagina } },
+          select: PRODUCT_SELECT,
+        })
       : [];
     const pos = new Map(idsPagina.map((id, i) => [id, i]));
     brutos = fatia.sort((a, b) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
   }
 
-  const rows: ProductRow[] = brutos.map((p) => toProductRow(p));
-  const giro = await carregarGiro(rows.map((r) => r.id));
+  return { rows: brutos.map((p) => toProductRow(p)), total, totalGeral };
+}
 
-  return { rows, giro, total, totalGeral };
+/** Página completa, giro incluído — "carregar mais" e quem precisa de tudo junto. */
+export async function consultarProdutos(c: ProdutoConsulta): Promise<ProdutosPagina> {
+  const pagina = await consultarLinhas(c);
+  const giro = await carregarGiro(pagina.rows.map((r) => r.id));
+  return { ...pagina, giro };
 }
 
 /** Ids de tudo que bate com o filtro — alimenta "selecionar todos os N". */
@@ -555,18 +591,18 @@ export async function linhasDoFiltro(
   const where = whereDoFiltro(f);
   const ordemDb = ORDER_DB[sort]?.(dir);
 
-  let brutos: Prisma.ProductGetPayload<{ include: typeof PRODUCT_INCLUDE }>[];
+  let brutos: Prisma.ProductGetPayload<{ select: typeof PRODUCT_SELECT }>[];
   if (ordemDb) {
     brutos = await db.product.findMany({
       where,
       orderBy: ordemDb,
       take: TETO_VARREDURA,
-      include: PRODUCT_INCLUDE,
+      select: PRODUCT_SELECT,
     });
   } else {
     const ordenados = (await idsOrdenados(where, sort, dir)).slice(0, TETO_VARREDURA);
     const fatia = ordenados.length
-      ? await db.product.findMany({ where: { id: { in: ordenados } }, include: PRODUCT_INCLUDE })
+      ? await db.product.findMany({ where: { id: { in: ordenados } }, select: PRODUCT_SELECT })
       : [];
     const pos = new Map(ordenados.map((id, i) => [id, i]));
     brutos = fatia.sort((a, b) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
@@ -603,7 +639,7 @@ export async function linhasPorIds(ids: string[]): Promise<ProductRow[]> {
   const brutos = await db.product.findMany({
     where: { id: { in: unicos } },
     orderBy: { nome: "asc" },
-    include: PRODUCT_INCLUDE,
+    select: PRODUCT_SELECT,
   });
   return brutos.map((p) => toProductRow(p));
 }

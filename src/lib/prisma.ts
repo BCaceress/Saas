@@ -19,11 +19,51 @@ const globalForPrisma = globalThis as unknown as {
   basePrisma?: PrismaClient;
 };
 
-export const basePrisma =
-  globalForPrisma.basePrisma ??
-  new PrismaClient({
+/** Operações que aceitam `relationLoadStrategy`. */
+const STRATEGY_OPS = new Set([
+  "findMany",
+  "findFirst",
+  "findFirstOrThrow",
+  "findUnique",
+  "findUniqueOrThrow",
+  "create",
+  "update",
+  "delete",
+  "upsert",
+]);
+
+/**
+ * Com `relationJoins` ligado no schema, o Prisma passa a carregar relações por
+ * JOIN em TODA consulta. Aqui o padrão volta a ser "query" (uma consulta por
+ * relação, como sempre foi): nenhuma leitura muda de comportamento sozinha, e
+ * "join" vira decisão de quem escreve a consulta e mediu — hoje, a página da
+ * listagem de produtos, onde troca ~9 idas ao banco por 1.
+ *
+ * O handler NÃO é async e devolve a própria promessa de `query()`: é o que
+ * mantém a operação dentro de `$transaction([...])` (e portanto dentro do
+ * `set_config` do RLS). O cast preserva o tipo `PrismaClient` que o resto do
+ * código — adapter do Auth.js, `Prisma.TransactionClient` — espera.
+ */
+function criarBasePrisma(): PrismaClient {
+  const cru = new PrismaClient({
     log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
   });
+  return cru.$extends({
+    query: {
+      $allModels: {
+        $allOperations({ operation, args, query }) {
+          const a = args as Record<string, unknown>;
+          if (STRATEGY_OPS.has(operation) && a.relationLoadStrategy === undefined) {
+            return query({ ...a, relationLoadStrategy: "query" } as typeof args);
+          }
+          return query(args);
+        },
+      },
+    },
+  }) as unknown as PrismaClient;
+}
+
+export const basePrisma = globalForPrisma.basePrisma ?? criarBasePrisma();
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.basePrisma = basePrisma;
 

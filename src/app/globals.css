@@ -78,6 +78,15 @@
   --tier-diamond: #7c3aed;
   --tier-diamond-soft: #f3edfe;
 
+  /* Camadas da montagem (copo do drink, vãos do kit) — identificam o que
+     entrou, não têm sentido semântico. Cor de líquido/embalagem, não de marca. */
+  --camada-1: #cfe0ea;
+  --camada-2: #e9a622;
+  --camada-3: #bfd16e;
+  --camada-4: #e8b4a0;
+  --camada-5: #b8c6e8;
+  --camada-6: #d8c3a5;
+
   /* Forma — cantos totalmente arredondados (premium floating)
      inputs 16px · cards 24px · modais 32px · botões/pílulas 999px */
   --radius-sm: 0.75rem; /* 12px — chips, ícones */
@@ -197,6 +206,14 @@
   --tier-silver-soft: #1e2530;
   --tier-diamond: #a78bfa;
   --tier-diamond-soft: #241a38;
+
+  /* Camadas da montagem — tons rebaixados para não estourar no fundo escuro. */
+  --camada-1: #7295ad;
+  --camada-2: #b8801c;
+  --camada-3: #88994f;
+  --camada-4: #a9766a;
+  --camada-5: #7d8bad;
+  --camada-6: #9b8a72;
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 10px 30px -12px rgba(0, 0, 0, 0.6);

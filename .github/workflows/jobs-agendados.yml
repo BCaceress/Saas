@@ -23,15 +23,19 @@
 name: Jobs agendados
 
 on:
-  schedule:
-    # A cada 30 min das 07h as 02h BRT (10h-23h e 00h-05h UTC).
-    - cron: "*/30 10-23,0-5 * * *"
-    # Fim do dia, 19h45 BRT (22h45 UTC): segundo push (o primeiro é o cron das
-    # 09h no vercel.json) e segunda varredura da distribuição DF-e.
-    # NÃO passe das 20h: a janela padrão do push fecha em 21h exclusivo
-    # (pushHoraFim, src/lib/alertas/push.ts) e o disparo seria descartado.
-    # O :45 evita cair junto com o disparo intradiário dos múltiplos de 30.
-    - cron: "45 22 * * *"
+  # DISPAROS AGENDADOS DESLIGADOS (out/2026): não são necessários por enquanto.
+  # Para religar, descomente o bloco `schedule` abaixo — e configure antes o
+  # secret CRON_SECRET e a variable APP_BASE_URL, senão todo run falha.
+  #
+  # schedule:
+  #   # A cada 30 min das 07h as 02h BRT (10h-23h e 00h-05h UTC).
+  #   - cron: "*/30 10-23,0-5 * * *"
+  #   # Fim do dia, 19h45 BRT (22h45 UTC): segundo push (o primeiro é o cron das
+  #   # 09h no vercel.json) e segunda varredura da distribuição DF-e.
+  #   # NÃO passe das 20h: a janela padrão do push fecha em 21h exclusivo
+  #   # (pushHoraFim, src/lib/alertas/push.ts) e o disparo seria descartado.
+  #   # O :45 evita cair junto com o disparo intradiário dos múltiplos de 30.
+  #   - cron: "45 22 * * *"
   workflow_dispatch:
     inputs:
       rotas:

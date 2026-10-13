@@ -164,6 +164,18 @@ export type ProdutosPagina = {
   totalGeral: number;
 };
 
+/**
+ * Página como o RSC a entrega: linhas prontas, giro A CAMINHO.
+ *
+ * A promessa atravessa para o cliente sem ser aguardada no servidor — a tabela
+ * pinta com o que já chegou e as colunas de giro se preenchem depois. Resolve
+ * em `null` quando a consulta falha: giro é enfeite da linha, não motivo para
+ * derrubar a listagem.
+ */
+export type ProdutosPaginaInicial = Omit<ProdutosPagina, "giro"> & {
+  giro: Promise<Record<string, ProdutoGiro> | null>;
+};
+
 export type TagOpt = { id: string; nome: string };
 export type SiteOpt = { id: string; nome: string };
 
@@ -293,6 +305,36 @@ export type ComponentCandidate = {
 
 export type ComboComponentItem = { componentProductId: string; quantidade: number };
 
+/**
+ * Item de um grupo de escolha do kit. Sempre unidade fechada (UN) — dose
+ * fracionada é assunto de receita, não de combo.
+ */
+export type ComboGroupItem = {
+  componentProductId: string;
+  quantidade: number;
+  isDefault: boolean;
+  acrescimoPreco?: number | null;
+};
+
+export type ComboComponentGroup = {
+  id?: string;
+  nome: string;
+  obrigatoria: boolean;
+  tipoSelecao: "UNICA" | "MULTIPLA";
+  maxSelecoes: number | null;
+  ordem: number;
+  items: ComboGroupItem[];
+};
+
+/** Tamanho do kit (Kit 4/6/8) — fator de escala sobre as quantidades da ficha. */
+export type ComboVariantItem = {
+  id?: string;
+  nome: string;
+  fatorEscala: number;
+  precoVenda: number | null;
+  isDefault: boolean;
+};
+
 export type RecipeType = "DRINK" | "PRATO" | "OUTRO";
 export type SelectionType = "UNICA" | "MULTIPLA";
 
@@ -374,5 +416,7 @@ export type ComboData = {
   pesoGramas: number | null;
   descricaoOnline: string | null;
   components: ComboComponentItem[];
+  groups: ComboComponentGroup[];
+  variants: ComboVariantItem[];
   salesChannels: SalesChannelItem[];
 };
