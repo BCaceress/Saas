@@ -10,6 +10,8 @@ import { AlertsProvider } from "@/components/app/alerts-provider";
 import type { CaixaInfo } from "@/components/app/caixa-sheet";
 import type { PaymentMethod } from "@/generated/prisma";
 import type { Acesso } from "@/lib/permissoes";
+import type { EstoquePolicy } from "@/lib/estoque-estrategia";
+import type { CamposCadastro } from "@/lib/cadastro-campos";
 
 /** Cookie do menu recolhido — lido no servidor por `(app)/layout.tsx`. */
 export const NAV_COLLAPSED_COOKIE = "nav_collapsed";
@@ -30,6 +32,8 @@ export function AppShell({
   caixaInfo,
   metodosCaixa,
   limiteGaveta,
+  estoquePolicy,
+  camposCadastro,
   onSignOut,
   children,
 }: {
@@ -56,6 +60,9 @@ export function AppShell({
   caixaInfo: CaixaInfo | null;
   metodosCaixa: PaymentMethod[];
   limiteGaveta?: number | null;
+  /** Estratégia de estoque e campos do cadastro — a ficha do produto na busca global segue os dois. */
+  estoquePolicy?: EstoquePolicy;
+  camposCadastro?: CamposCadastro;
   onSignOut: () => void;
   children: React.ReactNode;
 }) {
@@ -167,6 +174,8 @@ export function AppShell({
           onClose={() => setBuscaAberta(false)}
           acessos={acessos}
           toggles={toggles}
+          policy={estoquePolicy}
+          campos={camposCadastro}
         />
       </div>
     </AlertsProvider>

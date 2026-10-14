@@ -4,6 +4,8 @@ import { FaixaAssinatura } from "@/components/app/faixa-assinatura";
 import { Toaster } from "@/components/ui/toast";
 import { carregarShell } from "@/lib/shell-context";
 import { featureAtiva } from "@/lib/planos";
+import { policyDoTenant } from "@/lib/estoque-estrategia";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { signOutAction } from "./actions";
 
 export default async function ShellLayout({
@@ -39,6 +41,8 @@ export default async function ShellLayout({
       multiPonto={shell.multiPonto}
       caixaInfo={caixaInfo}
       metodosCaixa={metodosCaixa}
+      estoquePolicy={policyDoTenant(tenant)}
+      camposCadastro={camposDoTenant(tenant)}
       limiteGaveta={
         tenant.caixaLimiteGaveta != null ? Number(tenant.caixaLimiteGaveta) : null
       }

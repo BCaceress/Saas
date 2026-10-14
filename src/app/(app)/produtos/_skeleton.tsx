@@ -149,7 +149,7 @@ export function CorpoProdutosSkeleton({ linhas = 8 }: { linhas?: number }) {
   const depoisDoPreco = visiveis.filter((k) => COL_ORDER.indexOf(k) >= corte);
 
   return (
-    <div className="w-full rounded-[var(--radius-lg)] bg-surface p-3 shadow-[var(--shadow-float)] sm:p-4">
+    <div className="w-full rounded-[var(--radius-lg)] bg-surface p-3 shadow-[var(--shadow-float)] sm:px-4 sm:pb-4 sm:pt-3">
       {/* Barra de filtros — desenho real, inerte enquanto os dados não chegam */}
       <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius)] border border-line bg-surface-2 p-2">
         <div className="relative min-w-48 flex-1">
@@ -166,7 +166,7 @@ export function CorpoProdutosSkeleton({ linhas = 8 }: { linhas?: number }) {
       </div>
 
       {/* ── Tabela (md+): cabeçalho real, linhas em placeholder ── */}
-      <div className="mt-4 hidden overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface md:block">
+      <div className="mt-3 hidden overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface md:block">
         <table className="w-full table-fixed text-left">
           <thead className="border-b border-line bg-surface-2 text-[11px] font-semibold uppercase tracking-wider text-faint">
             <tr>
@@ -191,7 +191,7 @@ export function CorpoProdutosSkeleton({ linhas = 8 }: { linhas?: number }) {
       </div>
 
       {/* ── Cards (mobile) ── */}
-      <CardsSkeleton linhas={6} className="mt-4 md:hidden" />
+      <CardsSkeleton linhas={6} className="mt-3 md:hidden" />
 
       {/* ── Rodapé de paginação ── */}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3 px-1">

@@ -33,7 +33,7 @@ export const DEFAULT_COLS: Record<ColKey, boolean> = {
 export const COL_TH_CLASS: Record<ColKey, string> = {
   marca: "hidden w-36 xl:table-cell",
   tipo: "hidden w-28 lg:table-cell",
-  categoria: "hidden w-44 lg:table-cell",
+  categoria: "hidden w-60 lg:table-cell",
   local: "hidden w-36 lg:table-cell",
   margem: "hidden w-24 sm:table-cell",
   fornecedor: "hidden w-40 md:table-cell",

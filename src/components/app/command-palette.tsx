@@ -27,6 +27,8 @@ import {
 import { searchProducts } from "@/app/(app)/produtos/actions";
 import type { ProductRow } from "@/app/(app)/produtos/_types";
 import type { Acesso, Permissao } from "@/lib/permissoes";
+import type { EstoquePolicy } from "@/lib/estoque-estrategia";
+import type { CamposCadastro } from "@/lib/cadastro-campos";
 import { podeEmAlguma } from "@/lib/permissoes";
 
 /**
@@ -141,11 +143,15 @@ export function CommandPalette({
   onClose,
   acessos,
   toggles,
+  policy,
+  campos,
 }: {
   open: boolean;
   onClose: () => void;
   acessos: Acesso[];
   toggles: NavToggles;
+  policy?: EstoquePolicy;
+  campos?: CamposCadastro;
 }) {
   const router = useRouter();
   const [q, setQ] = React.useState("");
@@ -386,10 +392,11 @@ export function CommandPalette({
 
       {selecionado && (
         <ProductSidePanel
-          key={selecionado.id}
           product={selecionado}
           onClose={() => setSelecionado(null)}
           onEdit={() => router.push(`/produtos/${selecionado.id}/editar`)}
+          policy={policy}
+          campos={campos}
         />
       )}
     </>

@@ -13,11 +13,12 @@ import { CorpoProdutosSkeleton } from "./_skeleton";
  */
 export default function ProdutosLoading() {
   return (
-    <div className="flex flex-col gap-5" aria-busy="true">
+    <div className="flex flex-col gap-3" aria-busy="true">
       <PageHeader
         title="Produtos"
         icon={navIcon("/produtos")}
-        innerClassName="max-w-none"
+        className="pb-3"
+        innerClassName="max-w-none px-3 sm:px-4"
         actions={
           <>
             <BotaoInerte variant="secondary">

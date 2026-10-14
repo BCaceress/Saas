@@ -62,6 +62,19 @@ export function nomeDaEmbalagem(unidade: string | null | undefined): string {
   );
 }
 
+/**
+ * Tipos que o cadastro oferece numa lista — os mesmos nomes que `NOMES` dá às
+ * siglas da nota, para "FD" no XML e "Fardo" na tela serem a mesma palavra.
+ * Fora da lista, o operador escreve o seu ("Outro").
+ */
+export const TIPOS_EMBALAGEM = ["Unidade", "Fardo", "Caixa", "Pacote"] as const;
+
+/** "fardo" → "Fardo"; nome fora da lista devolve null (vira "Outro" na tela). */
+export function tipoEmbalagemDaLista(nome: string | null | undefined): string | null {
+  const k = (nome ?? "").trim().toLowerCase();
+  return TIPOS_EMBALAGEM.find((t) => t.toLowerCase() === k) ?? null;
+}
+
 function capitalizar(s: string): string {
   return s.charAt(0) + s.slice(1).toLowerCase();
 }

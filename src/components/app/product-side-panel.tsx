@@ -7,8 +7,12 @@ import {
   ChevronUp, ChevronDown,
 } from "lucide-react";
 import { cn, brl, margem } from "@/lib/utils";
+import { POLICY_PADRAO, type EstoquePolicy } from "@/lib/estoque-estrategia";
+import { CAMPOS_PADRAO, type CamposCadastro } from "@/lib/cadastro-campos";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
+import { FotoEspera, fotoClasse, useFoto } from "@/components/app/foto-thumb";
+import { thumbSrc } from "@/lib/imagem";
 import { TIPO_LABEL, TipoIcone } from "@/components/app/produto-tipo";
 import { getProductInsights } from "@/app/(app)/produtos/actions";
 import type { ProductInsights } from "@/app/(app)/produtos/_data";
@@ -68,11 +72,15 @@ function buildAlerts(product: ProductRow, insights: ProductInsights | null): Ale
 
 /** Painel lateral de detalhes do produto — usado em /produtos e na busca global do navbar. */
 export function ProductSidePanel({
-  product, onClose, onEdit, navegacao,
+  product, onClose, onEdit, navegacao, policy = POLICY_PADRAO, campos = CAMPOS_PADRAO,
 }: {
   product: ProductRow;
   onClose: () => void;
   onEdit: () => void;
+  /** Estratégia de estoque: mínimo/ideal só aparecem para quem decide por eles. */
+  policy?: EstoquePolicy;
+  /** Campos do cadastro: SKU desligado em Configurações não aparece aqui. */
+  campos?: CamposCadastro;
   /**
    * Pular para o produto anterior/próximo da lista sem fechar o painel.
    * Conferir dez itens seguidos não pode custar dez fecha-acha-abre.
@@ -88,15 +96,18 @@ export function ProductSidePanel({
   const totalEstoque = product.estoque.fechado + product.estoque.aberto;
   const vendeDireto = product.tipo !== "INSUMO";
 
-  const [insights, setInsights] = useState<ProductInsights | null>(null);
-  const [loadingInsights, setLoadingInsights] = useState(true);
+  // O painel NÃO remonta ao trocar de produto (setas ↑/↓): remontar reabria o
+  // Sheet com a animação de entrada e a tela piscava. Os insights ficam
+  // amarrados ao id que os pediu — o do produto anterior não vaza para o atual.
+  const [res, setRes] = useState<{ id: string; dados: ProductInsights | null } | null>(null);
+  const loadingInsights = res?.id !== product.id;
+  const insights = loadingInsights ? null : res.dados;
 
-  // O painel remonta a cada produto (key={product.id} no chamador), então isto roda uma vez por produto aberto.
   useEffect(() => {
     let vivo = true;
     getProductInsights(product.id, product.tipo, product.precoVenda)
-      .then((d) => { if (vivo) setInsights(d); })
-      .finally(() => { if (vivo) setLoadingInsights(false); });
+      .then((d) => { if (vivo) setRes({ id: product.id, dados: d }); })
+      .catch(() => { if (vivo) setRes({ id: product.id, dados: null }); });
     return () => { vivo = false; };
   }, [product.id, product.tipo, product.precoVenda]);
 
@@ -110,7 +121,11 @@ export function ProductSidePanel({
     })),
   ].filter(Boolean) as { label: string; code: string }[];
 
-  const barraPct = product.estoque.ideal > 0
+  // Uma loja só: o detalhe por loja repetiria o total logo acima.
+  const locaisAtivos = product.locais.filter((l) => l.siteAtivo);
+  const multiLoja = new Set(locaisAtivos.map((l) => l.siteId)).size > 1;
+
+  const barraPct = policy.usaIdeal && product.estoque.ideal > 0
     ? Math.max(0, Math.min(100, Math.round((totalEstoque / product.estoque.ideal) * 100)))
     : null;
 
@@ -121,6 +136,7 @@ export function ProductSidePanel({
       title={product.nome}
       description={`${TIPO_LABEL[product.tipo]} · ${product.subcategoriaNome}`}
       width="lg"
+      entrada="suave"
       footer={
         <div className="flex items-center gap-2">
           {navegacao && (
@@ -156,20 +172,14 @@ export function ProductSidePanel({
       <div className="space-y-5">
         {/* Imagem + identificação */}
         <div className="flex items-center gap-3">
-          {product.imagemUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={product.imagemUrl}
-              alt=""
-              className="h-16 w-16 shrink-0 rounded-[var(--radius)] border border-line object-cover"
-            />
-          ) : (
-            <span className="grid h-16 w-16 shrink-0 place-items-center rounded-[var(--radius)] border border-line bg-surface-2 text-faint">
-              <TipoIcone tipo={product.tipo} size={22} />
-            </span>
-          )}
+          <FotoProduto url={product.imagemUrl} tipo={product.tipo} />
           <div className="min-w-0 flex-1">
-            <div className="font-mono text-[13px] font-medium text-ink">{product.sku}</div>
+            {/* Sem SKU na operação, o nome ocupa o lugar dele. */}
+            {campos.sku ? (
+              <div className="font-mono text-[13px] font-medium text-ink">{product.sku}</div>
+            ) : (
+              <div className="line-clamp-2 text-[14px] font-semibold leading-snug text-ink">{product.nome}</div>
+            )}
             {barcodeCodes.length > 0 && (
               <div className="mt-1 space-y-0.5">
                 {barcodeCodes.map((c) => (
@@ -229,9 +239,11 @@ export function ProductSidePanel({
             <div className="font-mono text-2xl font-bold text-ink tnum">
               {totalEstoque} <span className="text-sm font-normal text-muted">{product.unidadeBase}</span>
             </div>
-            <div className="text-right text-[12px] text-muted">
-              Mínimo: <span className="font-medium text-ink-2">{product.estoque.minimo}</span>
-            </div>
+            {policy.usaMinimo && (
+              <div className="text-right text-[12px] text-muted">
+                Mínimo: <span className="font-medium text-ink-2">{product.estoque.minimo}</span>
+              </div>
+            )}
           </div>
           {barraPct !== null && (
             <div className="mt-3">
@@ -245,9 +257,9 @@ export function ProductSidePanel({
             </div>
           )}
 
-          {product.locais.length > 0 && (
+          {multiLoja && (
             <div className="mt-3 space-y-2 border-t border-line pt-3">
-              {product.locais.map((l, i) => (
+              {locaisAtivos.map((l, i) => (
                 <div key={`${l.siteId}-${i}`} className="flex items-center justify-between gap-3 text-[13px]">
                   <div className="flex min-w-0 items-center gap-1.5 text-ink-2">
                     <Store size={12} className="shrink-0 text-faint" />
@@ -307,6 +319,47 @@ export function ProductSidePanel({
         )}
       </div>
     </Sheet>
+  );
+}
+
+/**
+ * Foto da ficha. Ao trocar de produto pelas setas o texto muda na hora e a foto
+ * ainda está a caminho: em vez de segurar a foto do produto anterior (que
+ * mentiria sobre qual produto está na tela), o quadro mostra o brilho de espera
+ * até a nova chegar.
+ *
+ * Miniatura pelo otimizador (`thumbSrc`) em vez do arquivo cheio: o quadro tem
+ * 64px, e baixar a foto original é o que fazia a troca demorar. A largura (96)
+ * é a MESMA da linha da tabela de /produtos — a foto já está no cache do
+ * navegador e a troca costuma ser imediata.
+ */
+function FotoProduto({ url, tipo }: { url: string | null; tipo: ProductRow["tipo"] }) {
+  const src = url ? thumbSrc(url, 96) : "";
+  const foto = useFoto(src);
+  const quadro = "relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-[var(--radius)] border border-line bg-surface-2 text-faint";
+
+  if (!url || foto.estado === "erro") {
+    return (
+      <span className={quadro}>
+        <TipoIcone tipo={tipo} size={22} />
+      </span>
+    );
+  }
+  return (
+    <span className={quadro} aria-busy={foto.estado === "carregando"}>
+      {foto.estado === "carregando" && <FotoEspera />}
+      {/* `key` pelo src: a <img> nova nasce vazia em vez de exibir a anterior. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        key={src}
+        src={src}
+        alt=""
+        width={64}
+        height={64}
+        {...foto.img}
+        className={cn("relative h-full w-full object-cover", fotoClasse(foto.estado))}
+      />
+    </span>
   );
 }
 

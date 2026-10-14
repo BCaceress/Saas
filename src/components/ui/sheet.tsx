@@ -38,10 +38,16 @@ export function Sheet({
   children,
   footer,
   width = "md",
+  entrada = "padrao",
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
+  /**
+   * Animação de abertura. `suave` é mais lenta e com deslocamento menor —
+   * para painel de consulta que o operador abre e fecha o dia inteiro.
+   */
+  entrada?: "padrao" | "suave";
   description?: React.ReactNode;
   /** Ícone ao lado do título — diz de relance que painel é este. */
   icon?: React.ReactNode;
@@ -81,14 +87,21 @@ export function Sheet({
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label={title}>
       <div
-        className="absolute inset-0 bg-ink/30 backdrop-blur-[2px] animate-[fade_120ms_ease-out]"
+        className={cn(
+          "absolute inset-0 bg-ink/30 backdrop-blur-[2px]",
+          entrada === "suave"
+            ? "animate-[fade_320ms_ease-out] motion-reduce:animate-none"
+            : "animate-[fade_120ms_ease-out]",
+        )}
         onClick={onClose}
         aria-hidden
       />
       <div
         className={cn(
           "relative flex h-full w-full flex-col overflow-hidden rounded-l-[var(--radius-xl)] bg-surface shadow-[var(--shadow-2)]",
-          "animate-[slidein_160ms_cubic-bezier(0.22,1,0.36,1)]",
+          entrada === "suave"
+            ? "animate-[slidein-suave_380ms_cubic-bezier(0.25,0.8,0.3,1)] motion-reduce:animate-none"
+            : "animate-[slidein_160ms_cubic-bezier(0.22,1,0.36,1)]",
           // A largura pode mudar com o painel aberto (prévia larga pede mais
           // espaço). Anima o degrau em vez de saltar — e quem pediu menos
           // movimento não vê animação nenhuma.
@@ -127,6 +140,7 @@ export function Sheet({
       </div>
       <style>{`
         @keyframes slidein { from { transform: translateX(16px); opacity: 0 } to { transform: none; opacity: 1 } }
+        @keyframes slidein-suave { from { transform: translateX(8px); opacity: 0 } to { transform: none; opacity: 1 } }
         @keyframes fade { from { opacity: 0 } to { opacity: 1 } }
         @media (prefers-reduced-motion: reduce) {
           .animate-\\[slidein_160ms_cubic-bezier\\(0\\.22\\,1\\,0\\.36\\,1\\)\\],

@@ -816,7 +816,10 @@ export function ProdutosClient(props: {
       <PageHeader
         title="Produtos"
         icon={navIcon("/produtos")}
-        innerClassName="max-w-none"
+        className="pb-3"
+        // Título na mesma linha vertical da barra de busca e da tabela (recuo
+        // igual ao padding do cartão abaixo).
+        innerClassName="max-w-none px-3 sm:px-4"
         actions={
           <>
             <Menu
@@ -884,7 +887,9 @@ export function ProdutosClient(props: {
         }
       />
 
-      <div className="w-full rounded-[var(--radius-lg)] bg-surface p-3 shadow-[var(--shadow-float)] sm:p-4">
+      {/* `-mt-2` encurta o vão do <main> (gap-5) só aqui: barra do sistema,
+          título e barra de ações já se separam pela borda do cabeçalho. */}
+      <div className="-mt-2 w-full rounded-[var(--radius-lg)] bg-surface p-3 shadow-[var(--shadow-float)] sm:px-4 sm:pb-4 sm:pt-3">
         {temProdutos && (
           <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius)] border border-line bg-surface-2 p-2">
             <div className="relative min-w-48 flex-1">
@@ -1060,7 +1065,7 @@ export function ProdutosClient(props: {
             <div
               role="list"
               className={cn(
-                "mt-4 grid grid-cols-1 gap-3 transition-opacity duration-150 ease-out sm:grid-cols-2 xl:grid-cols-3",
+                "mt-3 grid grid-cols-1 gap-3 transition-opacity duration-150 ease-out sm:grid-cols-2 xl:grid-cols-3",
                 carregando && "opacity-70",
               )}
             >
@@ -1077,7 +1082,6 @@ export function ProdutosClient(props: {
                   onImage={p.imagemUrl ? () => setImageUrl(p.imagemUrl) : undefined}
                   onEdit={() => editar(p)}
                   onArchive={() => toggleInativo(p)}
-                  onBuscarImagem={() => abrirImagens([p])}
                   onIntent={() => prefetchEditar(p.id)}
                 />
               ))}
@@ -1089,7 +1093,7 @@ export function ProdutosClient(props: {
                 `table-fixed`: sem ele a largura das colunas dança conforme o
                 tamanho dos nomes de cada página, e a tabela "pisca" ao paginar.
                 Cabeçalho grudado porque 200 linhas rolam para longe dele. */}
-            <div className="mt-4 hidden overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface md:block">
+            <div className="mt-3 hidden overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface md:block">
               <table className="w-full table-fixed text-left">
                 <thead className="sticky top-0 z-10 border-b border-line bg-surface-2 text-[11px] font-semibold uppercase tracking-wider text-faint">
                   <tr>
@@ -1099,7 +1103,7 @@ export function ProdutosClient(props: {
                     <SortableTh label="Produto" field="nome" sort={consulta.sort} dir={consulta.dir} onSort={toggleSort} />
                     {cols.marca && <SortableTh label="Marca" field="marca" sort={consulta.sort} dir={consulta.dir} onSort={toggleSort} className="hidden w-36 xl:table-cell" />}
                     {cols.tipo && <SortableTh label="Tipo" field="tipo" sort={consulta.sort} dir={consulta.dir} onSort={toggleSort} className="hidden w-28 lg:table-cell" />}
-                    {cols.categoria && <SortableTh label="Categoria" field="categoria" sort={consulta.sort} dir={consulta.dir} onSort={toggleSort} className="hidden w-44 lg:table-cell" />}
+                    {cols.categoria && <SortableTh label="Categoria" field="categoria" sort={consulta.sort} dir={consulta.dir} onSort={toggleSort} className="hidden w-60 lg:table-cell" />}
                     <SortableTh label="Preço" field="preco" sort={consulta.sort} dir={consulta.dir} onSort={toggleSort} className="w-32" />
                     {cols.local && <th className="hidden w-36 px-4 py-2.5 lg:table-cell">Local</th>}
                     {cols.margem && <SortableTh label="Margem" field="margem" sort={consulta.sort} dir={consulta.dir} onSort={toggleSort} className="hidden w-24 sm:table-cell" />}
@@ -1135,8 +1139,8 @@ export function ProdutosClient(props: {
                         onClick={() => setSelectedProduct(p)}
                         onPointerEnter={() => prefetchEditar(p.id)}
                         className={cn(
-                          "group relative cursor-pointer transition-colors hover:bg-brand-soft/30 focus-within:bg-brand-soft/30",
-                          "has-[input:checked]:bg-brand-soft/40",
+                          "group relative cursor-pointer transition-colors hover:bg-brand-soft focus-within:bg-brand-soft",
+                          "has-[input:checked]:bg-brand-softer/70",
                           !p.ativo && "opacity-50",
                         )}
                       >
@@ -1164,7 +1168,7 @@ export function ProdutosClient(props: {
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); setSelectedProduct(p); }}
-                                  className="min-w-0 cursor-pointer truncate rounded-sm text-left text-[13px] font-semibold leading-snug text-ink outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                                  className="min-w-0 cursor-pointer truncate rounded-sm text-left text-[14px] font-semibold leading-snug text-ink outline-none focus-visible:ring-2 focus-visible:ring-brand"
                                 >
                                   {p.nome}
                                 </button>
@@ -1206,8 +1210,8 @@ export function ProdutosClient(props: {
                         {/* Categoria */}
                         {cols.categoria && (
                           <td className={cn("hidden px-4 lg:table-cell", cellPad)}>
-                            <div className="text-[13px] font-medium text-ink-2">{p.subcategoriaNome}</div>
-                            {!denso && <div className="mt-0.5 text-[11px] text-faint">{p.categoriaNome}</div>}
+                            <div className="truncate text-[14px] font-medium text-ink-2">{p.subcategoriaNome}</div>
+                            {!denso && <div className="mt-0.5 truncate text-[12px] text-faint">{p.categoriaNome}</div>}
                           </td>
                         )}
 
@@ -1282,13 +1286,6 @@ export function ProdutosClient(props: {
                               }
                             >
                               <MenuItem icon={<Pencil size={15} />} onClick={() => editar(p)}>Editar</MenuItem>
-                              <MenuItem
-                                icon={<ImagePlus size={15} />}
-                                onClick={() => abrirImagens([p])}
-                                disabled={!p.ean}
-                              >
-                                Buscar imagem
-                              </MenuItem>
                               <div className="my-1 h-px bg-line" role="separator" />
                               <MenuItem
                                 icon={p.ativo ? <EyeOff size={15} /> : <Eye size={15} />}
@@ -1318,7 +1315,6 @@ export function ProdutosClient(props: {
               onImage={setImageUrl}
               onEdit={editar}
               onArchive={toggleInativo}
-              onBuscarImagem={(p) => abrirImagens([p])}
               onIntent={(p) => prefetchEditar(p.id)}
             />
 
@@ -1510,10 +1506,11 @@ export function ProdutosClient(props: {
         const idx = rows.findIndex((r) => r.id === selectedProduct.id);
         return (
           <ProductSidePanel
-            key={selectedProduct.id}
             product={selectedProduct}
             onClose={() => setSelectedProduct(null)}
             onEdit={() => sairPara(`/produtos/${selectedProduct.id}/editar`)}
+            policy={policy}
+            campos={campos}
             navegacao={
               idx >= 0
                 ? {
@@ -1828,7 +1825,7 @@ function BulkBar({
  * categoria/tipo, que não cabem na versão compacta do mobile.
  */
 function ProductCard({
-  p, giro, onToggle, onOpen, onImage, onEdit, onArchive, onBuscarImagem, onIntent, big, cols, info,
+  p, giro, onToggle, onOpen, onImage, onEdit, onArchive, onIntent, big, cols, info,
 }: {
   p: ProductRow;
   giro?: ProdutoGiro;
@@ -1839,8 +1836,6 @@ function ProductCard({
   onArchive: () => void;
   /** Mouse/dedo encostou no card — hora de pré-buscar o cadastro. */
   onIntent?: () => void;
-  /** Busca a foto do produto pelo código de barras. */
-  onBuscarImagem: () => void;
   big?: boolean;
   cols: Record<ColKey, boolean>;
   info: Record<InfoKey, boolean>;
@@ -1923,6 +1918,10 @@ function ProductCard({
                   onMouseLeave={tip.esconder}
                 >
                   <Barcode size={10} className="shrink-0" />{p.ean}
+                  {(() => {
+                    const extras = codigosExtras(p.ean, p.codigos, p.packagings);
+                    return extras > 0 ? <MaisCodigos n={extras} /> : null;
+                  })()}
                 </span>
               )}
             </div>
@@ -1990,9 +1989,6 @@ function ProductCard({
         }
       >
         <MenuItem icon={<Pencil size={15} />} onClick={onEdit}>Editar</MenuItem>
-        <MenuItem icon={<ImagePlus size={15} />} onClick={onBuscarImagem} disabled={!p.ean}>
-          Buscar imagem
-        </MenuItem>
         <div className="my-1 h-px bg-line" role="separator" />
         <MenuItem icon={p.ativo ? <EyeOff size={15} /> : <Eye size={15} />} onClick={onArchive}>
           {p.ativo ? "Inativar" : "Ativar"}
@@ -2144,7 +2140,7 @@ const LIMIAR_VIRTUAL = 120;
 const ALTURA_CARD = 88;
 
 function ListaCards({
-  rows, giro, cols, info, atenuado, onToggle, onOpen, onImage, onEdit, onArchive, onBuscarImagem, onIntent,
+  rows, giro, cols, info, atenuado, onToggle, onOpen, onImage, onEdit, onArchive, onIntent,
 }: {
   rows: ProductRow[];
   giro: Record<string, ProdutoGiro>;
@@ -2157,7 +2153,6 @@ function ListaCards({
   onImage: (url: string) => void;
   onEdit: (p: ProductRow) => void;
   onArchive: (p: ProductRow) => void;
-  onBuscarImagem: (p: ProductRow) => void;
   onIntent: (p: ProductRow) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -2195,7 +2190,6 @@ function ListaCards({
       onImage={p.imagemUrl ? () => onImage(p.imagemUrl!) : undefined}
       onEdit={() => onEdit(p)}
       onArchive={() => onArchive(p)}
-      onBuscarImagem={() => onBuscarImagem(p)}
       onIntent={() => onIntent(p)}
     />
   );
@@ -2355,6 +2349,7 @@ function BarcodeCell({
   const tip = useTooltip();
 
   const hasCodes = codigos.length > 0 || packagings.some((pk) => !!pk.ean);
+  const extras = codigosExtras(ean, codigos, packagings);
 
   function handleEnter() {
     if (!hasCodes) return;
@@ -2378,9 +2373,36 @@ function BarcodeCell({
         <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-2">
           <Barcode size={10} className="shrink-0 text-muted" />
           {ean}
+          {extras > 0 && <MaisCodigos n={extras} />}
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * Quantos códigos o produto tem além do principal (apelidos da unidade e EAN
+ * das embalagens). A linha mostra só o principal; o resto vira "+N" e a lista
+ * inteira fica no tooltip.
+ */
+function codigosExtras(
+  ean: string | null,
+  codigos: ProductBarcodeItem[],
+  packagings: ProductPackagingItem[],
+): number {
+  const todos = new Set([
+    ...codigos.map((c) => c.codigo),
+    ...packagings.flatMap((pk) => (pk.ean ? [pk.ean] : [])),
+  ]);
+  if (ean) todos.delete(ean);
+  return todos.size;
+}
+
+function MaisCodigos({ n }: { n: number }) {
+  return (
+    <span className="ml-1 rounded-full bg-surface-2 px-1.5 py-px font-sans text-[10px] font-medium text-muted">
+      +{n} {n === 1 ? "código" : "códigos"}
+    </span>
   );
 }
 
