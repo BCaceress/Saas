@@ -4,13 +4,15 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
+  ArrowRight,
   ChevronRight,
+  CirclePlus,
   FilePlus2,
   History,
+  Link2,
   Loader2,
-  ScanLine,
+  ScanBarcode,
   Search,
-  SkipForward,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -224,6 +226,7 @@ export function RelacionarProduto({
   supplierId,
   siteId,
   subcategorias: subcategoriasProp,
+  mostrarSku = true,
   onFechar,
   onPular,
   onRelacionado,
@@ -238,6 +241,8 @@ export function RelacionarProduto({
   siteId?: string | null;
   /** Quem já carregou no servidor passa; quem não passou, busca sob demanda. */
   subcategorias?: SubcategoriaCadastro[];
+  /** SKU ligado nas configurações de produto. */
+  mostrarSku?: boolean;
   onFechar: () => void;
   /** Deixar este para depois e ir ao próximo pendente. */
   onPular?: () => void;
@@ -257,8 +262,8 @@ export function RelacionarProduto({
   const [dono, setDono] = React.useState<DonoDoCodigo | null | undefined>(
     undefined,
   );
-  /** Linha destacada pelo teclado. */
-  const [ativo, setAtivo] = React.useState(0);
+  /** Produto marcado na lista (clique ou ↑↓). Nulo = nenhum ainda. */
+  const [ativo, setAtivo] = React.useState<number | null>(null);
   /**
    * Produto escolhido na busca — passo 2 (quantas unidades entram).
    *
@@ -315,13 +320,13 @@ export function RelacionarProduto({
         });
         if (!vivo) return;
         setResultados(r);
-        setAtivo(0);
+        setAtivo(null);
       } catch {
         if (vivo) toast.error("Falha ao buscar produtos.");
       } finally {
         if (vivo) setBuscando(false);
       }
-    }, 300);
+    }, 200);
     return () => {
       vivo = false;
       clearTimeout(t);
@@ -453,69 +458,81 @@ export function RelacionarProduto({
     !buscando && buscou && resultados.length === 0
       ? termosAlternativosDaDescricao(item.descricao, termo)
       : [];
+  /** O produto marcado na lista — é ele que o botão do rodapé relaciona. */
+  const marcado = ativo != null ? (lista[ativo] ?? null) : null;
+
+  function seguirCom(p: ProdutoBuscado) {
+    setSelecionado({ itemId: item.inboundItemId, produto: p });
+  }
 
   /**
-   * ↑↓ percorrem os resultados e Enter leva o destacado para o passo 2, com
-   * o cursor já no campo de unidades. Sem isto o fluxo era teclado na tabela →
-   * mouse no painel → teclado de novo.
+   * ↑↓ percorrem os resultados e Enter leva o marcado (ou o primeiro, se nada
+   * foi marcado) para o passo da conversão, com o cursor já no campo de
+   * unidades. Sem isto o fluxo era teclado na tabela → mouse no painel →
+   * teclado de novo.
    */
   function aoTeclar(e: React.KeyboardEvent) {
     if (cadastrando || escolhido || lista.length === 0) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setAtivo((i) => Math.min(i + 1, lista.length - 1));
+      setAtivo((i) => (i == null ? 0 : Math.min(i + 1, lista.length - 1)));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setAtivo((i) => Math.max(i - 1, 0));
+      setAtivo((i) => (i == null ? 0 : Math.max(i - 1, 0)));
     } else if (e.key === "Enter") {
-      const p = lista[ativo];
+      const p = marcado ?? lista[0];
       if (!p || salvando) return;
       e.preventDefault();
-      setSelecionado({ itemId: item.inboundItemId, produto: p });
+      seguirCom(p);
     }
   }
 
   React.useEffect(() => {
+    if (ativo == null) return;
     listaRef.current[lista[ativo]?.id ?? ""]?.scrollIntoView({
       block: "nearest",
     });
   }, [ativo, lista]);
 
+  const naBusca = !cadastrando && !escolhido;
+
   return (
     <Sheet
       open
       onClose={onFechar}
+      icon={<Link2 className="h-6 w-6 text-brand" aria-hidden />}
       title={item.productId ? "Trocar produto" : "Relacionar produto"}
-      description={
-        <>
-          {item.codigoFornecedor && (
-            <>
-              <span className="font-mono">{item.codigoFornecedor}</span>
-              {" — "}
-            </>
-          )}
-          <span className="text-ink-2">{item.descricao}</span>
-          {item.gtin && (
-            <>
-              {" · "}
-              <span className="font-mono">{item.gtin}</span>
-            </>
-          )}
-          {restantes > 0 && (
-            <>
-              {" · "}
-              <span className="font-medium text-accent">
-                {restantes === 1
-                  ? "mais 1 item por relacionar"
-                  : `mais ${restantes} itens por relacionar`}
-              </span>
-            </>
-          )}
-        </>
+      description="Encontre o produto já cadastrado no NoHub ou crie um novo."
+      width="xl"
+      footer={
+        naBusca ? (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            {onPular && restantes > 0 && (
+              // Item duvidoso não pode travar a fila: pular deixa este para o
+              // fim em vez de o operador fechar o painel e perder o embalo.
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={onPular}
+                disabled={salvando}
+              >
+                Pular por enquanto
+              </Button>
+            )}
+            <span className="flex-1" aria-hidden />
+            <Button
+              type="button"
+              disabled={!marcado || salvando}
+              onClick={() => marcado && seguirCom(marcado)}
+            >
+              Relacionar produto
+              <ArrowRight className="h-4 w-4" aria-hidden />
+            </Button>
+          </div>
+        ) : undefined
       }
-      width="2xl"
     >
-      <div className="space-y-3">
+      <div className="space-y-4">
         {camera && (
           <Scanner
             onCodigo={(codigo) => {
@@ -526,6 +543,10 @@ export function RelacionarProduto({
             dica="Bipe o código de barras do produto"
           />
         )}
+
+        {/* O que a nota diz sobre o item fica à vista nos três passos: é a
+            referência que o operador usa para escolher o produto certo. */}
+        <CartaoDoItem item={item} />
 
         {cadastrando ? (
           <CadastroRapido
@@ -542,6 +563,7 @@ export function RelacionarProduto({
           <ConfirmarVinculo
             produto={escolhido}
             item={item}
+            mostrarSku={mostrarSku}
             sugeridoPelaNota={sugeridoPelaNota}
             origemSugerida={origemSugerida}
             salvando={salvando}
@@ -552,39 +574,10 @@ export function RelacionarProduto({
           />
         ) : (
           <>
-            {/* O que a nota diz sobre o item fica visível o tempo todo: é a
-                referência que o operador usa para escolher o produto certo. */}
-            {item.quantidade != null && (
-              <div className="flex flex-wrap gap-x-6 gap-y-1 rounded-[var(--radius-md)] border border-line bg-surface-2 px-4 py-2.5 text-[12px]">
-                <span className="text-muted">
-                  Na nota:{" "}
-                  <span className="text-ink-2" title={rotuloDaUnidade(item.unidade)}>
-                    {fmtQtd(item.quantidade)} {(item.unidade ?? "").toUpperCase()}
-                  </span>
-                  {/* "0,6 MI" sozinho lê-se como "menos de um". O que a sigla
-                      vale em unidades é a informação que falta ali. */}
-                  {daUnidade != null && daUnidade > 1 && (
-                    <span className="text-faint">
-                      {" · "}
-                      {frasesDeConversao((item.unidade ?? "").toUpperCase(), daUnidade)}
-                    </span>
-                  )}
-                </span>
-                {item.custoLinha != null && item.custoLinha > 0 && (
-                  <span className="text-muted">
-                    Custo do item:{" "}
-                    <span className="font-mono text-ink-2">
-                      {fmtMoney(item.custoLinha)}
-                    </span>
-                  </span>
-                )}
-              </div>
-            )}
-
             <div className="flex items-center gap-2">
               <div className="relative min-w-0 flex-1">
                 <Search
-                  className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-faint"
+                  className="pointer-events-none absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-brand"
                   aria-hidden
                 />
                 <input
@@ -595,11 +588,11 @@ export function RelacionarProduto({
                   aria-label="Buscar produto no catálogo"
                   autoFocus
                   onKeyDown={aoTeclar}
-                  className="h-10 w-full rounded-full border border-line-button bg-surface pr-16 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  className="h-11 w-full rounded-full border-2 border-line-strong bg-surface pr-16 pl-10 text-sm text-ink transition-colors placeholder:text-faint focus-visible:border-brand focus-visible:outline-none"
                 />
                 {buscando && (
                   <Loader2
-                    className="absolute top-1/2 right-9 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-faint"
+                    className="absolute top-1/2 right-10 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-faint"
                     aria-hidden
                   />
                 )}
@@ -613,20 +606,21 @@ export function RelacionarProduto({
                       buscaRef.current?.focus();
                     }}
                     aria-label="Limpar busca"
-                    className="absolute top-1/2 right-3 -translate-y-1/2 rounded-full p-1 text-faint transition-colors hover:text-ink"
+                    className="absolute top-1/2 right-3 grid h-7 w-7 -translate-y-1/2 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink"
                   >
-                    <X className="h-3.5 w-3.5" aria-hidden />
+                    <X className="h-4 w-4" aria-hidden />
                   </button>
                 )}
               </div>
               <Button
                 type="button"
                 variant="secondary"
-                size="sm"
+                className="h-11 shrink-0"
                 onClick={() => setCamera(true)}
               >
-                <ScanLine className="h-4 w-4" aria-hidden />
-                Bipar
+                <ScanBarcode className="h-4 w-4" aria-hidden />
+                <span className="hidden sm:inline">Bipar código</span>
+                <span className="sm:hidden">Bipar</span>
               </Button>
             </div>
 
@@ -636,13 +630,13 @@ export function RelacionarProduto({
                 apagando palavra por palavra. */}
             {termosAlternativos.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] text-faint">Tentar por:</span>
+                <span className="text-[12px] text-muted">Tentar por:</span>
                 {termosAlternativos.map((t) => (
                   <button
                     key={t}
                     type="button"
                     onClick={() => setTermo(t)}
-                    className="rounded-full border border-line-button px-2.5 py-1 text-[11px] text-ink-2 transition-colors hover:border-brand hover:text-brand"
+                    className="cursor-pointer rounded-full border border-line-strong px-2.5 py-1 text-[12px] text-ink-2 transition-colors hover:border-brand hover:text-brand-strong"
                   >
                     {t}
                   </button>
@@ -654,34 +648,36 @@ export function RelacionarProduto({
                 duplicata, e aí o PDV passa a vender o produto errado ao bipar
                 — erro que só aparece no inventário que não fecha. */}
             {dono && (
-              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[var(--radius-md)] border border-info/40 bg-info-soft px-3.5 py-2.5 text-[12px] text-info">
-                <TriangleAlert size={14} className="shrink-0" aria-hidden />
+              <p className="flex items-start gap-2 rounded-[var(--radius)] border border-info/40 bg-info-soft px-3.5 py-2.5 text-[12px] text-info">
+                <TriangleAlert size={14} className="mt-px shrink-0" aria-hidden />
                 <span>
-                  O código <span className="font-mono">{item.gtin}</span> já é{" "}
-                  {dono.onde} de{" "}
-                  <span className="font-medium">{dono.nome}</span> ({dono.sku}).
-                  Provavelmente é este produto — cadastrar outro faria o leitor
-                  apontar para dois.
+                  O código <span className="font-mono">{item.gtin}</span> já é {dono.onde} de{" "}
+                  <span className="font-medium">{dono.nome}</span>
+                  {mostrarSku && ` (${dono.sku})`}. Provavelmente é este produto — cadastrar
+                  outro faria o leitor apontar para dois.
                 </span>
               </p>
             )}
 
-            <p className="text-[12px] text-muted">
-              {buscando
-                ? "Procurando…"
-                : mostrandoHistorico
-                  ? "Comece pelo que este fornecedor já mandou antes — ou digite para buscar no catálogo inteiro."
-                  : "Escolha o produto do catálogo. Quantas unidades entram no estoque é a próxima pergunta. ↑ ↓ percorrem, Enter escolhe."}
-            </p>
+            <div className="flex items-end justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="font-display text-[15px] font-semibold text-ink">
+                  {mostrandoHistorico ? "Já veio deste fornecedor" : "Produtos encontrados"}
+                </h3>
+                <p className="text-[12px] text-muted">
+                  {mostrandoHistorico
+                    ? "Comece pelo que este fornecedor já mandou — ou busque no catálogo inteiro."
+                    : "Selecione o produto correspondente ao item da nota."}
+                </p>
+              </div>
+              {lista.length > 0 && (
+                <span className="shrink-0 text-[12px] text-muted tabular-nums">
+                  {lista.length} {lista.length === 1 ? "resultado" : "resultados"}
+                </span>
+              )}
+            </div>
 
-            {mostrandoHistorico && (
-              <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
-                <History size={11} aria-hidden />
-                Já veio deste fornecedor
-              </p>
-            )}
-
-            <ul className="space-y-1.5">
+            <ul className="space-y-2.5">
               {lista.map((p, i) => (
                 <Resultado
                   key={p.id}
@@ -690,46 +686,41 @@ export function RelacionarProduto({
                   }}
                   produto={p}
                   item={item}
-                  focado={i === ativo}
-                  onSelecionar={(produto) =>
-                    setSelecionado({ itemId: item.inboundItemId, produto })
-                  }
+                  mostrarSku={mostrarSku}
+                  marcado={i === ativo}
+                  doHistorico={mostrandoHistorico}
+                  salvando={salvando}
+                  onMarcar={() => setAtivo(i)}
+                  onRelacionar={() => seguirCom(p)}
                 />
               ))}
             </ul>
 
-            {!buscando &&
-              termo.trim().length >= 2 &&
-              resultados.length === 0 && (
-                <p className="rounded-[var(--radius)] border border-dashed border-line px-4 py-6 text-center text-[13px] text-muted">
-                  {podeCadastrar
-                    ? `Nenhum produto com "${termo.trim()}". Tente outro termo — ou cadastre este item agora, com o que a nota já traz.`
-                    : `Nenhum produto com "${termo.trim()}". Tente outro termo — ou cadastre o produto e volte aqui, a nota continua esperando.`}
-                </p>
-              )}
+            {!buscando && buscou && resultados.length === 0 && (
+              <p className="rounded-[var(--radius)] border border-dashed border-line-strong px-4 py-6 text-center text-[13px] text-muted">
+                Nenhum produto com “{termo.trim()}”. Tente outro termo
+                {podeCadastrar
+                  ? " — ou cadastre este item agora, com o que a nota já traz."
+                  : " — ou cadastre o produto e volte aqui: a nota continua esperando."}
+              </p>
+            )}
 
             {podeCadastrar && (
               <button
                 type="button"
                 onClick={() => setCadastrando(true)}
-                className="flex w-full items-center justify-center gap-1.5 rounded-[var(--radius)] border border-dashed border-line-button px-4 py-2.5 text-[13px] font-medium text-brand transition-colors hover:bg-brand-soft/40"
+                className="flex w-full cursor-pointer items-center gap-3 rounded-[var(--radius-lg)] border border-dashed border-brand/50 bg-brand-soft/50 px-4 py-3.5 text-left transition-colors hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
               >
-                <FilePlus2 className="h-4 w-4" aria-hidden />
-                Não achou? Cadastrar produto novo
-              </button>
-            )}
-
-            {onPular && restantes > 0 && (
-              // Item duvidoso não pode travar a fila. Pular deixa este para o
-              // fim em vez de o operador fechar o painel e perder o embalo.
-              <button
-                type="button"
-                onClick={onPular}
-                disabled={salvando}
-                className="flex w-full items-center justify-center gap-1.5 py-1 text-[12px] font-medium text-muted transition-colors hover:text-ink disabled:opacity-50"
-              >
-                Decidir depois — ir para o próximo
-                <SkipForward className="h-3.5 w-3.5" aria-hidden />
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-brand-softer text-brand">
+                  <CirclePlus className="h-5 w-5" aria-hidden />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[14px] font-semibold text-accent">Não encontrou?</span>
+                  <span className="block text-[13px] text-ink-2">
+                    Cadastrar produto com dados da nota
+                  </span>
+                </span>
+                <ChevronRight className="h-5 w-5 shrink-0 text-accent" aria-hidden />
               </button>
             )}
           </>
@@ -738,26 +729,102 @@ export function RelacionarProduto({
     </Sheet>
   );
 }
-// ── Uma linha de resultado ──────────────────────────────────
+
+// ── O item da nota ──────────────────────────────────────────
 
 /**
- * Só responde "é este produto?".
+ * O item como o fornecedor faturou, no topo do painel nos três passos: é contra
+ * ele que a pessoa compara cada produto da lista. Sem foto — item de nota não
+ * tem imagem.
+ */
+function CartaoDoItem({ item }: { item: ItemDeNota }) {
+  const uCom = (item.unidade ?? "").trim().toUpperCase();
+  const daUnidade = fatorDaUnidade(item.unidade);
+
+  return (
+    <div className="rounded-[var(--radius-lg)] border border-brand/15 bg-brand-soft px-4 py-3.5">
+      <div className="min-w-0">
+        <p className="text-[13px] leading-snug font-semibold text-ink">{item.descricao}</p>
+        <dl className="mt-2.5 grid grid-cols-2 gap-y-2.5 sm:grid-cols-4">
+          <DadoDoItem rotulo="Código do fornecedor" mono>
+            {item.codigoFornecedor || "—"}
+          </DadoDoItem>
+          <DadoDoItem rotulo="EAN da nota" mono>
+            {item.gtin || "—"}
+          </DadoDoItem>
+          <DadoDoItem rotulo="Quantidade na nota">
+            {item.quantidade != null ? (
+              // "0,6 MI" sozinho lê-se como "menos de um". O que a sigla vale
+              // em unidades fica a um hover.
+              <span
+                title={
+                  daUnidade != null && daUnidade > 1
+                    ? `${rotuloDaUnidade(item.unidade)}: ${frasesDeConversao(uCom, daUnidade)}`
+                    : rotuloDaUnidade(item.unidade)
+                }
+              >
+                {fmtQtd(item.quantidade)} {uCom}
+              </span>
+            ) : (
+              "—"
+            )}
+          </DadoDoItem>
+          <DadoDoItem rotulo="Custo do item">
+            {item.custoLinha != null && item.custoLinha > 0 ? fmtMoney(item.custoLinha) : "—"}
+          </DadoDoItem>
+        </dl>
+      </div>
+    </div>
+  );
+}
+
+function DadoDoItem({
+  rotulo,
+  mono,
+  children,
+}: {
+  rotulo: string;
+  mono?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="min-w-0 border-brand/20 pr-3 sm:border-l sm:pl-3 sm:first:border-l-0 sm:first:pl-0">
+      <dt className="text-[11px] leading-tight text-muted">{rotulo}</dt>
+      <dd className={cn("mt-0.5 text-[13px] break-all text-ink", mono && "font-mono text-[12px]")}>
+        {children}
+      </dd>
+    </div>
+  );
+}
+
+// ── Um produto da lista ─────────────────────────────────────
+
+/**
+ * Responde "é este produto?" — e, se for, relaciona.
  *
- * Antes cada linha carregava junto os botões de embalagem, o campo de fator e
- * o botão de relacionar — dez painéis de conversão empilhados numa busca de
- * dez resultados, e o operador escolhendo a conversão antes de ter escolhido
- * o produto. A conversão saiu daqui e virou o passo 2.
+ * Nome, códigos e o que decide entre dois nomes quase iguais (saldo, última
+ * compra, custo médio) à esquerda; a embalagem que a nota sugere e o botão à
+ * direita. Clicar no cartão só marca (o rodapé relaciona o marcado); o botão
+ * relaciona direto. A conversão continua sendo o passo seguinte, nunca uma
+ * escolha feita aqui antes de o produto estar decidido.
  */
 const Resultado = React.forwardRef<
   HTMLLIElement,
   {
     produto: ProdutoBuscado;
     item: ItemDeNota;
-    /** Linha destacada pelo teclado. */
-    focado: boolean;
-    onSelecionar: (produto: ProdutoBuscado) => void;
+    mostrarSku: boolean;
+    marcado: boolean;
+    /** Veio do histórico do fornecedor, não da busca. */
+    doHistorico: boolean;
+    salvando: boolean;
+    onMarcar: () => void;
+    onRelacionar: () => void;
   }
->(function Resultado({ produto: p, item, focado, onSelecionar }, ref) {
+>(function Resultado(
+  { produto: p, item, mostrarSku, marcado, doHistorico, salvando, onMarcar, onRelacionar },
+  ref,
+) {
   const casa = casaPorCodigo(
     {
       ean: p.ean,
@@ -771,74 +838,98 @@ const Resultado = React.forwardRef<
     item.gtin,
   );
   const medida = medidaDoProduto(p);
+  const vinculo = vinculoDoProduto(p, item);
+  const uCom = (item.unidade ?? "").trim().toUpperCase() || UNIDADE_ENTRADA;
+  // Caixa sem número declarado em lugar nenhum: dizer "1 UN" aqui seria
+  // afirmar uma conversão que ninguém fez.
+  const semConversao =
+    unidadeComercial(item.unidade)?.classe === "EMBALAGEM" &&
+    !vinculo.packagingId &&
+    vinculo.fatorConversao === 1;
+  const embalagem = semConversao
+    ? "A definir"
+    : vinculo.fatorConversao > 1
+      ? `${uCom} ${fmtQtd(vinculo.fatorConversao)} UN`
+      : uCom;
+  const codigos = [mostrarSku ? `SKU: ${p.sku}` : null, p.ean ? `EAN: ${p.ean}` : null].filter(
+    Boolean,
+  );
+  const contexto = [
+    p.marca,
+    medida,
+    p.saldo > 0 ? `${fmtQtd(p.saldo)} ${UNIDADE_ENTRADA} em estoque` : "sem saldo",
+    p.ultimaCompra
+      ? `última compra ${dia(p.ultimaCompra.data)}: ${fmtMoney(p.ultimaCompra.custoUnitario)}${p.ultimaCompra.doMesmoFornecedor ? " (mesmo fornecedor)" : ""}`
+      : null,
+    p.custoMedio > 0 ? `custo médio ${fmtMoney(p.custoMedio)}` : null,
+  ].filter(Boolean);
 
   return (
     <li ref={ref}>
-      <button
-        type="button"
-        onClick={() => onSelecionar(p)}
+      <div
+        onClick={onMarcar}
         className={cn(
-          "flex w-full items-center gap-3 rounded-[var(--radius)] border px-3 py-2 text-left transition-colors",
-          casa
-            ? "border-ok/40 bg-ok-soft/25 hover:bg-ok-soft/40"
-            : "border-line hover:border-line-button hover:bg-surface-2/60",
-          focado && "ring-1 ring-brand/60 ring-inset",
+          "flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-3 rounded-[var(--radius-lg)] border bg-surface px-4 py-3.5 transition-colors",
+          marcado
+            ? "border-brand ring-1 ring-brand/40"
+            : "border-line hover:border-line-strong",
         )}
       >
-        <ProdutoThumb url={p.imagemUrl} nome={p.nome} />
+        <ProdutoThumb url={p.imagemUrl} nome={p.nome} size="xl" />
 
-        <div className="min-w-0 flex-1">
-          <p className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium text-ink">
-              {p.nome}
-            </span>
-            {casa && (
-              <span className="shrink-0 rounded-full bg-ok-soft px-2 py-0.5 text-[10px] font-medium text-ok">
-                mesmo código
-              </span>
-            )}
-          </p>
-          <p className="truncate font-mono text-[11px] text-muted">
-            {/* A marca vem primeiro e em letra comum: entre dois "Cerveja Long
-                Neck 330ml", é ela que diz qual é qual. */}
-            {p.marca && <span className="font-sans font-medium text-ink-2">{p.marca} · </span>}
-            {p.sku}
-            {medida ? ` · ${medida}` : ""}
-            {p.ean ? ` · ${p.ean}` : ""}
-          </p>
-
-          {/* O que responde "é este mesmo?" não é o SKU — é o que está na
-              prateleira e o que este fornecedor cobrou da última vez. Entre
-              dois nomes quase iguais, é isto que decide. */}
-          <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-faint">
-            <span className={p.saldo > 0 ? "text-muted" : undefined}>
-              {p.saldo > 0
-                ? `${fmtQtd(p.saldo)} ${UNIDADE_ENTRADA} em estoque`
-                : "sem saldo"}
-            </span>
-            {p.ultimaCompra && (
-              <span>
-                · última {dia(p.ultimaCompra.data)}:{" "}
-                <span className="font-mono">
-                  {fmtMoney(p.ultimaCompra.custoUnitario)}
+        <div className="min-w-0 flex-1 basis-40">
+          <p className="text-[14px] leading-snug font-semibold text-ink">{p.nome}</p>
+          {codigos.length > 0 && (
+            <p className="mt-0.5 font-mono text-[12px] text-muted">{codigos.join("  |  ")}</p>
+          )}
+          {/* O que responde "é este mesmo?" não é o código — é o que está na
+              prateleira e o que este fornecedor cobrou da última vez. */}
+          <p className="mt-0.5 text-[12px] text-muted">{contexto.join(" · ")}</p>
+          {/* Selo só quando diz algo além de "apareceu na busca": código de
+              barras batendo é prova, e o histórico explica por que o produto
+              está na lista sem ninguém ter buscado. */}
+          {(casa || doHistorico) && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {casa ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-ok-soft px-2.5 py-1 text-[11px] font-medium text-ok">
+                  <ScanBarcode className="h-3.5 w-3.5" aria-hidden />
+                  Mesmo código de barras
                 </span>
-                {p.ultimaCompra.doMesmoFornecedor && (
-                  <span className="text-brand"> · mesmo fornecedor</span>
-                )}
-              </span>
-            )}
-          </p>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-ink-2">
+                  <History className="h-3.5 w-3.5" aria-hidden />
+                  Já veio deste fornecedor
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
-        <span className="shrink-0 text-right">
-          <span className="block font-mono text-[11px] text-muted">
-            {p.custoMedio > 0 ? fmtMoney(p.custoMedio) : "sem custo"}
-          </span>
-          <span className="block text-[10px] text-faint">custo médio</span>
-        </span>
-
-        <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
-      </button>
+        <div className="flex shrink-0 items-center gap-4 border-line sm:border-l sm:pl-4">
+          <div className="min-w-[4.5rem]">
+            <p className="text-[11px] text-muted">Embalagem</p>
+            <p
+              className={cn(
+                "text-[13px] font-semibold whitespace-nowrap",
+                semConversao ? "text-warn" : "text-ink",
+              )}
+            >
+              {embalagem}
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            disabled={salvando}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRelacionar();
+            }}
+          >
+            Relacionar
+          </Button>
+        </div>
+      </div>
     </li>
   );
 });
@@ -856,6 +947,7 @@ const Resultado = React.forwardRef<
 function ConfirmarVinculo({
   produto: p,
   item,
+  mostrarSku,
   sugeridoPelaNota,
   origemSugerida,
   salvando,
@@ -864,6 +956,7 @@ function ConfirmarVinculo({
 }: {
   produto: ProdutoBuscado;
   item: ItemDeNota;
+  mostrarSku: boolean;
   sugeridoPelaNota: number | null;
   origemSugerida: OrigemSugerida;
   salvando: boolean;
@@ -930,9 +1023,13 @@ function ConfirmarVinculo({
           <p className="truncate text-sm font-medium text-ink">{p.nome}</p>
           <p className="truncate font-mono text-[11px] text-muted">
             {p.marca && <span className="font-sans font-medium text-ink-2">{p.marca} · </span>}
-            {p.sku}
-            {medida ? ` · ${medida}` : ""}
-            {p.custoMedio > 0 ? ` · médio ${fmtMoney(p.custoMedio)}` : ""}
+            {[
+              mostrarSku ? p.sku : null,
+              medida,
+              p.custoMedio > 0 ? `médio ${fmtMoney(p.custoMedio)}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
           </p>
         </div>
         <Button

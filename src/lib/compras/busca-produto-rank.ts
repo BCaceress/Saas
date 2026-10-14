@@ -18,6 +18,11 @@ export type ProdutoRanqueavel = {
   /** Apelidos de código: mesma unidade, marcas diferentes. */
   codigos?: { codigo: string }[];
   embalagens: { ean: string | null }[];
+  /**
+   * Parecença do nome com o termo inteiro (0 a 1), calculada no banco por
+   * trigramas. Ausente = o produto entrou por outro caminho (código, palavra).
+   */
+  similaridade?: number;
 };
 
 /** Termo de busca partido em pedaços comparáveis. */
@@ -31,6 +36,42 @@ export function tokensDaBusca(termo: string): string[] {
 
 const limpo = (s: string) => semAcento(s).toLowerCase();
 
+/** Distância de edição — quantas letras trocar, pôr ou tirar de um para o outro. */
+function distancia(a: string, b: string): number {
+  if (a === b) return 0;
+  let anterior = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const atual = [i];
+    for (let j = 1; j <= b.length; j++) {
+      atual[j] = Math.min(
+        anterior[j] + 1,
+        atual[j - 1] + 1,
+        anterior[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    anterior = atual;
+  }
+  return anterior[b.length];
+}
+
+/**
+ * A palavra digitada é esta, com erro de digitação? "heinekn" é "heineken",
+ * "refrigerante" é "refrigernte". Palavra curta não ganha folga: "lt" e "kg"
+ * com uma letra de diferença já são outra coisa. Vale também para o começo da
+ * palavra — quem está digitando "morang" ainda não terminou "morango".
+ */
+export function quaseIgual(digitada: string, palavra: string): boolean {
+  const folga = digitada.length >= 7 ? 2 : digitada.length >= 4 ? 1 : 0;
+  if (folga === 0) return false;
+  if (Math.abs(palavra.length - digitada.length) <= folga && distancia(digitada, palavra) <= folga) {
+    return true;
+  }
+  return (
+    palavra.length > digitada.length &&
+    distancia(digitada, palavra.slice(0, digitada.length)) <= folga
+  );
+}
+
 /**
  * Quanto este produto responde ao que foi digitado. Maior = mais em cima.
  *
@@ -39,10 +80,13 @@ const limpo = (s: string) => semAcento(s).toLowerCase();
  *   2. SKU idêntico;
  *   3. o nome COMEÇA com o que foi digitado;
  *   4. cada palavra digitada abre uma palavra do nome ("hein" → "Heineken");
- *   5. a palavra aparece no meio de alguma palavra do nome.
+ *   5. a palavra aparece no meio de alguma palavra do nome;
+ *   6. a palavra quase bate — erro de digitação ou abreviação ("heinekn").
  *
  * Palavra digitada que não aparece de jeito nenhum tira ponto: "heineken lata"
- * não pode empatar com "heineken long neck" só porque metade bateu.
+ * não pode empatar com "heineken long neck" só porque metade bateu. A
+ * parecença calculada no banco soma por cima, para desempatar o que chegou
+ * por aproximação.
  */
 export function pontuarProduto(
   p: ProdutoRanqueavel,
@@ -81,8 +125,11 @@ export function pontuarProduto(
     else if (palavras.some((w) => w.startsWith(t))) pontos += 40;
     else if (nome.includes(t)) pontos += 15;
     else if (sku.includes(t)) pontos += 10;
+    else if (palavras.some((w) => quaseIgual(t, w))) pontos += 20;
     else pontos -= 25; // não apareceu em lugar nenhum
   }
+
+  pontos += (p.similaridade ?? 0) * 60;
 
   // Empate entre dois que batem igual: o nome mais curto é o mais específico
   // ("Heineken 330ml" antes de "Heineken 330ml kit festa 12un").

@@ -505,6 +505,34 @@ export async function aceitarCustoAction(input: { receiptId: string; itemId: str
   });
 }
 
+// ── Observações ─────────────────────────────────────────────
+
+const observacaoSchema = z.object({
+  receiptId: z.string().min(1),
+  observacao: z.string().trim().max(500, "A observação cabe em até 500 caracteres."),
+});
+
+/**
+ * A anotação livre do recebimento — "motorista avisou que o resto vem na
+ * sexta". Não muda estoque nem custo; fica com o recebimento, para quem abrir
+ * depois.
+ */
+export async function salvarObservacaoAction(input: z.input<typeof observacaoSchema>) {
+  return tx(async () => {
+    const d = observacaoSchema.parse(input);
+    const receipt = await db.goodsReceipt.findFirst({
+      where: { id: d.receiptId },
+      select: { id: true },
+    });
+    if (!receipt) throw new Error("Recebimento não encontrado.");
+    await db.goodsReceipt.update({
+      where: { id: receipt.id },
+      data: { observacao: d.observacao || null },
+    });
+    revalidatePath(`${ROTA}/${receipt.id}`);
+  });
+}
+
 // ── Fechar ──────────────────────────────────────────────────
 
 const finalizarSchema = z.object({

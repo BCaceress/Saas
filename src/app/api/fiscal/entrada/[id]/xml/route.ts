@@ -10,12 +10,16 @@ import { db } from "@/lib/prisma";
  * faltava um jeito de tirá-lo de lá. Quem pede é sempre o contador — e sem esta
  * rota o operador tem de voltar ao e-mail do fornecedor procurar o anexo.
  *
- * GET /api/fiscal/entrada/<inboundId>/xml
+ * GET /api/fiscal/entrada/<inboundId>/xml         baixa o arquivo
+ * GET /api/fiscal/entrada/<inboundId>/xml?ver=1   abre no navegador
  */
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  // "Ver" e "baixar" são o mesmo arquivo; muda só o que o navegador faz com
+  // ele. Conferir uma tag do XML não deveria deixar um arquivo em Downloads.
+  const ver = new URL(req.url).searchParams.has("ver");
 
   const ctx = await requireActiveTenant();
   if (!podeEmAlguma(ctx.acessos, "fiscal.baixar")) {
@@ -39,7 +43,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   return new Response(nota.xmlArquivo.conteudo, {
     headers: {
       "Content-Type": "application/xml; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${nota.chave}.xml"`,
+      "Content-Disposition": `${ver ? "inline" : "attachment"}; filename="${nota.chave}.xml"`,
       "Cache-Control": "private, no-store",
     },
   });

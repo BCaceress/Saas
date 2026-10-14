@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
 import { podeEmAlguma, SemPermissaoError } from "@/lib/permissoes";
 import { db } from "@/lib/prisma";
+import { camposDoTenant } from "@/lib/cadastro-campos";
 import { garantirRecebimentoDaNota } from "@/lib/compras/recebimento";
 import { carregarRecebimento, listarSubcategoriasParaCadastro } from "../_data";
 import { RecebimentoClient } from "./_client";
@@ -21,10 +22,13 @@ export default async function RecebimentoDetalhePage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ origem?: string }>;
+  searchParams: Promise<{ origem?: string; etapa?: string }>;
 }) {
   const { id } = await params;
-  const { origem } = await searchParams;
+  const { origem, etapa } = await searchParams;
+  // Com a conferência aberta, a etapa da nota só aparece quando pedida: os
+  // itens do XML e o fornecedor não entram na conta de quem está contando.
+  const verNota = etapa === "nota";
   const ctx = await requireActiveTenant();
   // O recebimento é assunto das duas pontas: quem confere na doca e quem trata
   // o XML no escritório. Exigir só `compras.receber` trancava o contador para
@@ -39,6 +43,9 @@ export default async function RecebimentoDetalhePage({
   // A decisão que o recebimento provoca FORA dele: aceitar o contato que o XML
   // trouxe para o fornecedor. Quem não pode vê a informação, sem o botão.
   const podeEditarFornecedor = podeEmAlguma(ctx.acessos, "fornecedor.editar");
+  // A rota do XML exige esta permissão; sem ela, os botões só levariam a um
+  // "sem permissão" depois do clique.
+  const podeBaixarXml = podeEmAlguma(ctx.acessos, "fiscal.baixar");
 
   const destino = await withTenant(ctx, async () => {
     const existe = await db.goodsReceipt.findFirst({ where: { id }, select: { id: true } });
@@ -56,7 +63,7 @@ export default async function RecebimentoDetalhePage({
 
   const [dados, subcategorias] = await withTenant(ctx, () =>
     Promise.all([
-      carregarRecebimento(ctx.tenant.id, id, { origem: origem ?? null }),
+      carregarRecebimento(ctx.tenant.id, id, { origem: origem ?? null, verNota }),
       podeCriarProduto ? listarSubcategoriasParaCadastro() : Promise.resolve([]),
     ]),
   );
@@ -65,10 +72,14 @@ export default async function RecebimentoDetalhePage({
   return (
     <RecebimentoClient
       dados={dados}
+      verNota={verNota}
       podeReceber={podeReceber}
       podeTratarNota={podeTratarNota}
       podeCriarProduto={podeCriarProduto}
       podeEditarFornecedor={podeEditarFornecedor}
+      podeBaixarXml={podeBaixarXml}
+      // SKU desligado nas configurações de produto some daqui também.
+      mostrarSku={camposDoTenant(ctx.tenant).sku}
       cega={ctx.tenant.conferenciaCega}
       subcategorias={subcategorias}
     />

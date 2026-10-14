@@ -3,13 +3,18 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
-  ArrowRightLeft,
+  CalendarClock,
   Check,
   CheckCheck,
+  CircleCheck,
   ClipboardCheck,
+  Clock3,
+  Download,
+  Gift,
   History,
+  Link2,
   Loader2,
-  PackageOpen,
+  MoreVertical,
   PackagePlus,
   Plus,
   Trash2,
@@ -17,12 +22,13 @@ import {
   Search,
   Send,
   Undo2,
-  TrendingDown,
-  TrendingUp,
   TriangleAlert,
+  Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/misc";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import { Sheet } from "@/components/ui/sheet";
 import { toast } from "@/components/ui/toast";
 import { Scanner } from "@/components/mobile/scanner";
@@ -31,19 +37,14 @@ import {
   RelacionarProduto,
   type ItemDeNota,
 } from "@/components/recebimento/relacionar-produto";
-import { PainelNota } from "./_painel-nota";
-import { EntradaDaNota } from "./_entrada";
-import {
-  Cabecalho,
-  ETAPAS_COM_NOTA,
-  MedidorRodape,
-  RodapeAcao,
-  Trilho,
-} from "./_partes";
+import { Filtro, Th } from "@/components/recebimento/tabela-de-para";
+import { EtapaNota } from "./_entrada";
+import { MedidorRodape, RodapeAcao, Topo } from "./_partes";
 import { useLeitorTeclado } from "@/lib/hooks/use-leitor-teclado";
+import { baixarXlsx } from "@/lib/baixar-xlsx";
 import { variacaoCusto } from "@/lib/compras/conciliacao-regras";
 import { frasesDeConversao, rotuloDaUnidade } from "@/lib/fiscal/unidades";
-import { Metrica, MetricaGrid, fmtMoney, fmtQtd } from "../../cotacoes/_catalogo/ui";
+import { fmtMoney, fmtQtd } from "../../cotacoes/_catalogo/ui";
 import {
   aceitarCustoAction,
   devolverDivergenciaAction,
@@ -51,7 +52,6 @@ import {
   cancelarRecebimentoAction,
   conferirItemAction,
   conferirTudoAction,
-  desvincularPedidoAction,
   finalizarRecebimentoAction,
   resolverDivergenciaAction,
   restaurarContagemAction,
@@ -67,16 +67,22 @@ import type { LinhaRecebimento, RecebimentoView, SubcategoriaCadastro } from "..
 import type { ReconciliationStatus } from "@/generated/prisma";
 
 // ============================================================
-// Recebimento inteligente.
+// Recebimento em duas etapas.
 //
-// A tela mostra as três camadas lado a lado — Pedido, NF, Recebido — e
+//   1. Nota e produtos — o que o XML diz: fornecedor, valores, pedido e a
+//      relação dos itens com o catálogo (`_entrada.tsx`).
+//   2. Conferência     — o que a doca contou, as diferenças e a entrada no
+//      estoque. É este arquivo.
+//
+// A conferência mostra as três camadas lado a lado — Pedido, NF, Recebido — e
 // destaca SÓ a exceção. Quando tudo bate, receber um pedido de trinta itens é
-// ler um resumo e apertar um botão; quando não bate, a divergência está na
-// cara, com a ação ao lado dela.
+// conferir e apertar um botão; quando não bate, a divergência está na cara,
+// com a ação ao lado dela.
 //
 // O que o operador edita aqui é só o que a conferência física revela:
 // quantidade, lote e validade. Preço, produto e quantidade faturada vêm da
-// nota e não se digitam.
+// nota e não se digitam. Os dados do documento ficam na etapa 1 — repeti-los
+// aqui em cartões de resumo era a mesma nota contada duas vezes.
 // ============================================================
 
 /** Gravação de uma linha: em voo, ou recém-confirmada pelo servidor. */
@@ -95,33 +101,98 @@ const STATUS_INFO: Record<
 };
 
 /**
- * As quatro perguntas que o operador faz olhando uma nota de quarenta linhas.
+ * Em que pé está cada linha da contagem. Uma régua só para o selo de status,
+ * os filtros e a planilha exportada — três lugares que não podem discordar.
  *
- * Busca por texto responde "onde está o item X?"; isto responde "o que ainda
- * falta?" — que é a pergunta que ele faz o tempo todo, e que antes só se
- * respondia rolando a lista inteira contando de cabeça.
+ *   A conferir      ninguém contou; entra pelo esperado se ninguém contar.
+ *   Conferido       contado, e bate com o esperado.
+ *   Com divergência o contado não bate, a nota não bate com o pedido, ou a
+ *                   linha não tem produto — alguém precisa decidir.
+ *   Ajustado        a diferença existiu e já foi decidida (aceita, ignorada
+ *                   ou explicada). Fica à vista: decidido não é sumido.
  */
-type Filtro = "TODOS" | "FALTA" | "DIVERGENTE" | "SEM_PRODUTO";
+type Situacao = "A_CONFERIR" | "CONFERIDO" | "DIVERGENCIA" | "AJUSTADO";
 
-const FILTROS: { id: Filtro; label: string }[] = [
-  { id: "TODOS", label: "Todos" },
-  { id: "FALTA", label: "Falta contar" },
-  { id: "DIVERGENTE", label: "Com diferença" },
-  { id: "SEM_PRODUTO", label: "Sem produto" },
-];
+/** Contado diferente do esperado. */
+const contouDiferente = (l: LinhaRecebimento) =>
+  l.qtdRecebida != null && Math.abs(l.qtdRecebida - esperadoDe(l)) > 0.001;
 
-function casaComFiltro(l: LinhaRecebimento, filtro: Filtro): boolean {
-  switch (filtro) {
-    case "FALTA":
-      return l.qtdRecebida == null;
-    case "DIVERGENTE":
-      return STATUS_INFO[l.status].grave && !l.resolucao;
-    case "SEM_PRODUTO":
-      return !l.productId;
-    default:
-      return true;
+function situacaoDaLinha(l: LinhaRecebimento, cega: boolean): Situacao {
+  // Conferência cega: até a pessoa contar, nem o selo pode contar que o
+  // pedido e a nota discordam — é o número que ela não pode ver.
+  if (cega && l.qtdRecebida == null) return "A_CONFERIR";
+  if (l.resolucao || l.motivoDivergencia) return "AJUSTADO";
+  if (!l.productId || STATUS_INFO[l.status].grave || contouDiferente(l)) return "DIVERGENCIA";
+  return l.qtdRecebida == null ? "A_CONFERIR" : "CONFERIDO";
+}
+
+const SITUACAO_UI: Record<
+  Situacao,
+  { rotulo: string; filtro: string; selo: string; Icone: typeof CircleCheck }
+> = {
+  A_CONFERIR: {
+    rotulo: "A conferir",
+    filtro: "A conferir",
+    selo: "bg-surface-2 text-muted",
+    Icone: Clock3,
+  },
+  CONFERIDO: {
+    rotulo: "Conferido",
+    filtro: "Conferidos",
+    selo: "bg-ok-soft text-ok",
+    Icone: CircleCheck,
+  },
+  DIVERGENCIA: {
+    rotulo: "Divergência",
+    filtro: "Com divergência",
+    selo: "bg-danger-soft text-danger",
+    Icone: TriangleAlert,
+  },
+  AJUSTADO: {
+    rotulo: "Ajustado",
+    filtro: "Ajustados",
+    selo: "bg-brand-softer text-accent",
+    Icone: Wrench,
+  },
+};
+
+const SITUACOES: Situacao[] = ["A_CONFERIR", "CONFERIDO", "DIVERGENCIA", "AJUSTADO"];
+
+/**
+ * Busca responde "onde está o item X?"; o filtro responde "o que ainda falta?"
+ * — a pergunta que o operador faz o tempo todo numa nota de quarenta linhas.
+ */
+type Lente = "TODOS" | Situacao;
+
+/** A frase inteira por trás do selo — no hover e no leitor de tela. */
+function porqueDaSituacao(l: LinhaRecebimento, s: Situacao, temNota: boolean): string {
+  switch (s) {
+    case "A_CONFERIR":
+      return `Ainda não contado — entra com a quantidade ${temNota ? "da nota" : "do pedido"} se ninguém contar.`;
+    case "CONFERIDO":
+      return "Contado e igual ao esperado.";
+    case "AJUSTADO":
+      return l.motivoDivergencia
+        ? `Ajustado: ${l.motivoDivergencia}`
+        : "Divergência decidida — fica no histórico.";
+    case "DIVERGENCIA":
+      if (!l.productId) return "Sem produto relacionado — relacione antes de receber.";
+      if (contouDiferente(l)) {
+        return `Contado ${fmtQtd(l.qtdRecebida ?? 0)}, esperado ${fmtQtd(esperadoDe(l))}.`;
+      }
+      return `${STATUS_INFO[l.status].label}: ${explicacao(l, variacaoDaLinha(l))}`;
   }
 }
+
+/** "125,42" — o cabeçalho da coluna já diz que é em reais. */
+const fmtValor = (v: number) =>
+  v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/**
+ * "2026-10-14" → "14/10/2026" sem passar por `Date`: meia-noite UTC vira o
+ * dia anterior no fuso de Brasília, e a validade mostrada sairia um dia antes.
+ */
+const fmtDia = (iso: string) => iso.slice(0, 10).split("-").reverse().join("/");
 
 /** Quanto o custo da nota subiu (ou caiu) sobre o negociado, em %. */
 function variacaoDaLinha(l: LinhaRecebimento): number | null {
@@ -150,14 +221,19 @@ const paraRelacionar = (l: LinhaRecebimento): ItemDeNota => ({
 
 export function RecebimentoClient({
   dados,
+  verNota,
   podeReceber,
   podeTratarNota,
   podeCriarProduto,
   podeEditarFornecedor,
+  podeBaixarXml,
+  mostrarSku,
   cega,
   subcategorias,
 }: {
   dados: RecebimentoView;
+  /** A pessoa pediu a etapa 1 (`?etapa=nota`) com a conferência já aberta. */
+  verNota: boolean;
   /**
    * Falso = a pessoa trata a NOTA (contador com `fiscal.importar`), não a
    * mercadoria. Relaciona itens ao catálogo, mas não escolhe porta nem conta
@@ -169,6 +245,10 @@ export function RecebimentoClient({
   podeCriarProduto: boolean;
   /** Decide as sugestões de contato que o XML trouxe para o fornecedor. */
   podeEditarFornecedor: boolean;
+  /** Abre e baixa o XML guardado (`fiscal.baixar`). */
+  podeBaixarXml: boolean;
+  /** SKU ligado nas configurações de produto. */
+  mostrarSku: boolean;
   /** Conferência cega: esconde pedido e NF até a pessoa contar. */
   cega: boolean;
   subcategorias: SubcategoriaCadastro[];
@@ -176,16 +256,19 @@ export function RecebimentoClient({
   // A nota recém-importada ainda não tem conferência: antes de contar caixa é
   // preciso ler o que ela diz, dizer de qual pedido é e relacionar os produtos.
   // Quem clicou "Iniciar recebimento" num pedido já entra conferindo, e o
-  // avulso também.
-  if (dados.escolherPorta && dados.nota) {
+  // avulso também — e os dois voltam à etapa 1 pelo botão do cabeçalho, quando
+  // há nota.
+  if (dados.nota && (dados.escolherPorta || verNota)) {
     return (
-      <EntradaDaNota
+      <EtapaNota
         dados={dados}
         nota={dados.nota}
         podeReceber={podeReceber}
         podeTratarNota={podeTratarNota}
         podeCriarProduto={podeCriarProduto}
         podeEditarFornecedor={podeEditarFornecedor}
+        podeBaixarXml={podeBaixarXml}
+        mostrarSku={mostrarSku}
         subcategorias={subcategorias}
       />
     );
@@ -196,6 +279,8 @@ export function RecebimentoClient({
       podeReceber={podeReceber}
       podeTratarNota={podeTratarNota}
       podeCriarProduto={podeCriarProduto}
+      podeBaixarXml={podeBaixarXml}
+      mostrarSku={mostrarSku}
       cega={cega}
       subcategorias={subcategorias}
     />
@@ -209,6 +294,8 @@ function Conferencia({
   podeReceber,
   podeTratarNota,
   podeCriarProduto,
+  podeBaixarXml,
+  mostrarSku,
   cega,
   subcategorias,
 }: {
@@ -216,6 +303,8 @@ function Conferencia({
   podeReceber: boolean;
   podeTratarNota: boolean;
   podeCriarProduto: boolean;
+  podeBaixarXml: boolean;
+  mostrarSku: boolean;
   cega: boolean;
   subcategorias: SubcategoriaCadastro[];
 }) {
@@ -241,7 +330,7 @@ function Conferencia({
   }
 
   const [busca, setBusca] = React.useState("");
-  const [filtro, setFiltro] = React.useState<Filtro>("TODOS");
+  const [lente, setLente] = React.useState<Lente>("TODOS");
   const [camera, setCamera] = React.useState(false);
   const [cancelando, setCancelando] = React.useState(false);
   const [motivoCancelamento, setMotivoCancelamento] = React.useState("");
@@ -249,8 +338,6 @@ function Conferencia({
   const [confirmando, setConfirmando] = React.useState(false);
   const [motivoEntrada, setMotivoEntrada] = React.useState("");
   const [verTimeline, setVerTimeline] = React.useState(false);
-  /** Os itens que já fecharam ficam dobrados até alguém querer reler. */
-  const [verFechados, setVerFechados] = React.useState(false);
   const [relacionar, setRelacionar] = React.useState<ItemDeNota | null>(null);
   /**
    * Item que ninguém esperava. É o único caminho de entrada do recebimento
@@ -274,7 +361,7 @@ function Conferencia({
   const [salvandoLinha, setSalvandoLinha] = React.useState<
     Record<string, EstadoSalvamento>
   >({});
-  const itensRef = React.useRef<Record<string, HTMLLIElement | null>>({});
+  const itensRef = React.useRef<Record<string, HTMLTableRowElement | null>>({});
   const timersRef = React.useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   // Sair da tela no meio de um "salvo" não pode deixar timer pendurado.
@@ -287,7 +374,6 @@ function Conferencia({
 
   const conferidos = linhas.filter((l) => l.qtdRecebida != null).length;
   const divergentes = linhas.filter((l) => STATUS_INFO[l.status].grave && !l.resolucao);
-  const impacto = resumo.impactoCusto;
   // O que vira saldo se a entrada for confirmada agora: o contado, quando
   // alguém contou; o esperado, quando ninguém contou. É a mesma regra que o
   // servidor aplica em `finalizarRecebimento` — a tela só a mostra antes.
@@ -410,6 +496,22 @@ function Conferencia({
   // porta tem o leitor numa mão e a caixa na outra.
   useLeitorTeclado(aoLerCodigo, { ativo: !encerrada });
 
+  /**
+   * Contar é o trabalho desta tela: o cursor já nasce no primeiro item que
+   * falta contar (numa conferência nova, a linha 1), e quem chega com a nota
+   * na mão começa digitando. Só ao abrir — o refresh depois de cada gravação
+   * não pode arrancar o cursor de onde a pessoa está. No celular não: o foco
+   * abriria o teclado por cima da tabela antes de alguém pedir.
+   */
+  const tabelaRef = React.useRef<HTMLTableElement>(null);
+  React.useEffect(() => {
+    if (encerrada || window.matchMedia("(pointer: coarse)").matches) return;
+    const campos = Array.from(
+      tabelaRef.current?.querySelectorAll<HTMLInputElement>("input[data-contagem]") ?? [],
+    );
+    (campos.find((c) => c.value === "") ?? campos[0])?.focus();
+  }, [encerrada]);
+
   async function conferirTudo() {
     // Retrato de antes do clique. É o que "Desfazer" devolve — inclusive as
     // linhas já contadas, que o "conferi tudo" sobrescreve.
@@ -504,60 +606,100 @@ function Conferencia({
     }
   }
 
-  async function desvincular() {
-    try {
-      if (!nota) return;
-      await desvincularPedidoAction({ receiptId: recebimento.id, inboundId: nota.id });
-      toast.info(
-        semPedido ? "Conferência cancelada." : "Vínculo desfeito.",
-        "Escolha de novo como receber esta nota.",
-      );
-      router.refresh();
-    } catch (e) {
-      toast.error("Não deu para desvincular", e instanceof Error ? e.message : "Tente de novo.");
-    }
-  }
-
+  /** Situação de cada linha — a mesma régua no selo, no filtro e na planilha. */
+  const situacoes = React.useMemo(
+    () => new Map(linhas.map((l) => [l.id, situacaoDaLinha(l, cega)])),
+    [linhas, cega],
+  );
   /** Quantas linhas cada filtro tem hoje — o número mora no próprio chip. */
-  const contagens = React.useMemo(
-    () => ({
+  const contagens = React.useMemo(() => {
+    const n: Record<Lente, number> = {
       TODOS: linhas.length,
-      FALTA: linhas.filter((l) => l.qtdRecebida == null).length,
-      DIVERGENTE: linhas.filter((l) => STATUS_INFO[l.status].grave && !l.resolucao).length,
-      SEM_PRODUTO: linhas.filter((l) => !l.productId).length,
-    }),
+      A_CONFERIR: 0,
+      CONFERIDO: 0,
+      DIVERGENCIA: 0,
+      AJUSTADO: 0,
+    };
+    for (const s of situacoes.values()) n[s]++;
+    return n;
+  }, [linhas.length, situacoes]);
+  /** Número da linha na ordem do documento — o mesmo com ou sem filtro. */
+  const numeroDe = React.useMemo(
+    () => new Map(linhas.map((l, i) => [l.id, i + 1])),
     [linhas],
   );
 
-  // Filtro que esvaziou — o operador contou o último item de "falta contar" —
+  // Filtro que esvaziou — o operador contou o último item "a conferir" —
   // deixaria a tela em branco sem explicação. Derivado, não corrigido por
-  // efeito: o chip some e a lista volta a ser todos no mesmo render.
-  const filtroAtivo: Filtro = contagens[filtro] === 0 ? "TODOS" : filtro;
+  // efeito: a lista volta a ser todos no mesmo render.
+  const lenteAtiva: Lente = contagens[lente] === 0 ? "TODOS" : lente;
 
+  // A tabela segue a ordem da nota, como o papel na mão de quem confere. Nada
+  // é agrupado nem dobrado: quem quer só o que falta usa o filtro.
   const visiveis = React.useMemo(() => {
     const termo = busca.trim().toLowerCase();
     return linhas.filter((l) => {
-      if (!casaComFiltro(l, filtroAtivo)) return false;
+      if (lenteAtiva !== "TODOS" && situacoes.get(l.id) !== lenteAtiva) return false;
       if (!termo) return true;
-      return `${l.descricao} ${l.sku ?? ""} ${l.ean ?? ""} ${l.codigoFornecedor ?? ""}`
+      // Os dois lados da linha: como o fornecedor escreveu e o que isso é no
+      // catálogo.
+      return `${l.descricao} ${l.produtoNome ?? ""} ${l.sku ?? ""} ${l.ean ?? ""} ${l.codigoFornecedor ?? ""}`
         .toLowerCase()
         .includes(termo);
     });
-  }, [linhas, busca, filtroAtivo]);
+  }, [linhas, busca, lenteAtiva, situacoes]);
 
   /**
-   * A lista em duas alturas: o que ainda pede decisão, e o que já fechou.
-   *
-   * Item conferido, sem divergência e com produto é leitura — dezesseis deles
-   * empurram as três linhas que importam para fora da tela. Só agrupa no
-   * estado neutro: com filtro ou busca ativos, a lista JÁ é o recorte pedido, e
-   * esconder metade dele seria o segundo filtro que ninguém pediu.
+   * A conferência numa planilha: o que veio, o que se contou e a diferença,
+   * linha a linha — o papel que vai para o fornecedor ou para a pasta da nota.
+   * Sai inteira, sem o filtro da tela. Na conferência cega o esperado do que
+   * ninguém contou fica em branco, como na tela.
    */
-  const agrupar = filtroAtivo === "TODOS" && busca.trim() === "";
-  const fechado = (l: LinhaRecebimento) =>
-    l.qtdRecebida != null && Boolean(l.productId) && !(STATUS_INFO[l.status].grave && !l.resolucao);
-  const emAberto = agrupar ? visiveis.filter((l) => !fechado(l)) : visiveis;
-  const fechados = agrupar ? visiveis.filter(fechado) : [];
+  function exportar() {
+    const qtdNota = nota ? "Qtd. da nota" : "Qtd. esperada";
+    baixarXlsx({
+      nomeArquivo: `conferencia-${recebimento.numero}.xlsx`,
+      aba: "Conferência",
+      cabecalho: [
+        "#",
+        "Produto na nota",
+        "Código do fornecedor",
+        "Produto no NoHub",
+        ...(mostrarSku ? ["SKU"] : []),
+        "EAN",
+        "Unidade",
+        qtdNota,
+        "Qtd. recebida",
+        "Diferença",
+        "Status",
+        "Custo unitário (R$)",
+        "Total recebido (R$)",
+        "Lote",
+        "Validade",
+      ],
+      linhas: linhas.map((l, i) => {
+        const oculto = cega && l.qtdRecebida == null && !encerrada;
+        const custo = l.bonificacao ? 0 : l.custoFaturado;
+        return [
+          i + 1,
+          l.descricao,
+          l.codigoFornecedor ?? "",
+          l.produtoNome ?? "",
+          ...(mostrarSku ? [l.sku ?? ""] : []),
+          l.ean ?? "",
+          UNIDADE_CONFERENCIA,
+          oculto ? null : esperadoDe(l),
+          l.qtdRecebida,
+          l.qtdRecebida == null ? null : l.qtdRecebida - esperadoDe(l),
+          SITUACAO_UI[situacoes.get(l.id) ?? "A_CONFERIR"].rotulo,
+          custo,
+          l.qtdRecebida == null ? null : custo * l.qtdRecebida,
+          l.lote ?? "",
+          l.validade ? fmtDia(l.validade) : "",
+        ];
+      }),
+    });
+  }
 
   return (
     <div className="flex min-h-full flex-col gap-5">
@@ -570,87 +712,16 @@ function Conferencia({
         />
       )}
 
-      <Cabecalho
-        recebimento={recebimento}
-        nota={nota}
-        pedidoNumero={pedido?.numero ?? null}
-        semPedido={semPedido}
-        onDesvincular={encerrada || !nota ? undefined : desvincular}
+      {/* Sem faixa de números aqui. Itens, pendências e o que entra no saldo já
+          têm dono nesta tela — os chips do filtro, o painel de diferenças e o
+          rodapé — e o valor da nota mora na etapa 1. */}
+      <Topo
+        dados={dados}
+        etapa="conferencia"
+        podeTratarNota={podeTratarNota}
+        podeBaixarXml={podeBaixarXml}
         onCancelar={encerrada ? undefined : () => setCancelando(true)}
       />
-
-      {/* Sem XML a conferência é a tela inteira: trilho de um passo só não diz
-          nada. */}
-      {!encerrada && nota && (
-        <Trilho
-          etapas={ETAPAS_COM_NOTA}
-          atual="conferencia"
-          avisos={{ produtos: resumo.produtosNovos }}
-        />
-      )}
-
-      {podeTratarNota && nota && (
-        <PainelNota
-          nota={nota}
-          faltamRelacionar={resumo.produtosNovos}
-          emConferencia
-        />
-      )}
-
-      {/* Quatro números, na ordem em que a pergunta é feita: quantos itens,
-          quanto custou, quanto entra no saldo, quanto ainda pede decisão. As
-          contas de segundo plano (custo negociado, produtos novos) viram a
-          linha de apoio de quem as explica — cinco cartões de peso igual não
-          dizem por onde começar. */}
-      <MetricaGrid className="lg:grid-cols-4">
-        <Metrica
-          label="Itens"
-          valor={String(resumo.itens)}
-          sub={semPedido ? "linhas da nota" : "linhas conciliadas"}
-        />
-        <Metrica
-          label={nota ? "Valor da NF" : "Valor esperado"}
-          valor={fmtMoney(resumo.valorNota)}
-          sub={
-            semPedido
-              ? "sem pedido para comparar"
-              : resumo.custosAlterados === 0
-                ? "preço igual ao negociado"
-                : `${resumo.custosAlterados} ${resumo.custosAlterados === 1 ? "custo mudou" : "custos mudaram"} · ${impacto > 0 ? "+" : ""}${fmtMoney(impacto)}`
-          }
-          tom={!semPedido && resumo.custosAlterados > 0 ? "accent" : undefined}
-        />
-        <Metrica
-          label="Entrada no estoque"
-          valor={`+${fmtQtd(entraNoEstoque)} UN`}
-          sub={
-            conferidos === linhas.length
-              ? "tudo conferido"
-              : `${linhas.length - conferidos} ${linhas.length - conferidos === 1 ? "item entra" : "itens entram"} como esperado`
-          }
-          icon={<PackageOpen size={13} />}
-        />
-        <Metrica
-          label="Pendências"
-          valor={String(pendencias)}
-          sub={
-            pendencias === 0
-              ? "nada a decidir"
-              : [
-                  divergentes.length > 0
-                    ? `${divergentes.length} ${divergentes.length === 1 ? "diferença" : "diferenças"}`
-                    : null,
-                  resumo.produtosNovos > 0
-                    ? `${resumo.produtosNovos} sem produto`
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")
-          }
-          tom={pendencias > 0 ? "accent" : "ok"}
-          icon={<TriangleAlert size={13} />}
-        />
-      </MetricaGrid>
 
       {/* Conferência cega: mostrar as divergências antes da contagem entregaria
           justamente o número que a pessoa não pode ver. O painel espera todo
@@ -660,6 +731,7 @@ function Conferencia({
           receiptId={recebimento.id}
           inboundId={nota?.id ?? null}
           linhas={divergentes}
+          impactoCusto={resumo.custosAlterados > 0 ? resumo.impactoCusto : 0}
           bloqueado={encerrada}
           onRelacionar={(l) => setRelacionar(paraRelacionar(l))}
         />
@@ -673,98 +745,15 @@ function Conferencia({
         </p>
       )}
 
-      {encerrada ? (
-        recebimento.status === "FINALIZADO" ? (
-          <p className="rounded-[var(--radius)] bg-ok-soft px-4 py-3 text-[13px] text-ok">
-            Recebimento {recebimento.numero} finalizado — a mercadoria já entrou no estoque. O
-            histórico abaixo mostra como a conferência foi feita.
-          </p>
-        ) : recebimento.status === "CANCELADO" ? (
-          <p className="rounded-[var(--radius)] bg-surface-2 px-4 py-3 text-[13px] text-muted">
-            Recebimento cancelado{recebimento.canceladoMotivo ? `: ${recebimento.canceladoMotivo}` : "."}{" "}
-            Nada entrou no estoque.
-          </p>
-        ) : (
-          <p className="rounded-[var(--radius)] bg-surface-2 px-4 py-3 text-[13px] text-muted">
-            Esta conferência está em andamento. Você acompanha o que já foi contado; quem
-            recebe a mercadoria é quem conta e dá a entrada.
-          </p>
-        )
-      ) : (
-        // Sticky: em nota de quarenta linhas, procurar um item ou bipar exigia
-        // rolar até o topo e voltar. Quem rola aqui é o <main> do shell, então
-        // o topo desta barra é o topo da área de conteúdo.
-        <div className="sticky top-0 z-20 -mt-2 flex flex-col gap-2 bg-canvas/95 py-2 backdrop-blur">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative min-w-0 flex-1">
-              <Search
-                className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-faint"
-                aria-hidden
-              />
-              <input
-                value={busca}
-                onChange={(e) => setBusca(e.target.value)}
-                placeholder="Achar item por nome, SKU ou código"
-                aria-label="Buscar item da nota"
-                className="h-10 w-full rounded-full border border-line-button bg-surface pr-4 pl-9 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-              />
-            </div>
-            <Button variant="secondary" onClick={() => setCamera(true)}>
-              <ScanLine className="h-4 w-4" aria-hidden />
-              Bipar
-            </Button>
-            <Button variant="secondary" onClick={() => setAdicionando(true)}>
-              <Plus className="h-4 w-4" aria-hidden />
-              <span className="hidden sm:inline">Adicionar item</span>
-              <span className="sm:hidden">Item</span>
-            </Button>
-            {!cega && linhas.length > 0 && (
-              <Button variant="secondary" onClick={() => void conferirTudo()}>
-                <CheckCheck className="h-4 w-4" aria-hidden />
-                <span className="hidden sm:inline">
-                  Conferi tudo conforme {nota ? "a nota" : "o esperado"}
-                </span>
-                <span className="sm:hidden">Conferi tudo</span>
-              </Button>
-            )}
-          </div>
-
-          {/* Chips só de estado que existe. Filtro com zero é botão que não
-              leva a lugar nenhum. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            {FILTROS.filter((f) => f.id === "TODOS" || contagens[f.id] > 0).map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                onClick={() => setFiltro(f.id)}
-                aria-pressed={filtroAtivo === f.id}
-                className={cn(
-                  "rounded-full border px-3 py-1 text-[12px] font-medium transition-colors",
-                  filtroAtivo === f.id
-                    ? "border-brand bg-brand text-on-brand"
-                    : "border-line-button bg-surface text-muted hover:text-ink",
-                )}
-              >
-                {f.label}
-                <span
-                  className={cn(
-                    "ml-1.5 tabular-nums",
-                    filtroAtivo === f.id ? "opacity-80" : "text-faint",
-                  )}
-                >
-                  {contagens[f.id]}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* Quem só acompanha. Finalizado e cancelado já são ditos no topo. */}
+      {encerrada && recebimento.status !== "FINALIZADO" && recebimento.status !== "CANCELADO" && (
+        <p className="rounded-[var(--radius)] bg-surface-2 px-4 py-3 text-[13px] text-muted">
+          Esta conferência está em andamento. Você acompanha o que já foi contado; quem
+          recebe a mercadoria é quem conta e dá a entrada.
+        </p>
       )}
 
-      {/* O que pede decisão em cima; o que já fechou, dobrado embaixo.
-          Sem isso, três divergências ficavam perdidas no meio de dezesseis
-          linhas idênticas que ninguém precisava reler. Agrupa só quando não há
-          filtro nem busca — ali a lista já é o recorte que a pessoa pediu. */}
-      {linhas.length === 0 && (
+      {linhas.length === 0 ? (
         <div className="flex flex-col items-center gap-2 rounded-[var(--radius-lg)] border border-dashed border-line bg-surface px-6 py-12 text-center">
           <span className="grid h-11 w-11 place-items-center rounded-full bg-surface-2 text-muted">
             <PackagePlus size={20} aria-hidden />
@@ -787,105 +776,205 @@ function Conferencia({
             </div>
           )}
         </div>
-      )}
+      ) : (
+        // `overflow-clip`, não `hidden`: recorta os cantos sem virar contêiner
+        // de rolagem — é o que deixa a barra de busca presa no topo enquanto a
+        // nota de quarenta linhas rola por baixo dela.
+        <div className="@container overflow-clip rounded-[var(--radius-lg)] border border-line bg-surface">
+          <div className="sticky top-0 z-20 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line bg-surface px-3 py-3 sm:px-4">
+            <div className="relative min-w-48 flex-1 sm:max-w-72">
+              <Search
+                size={14}
+                aria-hidden
+                className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-faint"
+              />
+              <input
+                value={busca}
+                onChange={(e) => setBusca(e.target.value)}
+                placeholder="Buscar produto na nota…"
+                aria-label="Buscar item por nome, SKU, EAN ou código do fornecedor"
+                className="h-9 w-full rounded-full border border-line-strong bg-surface pr-3 pl-8 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+              />
+            </div>
 
-      <ul className="space-y-2">
-        {emAberto.map((l) => (
-          <ItemCard
-            key={l.id}
-            ref={(el) => {
-              itensRef.current[l.id] = el;
-            }}
-            linha={l}
-            bloqueado={encerrada}
-            cega={cega}
-            semPedido={semPedido}
-            piscando={piscando === l.id}
-            salvamento={salvandoLinha[l.id] ?? null}
-            onAlterar={(patch) => {
-              aplicarLocal(l.id, patch);
-              void salvar(l.id, patch);
-            }}
-            onRelacionar={() => setRelacionar(paraRelacionar(l))}
-            onRemover={
-              // Só a linha que ninguém esperava sai da lista. A do pedido ou da
-              // nota se zera — apagar esconderia a falta em vez de mostrá-la.
-              l.avulsa && !encerrada
-                ? () => {
-                    void removerItemAction({ receiptId: recebimento.id, itemId: l.id })
-                      .then(() => router.refresh())
-                      .catch((e: unknown) =>
-                        toast.error(
-                          "Não deu para remover",
-                          e instanceof Error ? e.message : "Tente de novo.",
-                        ),
-                      );
-                  }
-                : undefined
-            }
-          />
-        ))}
-      </ul>
-
-      {fechados.length > 0 && (
-        <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
-          <button
-            type="button"
-            onClick={() => setVerFechados((v) => !v)}
-            aria-expanded={verFechados}
-            className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-medium text-ink hover:bg-surface-2"
-          >
-            <Check className="h-4 w-4 text-ok" aria-hidden />
-            {fechados.length} {fechados.length === 1 ? "item conferido" : "itens conferidos"} sem
-            diferença
-            <span className="ml-auto text-[12px] text-muted">
-              {verFechados ? "ocultar" : "ver"}
-            </span>
-          </button>
-          {verFechados && (
-            <ul className="space-y-2 border-t border-line p-3">
-              {fechados.map((l) => (
-                <ItemCard
-                  key={l.id}
-                  ref={(el) => {
-                    itensRef.current[l.id] = el;
-                  }}
-                  linha={l}
-                  bloqueado={encerrada}
-                  cega={cega}
-                  semPedido={semPedido}
-                  piscando={piscando === l.id}
-                  salvamento={salvandoLinha[l.id] ?? null}
-                  onAlterar={(patch) => {
-                    aplicarLocal(l.id, patch);
-                    void salvar(l.id, patch);
-                  }}
-                  onRelacionar={() => setRelacionar(paraRelacionar(l))}
+            <div
+              className="flex flex-wrap items-center gap-1.5"
+              role="group"
+              aria-label="Filtrar itens da conferência"
+            >
+              <Filtro
+                rotulo="Todos"
+                total={linhas.length}
+                ativo={lenteAtiva === "TODOS"}
+                conta="bg-surface-2 text-muted"
+                onClick={() => setLente("TODOS")}
+              />
+              {SITUACOES.map((s) => (
+                <Filtro
+                  key={s}
+                  rotulo={SITUACAO_UI[s].filtro}
+                  total={contagens[s]}
+                  ativo={lenteAtiva === s}
+                  conta={SITUACAO_UI[s].selo}
+                  onClick={() => setLente(s)}
                 />
               ))}
-            </ul>
+            </div>
+
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              {!encerrada && (
+                <Button size="sm" variant="secondary" onClick={() => setCamera(true)}>
+                  <ScanLine size={14} aria-hidden />
+                  Bipar
+                </Button>
+              )}
+              {!encerrada && !cega && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void conferirTudo()}
+                  title={`Marca cada linha com a quantidade ${nota ? "da nota" : "esperada"}`}
+                >
+                  <CheckCheck size={14} aria-hidden />
+                  Conferi tudo
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={exportar}
+                aria-label="Exportar conferência"
+                title="Exportar conferência (planilha)"
+              >
+                <Download size={14} aria-hidden />
+                <span className="hidden @[40rem]:inline">Exportar conferência</span>
+              </Button>
+            </div>
+          </div>
+
+          {/* As colunas acompanham a largura do cartão, não da tela: no
+              celular sobra o que a doca usa — o item, quanto veio, quanto
+              chegou e o status. Foto, NoHub, unidade e valores voltam quando
+              há espaço. */}
+          <div className="overflow-x-auto">
+            <table ref={tabelaRef} className="w-full border-collapse text-[12px]">
+              <thead>
+                <tr className="bg-surface-2">
+                  <Th className="w-10 pl-3 sm:pl-4">#</Th>
+                  <Th className={cn(COLUNA_LARGA, "w-12")}>
+                    <span className="sr-only">Foto</span>
+                  </Th>
+                  <Th sub="Código do fornecedor">Produto na nota</Th>
+                  <Th sub={mostrarSku ? "SKU / EAN" : "EAN"} className={COLUNA_LARGA}>
+                    Produto no NoHub
+                  </Th>
+                  <Th
+                    className={cn(COLUNA_LARGA, "text-center")}
+                    dica="A conferência conta unidades de estoque — garrafa, lata, maço. A embalagem que a nota faturou aparece embaixo da quantidade."
+                  >
+                    Unidade
+                  </Th>
+                  {/* No celular o cabeçalho encolhe para a coluna "⋮" caber
+                      sem rolar de lado. */}
+                  <Th className="text-center">
+                    <span className="hidden @[54rem]:inline">
+                      {nota ? "Qtd. da nota" : "Qtd. esperada"}
+                    </span>
+                    <span className="@[54rem]:hidden">{nota ? "Nota" : "Esperado"}</span>
+                  </Th>
+                  <Th className="text-center">
+                    <span className="hidden @[54rem]:inline">Qtd. recebida</span>
+                    <span className="@[54rem]:hidden">Recebido</span>
+                  </Th>
+                  <Th className="hidden text-center @[30rem]:table-cell">Diferença</Th>
+                  <Th>Status</Th>
+                  <Th sub="(unitário)" className={cn(COLUNA_LARGA, "text-right")}>
+                    Custo (R$)
+                  </Th>
+                  <Th sub="(recebido)" className={cn(COLUNA_LARGA, "text-right")}>
+                    Total (R$)
+                  </Th>
+                  <Th className="w-10 pr-3">
+                    <span className="sr-only">Ações</span>
+                  </Th>
+                </tr>
+              </thead>
+              <tbody>
+                {visiveis.map((l) => (
+                  <LinhaConferencia
+                    key={l.id}
+                    ref={(el) => {
+                      itensRef.current[l.id] = el;
+                    }}
+                    linha={l}
+                    numero={numeroDe.get(l.id) ?? 0}
+                    situacao={situacoes.get(l.id) ?? "A_CONFERIR"}
+                    temNota={Boolean(nota)}
+                    mostrarSku={mostrarSku}
+                    bloqueado={encerrada}
+                    cega={cega}
+                    piscando={piscando === l.id}
+                    salvamento={salvandoLinha[l.id] ?? null}
+                    onAlterar={(patch) => {
+                      aplicarLocal(l.id, patch);
+                      void salvar(l.id, patch);
+                    }}
+                    onRelacionar={() => setRelacionar(paraRelacionar(l))}
+                    onBipe={aoLerCodigo}
+                    onRemover={
+                      // Só a linha que ninguém esperava sai da lista. A do pedido
+                      // ou da nota se zera — apagar esconderia a falta em vez de
+                      // mostrá-la.
+                      l.avulsa && !encerrada
+                        ? () => {
+                            void removerItemAction({ receiptId: recebimento.id, itemId: l.id })
+                              .then(() => router.refresh())
+                              .catch((e: unknown) =>
+                                toast.error(
+                                  "Não deu para remover",
+                                  e instanceof Error ? e.message : "Tente de novo.",
+                                ),
+                              );
+                          }
+                        : undefined
+                    }
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {visiveis.length === 0 && (
+            <p className="border-t border-line px-4 py-8 text-center text-[13px] text-muted">
+              {busca.trim()
+                ? `Nenhum item com “${busca.trim()}”${lenteAtiva !== "TODOS" ? " neste filtro" : ""}. `
+                : "Nenhum item neste filtro. "}
+              <button
+                type="button"
+                onClick={() => {
+                  setBusca("");
+                  setLente("TODOS");
+                }}
+                className="cursor-pointer font-medium text-brand-strong underline"
+              >
+                Ver os {linhas.length} itens
+              </button>
+            </p>
+          )}
+
+          {/* O excedente do caminhão entra como linha própria, no fim da
+              tabela — a diferença fica visível em vez de sumir num ajuste. */}
+          {!encerrada && (
+            <button
+              type="button"
+              onClick={() => setAdicionando(true)}
+              className="flex w-full cursor-pointer items-center justify-center gap-1.5 border-t border-dashed border-line px-4 py-2.5 text-[13px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none focus-visible:ring-inset"
+            >
+              <Plus size={14} aria-hidden />
+              {nota ? "Adicionar item que chegou fora da nota" : "Adicionar item"}
+            </button>
           )}
         </div>
-      )}
-
-      {visiveis.length === 0 && (
-        <p className="rounded-[var(--radius)] border border-line bg-surface px-4 py-6 text-center text-[13px] text-muted">
-          {busca.trim() ? (
-            <>Nenhum item com “{busca.trim()}”{filtroAtivo !== "TODOS" && " neste filtro"}.</>
-          ) : (
-            "Nenhum item neste filtro."
-          )}{" "}
-          <button
-            type="button"
-            onClick={() => {
-              setBusca("");
-              setFiltro("TODOS");
-            }}
-            className="font-medium text-brand underline"
-          >
-            Ver os {linhas.length} itens
-          </button>
-        </p>
       )}
 
       <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
@@ -933,9 +1022,9 @@ function Conferencia({
               rotulo="item conferido"
               rotuloPlural="itens conferidos"
             />
-            {/* Os totais já estão no topo da tela; aqui embaixo cabe só a
-                consequência de apertar o botão — repetir "R$ 1.234,00" em
-                corpo 12 não é resumo, é ruído em cima da decisão. */}
+            {/* Uma frase: o que falta, ou o que acontece com o que ninguém
+                contou. Quanto entra e quanto se paga é assunto da confirmação,
+                um clique adiante — não de um segundo resumo aqui. */}
             <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted">
               {impedimento ? (
                 <>
@@ -965,20 +1054,14 @@ function Conferencia({
             </p>
           </div>
 
-          <div className="flex w-full shrink-0 flex-col items-stretch gap-1 sm:w-auto sm:items-end">
-            <Button
-              onClick={() => setConfirmando(true)}
-              disabled={enviando || gravando || linhas.length === 0 || impedimento !== null}
-              className="w-full sm:w-auto"
-            >
-              <ClipboardCheck className="h-4 w-4" aria-hidden />
-              Receber no estoque
-            </Button>
-            <p className="text-[11px] text-muted sm:text-right">
-              <span className="font-mono text-ink-2">+{fmtQtd(entraNoEstoque)} UN</span> no
-              estoque
-            </p>
-          </div>
+          <Button
+            onClick={() => setConfirmando(true)}
+            disabled={enviando || gravando || linhas.length === 0 || impedimento !== null}
+            className="w-full shrink-0 sm:w-auto"
+          >
+            <ClipboardCheck className="h-4 w-4" aria-hidden />
+            Receber no estoque
+          </Button>
         </RodapeAcao>
       )}
 
@@ -1141,6 +1224,7 @@ function Conferencia({
           }}
           podeCriarProduto={podeCriarProduto}
           subcategorias={subcategorias}
+          mostrarSku={mostrarSku}
         />
       )}
     </div>
@@ -1155,6 +1239,7 @@ function PainelDivergencias({
   receiptId,
   inboundId,
   linhas,
+  impactoCusto,
   bloqueado,
   onRelacionar,
 }: {
@@ -1162,6 +1247,8 @@ function PainelDivergencias({
   /** Nulo quando ainda não há NF-e — aí não há fornecedor a quem reclamar. */
   inboundId: string | null;
   linhas: LinhaRecebimento[];
+  /** Quanto a nota custou a mais (ou a menos) que o negociado. Zero = não mudou. */
+  impactoCusto: number;
   bloqueado: boolean;
   onRelacionar: (l: LinhaRecebimento) => void;
 }) {
@@ -1194,6 +1281,16 @@ function PainelDivergencias({
         <h2 className="font-display text-[14px] font-semibold text-ink">
           {linhas.length === 1 ? "1 diferença encontrada" : `${linhas.length} diferenças encontradas`}
         </h2>
+        {Math.abs(impactoCusto) > 0.005 && (
+          <p className="text-[12px] text-muted">
+            custo{" "}
+            <span className={cn("font-mono", impactoCusto > 0 ? "text-danger" : "text-ok")}>
+              {impactoCusto > 0 ? "+" : "−"}
+              {fmtMoney(Math.abs(impactoCusto))}
+            </span>{" "}
+            sobre o negociado
+          </p>
+        )}
         {/* O desfecho de verdade acontece com o representante — o sistema só
             precisa entregar o texto pronto, com os números certos. */}
         <Button
@@ -1658,9 +1755,6 @@ function explicacao(l: LinhaRecebimento, v: number | null): string {
   }
 }
 
-// ── Card do item ────────────────────────────────────────────
-
-
 // ── Adicionar item ──────────────────────────────────────────
 //
 // Uma linha que ninguém esperava: o excedente do caminhão, ou — no recebimento
@@ -1962,338 +2056,418 @@ function AdicionarItem({
   );
 }
 
-const ItemCard = React.forwardRef<
-  HTMLLIElement,
+// ── Linha da conferência ────────────────────────────────────
+
+/**
+ * A conferência conta UNIDADE de estoque — garrafa, lata, maço —, nunca a
+ * embalagem do papel: quem está na doca conta maço, não milheiro. A embalagem
+ * que a nota faturou aparece embaixo da quantidade, para quem confere contra o
+ * papel achar o número dele.
+ */
+const UNIDADE_CONFERENCIA = "UN";
+
+/** Colunas que só aparecem com espaço: no celular a doca vê o essencial. */
+const COLUNA_LARGA = "hidden @[54rem]:table-cell";
+
+/**
+ * Uma linha da nota, lida da esquerda para a direita: o que chegou (como o
+ * fornecedor escreveu), o que isso é no NoHub, quanto a nota diz, quanto a
+ * doca contou, a diferença — e quanto isso custa.
+ *
+ * O que o operador digita aqui é só o que a conferência física revela:
+ * quantidade e, de vez em quando, lote e validade (no "⋮", que abre embaixo
+ * da linha).
+ */
+const LinhaConferencia = React.forwardRef<
+  HTMLTableRowElement,
   {
     linha: LinhaRecebimento;
+    /** Número da linha no documento — o mesmo com ou sem filtro. */
+    numero: number;
+    situacao: Situacao;
+    /** Há NF-e: o esperado é "da nota"; sem ela, do pedido. */
+    temNota: boolean;
+    /** SKU ligado nas configurações de produto. */
+    mostrarSku: boolean;
     bloqueado: boolean;
-    /** Esconde pedido/NF enquanto a linha não foi contada. */
-    cega?: boolean;
-    /** Recebimento sem pedido: não existe coluna "Pedido" para mostrar. */
-    semPedido?: boolean;
+    /** Esconde o esperado enquanto a linha não foi contada. */
+    cega: boolean;
     /** Acabou de receber um bipe — destaca por um instante. */
-    piscando?: boolean;
+    piscando: boolean;
     /** Gravando esta linha agora, ou acabou de gravar. */
-    salvamento?: EstadoSalvamento | null;
+    salvamento: EstadoSalvamento | null;
     onAlterar: (patch: {
       qtdRecebida?: number | null;
       lote?: string | null;
       validade?: string | null;
     }) => void;
     onRelacionar: () => void;
+    /** Código de barras que o leitor digitou dentro do campo de quantidade. */
+    onBipe: (codigo: string) => void;
     /** Só nas linhas avulsas — o que veio do pedido/nota se zera, não some. */
     onRemover?: () => void;
   }
->(function ItemCard(
-  { linha, bloqueado, cega, semPedido, piscando, salvamento, onAlterar, onRelacionar, onRemover },
+>(function LinhaConferencia(
+  {
+    linha,
+    numero,
+    situacao,
+    temNota,
+    mostrarSku,
+    bloqueado,
+    cega,
+    piscando,
+    salvamento,
+    onAlterar,
+    onRelacionar,
+    onBipe,
+    onRemover,
+  },
   ref,
 ) {
-  const info = STATUS_INFO[linha.status];
-  const v = variacaoDaLinha(linha);
-  const [aberto, setAberto] = React.useState(false);
+  const [detalhe, setDetalhe] = React.useState(false);
   const recebido = linha.qtdRecebida;
-  /** Contou? Então pode ver. Antes disso, o número do pedido enviesa a contagem. */
-  const oculto = Boolean(cega) && recebido == null && !bloqueado;
-  const temDetalhe = Boolean(linha.lote || linha.validade || linha.motivoDivergencia);
+  /** Contou? Então pode ver. Antes disso, o número da nota enviesa a contagem. */
+  const oculto = cega && recebido == null && !bloqueado;
+  const esperado = esperadoDe(linha);
+  const diferenca = recebido == null ? null : recebido - esperado;
+  const v = variacaoDaLinha(linha);
+  const ui = SITUACAO_UI[situacao];
+  const porque = porqueDaSituacao(linha, situacao, temNota);
+  const custo = linha.bonificacao ? 0 : linha.custoFaturado;
   /**
-   * A nota faturou numa unidade que não é a da prateleira (MI, CX, FD).
-   *
-   * A conferência conta unidade — quem está na doca conta maço, não milheiro.
-   * Mas o número do papel é o outro, e sem ele à vista a pessoa procura "0,6"
-   * na tela e não acha.
+   * A nota faturou numa embalagem que não é a da prateleira (MI, CX, FD). O
+   * número do papel é outro, e sem ele à vista a pessoa procura "1 CX" na tela
+   * e não acha. O XML não muda — o convertido é que é derivado dele.
    */
   const doXml =
     linha.xml && linha.xml.fatorConversao !== 1
-      ? {
-          ...linha.xml,
-          sigla: linha.xml.unidade.trim().toUpperCase(),
-        }
+      ? { ...linha.xml, sigla: linha.xml.unidade.trim().toUpperCase() }
       : null;
+  const temDetalhe = Boolean(linha.lote || linha.validade || linha.motivoDivergencia);
+  const podeIgualar = !bloqueado && !cega;
+  const temMenu = podeIgualar || !bloqueado || temDetalhe || Boolean(onRemover);
 
   return (
-    <li
-      ref={ref}
-      className={cn(
-        "relative overflow-hidden rounded-[var(--radius-lg)] border bg-surface transition-colors",
-        info.grave && !linha.resolucao ? "border-accent/40" : "border-line",
-        // O bipe acerta a linha certa; o destaque é o que prova isso a quem
-        // está de pé, com a caixa na mão, longe da tela.
-        piscando && "border-ok bg-ok-soft/50 motion-reduce:transition-none",
-        salvamento === "salvando" && "border-brand/50",
-        salvamento === "salvo" && "border-ok/60",
-      )}
-    >
-      {/* Fio de luz no topo do card enquanto a linha grava. O operador conta
-          de pé, olhando a caixa e não a tela: o movimento é o que ele capta
-          de canto de olho. Fica atrás do conteúdo e some com o "salvo". */}
-      {salvamento === "salvando" && (
-        <span
-          aria-hidden
-          className="linha-salvando absolute inset-x-0 top-0 h-0.5 overflow-hidden bg-brand-soft"
-        >
-          <span className="block h-full w-1/3 bg-brand" />
-        </span>
-      )}
-
-      {/* A linha fechada não é mais um botão só: contar é o trabalho, e
-          trabalho não pode morar atrás de um clique de "expandir". O toggle
-          cobre a identidade do item; a quantidade fica ao lado, digitável. */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
-        <button
-          type="button"
-          onClick={() => setAberto((a) => !a)}
-          aria-expanded={aberto}
-          className="flex min-w-0 flex-1 items-center gap-3 rounded-[var(--radius)] text-left focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-        >
-          <ProdutoThumb url={linha.imagemUrl} nome={linha.descricao} size="lg" />
-
-          <span className="min-w-0 flex-1">
-            <span className="flex items-center gap-2">
-              <span className="truncate text-sm font-medium text-ink">{linha.descricao}</span>
-              {linha.bonificacao && (
-                <span className="shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-[11px] text-brand">
-                  Bonificação
-                </span>
-              )}
-            </span>
-            <span className="block truncate font-mono text-[11px] text-muted">
-              {linha.sku ?? linha.codigoFornecedor ?? "sem código"}
-              {temDetalhe && !aberto && (
-                <span className="font-sans text-faint">
-                  {linha.lote ? ` · lote ${linha.lote}` : ""}
-                  {linha.validade
-                    ? ` · val. ${new Date(linha.validade).toLocaleDateString("pt-BR")}`
-                    : ""}
-                </span>
-              )}
-            </span>
-            {/* Nota em milheiro, caixa ou fardo: a quantidade do papel e a
-                contada na porta são números diferentes, e os dois ficam à
-                vista. O XML não muda — o convertido é que é derivado dele. */}
-            {doXml && (
-              <span
-                className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted"
-                title={`A nota fatura em ${rotuloDaUnidade(doXml.unidade)}. ${frasesDeConversao(doXml.sigla, doXml.fatorConversao)} — ${fmtQtd(doXml.quantidade)} ${doXml.sigla} valem ${fmtQtd(doXml.quantidade * doXml.fatorConversao)} UN. A conferência conta unidades.`}
-              >
-                <ArrowRightLeft size={11} aria-hidden />
-                <span className="font-mono">
-                  XML {fmtQtd(doXml.quantidade)} {doXml.sigla}
-                </span>
-                <span className="text-faint">
-                  · {frasesDeConversao(doXml.sigla, doXml.fatorConversao)}
-                </span>
-              </span>
-            )}
-            {v != null && !oculto && (
-              <span
-                className={cn(
-                  "mt-0.5 inline-flex items-center gap-1 text-[11px]",
-                  v > 0 ? "text-danger" : "text-ok",
-                )}
-              >
-                {v > 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-                {fmtMoney(linha.custoPedido)} → {fmtMoney(linha.custoFaturado)} ({pct(v)})
-              </span>
-            )}
-          </span>
-        </button>
-
-        <div className="hidden shrink-0 items-center gap-5 sm:flex">
-          {oculto ? (
-            <Coluna titulo={semPedido ? "NF" : "Pedido / NF"} valor="•••" />
-          ) : (
-            <>
-              {!semPedido && <Coluna titulo="Pedido" valor={fmtQtd(linha.qtdPedida)} />}
-              <Coluna titulo="NF" valor={fmtQtd(linha.qtdFaturada)} />
-            </>
-          )}
-        </div>
-
-        {bloqueado ? (
-          <Coluna
-            titulo="Recebido"
-            valor={recebido == null ? fmtQtd(linha.qtdFaturada) : fmtQtd(recebido)}
-            destaque={recebido != null}
-          />
-        ) : (
-          <div className="flex shrink-0 items-end gap-1.5">
-            <Campo label="Recebido">
-              <input
-                // `key` amarrado ao valor do servidor: o campo é não
-                // controlado (para não brigar com a digitação), e sem remontar
-                // ele ficava exibindo 12 depois de o bipe somar 13.
-                key={`${linha.id}:${recebido ?? "-"}`}
-                type="number"
-                // Peça inteira, sempre: o saldo conta garrafa, não meia
-                // garrafa. Aceitar decimal aqui só empurraria o erro para a
-                // hora de receber, quando a nota inteira trava.
-                inputMode="numeric"
-                step="1"
-                min={0}
-                defaultValue={recebido ?? ""}
-                placeholder={oculto ? "conte" : fmtQtd(linha.qtdFaturada)}
-                aria-label={`Quantidade recebida de ${linha.descricao}, em unidades inteiras`}
-                onBlur={(e) => {
-                  const bruto = e.target.value.trim();
-                  const novo = bruto === "" ? null : Math.round(Number(bruto));
-                  // O campo devolve o inteiro para a tela não ficar mostrando
-                  // "1,5" que o servidor nunca vai gravar.
-                  if (novo != null && String(novo) !== bruto) e.target.value = String(novo);
-                  if (novo === recebido) return;
-                  onAlterar({ qtdRecebida: novo });
-                }}
-                onKeyDown={(e) => {
-                  // Enter fecha a linha e devolve o teclado ao leitor: contar
-                  // quarenta itens é digitar, tab, digitar — não mirar botão.
-                  if (e.key === "Enter") e.currentTarget.blur();
-                }}
-                className={cn(
-                  "h-10 w-[4.5rem] rounded-[var(--radius)] border bg-surface px-2 text-center text-sm tabular-nums focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
-                  recebido == null
-                    ? "border-line-button text-ink placeholder:text-faint"
-                    : "border-ok/50 font-semibold text-ink",
-                )}
-              />
-            </Campo>
-            {/* "Igual à nota" é o caso de 90% das linhas. Um toque, sem abrir
-                nada, sem digitar o número que já está na tela ao lado. */}
-            <button
-              type="button"
-              onClick={() => onAlterar({ qtdRecebida: linha.qtdFaturada })}
-              title="Recebi como está na nota"
-              aria-label={`Recebi ${fmtQtd(linha.qtdFaturada)} de ${linha.descricao}, como na nota`}
-              className={cn(
-                "grid h-10 w-9 place-items-center rounded-[var(--radius)] border border-line-button text-muted transition-colors hover:bg-ok-soft hover:text-ok focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
-                recebido != null &&
-                  Math.abs(recebido - linha.qtdFaturada) < 0.001 &&
-                  "border-ok/50 bg-ok-soft text-ok",
-              )}
-            >
-              <Check className="h-4 w-4" aria-hidden />
-            </button>
-          </div>
-        )}
-
-        {/* Enquanto grava, o selo de status dá lugar ao do salvamento: são a
-            mesma informação em momentos diferentes — o status da linha só vale
-            depois que o servidor confirmou o número novo. */}
-        {salvamento ? (
-          <span
-            role="status"
-            className={cn(
-              "flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium",
-              salvamento === "salvando" ? "bg-brand-soft text-brand" : "bg-ok-soft text-ok",
-            )}
-          >
-            {salvamento === "salvando" ? (
-              <>
-                <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
-                Salvando…
-              </>
-            ) : (
-              <>
-                <Check className="h-3 w-3" aria-hidden />
-                Salvo
-              </>
-            )}
-          </span>
-        ) : (
-          <span
-            className={cn(
-              "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium",
-              linha.resolucao || oculto ? "bg-surface-2 text-muted" : info.classe,
-            )}
-          >
-            {linha.resolucao ? "Resolvido" : oculto ? "A conferir" : info.label}
-          </span>
-        )}
-
-        {onRemover && (
-          <button
-            type="button"
-            onClick={onRemover}
-            aria-label={`Remover ${linha.descricao} do recebimento`}
-            title="Remover — esta linha foi adicionada na porta"
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-faint transition-colors hover:bg-danger-soft hover:text-danger focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-          >
-            <Trash2 className="h-4 w-4" aria-hidden />
-          </button>
-        )}
-      </div>
-
-      {aberto && (
-        <div className="border-t border-line px-4 py-3">
-          {bloqueado ? (
-            <p className="text-[13px] text-muted">
-              Recebido {recebido == null ? fmtQtd(linha.qtdFaturada) : fmtQtd(recebido)}
-              {linha.lote && ` · lote ${linha.lote}`}
-              {linha.validade &&
-                ` · validade ${new Date(linha.validade).toLocaleDateString("pt-BR")}`}
-            </p>
-          ) : (
-            <div className="flex flex-wrap items-end gap-3">
-              {/* Quantidade saiu daqui: vive na linha fechada. Aqui fica o que
-                  só se preenche de vez em quando. */}
-              <Campo label="Lote">
-                <input
-                  defaultValue={linha.lote ?? ""}
-                  onBlur={(e) => onAlterar({ lote: e.target.value.trim() || null })}
-                  placeholder="opcional"
-                  className="h-10 w-36 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-                />
-              </Campo>
-              <Campo label="Validade">
-                <input
-                  type="date"
-                  defaultValue={linha.validade ?? ""}
-                  onBlur={(e) => onAlterar({ validade: e.target.value || null })}
-                  className="h-10 w-40 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-                />
-              </Campo>
-
-              {/* Só no celular: no desktop as colunas Pedido/NF ficam à vista
-                  na própria linha. */}
-              {!oculto && (
-                <p className="text-[12px] text-muted sm:hidden">
-                  {!semPedido && <>Pedido {fmtQtd(linha.qtdPedida)} · </>}
-                  NF {fmtQtd(linha.qtdFaturada)}
-                </p>
-              )}
-
-              {!linha.productId && (
-                <Button size="sm" onClick={onRelacionar}>
-                  Relacionar produto
-                </Button>
-              )}
-            </div>
-          )}
-
-          {linha.motivoDivergencia && (
-            <p className="mt-2 text-[12px] text-muted">Nota: {linha.motivoDivergencia}</p>
-          )}
-        </div>
-      )}
-    </li>
-  );
-});
-
-function Coluna({ titulo, valor, destaque }: { titulo: string; valor: string; destaque?: boolean }) {
-  return (
-    <span className="block text-right">
-      <span className="block text-[10px] font-medium tracking-wide text-faint uppercase">
-        {titulo}
-      </span>
-      <span
+    <>
+      <tr
+        ref={ref}
         className={cn(
-          "block font-display text-[15px] leading-tight font-semibold tabular-nums",
-          destaque ? "text-ink" : "text-ink-2",
+          "border-t border-line bg-surface align-middle transition-colors first:border-t-0 hover:bg-surface-2",
+          // O bipe acerta a linha certa; o destaque é o que prova isso a quem
+          // está de pé, com a caixa na mão, longe da tela.
+          piscando && "bg-ok-soft hover:bg-ok-soft motion-reduce:transition-none",
         )}
       >
-        {valor}
-      </span>
-    </span>
+        <td className="py-2 pr-2 pl-3 font-semibold text-ink tabular-nums sm:pl-4">{numero}</td>
+
+        <td className={cn(COLUNA_LARGA, "py-2 pr-1 pl-2")}>
+          <ProdutoThumb url={linha.imagemUrl} nome={linha.produtoNome ?? linha.descricao} size="sm" />
+        </td>
+
+        {/* ── O que chegou ─────────────────────────────────── */}
+        <td className="max-w-[15rem] px-2 py-2">
+          <p className="leading-snug font-medium text-ink">{linha.descricao}</p>
+          <p className="font-mono text-[10px] text-faint">
+            {linha.codigoFornecedor ?? (linha.avulsa ? "adicionado na conferência" : "sem código")}
+          </p>
+          {linha.bonificacao && (
+            <span className="mt-1 inline-block">
+              <Badge tone="accent">
+                <Gift size={11} /> bonificação
+              </Badge>
+            </span>
+          )}
+          {(linha.lote || linha.validade) && (
+            <p className="mt-0.5 text-[10px] text-muted">
+              {[
+                linha.lote ? `lote ${linha.lote}` : null,
+                linha.validade ? `val. ${fmtDia(linha.validade)}` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          )}
+        </td>
+
+        {/* ── O que isso é no NoHub ─────────────────────────── */}
+        <td className={cn(COLUNA_LARGA, "max-w-[14rem] px-2 py-2")}>
+          {linha.productId ? (
+            <>
+              <p className="leading-snug font-medium text-ink">{linha.produtoNome}</p>
+              {(mostrarSku ? linha.sku : null) || linha.ean ? (
+                <p className="font-mono text-[10px] text-faint">
+                  {[mostrarSku ? linha.sku : null, linha.ean].filter(Boolean).join(" · ")}
+                </p>
+              ) : null}
+            </>
+          ) : bloqueado ? (
+            <span className="text-faint">Sem produto</span>
+          ) : (
+            <button
+              type="button"
+              onClick={onRelacionar}
+              className="inline-flex cursor-pointer items-center gap-1 rounded-full font-medium text-accent underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+            >
+              <Link2 size={12} aria-hidden />
+              Relacionar produto
+            </button>
+          )}
+        </td>
+
+        <td
+          className={cn(COLUNA_LARGA, "px-2 py-2 text-center font-medium text-ink-2")}
+          title="Unidade de estoque"
+        >
+          {UNIDADE_CONFERENCIA}
+        </td>
+
+        {/* ── Quanto a nota diz ─────────────────────────────── */}
+        <td className="px-2 py-2 text-center whitespace-nowrap">
+          {oculto ? (
+            <span className="text-faint" title="Conferência cega: aparece depois que você contar">
+              •••
+            </span>
+          ) : (
+            // O número que se compara com a contagem vem em destaque, do mesmo
+            // tamanho do campo ao lado; embaixo, de onde ele saiu no papel —
+            // "1 CX c/ 24" diz por que a nota de uma caixa espera 24.
+            <>
+              <p className="text-[13px] font-semibold text-ink tabular-nums">{fmtQtd(esperado)}</p>
+              {doXml && (
+                <p
+                  className="text-[10px] whitespace-nowrap text-muted"
+                  title={`A nota fatura em ${rotuloDaUnidade(doXml.unidade)}. ${frasesDeConversao(doXml.sigla, doXml.fatorConversao)} — ${fmtQtd(doXml.quantidade)} ${doXml.sigla} valem ${fmtQtd(doXml.quantidade * doXml.fatorConversao)} ${UNIDADE_CONFERENCIA}.`}
+                >
+                  {fmtQtd(doXml.quantidade)} {doXml.sigla} c/ {fmtQtd(doXml.fatorConversao)}
+                </p>
+              )}
+            </>
+          )}
+        </td>
+
+        {/* ── Quanto a doca contou ──────────────────────────── */}
+        <td className="px-2 py-1.5 text-center">
+          {bloqueado ? (
+            <span className="font-medium text-ink tabular-nums">
+              {recebido == null ? <span className="text-faint">—</span> : fmtQtd(recebido)}
+            </span>
+          ) : (
+            <input
+              // `key` amarrado ao valor do servidor: o campo é não controlado
+              // (para não brigar com a digitação), e sem remontar ele ficava
+              // exibindo 12 depois de o bipe somar 13.
+              key={`${linha.id}:${recebido ?? "-"}`}
+              type="number"
+              // Peça inteira, sempre: o saldo conta garrafa, não meia garrafa.
+              // Aceitar decimal aqui só empurraria o erro para a hora de
+              // receber, quando a nota inteira trava.
+              inputMode="numeric"
+              step="1"
+              min={0}
+              // Sem número sugerido: o campo nasce vazio e só se enche com o
+              // que alguém contou. Um "24" cinza dentro dele passava por
+              // contado — e era justamente o número que a pessoa não conferiu.
+              defaultValue={recebido ?? ""}
+              data-contagem
+              aria-label={`Quantidade recebida de ${linha.descricao}, em unidades inteiras`}
+              onBlur={(e) => {
+                const bruto = e.target.value.trim();
+                // O cursor mora neste campo, e o leitor USB "digita" onde o
+                // cursor está: oito dígitos ou mais não são quantidade, são um
+                // código de barras. Volta o campo e trata como bipe.
+                if (/^\d{8,}$/.test(bruto)) {
+                  e.target.value = recebido == null ? "" : String(recebido);
+                  onBipe(bruto);
+                  return;
+                }
+                const novo = bruto === "" ? null : Math.round(Number(bruto));
+                // O campo devolve o inteiro para a tela não ficar mostrando
+                // "1,5" que o servidor nunca vai gravar.
+                if (novo != null && String(novo) !== bruto) e.target.value = String(novo);
+                if (novo === recebido) return;
+                onAlterar({ qtdRecebida: novo });
+              }}
+              onKeyDown={(e) => {
+                // Enter fecha a linha e devolve o teclado ao leitor: contar
+                // quarenta itens é digitar, tab, digitar — não mirar botão.
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+              className="h-8 w-14 [appearance:textfield] rounded-[var(--radius)] border border-line-strong bg-surface px-2 text-center text-[13px] font-semibold text-ink tabular-nums focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none @[54rem]:w-16 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            />
+          )}
+        </td>
+
+        {/* ── A diferença ───────────────────────────────────── */}
+        <td className="hidden px-2 py-2 text-center tabular-nums @[30rem]:table-cell">
+          {diferenca == null ? (
+            <span className="text-faint">—</span>
+          ) : Math.abs(diferenca) < 0.001 ? (
+            <span className="text-ink-2">0</span>
+          ) : (
+            <span className={cn("font-semibold", diferenca < 0 ? "text-danger" : "text-accent")}>
+              {diferenca > 0 ? "+" : "−"}
+              {fmtQtd(Math.abs(diferenca))}
+            </span>
+          )}
+        </td>
+
+        {/* ── Em que pé está ────────────────────────────────── */}
+        {/* Enquanto grava, o selo dá lugar ao do salvamento: são a mesma
+            informação em momentos diferentes — a situação da linha só vale
+            depois que o servidor confirmou o número novo. No celular sobra
+            o ícone; a frase inteira fica no hover e no leitor de tela. */}
+        <td className="px-2 py-2">
+          {salvamento ? (
+            <span
+              role="status"
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium whitespace-nowrap",
+                salvamento === "salvando" ? "bg-brand-soft text-accent" : "bg-ok-soft text-ok",
+              )}
+            >
+              {salvamento === "salvando" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+              ) : (
+                <Check className="h-3.5 w-3.5" aria-hidden />
+              )}
+              <span className="sr-only @[54rem]:not-sr-only">
+                {salvamento === "salvando" ? "Salvando…" : "Salvo"}
+              </span>
+            </span>
+          ) : (
+            <span
+              title={porque}
+              className={cn(
+                "inline-flex cursor-help items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium whitespace-nowrap",
+                ui.selo,
+              )}
+            >
+              <ui.Icone className="h-3.5 w-3.5" aria-hidden />
+              <span className="sr-only @[54rem]:not-sr-only">{ui.rotulo}</span>
+              <span className="sr-only">: {porque}</span>
+            </span>
+          )}
+        </td>
+
+        {/* ── Quanto custa ──────────────────────────────────── */}
+        <td className={cn(COLUNA_LARGA, "px-2 py-2 text-right whitespace-nowrap")}>
+          {linha.bonificacao ? (
+            <span className="text-muted">sem custo</span>
+          ) : (
+            <>
+              <p className="font-mono text-ink">{fmtValor(custo)}</p>
+              {v != null && !oculto && (
+                <p
+                  className={cn("font-mono text-[10px]", v > 0 ? "text-danger" : "text-ok")}
+                  title={`Negociado no pedido: ${fmtMoney(linha.custoPedido)}`}
+                >
+                  {pct(v)}
+                </p>
+              )}
+            </>
+          )}
+        </td>
+
+        {/* Total do que foi CONTADO. Sem contagem, nada — um valor ali
+            passaria por recebido, como o número sugerido no campo passava. */}
+        <td className={cn(COLUNA_LARGA, "px-2 py-2 text-right whitespace-nowrap")}>
+          {recebido == null ? (
+            <span className="text-faint">—</span>
+          ) : (
+            <span className="font-mono text-ink">{fmtValor(custo * recebido)}</span>
+          )}
+        </td>
+
+        <td className="py-2 pr-2 pl-1 text-right sm:pr-3">
+          {temMenu && (
+            <Menu
+              trigger={
+                <button
+                  type="button"
+                  className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  aria-label={`Mais ações da linha ${numero}`}
+                >
+                  <MoreVertical size={15} aria-hidden />
+                </button>
+              }
+            >
+              {/* "Igual à nota" é o caso de 90% das linhas: um toque, sem
+                  digitar o número que já está na tela ao lado. */}
+              {podeIgualar && (
+                <MenuItem icon={<Check size={15} />} onClick={() => onAlterar({ qtdRecebida: esperado })}>
+                  Recebi {fmtQtd(esperado)}, igual {temNota ? "à nota" : "ao pedido"}
+                </MenuItem>
+              )}
+              {(!bloqueado || temDetalhe) && (
+                <MenuItem icon={<CalendarClock size={15} />} onClick={() => setDetalhe((d) => !d)}>
+                  {detalhe ? "Fechar lote e validade" : "Lote e validade"}
+                </MenuItem>
+              )}
+              {!bloqueado && !linha.productId && (
+                <MenuItem icon={<Link2 size={15} />} onClick={onRelacionar}>
+                  Relacionar produto
+                </MenuItem>
+              )}
+              {onRemover && (
+                <MenuItem icon={<Trash2 size={15} />} danger onClick={onRemover}>
+                  Remover do recebimento
+                </MenuItem>
+              )}
+            </Menu>
+          )}
+        </td>
+      </tr>
+
+      {/* Lote e validade abrem embaixo da linha: precisam de mais largura do
+          que uma célula tem, e só se preenchem de vez em quando. */}
+      {detalhe && (
+        <tr className="border-t border-line bg-surface-2/60">
+          <td colSpan={12} className="px-4 py-3 sm:px-6">
+            {bloqueado ? (
+              <p className="text-[13px] text-muted">
+                {[
+                  linha.lote ? `Lote ${linha.lote}` : null,
+                  linha.validade ? `validade ${fmtDia(linha.validade)}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || "Sem lote nem validade."}
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-end gap-3">
+                <Campo label="Lote">
+                  <input
+                    defaultValue={linha.lote ?? ""}
+                    onBlur={(e) => {
+                      const novo = e.target.value.trim() || null;
+                      if (novo !== linha.lote) onAlterar({ lote: novo });
+                    }}
+                    placeholder="opcional"
+                    className="h-9 w-36 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  />
+                </Campo>
+                <Campo label="Validade">
+                  <input
+                    type="date"
+                    defaultValue={linha.validade ?? ""}
+                    onBlur={(e) => {
+                      const novo = e.target.value || null;
+                      if (novo !== linha.validade) onAlterar({ validade: novo });
+                    }}
+                    className="h-9 w-40 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  />
+                </Campo>
+              </div>
+            )}
+            {linha.motivoDivergencia && (
+              <p className="mt-2 text-[12px] text-muted">Motivo: {linha.motivoDivergencia}</p>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
-}
+});
 
 function Campo({ label, children }: { label: string; children: React.ReactNode }) {
   return (

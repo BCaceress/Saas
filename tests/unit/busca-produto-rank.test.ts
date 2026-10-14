@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   ordenarPorRelevancia,
   pontuarProduto,
+  quaseIgual,
   tokensDaBusca,
 } from "@/lib/compras/busca-produto-rank";
 
@@ -88,5 +89,37 @@ describe("pontuarProduto", () => {
     // "CERV HEINEKEN LN" — como o fornecedor escreve na NF-e.
     const ln = p("Cerveja Heineken Long Neck 330ml", "CER-330");
     expect(pontuarProduto(ln, "CERV HEINEKEN LN")).toBeGreaterThan(0);
+  });
+});
+
+describe("busca tolerante", () => {
+  it("erro de digitação ainda acha o produto", () => {
+    const r = ordenarPorRelevancia(
+      [p("Cerveja Heineken Long Neck 330ml", "CER-330"), p("Água Mineral 500ml", "AGU-500")],
+      "heinekn",
+    );
+    expect(r[0].sku).toBe("CER-330");
+  });
+
+  it("palavra quase igual pontua acima de palavra ausente", () => {
+    const chiclete = p("Chiclete Trident Hortelã 54g", "CHI-54");
+    expect(pontuarProduto(chiclete, "trident hortela")).toBeGreaterThan(
+      pontuarProduto(chiclete, "trident morango"),
+    );
+    expect(pontuarProduto(chiclete, "trident hortelaa")).toBeGreaterThan(
+      pontuarProduto(chiclete, "trident morango"),
+    );
+  });
+
+  it("palavra curta não ganha folga", () => {
+    expect(quaseIgual("lt", "kt")).toBe(false);
+    expect(quaseIgual("morang", "morango")).toBe(true);
+    expect(quaseIgual("refrigernte", "refrigerante")).toBe(true);
+  });
+
+  it("parecença do banco desempata", () => {
+    const a = { ...p("Trident Melancia 54g", "T-1"), similaridade: 0.2 };
+    const b = { ...p("Trident Morango Lime 54g", "T-2"), similaridade: 0.8 };
+    expect(ordenarPorRelevancia([a, b], "trident morango lime")[0].sku).toBe("T-2");
   });
 });

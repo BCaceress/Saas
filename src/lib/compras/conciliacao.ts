@@ -440,15 +440,62 @@ export async function conciliar(input: {
     data: { purchaseOrderId, status: "EM_CONFERENCIA" },
   });
 
+  // Remontar a conciliação não pode apagar a contagem da porta — mesma regra
+  // de `conferirSemPedido`. Relacionar um item ao catálogo com a conferência
+  // aberta refaz as linhas, e quem já contou trinta caixas não conta de novo.
+  // A linha da nota é reconhecida pelo item do XML; a que só existe no pedido
+  // (não faturada), pelo item do pedido.
+  const anteriores = await db.purchaseReconciliationItem.findMany({
+    where: { receiptId: receipt.id },
+    select: {
+      inboundItemId: true,
+      purchaseOrderItemId: true,
+      status: true,
+      qtdRecebida: true,
+      lote: true,
+      validade: true,
+      resolucao: true,
+      motivoDivergencia: true,
+    },
+  });
+  const chaveDaLinha = (l: { inboundItemId: string | null; purchaseOrderItemId: string | null }) =>
+    l.inboundItemId
+      ? `nota:${l.inboundItemId}`
+      : l.purchaseOrderItemId
+        ? `pedido:${l.purchaseOrderItemId}`
+        : null;
+  const conferido = new Map(
+    anteriores.flatMap((a) => {
+      const chave = chaveDaLinha(a);
+      return chave ? [[chave, a] as const] : [];
+    }),
+  );
+
   await db.purchaseReconciliationItem.deleteMany({ where: { receiptId: receipt.id } });
   await db.purchaseReconciliationItem.createMany({
-    data: linhas.map((l) => ({
-      tenantId,
-      receiptId: receipt.id,
-      inboundId,
-      purchaseOrderId,
-      ...l,
-    })),
+    data: linhas.map((l) => {
+      const chave = chaveDaLinha(l);
+      // Recebimento aberto pelo pedido e que só agora ganhou a nota: a linha
+      // contada ainda não tinha item do XML, então vale o item do pedido.
+      const antes =
+        (chave ? conferido.get(chave) : null) ??
+        (l.purchaseOrderItemId ? conferido.get(`pedido:${l.purchaseOrderItemId}`) : null);
+      // A decisão sobre a divergência só vale enquanto a divergência é a
+      // mesma: linha que mudou de veredito volta a pedir resposta.
+      const mesmoVeredito = antes?.status === l.status;
+      return {
+        tenantId,
+        receiptId: receipt.id,
+        inboundId,
+        purchaseOrderId,
+        ...l,
+        qtdRecebida: antes?.qtdRecebida ?? null,
+        lote: antes?.lote ?? null,
+        validade: antes?.validade ?? null,
+        resolucao: mesmoVeredito ? (antes?.resolucao ?? null) : null,
+        motivoDivergencia: mesmoVeredito ? (antes?.motivoDivergencia ?? null) : null,
+      };
+    }),
   });
 
   await db.fiscalInbound.update({

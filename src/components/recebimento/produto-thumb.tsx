@@ -1,5 +1,6 @@
 import { PackageOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { thumbSrc } from "@/lib/imagem";
 
 // ============================================================
 // Miniatura do produto do catálogo.
@@ -19,6 +20,9 @@ const TAMANHOS = {
 } as const;
 
 const ICONE = { xs: 13, sm: 13, md: 15, lg: 16, xl: 20 } as const;
+
+/** Largura pedida ao otimizador — o dobro do tamanho na tela, para retina. */
+const LARGURA_PX = { xs: 64, sm: 96, md: 96, lg: 96, xl: 128 } as const;
 
 export function ProdutoThumb({
   url,
@@ -49,9 +53,12 @@ export function ProdutoThumb({
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={url}
+      // Foto do catálogo pode ter centenas de KB: a miniatura pede só a
+      // largura que vai desenhar, e só quando aparece na tela.
+      src={thumbSrc(url, LARGURA_PX[size])}
       alt={nome ?? ""}
       loading="lazy"
+      decoding="async"
       className={cn(base, "bg-surface object-contain")}
     />
   );

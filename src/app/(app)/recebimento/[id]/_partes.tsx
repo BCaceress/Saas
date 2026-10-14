@@ -2,129 +2,29 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowLeft, Check, CircleX, FileText, MoreVertical, Undo2 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { ArrowLeft, CircleX, FileText, MoreVertical } from "lucide-react";
 import { Menu, MenuItem } from "@/components/ui/menu";
-import { fmtMoney } from "../../cotacoes/_catalogo/ui";
+import { Badge } from "@/components/ui/misc";
+import { toast } from "@/components/ui/toast";
 import type { RecebimentoView } from "../_data";
+import { PainelNota } from "./_painel-nota";
+import { buscarXmlDaNota, salvarComoArquivo } from "./_xml";
 
 // ============================================================
-// As peças que todas as etapas do recebimento usam: o cabeçalho, o trilho e o
-// rodapé de ação. Moram fora de `_client.tsx` porque a entrada da nota e a
-// conferência são telas diferentes do mesmo recebimento — e as duas precisam
-// dizer onde a pessoa está do mesmo jeito.
+// As peças que as duas etapas do recebimento usam: o topo (cabeçalho e avisos
+// do documento) e o rodapé de ação. Moram fora de `_client.tsx` porque a etapa
+// da nota e a conferência são telas diferentes do mesmo recebimento.
+//
+// Não há trilho de etapas: são duas, e cada uma leva à outra por um botão — o
+// rodapé da nota abre a conferência, e o cabeçalho da conferência volta à nota.
+//
+// Cada fato tem um lugar só. O topo diz QUAL recebimento é; a etapa 1 guarda
+// o que a nota diz (fornecedor, valores, pedido, produtos); a etapa 2 guarda o
+// que a doca contou. Nada aqui repete o que a etapa mostra logo abaixo.
 // ============================================================
 
-// ── Trilho ──────────────────────────────────────────────────
-
-export type EtapaId = "nota" | "pedido" | "produtos" | "conferencia";
-
-const ETAPAS: Record<EtapaId, { titulo: string; ajuda: string }> = {
-  nota: { titulo: "Nota", ajuda: "Confira o que o NoHub leu do XML" },
-  pedido: { titulo: "Pedido", ajuda: "Diga se esta nota fatura um pedido seu" },
-  produtos: { titulo: "Produtos", ajuda: "Relacione os itens da nota aos seus produtos" },
-  conferencia: { titulo: "Conferência", ajuda: "Conte o que chegou e receba no estoque" },
-};
-
-/**
- * A conferência é a última etapa: confirmar a entrada é o botão dela, não uma
- * tela a mais. Preço de venda se cuida no cadastro do produto.
- */
-export const ETAPAS_COM_NOTA: EtapaId[] = ["nota", "pedido", "produtos", "conferencia"];
-
-/**
- * O trilho do recebimento. As etapas são sempre as mesmas e sempre visíveis: o
- * operador precisa saber em que pé está uma nota que abriu ontem e voltou a
- * abrir hoje — e o que ainda falta antes de a mercadoria virar saldo.
- *
- * Etapa já visitada é botão: voltar para rever o pedido não pode exigir o
- * "voltar" do navegador. Etapa adiante só abre quando `onIr` a aceita.
- */
-export function Trilho({
-  etapas,
-  atual,
-  avisos,
-  onIr,
-}: {
-  etapas: EtapaId[];
-  atual: EtapaId;
-  /** Pendência curta ao lado do título ("5", "2"). Só número: é contagem. */
-  avisos?: Partial<Record<EtapaId, number>>;
-  /** Ausente = trilho só informa. Devolver para onde dá para ir é do dono. */
-  onIr?: (etapa: EtapaId) => void;
-}) {
-  const posicao = etapas.indexOf(atual);
-
-  return (
-    <div className="flex flex-col gap-1">
-      <ol className="flex flex-wrap items-center gap-x-1 gap-y-1.5">
-        {etapas.map((id, i) => {
-          const feita = i < posicao;
-          const ativa = i === posicao;
-          const aviso = avisos?.[id] ?? 0;
-          const clicavel = Boolean(onIr) && feita;
-          const conteudo = (
-            <>
-              <span
-                className={cn(
-                  "grid h-5 w-5 place-items-center rounded-full text-[11px] font-semibold",
-                  ativa && "bg-brand text-on-brand",
-                  feita && (aviso > 0 ? "bg-accent-soft text-accent" : "bg-ok-soft text-ok"),
-                  !ativa && !feita && "bg-surface-2 text-faint",
-                )}
-                aria-hidden
-              >
-                {feita && aviso === 0 ? <Check className="h-3 w-3" /> : i + 1}
-              </span>
-              <span
-                className={cn(
-                  "text-[12px]",
-                  ativa ? "font-semibold text-ink" : feita ? "text-muted" : "text-faint",
-                )}
-              >
-                {ETAPAS[id].titulo}
-              </span>
-              {aviso > 0 && (
-                <span className="rounded-full bg-accent-soft px-1.5 font-mono text-[11px] font-semibold text-accent">
-                  {aviso}
-                  <span className="sr-only"> {aviso === 1 ? "pendência" : "pendências"}</span>
-                </span>
-              )}
-            </>
-          );
-          return (
-            <React.Fragment key={id}>
-              {i > 0 && <span className="h-px w-3 bg-line sm:w-5" aria-hidden />}
-              <li aria-current={ativa ? "step" : undefined}>
-                {clicavel ? (
-                  <button
-                    type="button"
-                    onClick={() => onIr?.(id)}
-                    className="flex items-center gap-1.5 rounded-full px-2 py-1 transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-                  >
-                    {conteudo}
-                  </button>
-                ) : (
-                  <span
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-full px-2 py-1",
-                      // Só a etapa atual ganha fundo: um trilho em que todos os
-                      // passos pesam igual não diz onde a pessoa está.
-                      ativa && "bg-brand-soft",
-                    )}
-                  >
-                    {conteudo}
-                  </span>
-                )}
-              </li>
-            </React.Fragment>
-          );
-        })}
-      </ol>
-      <p className="text-[13px] text-muted">{ETAPAS[atual].ajuda}</p>
-    </div>
-  );
-}
+/** As duas telas do recebimento: a nota com seus produtos, e a contagem. */
+export type EtapaId = "nota" | "conferencia";
 
 // ── Rodapé de ação ──────────────────────────────────────────
 
@@ -135,10 +35,8 @@ export function Trilho({
  * da sidebar e obriga a chutar um `pb-24` que o texto de duas linhas do
  * celular estoura — escondendo o último item da nota.
  *
- * Uma casca só para as duas etapas. Antes cada uma desenhava a sua: mesma
- * altura, mesmo botão, e os números do topo repetidos aqui embaixo em corpo
- * menor. Agora o rodapé responde só duas coisas — quanto falta e o que
- * acontece ao apertar —, e os totais ficam onde já estavam.
+ * Uma casca só para as duas etapas, e ela responde só duas coisas — quanto
+ * falta e o que acontece ao apertar. Os totais ficam onde já estavam.
  */
 export function RodapeAcao({ children }: { children: React.ReactNode }) {
   return (
@@ -162,11 +60,8 @@ export function RodapeAcao({ children }: { children: React.ReactNode }) {
  * "12 de 40" é um número que se lê; a barra é um estado que se vê.
  *
  * Dois saldos na mesma régua, como o medidor de estoque do produto: o que já
- * foi feito e, dentro dele, o que ainda pede decisão. Quem está na doca olha
+ * foi contado e, dentro dele, o que ainda pede decisão. Quem está na doca olha
  * de longe, com a caixa na mão — texto de 13px não se lê nessa distância.
- *
- * Serve as duas etapas: relacionar produto e contar mercadoria são a mesma
- * pergunta ("quanto falta para poder receber?") em momentos diferentes.
  */
 export function MedidorRodape({
   total,
@@ -218,158 +113,302 @@ export function MedidorRodape({
   );
 }
 
-// ── Cabeçalho ───────────────────────────────────────────────
+// ── Topo ────────────────────────────────────────────────────
 
-export function Cabecalho({
-  recebimento,
-  nota,
-  pedidoNumero,
-  semPedido,
-  titulo,
-  semParcelas,
-  onDesvincular,
+/**
+ * O que as duas etapas têm em cima: qual recebimento é e o que o documento
+ * tem a avisar. Um componente só — antes cada etapa
+ * montava o seu, e as duas discordavam sobre onde ficava o menu da nota.
+ */
+export function Topo({
+  dados,
+  etapa,
+  podeTratarNota,
+  podeBaixarXml,
   onCancelar,
 }: {
-  /**
-   * A tarefa da tela, no lugar do nome do fornecedor. Na etapa da nota o
-   * fornecedor é uma das coisas a conferir — está na lista logo abaixo, e
-   * repeti-lo no título é dizer a mesma coisa duas vezes.
-   */
-  titulo?: string;
-  /** As parcelas já aparecem no corpo da etapa: não repetir aqui. */
-  semParcelas?: boolean;
+  dados: RecebimentoView;
+  etapa: EtapaId;
+  /** Decide sobre o DOCUMENTO: descartar, estornar, dar entrada sem conferir. */
+  podeTratarNota: boolean;
+  /** Abre e baixa o XML guardado (`fiscal.baixar`). */
+  podeBaixarXml: boolean;
+  /** Abandonar a conferência sem mover estoque. Ausente = não cabe agora. */
+  onCancelar?: () => void;
+}) {
+  const { recebimento, nota, pedido, semPedido, resumo, escolherPorta } = dados;
+  const naConferencia = etapa === "conferencia";
+  // Antes da conferência não há linha conciliada: a conta vem dos itens do XML.
+  const semProduto = escolherPorta
+    ? dados.itensNota.filter((i) => !i.productId).length
+    : resumo.produtosNovos;
+
+  const cabecalho = (menuDoDocumento?: React.ReactNode) => (
+    <Cabecalho
+      recebimento={recebimento}
+      nota={nota}
+      // Com nota, as duas etapas têm o mesmo título — "Recebimento REC-x" e a
+      // identidade da NF-e embaixo. Quem manda e qual pedido moram nos cartões
+      // da etapa 1, a um clique ("Nota e produtos").
+      resumido={Boolean(nota)}
+      // Na etapa 1 o XML tem botão próprio, ao lado dos dados do documento.
+      xmlNaTela={!naConferencia}
+      podeBaixarXml={podeBaixarXml}
+      pedidoNumero={naConferencia ? (pedido?.numero ?? null) : null}
+      semPedido={naConferencia && semPedido}
+      menuDoDocumento={menuDoDocumento}
+      onCancelar={onCancelar}
+      // Da contagem, um clique de volta ao que a nota diz. Sem nota, a
+      // conferência é a tela inteira e não há para onde voltar.
+      linkDaNota={naConferencia && nota ? `/recebimento/${recebimento.id}?etapa=nota` : null}
+    />
+  );
+
+  const encerrado = <AvisoEncerrado recebimento={recebimento} />;
+
+  if (nota && podeTratarNota) {
+    return (
+      <PainelNota nota={nota} faltamRelacionar={semProduto} emConferencia={!escolherPorta}>
+        {({ alertas, menu }) => (
+          <>
+            {cabecalho(menu)}
+            {encerrado}
+            {alertas}
+          </>
+        )}
+      </PainelNota>
+    );
+  }
+
+  return (
+    <>
+      {cabecalho()}
+      {encerrado}
+    </>
+  );
+}
+
+/** Recebimento fechado: a tela inteira vira leitura, e isto diz por quê. */
+function AvisoEncerrado({ recebimento }: { recebimento: RecebimentoView["recebimento"] }) {
+  if (recebimento.status === "FINALIZADO") {
+    return (
+      <p className="rounded-[var(--radius)] bg-ok-soft px-4 py-3 text-[13px] text-ok">
+        Recebimento {recebimento.numero} finalizado — a mercadoria já entrou no estoque.
+      </p>
+    );
+  }
+  if (recebimento.status === "CANCELADO") {
+    return (
+      <p className="rounded-[var(--radius)] bg-surface-2 px-4 py-3 text-[13px] text-muted">
+        Recebimento cancelado
+        {recebimento.canceladoMotivo ? `: ${recebimento.canceladoMotivo}` : "."} Nada entrou no
+        estoque.
+      </p>
+    );
+  }
+  return null;
+}
+
+// ── Cabeçalho ───────────────────────────────────────────────
+
+/**
+ * Identidade, e só: quem mandou, qual nota, em qual loja. Valor, parcelas e a
+ * origem do pedido são conteúdo da etapa 1 — aqui eles eram a mesma informação
+ * repetida em corpo menor.
+ *
+ * `resumido` vale nas duas etapas quando há nota: o fornecedor e o pedido têm
+ * cartão próprio na etapa 1, então o cabeçalho diz só qual recebimento é e
+ * qual NF-e — igual na nota e na conferência. Sem nota (pedido sem XML,
+ * avulso) não há etapa 1, e o cabeçalho completo é o único lugar desses dados.
+ */
+const STATUS_RECEBIMENTO: Record<
+  RecebimentoView["recebimento"]["status"],
+  { rotulo: string; tom: "neutral" | "brand" | "ok" | "warn" | "danger" }
+> = {
+  PENDENTE: { rotulo: "Pendente", tom: "warn" },
+  EM_CONFERENCIA: { rotulo: "Em conferência", tom: "brand" },
+  DIVERGENCIA: { rotulo: "Com divergência", tom: "danger" },
+  FINALIZADO: { rotulo: "Finalizado", tom: "ok" },
+  CANCELADO: { rotulo: "Cancelado", tom: "neutral" },
+};
+
+/** "NF-e 234517 · Série 39 · Emitida em 07/10/2026" — como o papel identifica a nota. */
+function IdentidadeDaNota({
+  nota,
+  solta,
+}: {
+  nota: NonNullable<RecebimentoView["nota"]>;
+  /** Dentro de outra linha de texto: sem o parágrafo próprio. */
+  solta?: boolean;
+}) {
+  const conteudo = (
+    <>
+      NF-e <span className="font-mono text-ink-2">{nota.numero}</span>
+      {" · Série "}
+      <span className="font-mono text-ink-2">{nota.serie}</span>
+      {" · Emitida em "}
+      {new Date(nota.dataEmissao).toLocaleDateString("pt-BR")}
+    </>
+  );
+  if (solta) return conteudo;
+  return <p className="truncate text-[13px] text-muted">{conteudo}</p>;
+}
+
+function Cabecalho({
+  recebimento,
+  nota,
+  resumido,
+  xmlNaTela,
+  podeBaixarXml,
+  pedidoNumero,
+  semPedido,
+  menuDoDocumento,
+  onCancelar,
+  linkDaNota,
+}: {
   recebimento: RecebimentoView["recebimento"];
   /** Nulo é caso normal: recebimento de pedido sem XML, ou avulso. */
   nota: RecebimentoView["nota"];
+  resumido?: boolean;
+  /** A tela já tem botão de XML — o menu não repete. */
+  xmlNaTela?: boolean;
+  podeBaixarXml: boolean;
   pedidoNumero: string | null;
-  /** Conferência aberta sem pedido — o rótulo do voltar muda com isso. */
+  /** Conferência aberta sem pedido. */
   semPedido?: boolean;
-  onDesvincular?: () => void;
-  /** Abandonar a conferência sem mover estoque. */
+  /** Itens de menu das decisões do documento — só para quem trata a nota. */
+  menuDoDocumento?: React.ReactNode;
   onCancelar?: () => void;
+  /** Endereço da etapa da nota — só na conferência. */
+  linkDaNota?: string | null;
 }) {
+  const xmlNoMenu = Boolean(nota?.temXml) && !xmlNaTela && podeBaixarXml;
+  const temMenu = Boolean(xmlNoMenu || menuDoDocumento || onCancelar);
+
   return (
-    <div className="flex flex-wrap items-start gap-3">
+    <div className="flex items-start gap-3">
       <Link
-        href="/pedidos"
-        className="mt-1 grid h-9 w-9 shrink-0 place-items-center rounded-full border border-line-button text-ink-2 hover:bg-surface-2"
-        aria-label="Voltar para os pedidos de compra"
+        href="/recebimento"
+        className="mt-1 grid h-9 w-9 shrink-0 place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+        aria-label="Voltar para os recebimentos"
       >
         <ArrowLeft className="h-4 w-4" aria-hidden />
       </Link>
 
-      {/* Hierarquia: quem mandou > qual papel > quanto. O nome do fornecedor é
-          o que o operador procura na tela cheia de notas; "Recebimento
-          inteligente" é onde ele está, não o que ele está olhando. */}
-      <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
-          <span className="font-mono">{recebimento.numero}</span>
-          <span aria-hidden>·</span>
-          <span>Recebimento</span>
-        </p>
-        <h1 className="truncate font-display text-[20px] font-semibold text-ink">
-          {titulo ?? recebimento.supplierNome ?? "Sem fornecedor"}
-        </h1>
-        <p className="truncate text-[13px] text-muted">
-          {nota ? (
-            <span className="font-mono">
-              NF {nota.numero}/{nota.serie}
-            </span>
-          ) : recebimento.numeroNota ? (
-            <span className="font-mono">NF {recebimento.numeroNota} (sem XML)</span>
-          ) : (
-            <span>Sem nota fiscal</span>
+      {/* Hierarquia: quem mandou > qual documento > onde. Na etapa 1 quem manda
+          e qual documento têm cartão próprio logo abaixo — sobra o recebimento. */}
+      {resumido ? (
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate font-display text-[20px] font-semibold text-ink">
+            Recebimento <span className="font-mono">{recebimento.numero}</span>
+          </h1>
+          {nota && <IdentidadeDaNota nota={nota} />}
+        </div>
+      ) : (
+        <div className="min-w-0 flex-1">
+          <p className="font-mono text-[11px] font-semibold tracking-wider text-faint">
+            {recebimento.numero}
+          </p>
+          <h1 className="truncate font-display text-[20px] font-semibold text-ink">
+            {recebimento.supplierNome ?? "Sem fornecedor"}
+          </h1>
+          <p className="truncate text-[13px] text-muted">
+            {nota ? (
+              <IdentidadeDaNota nota={nota} solta />
+            ) : (
+              <>
+                {recebimento.numeroNota ? (
+                  <span className="font-mono">NF {recebimento.numeroNota} (sem XML)</span>
+                ) : (
+                  <span>Sem nota fiscal</span>
+                )}
+                {" · "}
+                {recebimento.siteNome}
+              </>
+            )}
+            {pedidoNumero && (
+              <>
+                {" · pedido "}
+                <span className="font-mono text-ink-2">{pedidoNumero}</span>
+              </>
+            )}
+            {semPedido && " · sem pedido"}
+          </p>
+          {!nota && !pedidoNumero && (
+            <p className="mt-1 text-[12px] text-muted">
+              Recebimento avulso — sem pedido e sem nota. Some o que chegou.
+            </p>
           )}
-          {" · "}
-          {recebimento.siteNome}
-          {pedidoNumero && (
-            <>
-              {" · pedido "}
-              <span className="font-mono text-ink-2">{pedidoNumero}</span>
-            </>
+          {!nota && pedidoNumero && (
+            <p className="mt-1 text-[12px] text-muted">
+              Sem XML por enquanto. Você pode receber assim e vincular a NF-e quando ela chegar.
+            </p>
           )}
-        </p>
-        {semPedido && (
-          <p className="mt-1 text-[12px] text-muted">
-            Sem pedido — a nota é a referência do que deveria vir.
-          </p>
-        )}
-        {!nota && !pedidoNumero && (
-          <p className="mt-1 text-[12px] text-muted">
-            Recebimento avulso — sem pedido e sem nota. Some o que chegou.
-          </p>
-        )}
-        {!nota && pedidoNumero && (
-          <p className="mt-1 text-[12px] text-muted">
-            Sem XML por enquanto. Você pode receber assim e vincular a NF-e quando ela chegar.
-          </p>
-        )}
-        {nota?.vinculoAutomatico && pedidoNumero && (
-          <p className="mt-1 text-[12px] text-brand">
-            Pedido {pedidoNumero} encontrado automaticamente pela nota.
-          </p>
-        )}
-        {nota && !semParcelas && nota.duplicatas.length > 0 && (
-          <p className="mt-1 text-[12px] text-muted">
-            {nota.duplicatas.length === 1 ? "Vencimento" : `${nota.duplicatas.length} parcelas`}:{" "}
-            {nota.duplicatas
-              .map(
-                (d) =>
-                  `${new Date(d.vencimento).toLocaleDateString("pt-BR")} ${fmtMoney(d.valor)}`,
-              )
-              .join(" · ")}
-          </p>
-        )}
-      </div>
+        </div>
+      )}
 
-      <div className="flex shrink-0 items-start gap-3">
-        {nota && (
-          <p className="text-right">
-            <span className="block font-mono text-[20px] font-semibold text-ink">
-              {fmtMoney(nota.valorTotal)}
-            </span>
-            <span className="block text-[11px] text-faint">total da nota</span>
-          </p>
-        )}
+      {/* Em que pé está o recebimento, à direita do título — o mesmo selo
+          nas duas etapas. */}
+      <Badge
+        tone={STATUS_RECEBIMENTO[recebimento.status].tom}
+        className="mt-1.5 shrink-0 px-2.5 py-1 text-[12px]"
+      >
+        {STATUS_RECEBIMENTO[recebimento.status].rotulo}
+      </Badge>
 
-        {/* O que não é a decisão da vez sai do caminho. Baixar o XML e trocar
-            a forma de receber são coisas que se faz uma vez por nota — não
-            merecem competir com o botão de receber. */}
+      {linkDaNota && (
+        <Link
+          href={linkDaNota}
+          className="mt-1 inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-line-button bg-surface px-3.5 text-[13px] font-medium text-ink transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+        >
+          <FileText className="h-4 w-4" aria-hidden />
+          <span className="hidden sm:inline">Nota e produtos</span>
+          <span className="sm:hidden">Nota</span>
+        </Link>
+      )}
+
+      {/* Um menu só para o recebimento e para o documento dele. O que não é a
+          decisão da vez sai do caminho: baixar o XML, descartar a nota e
+          cancelar a conferência são coisas que se faz uma vez. */}
+      {temMenu && (
         <Menu
           trigger={
             <button
               type="button"
-              className="grid h-9 w-9 place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2"
-              aria-label="Mais opções desta nota"
+              className="mt-1 grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+              aria-label="Mais opções deste recebimento"
             >
               <MoreVertical className="h-4 w-4" aria-hidden />
             </button>
           }
         >
-          {nota?.temXml && (
+          {nota && xmlNoMenu && (
             // O contador pede o XML, e sem isto o operador volta ao e-mail do
             // fornecedor procurar o anexo que já está guardado aqui.
             <MenuItem
               icon={<FileText size={15} />}
               onClick={() => {
-                window.location.href = `/api/fiscal/entrada/${nota.id}/xml`;
+                buscarXmlDaNota(nota.id, nota.chave)
+                  .then(salvarComoArquivo)
+                  .catch((e: unknown) =>
+                    toast.error(
+                      "Não deu para baixar o XML",
+                      e instanceof Error ? e.message : "Tente de novo.",
+                    ),
+                  );
               }}
             >
               Baixar XML
             </MenuItem>
           )}
-          {onDesvincular && (pedidoNumero || semPedido) && (
-            <MenuItem icon={<Undo2 size={15} />} onClick={onDesvincular}>
-              {pedidoNumero ? "Trocar pedido" : "Trocar forma de receber"}
-            </MenuItem>
-          )}
+          {menuDoDocumento}
           {onCancelar && (
             <MenuItem icon={<CircleX size={15} />} onClick={onCancelar} danger>
               Cancelar recebimento
             </MenuItem>
           )}
         </Menu>
-      </div>
+      )}
     </div>
   );
 }

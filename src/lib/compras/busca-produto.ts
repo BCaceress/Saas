@@ -1,23 +1,32 @@
 import "server-only";
-import { db } from "@/lib/prisma";
-import { onlyDigits } from "@/lib/normalize";
+import { basePrisma, comTenant, db } from "@/lib/prisma";
+import { requireTenantId } from "@/lib/tenant-context";
+import { urlImagemProduto } from "@/lib/imagem";
+import { onlyDigits, semAcento } from "@/lib/normalize";
 import {
   alternativasComEmbalagem,
   alternativasPorCodigo,
 } from "@/lib/produto-codigo";
 import { ordenarPorRelevancia, tokensDaBusca } from "./busca-produto-rank";
-import type { Prisma } from "@/generated/prisma";
+import { Prisma } from "@/generated/prisma";
 
 // ============================================================
 // Busca de produto para relacionar um item de nota ao catálogo.
 //
-// Duas correções sobre o `contains` ingênuo:
+// Três correções sobre o `contains` ingênuo:
 //
 //  1. procura PALAVRA A PALAVRA. "CERV HEINEKEN LN" não existe como frase em
-//     "Cerveja Heineken Long Neck 330ml" — mas as três palavras existem. Com
-//     `contains` da frase inteira, a busca que a tela abre não achava nada.
-//  2. traz mais linhas do que mostra e ORDENA POR RELEVÂNCIA. Ordenar por nome
+//     "Cerveja Heineken Long Neck 330ml" — mas as três palavras existem.
+//  2. NÃO EXIGE O TEXTO IGUAL. Entram também os nomes PARECIDOS (trigramas do
+//     pg_trgm, sem acento) e os que têm só parte das palavras: "hortela",
+//     "heinekn" e a palavra que o fornecedor abreviou diferente ainda acham o
+//     produto. Antes, uma palavra a mais na descrição da nota zerava a lista.
+//  3. traz mais linhas do que mostra e ORDENA POR RELEVÂNCIA. Ordenar por nome
 //     no banco com LIMIT chega a cortar fora justamente o produto certo.
+//
+// E a foto não viaja: a coluna pode guardar a imagem inteira como `data:`, e
+// trazê-la a cada tecla deixava a busca lenta. A lista leva só o caminho da
+// foto, que o navegador baixa depois, com cache.
 //
 // Assume contexto de tenant ativo (runWithTenant no chamador).
 // ============================================================
@@ -62,6 +71,169 @@ export type ProdutoBuscado = {
 /** Quantas linhas o banco entrega para o ranqueamento escolher. */
 const CANDIDATOS = 60;
 
+/** Tirar acento no próprio banco, sem depender da extensão `unaccent`. */
+const COM_ACENTO = "áàâãäåéèêëíìîïóòôõöúùûüçñ";
+const SEM_ACENTO = "aaaaaaeeeeiiiiooooouuuucn";
+
+/** Parecença mínima (0 a 1) para um nome entrar na lista só por semelhança. */
+const PARECENCA_MINIMA = 0.3;
+
+type LinhaParecida = {
+  id: string;
+  nome: string;
+  sku: string;
+  ean: string | null;
+  custoMedio: unknown;
+  unidadeBase: string;
+  conteudoPorUnidade: unknown;
+  marca: string | null;
+  codigos: { codigo: string }[];
+  embalagens: { id: string; nome: string; ean: string | null; fator: number }[];
+  parecenca: number;
+};
+
+/**
+ * Produtos cujo nome PARECE o que foi digitado, mesmo sem bater letra a letra.
+ *
+ * Dois sinais: a semelhança da frase inteira com algum trecho do nome
+ * (`word_similarity`, trigramas) e quantas palavras digitadas aparecem nele.
+ * Basta um para o produto entrar — quem decide a ordem final é o ranqueamento
+ * em JS, que recebe a semelhança como desempate.
+ *
+ * Já volta com códigos e embalagens: buscar os detalhes numa segunda ida ao
+ * banco era mais uma volta inteira a cada tecla.
+ */
+async function candidatosParecidos(
+  termo: string,
+  tokens: string[],
+): Promise<(ProdutoBuscado & { similaridade: number })[]> {
+  const tenantId = requireTenantId();
+
+  // SQL com parâmetros numerados, sem fragmentos `Prisma.sql` aninhados: no
+  // bundle do Next o fragmento chegava ao client como VALOR (virava jsonb) e a
+  // consulta quebrava — num script avulso funcionava, o que escondia o erro.
+  // Tudo que vem de fora vai como parâmetro; só a estrutura é texto.
+  const nome = `translate(lower(p."nome"), $2, $3)`;
+  // Um parâmetro por palavra, a partir do $7. Tokens só têm [a-z0-9] (ver
+  // `tokensDaBusca`): nada a escapar no LIKE.
+  const acertos = tokens.map((_, i) => `(${nome} LIKE $${7 + i})::int`).join(" + ");
+  const sql = `
+    SELECT p."id", p."nome", p."sku", p."ean", p."custoMedio",
+      p."unidadeBase"::text AS "unidadeBase", p."conteudoPorUnidade",
+      b."nome" AS marca,
+      COALESCE((
+        SELECT json_agg(json_build_object('codigo', pb."codigo"))
+        FROM "ProductBarcode" pb WHERE pb."productId" = p."id"
+      ), '[]'::json) AS codigos,
+      COALESCE((
+        SELECT json_agg(json_build_object(
+          'id', pk."id", 'nome', pk."nome", 'ean', pk."ean", 'fator', pk."fatorConversao"
+        ))
+        FROM "ProductPackaging" pk WHERE pk."productId" = p."id"
+      ), '[]'::json) AS embalagens,
+      word_similarity($1, ${nome}) AS parecenca
+    FROM "Product" p
+    LEFT JOIN "Brand" b ON b."id" = p."brandId"
+    WHERE p."tenantId" = $4
+      AND p."ativo" = true
+      AND (word_similarity($1, ${nome}) >= $5 OR (${acertos}) > 0)
+    ORDER BY (${acertos}) DESC, parecenca DESC
+    LIMIT $6
+  `;
+
+  const linhas = await comTenant(
+    tenantId,
+    basePrisma.$queryRawUnsafe<LinhaParecida[]>(
+      sql,
+      termo,
+      COM_ACENTO,
+      SEM_ACENTO,
+      tenantId,
+      PARECENCA_MINIMA,
+      CANDIDATOS,
+      ...tokens.map((t) => `%${t}%`),
+    ),
+  );
+
+  return linhas.map((l) => ({
+    id: l.id,
+    nome: l.nome,
+    sku: l.sku,
+    ean: l.ean,
+    imagemUrl: null,
+    custoMedio: Number(l.custoMedio ?? 0),
+    unidadeBase: l.unidadeBase,
+    conteudoPorUnidade: l.conteudoPorUnidade == null ? null : Number(l.conteudoPorUnidade),
+    marca: l.marca,
+    codigos: l.codigos,
+    embalagens: l.embalagens.map((e) => ({ ...e, fator: Number(e.fator) })),
+    saldo: 0,
+    ultimaCompra: null,
+    similaridade: Number(l.parecenca),
+  }));
+}
+
+/** Plano B: todas as palavras no nome, SKU ou marca — exato, sem parecença. */
+async function porPalavras(tokens: string[]): Promise<(ProdutoBuscado & { similaridade: number })[]> {
+  const produtos = await db.product.findMany({
+    where: {
+      ativo: true,
+      AND: tokens.map((t) => ({
+        OR: [
+          { nome: { contains: t, mode: "insensitive" as const } },
+          { sku: { contains: t, mode: "insensitive" as const } },
+          { brand: { is: { nome: { contains: t, mode: "insensitive" as const } } } },
+        ],
+      })),
+    },
+    select: SELECAO,
+    take: CANDIDATOS,
+  });
+  return produtos.map((p) => ({ ...paraBuscado(p), similaridade: 0 }));
+}
+
+/** O que a busca carrega de cada produto — a foto fica de fora de propósito. */
+const SELECAO = {
+  id: true,
+  nome: true,
+  sku: true,
+  ean: true,
+  custoMedio: true,
+  unidadeBase: true,
+  conteudoPorUnidade: true,
+  brand: { select: { nome: true } },
+  // Apelidos de código: sem eles o ranqueamento daria 0 ponto a um bipe
+  // que casou exato, e o produto certo cairia fora do LIMIT.
+  barcodes: { select: { codigo: true } },
+  packagings: { select: { id: true, nome: true, ean: true, fatorConversao: true } },
+} satisfies Prisma.ProductSelect;
+
+type ProdutoSelecionado = Prisma.ProductGetPayload<{ select: typeof SELECAO }>;
+
+function paraBuscado(p: ProdutoSelecionado): ProdutoBuscado {
+  return {
+    id: p.id,
+    nome: p.nome,
+    sku: p.sku,
+    ean: p.ean,
+    // Preenchido em `comContexto`, só para quem vai à tela.
+    imagemUrl: null,
+    custoMedio: Number(p.custoMedio ?? 0),
+    unidadeBase: p.unidadeBase,
+    conteudoPorUnidade: p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
+    marca: p.brand?.nome ?? null,
+    codigos: p.barcodes,
+    embalagens: p.packagings.map((e) => ({
+      id: e.id,
+      nome: e.nome,
+      ean: e.ean,
+      fator: Number(e.fatorConversao),
+    })),
+    saldo: 0,
+    ultimaCompra: null,
+  };
+}
+
 export async function buscarProdutosParaRelacionar(
   termo: string,
   opts: {
@@ -81,82 +253,41 @@ export async function buscarProdutosParaRelacionar(
 
   if (tokens.length === 0 && digitos.length < 4 && !gtin) return [];
 
-  const alternativas: Prisma.ProductWhereInput[] = [];
-
-  // Todas as palavras digitadas, cada uma no nome ou no SKU.
-  if (tokens.length > 0) {
-    alternativas.push({
-      AND: tokens.map((t) => ({
-        OR: [
-          { nome: { contains: t, mode: "insensitive" as const } },
-          { sku: { contains: t, mode: "insensitive" as const } },
-          // Marca também é como o operador procura: "heineken" acha o long
-          // neck mesmo quando o cadastro se chama só "Cerveja Long Neck 330ml".
-          { brand: { is: { nome: { contains: t, mode: "insensitive" as const } } } },
-        ],
-      })),
-    });
-  }
-
-  // Código de barras digitado — principal, apelido (mesma unidade, outra
-  // marca) ou DUN de uma embalagem dele.
-  //
+  // Códigos: o digitado (principal, apelido ou DUN de embalagem) e o GTIN do
+  // item da nota — o palpite mais forte que existe, mesmo com outro texto.
   // Piso de 4 e não de 8: código interno de balança é curto e precisa casar
   // igual. Abaixo disso o OR casaria metade do catálogo.
-  if (digitos.length >= 4) {
-    alternativas.push(...alternativasComEmbalagem(digitos));
-  }
+  const porCodigo: Prisma.ProductWhereInput[] = [
+    ...(digitos.length >= 4 ? alternativasComEmbalagem(digitos) : []),
+    ...(gtin ? alternativasComEmbalagem(gtin) : []),
+  ];
 
-  // O GTIN do item da nota entra como candidato mesmo quando o operador está
-  // digitando outra coisa: é o palpite mais forte que existe, e some da lista
-  // se o texto digitado não tiver nada a ver.
-  if (gtin) {
-    alternativas.push(...alternativasComEmbalagem(gtin));
-  }
+  // As duas portas em paralelo: o que casa por código e o que parece pelo nome.
+  const [diretos, parecidos] = await Promise.all([
+    porCodigo.length > 0
+      ? db.product.findMany({ where: { ativo: true, OR: porCodigo }, select: SELECAO, take: CANDIDATOS })
+      : Promise.resolve([] as ProdutoSelecionado[]),
+    tokens.length > 0
+      ? candidatosParecidos(semAcento(q), tokens).catch((e: unknown) => {
+          // A busca por parecença depende do pg_trgm e de SQL cru. Se falhar,
+          // a tela não pode cair junto (as sugestões da nota passam por aqui
+          // no carregamento): volta à busca palavra a palavra, exata.
+          console.error("[busca-produto] parecença indisponível, usando busca exata", e);
+          return porPalavras(tokens);
+        })
+      : Promise.resolve([]),
+  ]);
 
-  const produtos = await db.product.findMany({
-    where: { ativo: true, OR: alternativas },
-    select: {
-      id: true,
-      nome: true,
-      sku: true,
-      ean: true,
-      imagemUrl: true,
-      custoMedio: true,
-      unidadeBase: true,
-      conteudoPorUnidade: true,
-      brand: { select: { nome: true } },
-      // Apelidos de código: sem eles o ranqueamento daria 0 ponto a um bipe
-      // que casou exato, e o produto certo cairia fora do LIMIT.
-      barcodes: { select: { codigo: true } },
-      packagings: { select: { id: true, nome: true, ean: true, fatorConversao: true } },
-    },
-    take: CANDIDATOS,
-  });
+  // Quem casou por código e também parece pelo nome fica com a parecença.
+  const parecencaPorId = new Map(parecidos.map((p) => [p.id, p.similaridade]));
+  const jaTem = new Set(diretos.map((p) => p.id));
+  const mapeados = [
+    ...diretos.map((p) => ({ ...paraBuscado(p), similaridade: parecencaPorId.get(p.id) })),
+    ...parecidos.filter((p) => !jaTem.has(p.id)),
+  ];
 
-  const mapeados: ProdutoBuscado[] = produtos.map((p) => ({
-    id: p.id,
-    nome: p.nome,
-    sku: p.sku,
-    ean: p.ean,
-    imagemUrl: p.imagemUrl,
-    custoMedio: Number(p.custoMedio ?? 0),
-    unidadeBase: p.unidadeBase,
-    conteudoPorUnidade: p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
-    marca: p.brand?.nome ?? null,
-    codigos: p.barcodes,
-    embalagens: p.packagings.map((e) => ({
-      id: e.id,
-      nome: e.nome,
-      ean: e.ean,
-      fator: Number(e.fatorConversao),
-    })),
-    saldo: 0,
-    ultimaCompra: null,
-  }));
-
-  // Contexto só do que vai à tela: ranquear primeiro e enriquecer os ~20 que
-  // sobram evita duas varreduras de estoque e de compras por tecla digitada.
+  // Contexto só do que vai à tela: ranquear primeiro e enriquecer os ~15 que
+  // sobram evita varrer estoque e compras de sessenta produtos por tecla.
   const escolhidos = ordenarPorRelevancia(mapeados, q, gtin || null).slice(0, limite);
   return comContexto(escolhidos, opts.supplierId ?? null, opts.siteId ?? null);
 }
@@ -223,21 +354,7 @@ async function produtosPorId(
 ): Promise<ProdutoBuscado[]> {
   const produtos = await db.product.findMany({
     where: { id: { in: ids }, ativo: true },
-    select: {
-      id: true,
-      nome: true,
-      sku: true,
-      ean: true,
-      imagemUrl: true,
-      custoMedio: true,
-      unidadeBase: true,
-      conteudoPorUnidade: true,
-      brand: { select: { nome: true } },
-      // Apelidos de código: sem eles o ranqueamento daria 0 ponto a um bipe
-      // que casou exato, e o produto certo cairia fora do LIMIT.
-      barcodes: { select: { codigo: true } },
-      packagings: { select: { id: true, nome: true, ean: true, fatorConversao: true } },
-    },
+    select: SELECAO,
   });
 
   // A ordem de `ids` é a ordem de relevância de quem chamou (mais recente
@@ -245,35 +362,16 @@ async function produtosPorId(
   const porId = new Map(produtos.map((p) => [p.id, p]));
   const naOrdem = ids.map((id) => porId.get(id)).filter((p) => p != null);
 
-  return comContexto(
-    naOrdem.map((p) => ({
-      id: p.id,
-      nome: p.nome,
-      sku: p.sku,
-      ean: p.ean,
-      imagemUrl: p.imagemUrl,
-      custoMedio: Number(p.custoMedio ?? 0),
-      unidadeBase: p.unidadeBase,
-      conteudoPorUnidade: p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
-    marca: p.brand?.nome ?? null,
-      codigos: p.barcodes,
-      embalagens: p.packagings.map((e) => ({
-        id: e.id,
-        nome: e.nome,
-        ean: e.ean,
-        fator: Number(e.fatorConversao),
-      })),
-      saldo: 0,
-      ultimaCompra: null,
-    })),
-    opts.supplierId ?? null,
-    opts.siteId ?? null,
-  );
+  return comContexto(naOrdem.map(paraBuscado), opts.supplierId ?? null, opts.siteId ?? null);
 }
 
 /**
- * Preenche saldo e última compra. Duas consultas para a lista inteira — uma
- * por produto seria N round-trips ao Neon a cada tecla digitada.
+ * Preenche saldo, última compra e o endereço da foto. Três consultas para a
+ * lista inteira, em paralelo — uma por produto seria N round-trips ao Neon a
+ * cada tecla digitada.
+ *
+ * A foto sai como caminho, nunca como conteúdo: `data:` guardado na coluna
+ * vira `/api/produtos/<id>/imagem`, que o navegador baixa depois da lista.
  */
 async function comContexto(
   produtos: ProdutoBuscado[],
@@ -283,7 +381,8 @@ async function comContexto(
   if (produtos.length === 0) return produtos;
   const ids = produtos.map((p) => p.id);
 
-  const [saldos, entradas] = await Promise.all([
+  const tenantId = requireTenantId();
+  const [saldos, entradas, fotos] = await Promise.all([
     db.stock.findMany({
       where: { productId: { in: ids }, ...(siteId ? { siteId } : {}) },
       select: { productId: true, estoqueFechado: true },
@@ -301,7 +400,22 @@ async function comContexto(
         purchase: { select: { data: true, supplierId: true } },
       },
     }),
+    // Só o começo da coluna: o suficiente para saber se é `data:` sem trazer
+    // os KB da imagem junto.
+    comTenant(
+      tenantId,
+      basePrisma.$queryRaw<{ id: string; atualizado: Date; foto: string | null }[]>`
+        SELECT "id", "updatedAt" AS atualizado,
+          CASE WHEN left("imagemUrl", 5) = 'data:' THEN 'data:' ELSE "imagemUrl" END AS foto
+        FROM "Product"
+        WHERE "tenantId" = ${tenantId} AND "id" = ANY(${ids})
+      `,
+    ),
   ]);
+
+  const fotoPorProduto = new Map(
+    fotos.map((f) => [f.id, urlImagemProduto(f.id, f.foto, new Date(f.atualizado))]),
+  );
 
   const saldoPorProduto = new Map<string, number>();
   for (const s of saldos) {
@@ -331,6 +445,7 @@ async function comContexto(
 
   return produtos.map((p) => ({
     ...p,
+    imagemUrl: fotoPorProduto.get(p.id) ?? null,
     saldo: saldoPorProduto.get(p.id) ?? 0,
     ultimaCompra: compraPorProduto.get(p.id) ?? null,
   }));

@@ -2,14 +2,13 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Copy, MoreVertical, PackageCheck, Receipt, Trash2, Undo2, Unlink } from "lucide-react";
+import { Copy, PackageCheck, Receipt, Trash2, Undo2, Unlink } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Menu, MenuItem } from "@/components/ui/menu";
+import { MenuItem } from "@/components/ui/menu";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/sheet";
 import { Field } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
-import { maskCnpj } from "@/lib/masks";
 import {
   candidatasEntradaManualAction,
   descartarNotaAction,
@@ -25,17 +24,19 @@ import { fmtMoney } from "../../cotacoes/_ui";
 import type { NotaRecebimento } from "../_data";
 
 // ============================================================
-// O documento, ao lado do trabalho.
+// As decisões do documento, sem tela própria.
 //
-// Antes isto era uma tela inteira em /fiscal/notas-recebidas, aberta por cima
-// da mesma nota que o recebimento estava conferindo — duas telas discutindo o
-// mesmo registro. Aqui é um painel: quem trata a nota (contador, `fiscal.importar`)
-// vê os dados do documento e as decisões que são DELE — descartar, documentar
-// uma entrada já lançada à mão, estornar, receber sem conferir.
+// Antes isto era uma tela inteira em /fiscal/notas-recebidas, depois um card
+// com o seu próprio menu ao lado do menu do cabeçalho — dois "⋮" para a mesma
+// nota. Agora este componente não desenha moldura nenhuma: entrega os avisos
+// do documento e os itens de menu dele, e o cabeçalho do recebimento os
+// hospeda. Quem trata a nota (contador, `fiscal.importar`) decide aqui o que é
+// DELE — descartar, documentar uma entrada já lançada à mão, estornar, receber
+// sem conferir.
 //
-// O que NÃO está aqui é de propósito: escolher pedido e conferir mercadoria
-// são as etapas 2 e 3 do trilho, e repetir a decisão em dois lugares é como se
-// criava divergência.
+// O que NÃO está aqui é de propósito: os dados da nota e o pedido moram na
+// etapa 1, a contagem na etapa 2, e repetir a decisão em dois lugares é como
+// se criava divergência.
 // ============================================================
 
 type Candidata = Awaited<ReturnType<typeof candidatasEntradaManualAction>>[number];
@@ -89,12 +90,11 @@ export function PainelNota({
   children,
 }: {
   /**
-   * Quem desenha em volta. Ausente, o painel é o card de sempre. Presente, ele
-   * só entrega as peças — os avisos do documento e as ações dele — e a tela
-   * decide onde cada uma mora: na etapa da nota os avisos ficam à vista e as
-   * ações descem para os detalhes fiscais, sem um card a mais competindo.
+   * Quem desenha em volta. O componente só entrega as peças: os avisos do
+   * documento, que ficam à vista, e os itens de menu dele (nulo quando a nota
+   * não tem mais decisão a tomar), que entram no "⋮" do cabeçalho.
    */
-  children?: (partes: { alertas: React.ReactNode; acoes: React.ReactNode }) => React.ReactNode;
+  children: (partes: { alertas: React.ReactNode; menu: React.ReactNode }) => React.ReactNode;
   nota: NotaRecebimento;
   /** Itens sem produto no catálogo — trava a entrada direta. */
   faltamRelacionar: number;
@@ -209,37 +209,15 @@ export function PainelNota({
     else desvincular(texto);
   }
 
-  const acoes = (
-    <div className="flex flex-wrap items-center gap-2">
-      {editavel && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => pedirMotivo("DESCARTAR")}
-          disabled={pending}
-        >
-          <Trash2 size={15} /> Descartar
-        </Button>
-      )}
-      {/* O resto das decisões do documento entra no menu. "Dar entrada
-          sem conferir" em botão no topo da tela era um atalho com peso
-          de caminho principal: pulava a conferência inteira com um
-          clique, ao lado do que o operador clica o tempo todo. */}
-      <Menu
-        trigger={
-          <button
-            type="button"
-            disabled={pending}
-            className="grid h-8 w-8 place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
-            aria-label="Mais opções do documento"
-          >
-            <MoreVertical size={15} aria-hidden />
-          </button>
-        }
-      >
+  // Tudo no menu, nada em botão solto: "Dar entrada sem conferir" e "Descartar"
+  // ao lado do que o operador clica o tempo todo eram atalhos com peso de
+  // caminho principal.
+  const menu =
+    editavel || nota.status === "RECEBIDO" || nota.status === "VINCULADO" ? (
+      <>
         {/* Atalho, não caminho: nota de serviço, frete ou compra que o
             operador já conferiu no papel não precisa de contagem. Some
-            assim que há conferência aberta — aí o botão da etapa 3 manda. */}
+            assim que há conferência aberta — aí quem manda é o botão dela. */}
         {editavel && !emConferencia && (
           <MenuItem
             icon={<PackageCheck size={15} />}
@@ -269,12 +247,18 @@ export function PainelNota({
             Desfazer vínculo
           </MenuItem>
         )}
-        {editavel && emConferencia && nota.status !== "RECEBIDO" && (
-          <MenuItem disabled>Conferência aberta — dê entrada pela etapa 3</MenuItem>
+        {editavel && (
+          <MenuItem
+            icon={<Trash2 size={15} />}
+            disabled={pending}
+            onClick={() => pedirMotivo("DESCARTAR")}
+            danger
+          >
+            Descartar nota
+          </MenuItem>
         )}
-      </Menu>
-    </div>
-  );
+      </>
+    ) : null;
 
   // O que o documento tem a dizer antes de qualquer decisão: por que foi
   // descartado, por que não mexe em estoque, e a entrada manual que ele pode
@@ -435,49 +419,9 @@ export function PainelNota({
     </>
   );
 
-  if (children) {
-    return (
-      <>
-        {children({ alertas, acoes })}
-        {modais}
-      </>
-    );
-  }
-
   return (
     <>
-      <section className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-line bg-surface p-4">
-        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-          <div className="min-w-0">
-            <h2 className="flex items-center gap-2 font-display text-[14px] font-semibold text-ink">
-              <Receipt size={15} className="shrink-0 text-faint" aria-hidden />
-              Nota fiscal {nota.numero}/{nota.serie}
-            </h2>
-            <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] text-faint">
-              <span>{maskCnpj(nota.cnpj)}</span>
-              {nota.uf && <span>· {nota.uf}</span>}
-              <span className="break-all">· {nota.chave}</span>
-              <button
-                type="button"
-                onClick={() => {
-                  void navigator.clipboard?.writeText(nota.chave);
-                  toast.success("Chave copiada.");
-                }}
-                className="cursor-pointer text-muted transition-colors hover:text-brand"
-                aria-label="Copiar chave de acesso"
-                title="Copiar chave de acesso"
-              >
-                <Copy size={12} />
-              </button>
-            </p>
-          </div>
-
-          {acoes}
-        </div>
-
-        {alertas}
-      </section>
-
+      {children({ alertas, menu })}
       {modais}
     </>
   );

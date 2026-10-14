@@ -2,21 +2,23 @@
 
 import {
   Fragment,
-  forwardRef,
   useEffect,
-  useRef,
   useState,
   useTransition,
+  type ButtonHTMLAttributes,
+  type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowRightLeft,
   Check,
   CheckCheck,
-  ChevronDown,
+  CircleCheck,
+  Clock3,
   Gift,
+  Info,
   Loader2,
-  Plus,
+  MoreVertical,
   Search,
   Sparkles,
   TrendingDown,
@@ -72,11 +74,13 @@ import { CONFIANCA } from "@/lib/compras/sugestao-pelo-pedido-regras";
 // A pergunta que o operador faz olhando uma nota de quarenta linhas nunca é
 // "qual o CFOP desta?" — é "esse aí virou qual produto meu, e quantas unidades
 // entram?". Todo o resto (NCM, CEST, GTIN tributável, código do fornecedor)
-// continua aqui, mas atrás de "Mais detalhes": dado fiscal disputando espaço
+// continua aqui, mas atrás de "Ver detalhes": dado fiscal disputando espaço
 // com a decisão é o que fazia a tela parecer um formulário de conferência.
 //
-// A tela trabalha por PENDÊNCIA, não por linha: o que chegou pronto sai do
-// caminho, e o que falta sobe ao topo com a ação ao lado.
+// A tabela segue a ordem da nota, numerada, com a situação e o próximo passo
+// de cada linha na ponta direita. Quem quer só o que falta usa o filtro
+// "Pendentes"; o que serve para várias linhas de uma vez mora em "Ações em
+// lote".
 // ============================================================
 
 /** Uma linha do XML com tudo que a decisão de de-para precisa. */
@@ -383,40 +387,6 @@ const SEVERIDADE_UI: Record<Severidade, { chip: string; ponto: string }> = {
   INFORMATIVA: { chip: "bg-surface-2 text-muted hover:text-ink", ponto: "bg-faint" },
 };
 
-const PENDENCIA_UI: Record<
-  Pendencia,
-  { titulo: string; curto: string; ponto: string; linha: string; tom: string }
-> = {
-  SEM_PRODUTO: {
-    titulo: "Precisam de produto",
-    curto: "sem produto",
-    ponto: "bg-warn",
-    linha: "bg-warn-soft/40",
-    tom: "bg-warn-soft text-warn",
-  },
-  SEM_EMBALAGEM: {
-    titulo: "Precisam de conversão",
-    curto: "sem conversão",
-    ponto: "bg-warn",
-    linha: "bg-warn-soft/40",
-    tom: "bg-warn-soft text-warn",
-  },
-  CONFERIR: {
-    titulo: "Confira antes de receber",
-    curto: "com diferença",
-    ponto: "bg-info",
-    linha: "bg-info-soft/40",
-    tom: "bg-info-soft text-info",
-  },
-  PRONTO: {
-    titulo: "Prontos",
-    curto: "prontos",
-    ponto: "bg-ok",
-    linha: "",
-    tom: "bg-surface-2 text-muted",
-  },
-};
-
 /**
  * Compra entra em UNIDADE FECHADA — sempre.
  *
@@ -441,215 +411,71 @@ function palavraDaEmbalagem(item: ItemDePara): string {
   return nomeDaEmbalagem(item.unidade).toLowerCase();
 }
 
-/** Nota com mais linhas que isto ganha campo de busca. */
-const LIMIAR_BUSCA = 12;
-
-/** As lentes da etapa 1 — o operador trabalha só no que ainda pede ação. */
-type Lente =
-  | "TODOS"
-  | "PENDENCIAS"
-  | Pendencia
-  // Sem produto, partido em dois trabalhos diferentes: dizer "sim" a um palpite
-  // e procurar no catálogo o que ninguém achou.
-  | "COM_SUGESTAO"
-  | "SEM_CORRESPONDENCIA"
-  | "VINCULADOS";
-
-type Contagens = Record<Pendencia, number> & {
-  COM_SUGESTAO: number;
-  SEM_CORRESPONDENCIA: number;
-  VINCULADOS: number;
-};
-
-/** A linha passa por esta lente? */
-function passaNaLente(lente: Lente, p: Pendencia, temSugestao: boolean): boolean {
-  switch (lente) {
-    case "TODOS":
-      return true;
-    case "PENDENCIAS":
-      return p !== "PRONTO";
-    case "COM_SUGESTAO":
-      return p === "SEM_PRODUTO" && temSugestao;
-    case "SEM_CORRESPONDENCIA":
-      return p === "SEM_PRODUTO" && !temSugestao;
-    case "VINCULADOS":
-      return p !== "SEM_PRODUTO";
-    default:
-      return p === lente;
-  }
-}
+// ── Situação da linha ───────────────────────────────────────
 
 /**
- * O resumo de pendências — a única coisa que o operador lê antes de decidir
- * onde gastar os próximos cinco minutos.
+ * As três situações que a tela mostra.
  *
- * "8 de 19 itens ainda sem produto" respondia metade da pergunta: dizia que
- * havia trabalho, não QUAL trabalho. Aqui a barra mostra o quanto já andou e
- * cada linha do resumo é um filtro clicável — ninguém precisa rolar quarenta
- * linhas procurando as laranjas.
+ * `pendenciaDoItem` distingue quatro trabalhos (escolher o produto, dizer a
+ * conversão, conferir uma diferença, nada). Para quem olha a nota inteira os
+ * dois primeiros são a mesma coisa — "ainda falta eu fazer algo" — e a coluna
+ * de quantidade convertida diz qual dos dois é.
  */
-function ResumoDePara({
-  contagens,
-  total,
-  lente,
-  onLente,
-  verTabela,
-  onVerTabela,
-}: {
-  contagens: Contagens;
-  total: number;
-  lente: Lente;
-  onLente: (l: Lente) => void;
-  verTabela: boolean;
-  /** Ausente = a tabela é a tela: não há o que dobrar. */
-  onVerTabela?: () => void;
-}) {
-  const pendencias = total - contagens.PRONTO;
-  const pct = total > 0 ? (contagens.PRONTO / total) * 100 : 0;
+export type SituacaoItem = "PENDENTE" | "RELACIONADO" | "DIVERGENCIA";
 
-  const resumo: { chave: Pendencia; rotulo: string; icone: string; classe: string }[] = [
-    {
-      chave: "PRONTO",
-      rotulo: contagens.PRONTO === 1 ? "pronto" : "prontos",
-      icone: "✓",
-      classe: "text-ok",
-    },
-    {
-      chave: "SEM_PRODUTO",
-      rotulo: contagens.SEM_PRODUTO === 1 ? "precisa de produto" : "precisam de produto",
-      icone: "!",
-      classe: "text-warn",
-    },
-    {
-      chave: "SEM_EMBALAGEM",
-      rotulo:
-        contagens.SEM_EMBALAGEM === 1
-          ? "precisa da quantidade por embalagem"
-          : "precisam da quantidade por embalagem",
-      icone: "!",
-      classe: "text-warn",
-    },
-    {
-      chave: "CONFERIR",
-      rotulo: contagens.CONFERIR === 1 ? "com diferença" : "com diferenças",
-      icone: "⚠",
-      classe: "text-info",
-    },
-  ];
-
-  return (
-    <div className="flex flex-col gap-3 rounded-[var(--radius-md)] border border-line bg-surface p-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <p className="font-display text-[15px] font-semibold text-ink">
-          {total} {total === 1 ? "item" : "itens"} na nota
-        </p>
-        <p className="flex items-center gap-2 text-[13px]">
-          <span className={cn("font-medium", pendencias === 0 ? "text-ok" : "text-warn")}>
-            {pendencias === 0
-              ? "Tudo pronto para a próxima etapa."
-              : `${pendencias} ${pendencias === 1 ? "item precisa" : "itens precisam"} de você.`}
-          </span>
-          {/* Nota que chegou inteira relacionada (o comum, depois que o mapa do
-              fornecedor aprendeu) abria com 40 linhas cobrindo o trabalho real,
-              que é dizer de onde veio a compra. O resumo fica; a tabela dobra. */}
-          {onVerTabela && (
-            <button
-              type="button"
-              onClick={onVerTabela}
-              aria-expanded={verTabela}
-              className="font-medium text-brand underline"
-            >
-              {verTabela ? "ocultar itens" : "ver itens"}
-            </button>
-          )}
-        </p>
-      </div>
-
-      {/* Dois saldos na mesma régua, como o medidor de estoque: o que já está
-          pronto e o que falta. Quem olha de longe lê a barra, não o número. */}
-      <div
-        className="flex h-2 w-full overflow-hidden rounded-full bg-warn-soft"
-        role="progressbar"
-        aria-valuenow={contagens.PRONTO}
-        aria-valuemin={0}
-        aria-valuemax={total}
-        aria-label="Itens prontos"
-      >
-        <span
-          className="h-full bg-ok transition-[width] duration-300 motion-reduce:transition-none"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-
-      <ul className="flex flex-wrap gap-x-5 gap-y-1.5">
-        {resumo
-          .filter((r) => contagens[r.chave] > 0)
-          .map((r) => (
-            <li key={r.chave}>
-              <button
-                type="button"
-                onClick={() => onLente(lente === r.chave ? "TODOS" : r.chave)}
-                aria-pressed={lente === r.chave}
-                className={cn(
-                  "flex items-center gap-1.5 text-[13px] transition-opacity hover:opacity-80",
-                  lente === r.chave && "underline underline-offset-4",
-                )}
-              >
-                <span className={cn("font-semibold", r.classe)} aria-hidden>
-                  {r.icone}
-                </span>
-                <span className="font-semibold tabular-nums text-ink">
-                  {contagens[r.chave]}
-                </span>
-                <span className="text-muted">{r.rotulo}</span>
-              </button>
-            </li>
-          ))}
-      </ul>
-
-      {/* Só existem os filtros que têm item. Chip com zero é botão que não leva
-          a lugar nenhum — e ainda faz a barra parecer mais cheia do que está. */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {(
-          [
-            ["TODOS", "Todos", total],
-            ["PENDENCIAS", "Pendentes", pendencias],
-            ["COM_SUGESTAO", "Com sugestão", contagens.COM_SUGESTAO],
-            ["SEM_CORRESPONDENCIA", "Sem correspondência", contagens.SEM_CORRESPONDENCIA],
-            ["SEM_EMBALAGEM", "Sem conversão", contagens.SEM_EMBALAGEM],
-            ["CONFERIR", "Com diferença", contagens.CONFERIR],
-            ["VINCULADOS", "Vinculados", contagens.VINCULADOS],
-          ] as const
-        )
-          .filter(([id, , n]) => id === "TODOS" || n > 0)
-          .map(([id, rotulo, n]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => onLente(id)}
-              aria-pressed={lente === id}
-              className={cn(
-                "rounded-full border px-3 py-1 text-[12px] font-medium transition-colors",
-                lente === id
-                  ? "border-brand bg-brand text-on-brand"
-                  : "border-line-button bg-surface text-muted hover:text-ink",
-              )}
-            >
-              {rotulo}
-              <span
-                className={cn(
-                  "ml-1.5 tabular-nums",
-                  lente === id ? "opacity-80" : "text-faint",
-                )}
-              >
-                {n}
-              </span>
-            </button>
-          ))}
-      </div>
-    </div>
-  );
+export function situacaoDoItem(i: ItemDePara): SituacaoItem {
+  const p = pendenciaDoItem(i);
+  if (p === "PRONTO") return "RELACIONADO";
+  return p === "CONFERIR" ? "DIVERGENCIA" : "PENDENTE";
 }
+
+/** Quantos itens em cada situação — a mesma conta nos filtros e no andamento. */
+export function contarSituacoes(itens: ItemDePara[]): Record<SituacaoItem, number> {
+  const n: Record<SituacaoItem, number> = { PENDENTE: 0, RELACIONADO: 0, DIVERGENCIA: 0 };
+  for (const i of itens) n[situacaoDoItem(i)]++;
+  return n;
+}
+
+type Lente = "TODOS" | SituacaoItem;
+
+const SITUACAO_UI: Record<
+  SituacaoItem,
+  { rotulo: string; filtro: string; selo: string; Icone: typeof CircleCheck }
+> = {
+  PENDENTE: {
+    rotulo: "Pendente",
+    filtro: "Pendentes",
+    selo: "bg-brand-softer text-accent",
+    Icone: Clock3,
+  },
+  RELACIONADO: {
+    rotulo: "Relacionado",
+    filtro: "Relacionados",
+    selo: "bg-ok-soft text-ok",
+    Icone: CircleCheck,
+  },
+  DIVERGENCIA: {
+    rotulo: "Divergência",
+    filtro: "Com divergência",
+    selo: "bg-danger-soft text-danger",
+    Icone: TriangleAlert,
+  },
+};
+
+/**
+ * De onde veio a sugestão, em duas palavras. "Confiança baixa" assustava mais
+ * do que informava; o porquê inteiro continua no hover, e a cor ainda separa o
+ * que é prova (código de barras) do que é palpite.
+ */
+const ORIGEM_SUGESTAO: Record<SugestaoDePara["motivo"], string> = {
+  EAN: "Pelo código de barras",
+  PEDIDO: "Sugestão automática",
+  NOME: "Sugestão automática",
+};
+
+/** "125,42" — o cabeçalho da coluna já diz que é em reais. */
+const fmtValor = (v: number) =>
+  v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export function TabelaDePara({
   inboundId,
@@ -660,10 +486,9 @@ export function TabelaDePara({
   supplierId,
   siteId,
   subcategorias,
-  atalhosAtivos = true,
   purchaseOrderId = null,
   pedidoDasSugestoes = null,
-  sempreAberta = false,
+  mostrarSku = true,
 }: {
   inboundId: string;
   itens: ItemDePara[];
@@ -678,8 +503,6 @@ export function TabelaDePara({
   siteId?: string | null;
   /** Quem já carregou no servidor passa; quem não passou, busca sob demanda. */
   subcategorias?: SubcategoriaCadastro[];
-  /** A tela hospedeira desliga os atalhos quando abre outro diálogo. */
-  atalhosAtivos?: boolean;
   /**
    * Pedido que a nota fatura, quando o operador já disse qual é. Os produtos
    * dele entram na disputa dos palpites.
@@ -687,8 +510,8 @@ export function TabelaDePara({
   purchaseOrderId?: string | null;
   /** Com qual pedido o servidor calculou `sugestoesIniciais`. */
   pedidoDasSugestoes?: string | null;
-  /** A tabela É a etapa: nasce aberta, com busca, e não se dobra. */
-  sempreAberta?: boolean;
+  /** SKU ligado nas configurações de produto. Desligado, a coluna não o mostra. */
+  mostrarSku?: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -716,64 +539,35 @@ export function TabelaDePara({
   const [emLote, setEmLote] = useState(false);
   const [busca, setBusca] = useState("");
   const [lente, setLente] = useState<Lente>("TODOS");
-  /** Nota já inteira relacionada abre dobrada — o resumo basta. */
-  const [aberta, setVerTabela] = useState(() => itens.some((i) => !i.productId));
-  const verTabela = sempreAberta || aberta;
-  const [foco, setFoco] = useState<string | null>(null);
-  // O anel só aparece na navegação por teclado: desenhar um em cada linha que
-  // o mouse passa transforma feedback em ruído.
-  const [porTeclado, setPorTeclado] = useState(false);
-  /**
-   * Linha que deve abrir o campo de "quantas unidades vêm na caixa" sozinha.
-   * É o que emenda a fila: resolveu uma pendência, a próxima já chega aberta
-   * em vez de exigir um clique para reencontrar onde parou.
-   */
-  const [abrirEmbalagem, setAbrirEmbalagem] = useState<string | null>(null);
-  const linhasRef = useRef<Record<string, HTMLTableRowElement | null>>({});
-
   const faltam = itens.filter((i) => !i.productId).length;
   // Derivado, não sincronizado: nota já resolvida não tem palpite a mostrar.
   const sugestoes = editavel && faltam > 0 ? palpites : [];
 
   /**
-   * Palpites por código de barras — os que dá para gravar em lote. EAN batendo
-   * é prova; palpite por nome continua um a um, porque ali a decisão é do
-   * operador e não da máquina.
+   * Palpites por código de barras — os que dá para gravar em lote sem olhar.
+   * EAN batendo é prova; palpite por nome é decisão do operador, e só entra em
+   * lote quando ele marca a linha.
    */
   const porCodigo = (sugestoes ?? []).filter((s) => s.motivo === "EAN");
 
   const sugestaoDe = (itemId: string) => sugestoes?.find((s) => s.itemId === itemId) ?? null;
 
-  const contagens: Contagens = {
-    SEM_PRODUTO: 0,
-    SEM_EMBALAGEM: 0,
-    CONFERIR: 0,
-    PRONTO: 0,
-    COM_SUGESTAO: 0,
-    SEM_CORRESPONDENCIA: 0,
-    VINCULADOS: 0,
-  };
-  for (const i of itens) {
-    const p = pendenciaDoItem(i);
-    contagens[p]++;
-    if (p !== "SEM_PRODUTO") contagens.VINCULADOS++;
-    else if (sugestaoDe(i.id)) contagens.COM_SUGESTAO++;
-    else contagens.SEM_CORRESPONDENCIA++;
-  }
+  // A tabela segue a ordem da nota, com o número da linha à vista: é como o
+  // operador confere contra o papel. Quem quer só o que falta usa o filtro.
+  const ordenados = [...itens].sort((a, b) => a.ordem - b.ordem);
+  const numeroDe = new Map(ordenados.map((i, idx) => [i.id, idx + 1]));
+  const contagens = contarSituacoes(itens);
 
-  // Lente que esvaziou — o operador resolveu a última pendência dela — deixaria
-  // a tela em branco sem explicação. Derivado, não corrigido por efeito: o
-  // chip some e a lista volta a ser todos no mesmo render.
-  const vazia =
-    (lente === "PENDENCIAS" && itens.length - contagens.PRONTO === 0) ||
-    (lente !== "TODOS" && lente !== "PENDENCIAS" && contagens[lente] === 0);
-  const lenteAtiva: Lente = vazia ? "TODOS" : lente;
+  // Filtro que esvaziou — o operador resolveu a última pendência dele — deixaria
+  // a tela em branco sem explicação. Derivado, não corrigido por efeito: a
+  // lista volta a ser todos no mesmo render.
+  const lenteAtiva: Lente = lente !== "TODOS" && contagens[lente] === 0 ? "TODOS" : lente;
 
   const q = busca.trim().toLowerCase();
-  const visiveis = itens.filter((i) => {
-    const s = sugestaoDe(i.id);
-    if (!passaNaLente(lenteAtiva, pendenciaDoItem(i), Boolean(s))) return false;
+  const visiveis = ordenados.filter((i) => {
+    if (lenteAtiva !== "TODOS" && situacaoDoItem(i) !== lenteAtiva) return false;
     if (!q) return true;
+    const s = sugestaoDe(i.id);
     // Os dois lados da linha: como o fornecedor escreveu e o que isso é (ou
     // parece ser) no catálogo — produto, SKU, marca e o palpite ainda aberto.
     return [
@@ -790,20 +584,6 @@ export function TabelaDePara({
       .some((c) => String(c).toLowerCase().includes(q));
   });
 
-  // O que trava o recebimento vem primeiro, depois o que pede conferência, e
-  // por último o que já está resolvido — cada bloco na ordem original da nota.
-  // Bloco vazio não vira cabeçalho, e nota inteira num estado só não ganha
-  // separador nenhum.
-  const grupos = (["SEM_PRODUTO", "SEM_EMBALAGEM", "CONFERIR", "PRONTO"] as const)
-    .map((chave) => ({
-      chave,
-      ...PENDENCIA_UI[chave],
-      itens: visiveis.filter((i) => pendenciaDoItem(i) === chave),
-    }))
-    .filter((g) => g.itens.length > 0);
-
-  const ordemVisual = grupos.flatMap((g) => g.itens);
-
   /** Refaz os palpites depois de mexer no de-para. */
   function recalcularPalpites() {
     setPalpites(null);
@@ -812,9 +592,9 @@ export function TabelaDePara({
       .catch(() => setPalpites([]));
   }
 
-  // O operador trocou de pedido na etapa anterior sem ir ao servidor: os
-  // palpites que vieram prontos foram calculados com outro pedido (ou sem
-  // nenhum). Busca os certos — e o próximo refresh já traz os dois iguais.
+  // O operador trocou de pedido sem ir ao servidor: os palpites que vieram
+  // prontos foram calculados com outro pedido (ou sem nenhum). Busca os certos
+  // — e o próximo refresh já traz os dois iguais.
   useEffect(() => {
     if (purchaseOrderId === pedidoDasSugestoes) return;
     let vivo = true;
@@ -830,34 +610,18 @@ export function TabelaDePara({
   }, [inboundId, purchaseOrderId, pedidoDasSugestoes]);
 
   /**
-   * A próxima linha que ainda pede alguma coisa, tirando a que acabou de ser
-   * resolvida. Recebimento é trabalho em série: quem confirma uma conversão
-   * quer a próxima já na frente, não a tabela inteira de volta.
+   * Grava de uma vez tudo que o código de barras já provou. Trinta linhas com
+   * o EAN do fornecedor batendo são trinta cliques para dizer "sim" trinta
+   * vezes. Palpite por nome não entra: ali a decisão é do operador.
    */
-  function proximaPendente(exceto: string): ItemDePara | null {
-    return (
-      ordemVisual.find((i) => i.id !== exceto && pendenciaDoItem(i) !== "PRONTO") ?? null
-    );
-  }
-
-  /** Leva o foco (e o campo aberto, quando for o caso) para a próxima pendência. */
-  function emendarNaProxima(exceto: string) {
-    const proximo = proximaPendente(exceto);
-    if (!proximo) return;
-    setFoco(proximo.id);
-    setPorTeclado(true);
-    linhasRef.current[proximo.id]?.scrollIntoView({ block: "nearest" });
-    if (pendenciaDoItem(proximo) === "SEM_EMBALAGEM") setAbrirEmbalagem(proximo.id);
-  }
-
-  /** Grava de uma vez tudo que o código de barras já provou. */
-  function confirmarTodasPorCodigo() {
-    if (porCodigo.length === 0) return;
+  function relacionarPorCodigo() {
+    const lista = porCodigo;
+    if (lista.length === 0) return;
     setEmLote(true);
     start(async () => {
       try {
         const r = await relacionarEmLoteAction(
-          porCodigo.map((s) => ({
+          lista.map((s) => ({
             itemId: s.itemId,
             productId: s.productId,
             packagingId: s.packagingId,
@@ -899,15 +663,13 @@ export function TabelaDePara({
           r.irmaos > 0
             ? `Mais ${r.irmaos} linha(s) com o mesmo código entraram junto.`
             : "Nas próximas notas deste fornecedor ele entra sozinho.",
-          // Na fila rápida o operador confirma em sequência e só percebe o
-          // engano na linha seguinte. Sem isto, desfazer é fechar tudo, achar
-          // a linha na tabela e clicar em "desfazer".
+          // O operador confirma em sequência e só percebe o engano na linha
+          // seguinte. Sem isto, desfazer é achar a linha de novo na tabela.
           {
             rotulo: "Desfazer",
             onClick: () => desrelacionar({ id: s.itemId }),
           },
         );
-        emendarNaProxima(s.itemId);
         recalcularPalpites();
         router.refresh();
       } catch (e) {
@@ -945,7 +707,6 @@ export function TabelaDePara({
             ? `Salvo no cadastro de ${item.productNome ?? "produto"} — as próximas compras já vêm assim.`
             : "Esta linha entra como unidade avulsa.",
         );
-        emendarNaProxima(item.id);
         recalcularPalpites();
         router.refresh();
       } catch (e) {
@@ -977,87 +738,35 @@ export function TabelaDePara({
     });
   }
 
-  // Teclado: recebimento é trabalho repetitivo, e tirar a mão do teclado a
-  // cada linha custa mais que a linha inteira. Só age quando nenhum diálogo
-  // está aberto e o foco não está num campo.
-  useEffect(() => {
-    if (!editavel || !atalhosAtivos || relacionando) return;
-
-    function onKey(e: KeyboardEvent) {
-      const alvo = e.target as HTMLElement | null;
-      if (alvo && /^(INPUT|SELECT|TEXTAREA)$/.test(alvo.tagName)) return;
-      if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Enter") return;
-
-      const ids = ordemVisual.map((i) => i.id);
-      if (ids.length === 0) return;
-      const atual = foco ? ids.indexOf(foco) : -1;
-
-      if (e.key === "Enter") {
-        const item = ordemVisual.find((i) => i.id === foco);
-        if (!item) return;
-        e.preventDefault();
-        const s = sugestoes?.find((x) => x.itemId === item.id);
-        if (s) confirmarSugestao(s);
-        // Enter numa linha que só espera o número da caixa abre o campo ali
-        // mesmo, em vez de jogar o operador na busca de produto que ele já fez.
-        else if (pendenciaDoItem(item) === "SEM_EMBALAGEM") setAbrirEmbalagem(item.id);
-        else setRelacionando(item);
-        return;
-      }
-
-      e.preventDefault();
-      setPorTeclado(true);
-      const proximo =
-        e.key === "ArrowDown"
-          ? Math.min(atual + 1, ids.length - 1)
-          : Math.max(atual <= 0 ? 0 : atual - 1, 0);
-      const id = ids[proximo];
-      setFoco(id);
-      linhasRef.current[id]?.scrollIntoView({ block: "nearest" });
-    }
-
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  });
+  const colunas = 9;
 
   return (
     <>
-      {itens.length > 0 && (
-        <ResumoDePara
-          contagens={contagens}
-          total={itens.length}
-          lente={lenteAtiva}
-          onLente={(l) => {
-            setLente(l);
-            // Filtrar com a tabela dobrada não mostraria nada — quem clicou
-            // num filtro quer ver as linhas dele.
-            setVerTabela(true);
-          }}
-          verTabela={verTabela}
-          onVerTabela={sempreAberta ? undefined : () => setVerTabela((v) => !v)}
-        />
-      )}
+      <div className="@container overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
+        {/* ── Filtros e busca ── */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-3 sm:px-4">
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filtrar itens da nota">
+            <Filtro
+              rotulo="Todos"
+              total={itens.length}
+              ativo={lenteAtiva === "TODOS"}
+              conta="bg-surface-2 text-muted"
+              onClick={() => setLente("TODOS")}
+            />
+            {(["PENDENTE", "RELACIONADO", "DIVERGENCIA"] as const).map((s) => (
+              <Filtro
+                key={s}
+                rotulo={SITUACAO_UI[s].filtro}
+                total={contagens[s]}
+                ativo={lenteAtiva === s}
+                conta={SITUACAO_UI[s].selo}
+                onClick={() => setLente(s)}
+              />
+            ))}
+          </div>
 
-      {verTabela && editavel && (porCodigo.length > 0 || sempreAberta || itens.length > LIMIAR_BUSCA) && (
-        <div className="mt-3 mb-2 flex flex-wrap items-center gap-2">
-          {/* Trinta linhas com o código de barras do fornecedor batendo são
-              trinta cliques para dizer "sim" trinta vezes. EAN é prova — o
-              lote grava o que a máquina não precisava perguntar. */}
-          {porCodigo.length > 0 && (
-            <Button size="sm" onClick={confirmarTodasPorCodigo} disabled={emLote || pending}>
-              {emLote ? (
-                <Loader2 size={14} className="animate-spin" aria-hidden />
-              ) : (
-                <CheckCheck size={14} />
-              )}
-              {emLote
-                ? "Relacionando…"
-                : `Relacionar ${porCodigo.length} pelo código de barras`}
-            </Button>
-          )}
-
-          {(sempreAberta || itens.length > LIMIAR_BUSCA) && (
-            <div className="relative min-w-0 flex-1 sm:max-w-sm">
+          <div className="flex w-full flex-wrap items-center gap-2 lg:ml-auto lg:w-auto lg:flex-nowrap">
+            <div className="relative min-w-48 flex-1 lg:w-64 lg:flex-none">
               <Search
                 size={14}
                 aria-hidden
@@ -1066,110 +775,102 @@ export function TabelaDePara({
               <input
                 value={busca}
                 onChange={(e) => setBusca(e.target.value)}
-                placeholder="Descrição, código do fornecedor, EAN, SKU ou marca"
-                aria-label="Buscar item da nota"
-                className="h-9 w-full rounded-full border border-line-button bg-surface pr-3 pl-8 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                placeholder="Buscar produto na nota…"
+                aria-label="Buscar produto na nota por descrição, código, EAN, SKU ou marca"
+                className="h-9 w-full rounded-full border border-line-strong bg-surface pr-3 pl-8 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
               />
             </div>
-          )}
-        </div>
-      )}
 
-      {/* `overflow-x-auto`: as colunas não cabem num celular, e espremer até
-          ficar ilegível é pior que rolar. Recebimento é trabalho de doca. */}
-      <div
-        className={cn(
-          "mt-2 overflow-x-auto rounded-[var(--radius-md)] border border-line",
-          !verTabela && "hidden",
-        )}
-      >
-        <table className="w-full min-w-[52rem] border-collapse text-sm">
-          <thead className="sticky top-0 z-10 text-left text-[10px] uppercase tracking-wider text-faint">
-            <tr className="[&>th]:border-b [&>th]:border-line [&>th]:bg-surface-2">
-              <th className="w-6 rounded-tl-[var(--radius-md)] py-2 pl-3">
-                <span className="sr-only">Situação</span>
-              </th>
-              <th className="px-3 py-2 font-medium">Item da nota</th>
-              <th className="px-3 py-2 font-medium">Produto no NoHub</th>
-              <th className="px-3 py-2 font-medium">Quanto entra no estoque</th>
-              <th className="rounded-tr-[var(--radius-md)] px-3 py-2 pr-3 text-right font-medium">
-                Custo da NF
-              </th>
-            </tr>
-          </thead>
-          <tbody className="[&>tr:last-child>td:first-child]:rounded-bl-[var(--radius-md)] [&>tr:last-child>td:last-child]:rounded-br-[var(--radius-md)]">
-            {grupos.map((g) => (
-              <Fragment key={g.chave}>
-                {grupos.length > 1 && (
-                  <tr>
-                    <td
-                      colSpan={5}
-                      className={cn(
-                        "border-y border-line px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider",
-                        g.tom,
-                      )}
-                    >
-                      {g.titulo} · {g.itens.length}
-                    </td>
-                  </tr>
+            {/* Só aparece quando há o que gravar sem perguntar: o EAN da nota é
+                o de um produto do catálogo. */}
+            {editavel && porCodigo.length > 0 && (
+              <Button
+                size="sm"
+                onClick={relacionarPorCodigo}
+                disabled={emLote || pending}
+                className="shrink-0"
+              >
+                {emLote ? (
+                  <Loader2 size={14} className="animate-spin" aria-hidden />
+                ) : (
+                  <CheckCheck size={14} aria-hidden />
                 )}
-                {g.itens.map((i) => (
-                  <LinhaItem
-                    key={i.id}
-                    ref={(el) => {
-                      linhasRef.current[i.id] = el;
-                    }}
-                    item={i}
-                    editavel={editavel && !pending}
-                    salvando={confirmando === i.id}
-                    focado={foco === i.id && porTeclado}
-                    abrirEmbalagem={abrirEmbalagem === i.id}
-                    onFecharEmbalagem={() => setAbrirEmbalagem(null)}
-                    sugestao={sugestaoDe(i.id)}
-                    buscandoSugestao={sugestoes === null}
-                    onFocar={() => {
-                      setFoco(i.id);
-                      setPorTeclado(false);
-                    }}
-                    onConfirmar={confirmarSugestao}
-                    onRelacionar={() => setRelacionando(i)}
-                    onDefinirEmbalagem={(fator, packagingId) =>
-                      definirEmbalagem(i, fator, packagingId)
-                    }
-                    onDesrelacionar={() => desrelacionar(i)}
-                  />
-                ))}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
+                {emLote ? "Relacionando…" : `Relacionar ${porCodigo.length} pelo código de barras`}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* As colunas acompanham a largura do cartão: com espaço, o EAN tem
+            coluna própria; sem ele, desce para baixo do código do fornecedor.
+            Abaixo disso a tabela rola de lado — e a coluna de ação fica presa
+            à direita, porque é ela que o operador veio procurar. */}
+        <div className="overflow-x-auto border-t border-line">
+          <table className="w-full min-w-[49rem] border-collapse text-[12px]">
+            <thead>
+              <tr className="bg-surface-2">
+                <Th className="w-10 pl-3 sm:pl-4">#</Th>
+                <Th sub="Código do fornecedor">Produto na nota</Th>
+                <Th className="hidden @[60rem]:table-cell">EAN</Th>
+                <Th sub="(embalagem)">Qtd. nota</Th>
+                <Th sub="(unidade de estoque)">Produto no NoHub</Th>
+                <Th
+                  sub="(estoque)"
+                  dica="Quantidade da nota × unidades por embalagem. É o que vira saldo; a quantidade do XML não muda."
+                >
+                  Qtd. convertida
+                </Th>
+                <Th sub="(unitário)" className="text-right">
+                  Custo (R$)
+                </Th>
+                <Th className="text-center">Status</Th>
+                <Th className={cn(CELULA_FIXA, "pr-4 text-right")}>Ação</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {visiveis.map((i) => (
+                <LinhaItem
+                  key={i.id}
+                  item={i}
+                  numero={numeroDe.get(i.id) ?? 0}
+                  colunas={colunas}
+                  editavel={editavel && !pending}
+                  salvando={confirmando === i.id}
+                  mostrarSku={mostrarSku}
+                  sugestao={sugestaoDe(i.id)}
+                  buscandoSugestao={sugestoes === null}
+                  onConfirmar={confirmarSugestao}
+                  onRelacionar={() => setRelacionando(i)}
+                  onDefinirEmbalagem={(fator, packagingId) => definirEmbalagem(i, fator, packagingId)}
+                  onDesrelacionar={() => desrelacionar(i)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {visiveis.length === 0 && (
+          <p className="border-t border-line px-4 py-8 text-center text-[13px] text-muted">
+            {itens.length === 0
+              ? "Esta nota não tem itens de mercadoria."
+              : q
+                ? `Nenhum item da nota com “${busca.trim()}”. `
+                : "Nenhum item neste filtro. "}
+            {itens.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setBusca("");
+                  setLente("TODOS");
+                }}
+                className="cursor-pointer font-medium text-brand-strong underline"
+              >
+                Ver os {itens.length} itens
+              </button>
+            )}
+          </p>
+        )}
       </div>
-
-      {verTabela && visiveis.length === 0 && (
-        <p className="mt-2 rounded-[var(--radius)] border border-dashed border-line px-4 py-5 text-center text-[13px] text-muted">
-          {q ? `Nenhum item da nota com “${busca.trim()}”. ` : "Nenhum item neste filtro. "}
-          <button
-            type="button"
-            onClick={() => {
-              setBusca("");
-              setLente("TODOS");
-            }}
-            className="font-medium text-brand underline"
-          >
-            Ver os {itens.length} itens
-          </button>
-        </p>
-      )}
-
-      {verTabela && editavel && itens.length > 3 && (
-        <p className="mt-2 text-[11px] text-faint">
-          Atalhos: <span className="font-mono text-muted">↑</span>{" "}
-          <span className="font-mono text-muted">↓</span> percorrem as linhas,{" "}
-          <span className="font-mono text-muted">Enter</span> resolve a pendência da linha,{" "}
-          <span className="font-mono text-muted">Esc</span> fecha. Ao confirmar, o foco vai
-          para a próxima pendência.
-        </p>
-      )}
 
       {relacionando && (
         <RelacionarProduto
@@ -1182,20 +883,20 @@ export function TabelaDePara({
           supplierId={supplierId}
           siteId={siteId}
           subcategorias={subcategorias}
+          mostrarSku={mostrarSku}
           onFechar={() => setRelacionando(null)}
           onPular={() => {
             // Item duvidoso não pode travar a fila: pula para o próximo
             // pendente e deixa este para o fim, em vez de o operador fechar o
             // painel inteiro e perder o embalo.
-            const proximo = itens.find((i) => !i.productId && i.id !== relacionando.id);
+            const proximo = ordenados.find((i) => !i.productId && i.id !== relacionando.id);
             setRelacionando(proximo ?? null);
           }}
           onRelacionado={(itemId) => {
             // Fila: emenda no próximo pendente em vez de fechar e obrigar o
-            // operador a caçar a próxima linha laranja na tabela.
-            const proximo = itens.find((i) => !i.productId && i.id !== itemId);
+            // operador a caçar a próxima linha pendente na tabela.
+            const proximo = ordenados.find((i) => !i.productId && i.id !== itemId);
             setRelacionando(proximo ?? null);
-            if (!proximo && itemId) emendarNaProxima(itemId);
             // O giro fica na linha que acabou de ser relacionada até o
             // servidor devolver a tabela nova — o painel fecha na hora, a
             // linha ainda não mudou, e sem sinal isso parece não ter gravado.
@@ -1210,55 +911,167 @@ export function TabelaDePara({
 }
 
 /**
- * Uma linha da nota, em quatro perguntas: o que chegou, o que isso é no NoHub,
- * quanto entra no estoque e quanto custou. O que é fiscal (NCM, CEST, CFOP,
- * GTIN tributável) vive atrás de "Mais detalhes" — continua tudo aqui, só não
- * disputa a atenção com a decisão. Linha sem produto é clicável inteira: em
- * nota grande, mirar num botão pequeno é imposto de tempo.
+ * Um filtro da tabela, com a contagem dentro. Zero aparece, mas não clica.
+ * A conferência usa o mesmo — as duas tabelas do recebimento se leem igual.
  */
-const LinhaItem = forwardRef<
-  HTMLTableRowElement,
-  {
+export function Filtro({
+  rotulo,
+  total,
+  ativo,
+  conta,
+  onClick,
+}: {
+  rotulo: string;
+  total: number;
+  ativo: boolean;
+  /** Cor da contagem quando o filtro não é o ativo. */
+  conta: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={ativo}
+      // Filtro vazio continua à vista — a posição dos quatro não muda enquanto
+      // o operador trabalha — mas não leva a uma lista em branco.
+      disabled={total === 0 && !ativo}
+      className={cn(
+        "inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border pr-1.5 pl-3 text-[12px] font-medium transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none disabled:cursor-default disabled:opacity-60",
+        ativo
+          ? "border-brand bg-brand text-on-brand"
+          : "border-line-strong bg-surface text-ink-2 enabled:hover:bg-surface-2",
+      )}
+    >
+      {rotulo}
+      <span
+        className={cn(
+          "min-w-5 rounded-full px-1.5 py-0.5 text-center font-mono text-[11px] leading-none font-semibold",
+          ativo ? "bg-on-brand/25 text-on-brand" : conta,
+        )}
+      >
+        {total}
+      </span>
+    </button>
+  );
+}
+
+/** Cabeçalho de coluna em duas linhas: o que é, e em que unidade se lê. */
+export function Th({
+  children,
+  sub,
+  dica,
+  className,
+}: {
+  children: ReactNode;
+  sub?: string;
+  /** Explicação curta, num "i" ao lado do título. */
+  dica?: string;
+  className?: string;
+}) {
+  return (
+    <th scope="col" className={cn("px-2 py-2 text-left align-top font-medium", className)}>
+      <span className="inline-flex items-center gap-1 text-[11px] whitespace-nowrap text-ink-2">
+        {children}
+        {dica && (
+          <span title={dica} className="text-faint">
+            <Info size={12} aria-hidden />
+            <span className="sr-only">{dica}</span>
+          </span>
+        )}
+      </span>
+      {sub && <span className="block text-[10px] font-normal whitespace-nowrap text-faint">{sub}</span>}
+    </th>
+  );
+}
+
+/**
+ * A coluna de ação fica presa à direita quando a tabela rola de lado. O fundo
+ * vem da linha (`bg-inherit`), e o fio à esquerda só aparece quando há rolagem
+ * — com a tabela inteira à vista, seria uma divisória a mais.
+ */
+const CELULA_FIXA =
+  "sticky right-0 z-[1] bg-inherit @max-[49rem]:border-l @max-[49rem]:border-line";
+
+const BOTAO_LINHA = {
+  cheio: "border-brand bg-brand text-on-brand hover:bg-brand-strong",
+  marca: "border-brand/60 bg-surface text-accent hover:bg-brand-soft",
+  neutro: "border-line-strong bg-surface text-ink hover:bg-surface-2",
+} as const;
+
+/** O botão da coluna Ação: um por linha, e ele diz o próximo passo dela. */
+function BotaoLinha({
+  tom,
+  className,
+  ...props
+}: { tom: keyof typeof BOTAO_LINHA } & ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "inline-flex h-8 min-w-[5.75rem] cursor-pointer items-center justify-center gap-1 rounded-full border px-3 text-[12px] font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50",
+        BOTAO_LINHA[tom],
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+/**
+ * Uma linha da nota, lida da esquerda para a direita: o que chegou (como o
+ * fornecedor escreveu), o que isso é no NoHub, quanto vira estoque e quanto
+ * custou — e, na ponta, em que pé está e qual é o próximo passo dela.
+ *
+ * O que é fiscal (NCM, CEST, CFOP, GTIN tributável) e a comparação campo a
+ * campo ficam atrás de "Ver detalhes": continuam aqui, só não disputam a
+ * atenção com a decisão.
+ */
+function LinhaItem({
+  item,
+  numero,
+  colunas,
+  editavel,
+  salvando,
+  mostrarSku,
+  sugestao,
+  buscandoSugestao,
+  onConfirmar,
+  onRelacionar,
+  onDefinirEmbalagem,
+  onDesrelacionar,
+}: {
     item: ItemDePara;
+    /** Número da linha na nota — o mesmo com ou sem filtro. */
+    numero: number;
+    /** Quantas colunas a tabela tem — para as sublinhas ocuparem a largura toda. */
+    colunas: number;
     editavel: boolean;
     /** Esta linha está gravando agora. */
     salvando: boolean;
-    focado: boolean;
-    /** A fila mandou esta linha abrir o campo de unidades por embalagem. */
-    abrirEmbalagem: boolean;
-    onFecharEmbalagem: () => void;
+    mostrarSku: boolean;
     sugestao: Sugestao | null;
     buscandoSugestao: boolean;
-    onFocar: () => void;
     onConfirmar: (s: Sugestao) => void;
     onRelacionar: () => void;
     /** Só quantas unidades vêm na embalagem muda — o produto continua o mesmo. */
     onDefinirEmbalagem: (fator: number, packagingId: string | null) => void;
     onDesrelacionar: () => void;
-  }
->(function LinhaItem(
-  {
-    item,
-    editavel,
-    salvando,
-    focado,
-    abrirEmbalagem,
-    onFecharEmbalagem,
-    sugestao,
-    buscandoSugestao,
-    onFocar,
-    onConfirmar,
-    onRelacionar,
-    onDefinirEmbalagem,
-    onDesrelacionar,
-  },
-  ref,
-) {
+}) {
   const [editando, setEditando] = useState(false);
   const [detalhes, setDetalhes] = useState(false);
   const divergencias = divergenciasDaLinha(item);
   const pendencia = pendenciaDoItem(item);
-  const ui = PENDENCIA_UI[pendencia];
+  const situacao = SITUACAO_UI[situacaoDoItem(item)];
+  /** O que o ícone de status quer dizer, dito por inteiro. */
+  const explicacaoDoStatus =
+    pendencia === "SEM_PRODUTO"
+      ? "Pendente: falta relacionar o produto"
+      : pendencia === "SEM_EMBALAGEM"
+        ? "Pendente: falta dizer quantas unidades vêm na embalagem"
+        : pendencia === "CONFERIR"
+          ? "Divergência: revise antes de receber"
+          : "Relacionado";
   const severidade = severidadeMaxima(divergencias);
   const divergente = fatorDivergente(item);
   // O que entra na compra é SEMPRE unidade fechada. Rotular com a unidadeBase
@@ -1266,72 +1079,57 @@ const LinhaItem = forwardRef<
   // operador ia procurar no cadastro do produto um erro que não existia.
   const medida = medidaDoProduto(item);
   const entra = item.quantidade * item.fatorConversao;
+  const custo = custoItem(item);
   const desvio = desvioDeCusto(item);
   const origem = origemDoFator(item);
   const uCom = item.unidade.trim().toUpperCase() || UNIDADE_ENTRADA;
   const emb = palavraDaEmbalagem(item);
-  /** O que a sigla do XML significa — "MI (milheiro)". */
-  const unidadeInfo = unidadeComercial(item.unidade);
   const rotuloUnidade = rotuloDaUnidade(item.unidade);
   /** A linha entra no estoque num número diferente do que a nota escreveu. */
   const convertido = item.fatorConversao !== 1;
-  const explicacaoConversao = `A nota fatura em ${rotuloUnidade}. ${frasesDeConversao(uCom, item.fatorConversao)} — ${ORIGEM_FATOR[origem]}. ${fmtQtd(item.quantidade)} ${uCom} × ${fmtQtd(item.fatorConversao)} = ${fmtQtd(entra)} ${UNIDADE_ENTRADA} no estoque. A quantidade e a unidade do XML não mudam.`;
-  // Com palpite à vista, o clique solto na linha abriria a busca justamente
-  // quando o operador queria confirmar. Aí a ação é só pelos botões.
-  const clicavel = editavel && !item.productId && !sugestao;
-  const definindo = editavel && (editando || abrirEmbalagem);
+  const explicacaoConversao =
+    `A nota fatura em ${rotuloUnidade}. ${frasesDeConversao(uCom, item.fatorConversao)} — ${ORIGEM_FATOR[origem]}. ` +
+    `${fmtQtd(item.quantidade)} ${uCom} × ${fmtQtd(item.fatorConversao)} = ${fmtQtd(entra)} ${UNIDADE_ENTRADA} no estoque. ` +
+    `A quantidade e a unidade do XML não mudam.` +
+    // Produto medido em ml/g: dizer o conteúdo evita a leitura errada de que o
+    // saldo passou a ser contado em mililitro.
+    (medida ? ` Cada unidade tem ${medida}.` : "");
+  const definindo = editavel && Boolean(item.productId) && editando;
 
   function fecharEditor() {
     setEditando(false);
-    onFecharEmbalagem();
   }
 
   return (
     <Fragment>
       <tr
-        ref={ref}
-        onMouseEnter={onFocar}
-        onClick={clicavel ? onRelacionar : undefined}
         className={cn(
-          "border-b border-line align-top last:border-b-0",
-          ui.linha,
-          clicavel && "cursor-pointer transition-colors hover:bg-warn-soft/70",
-          !clicavel && "transition-colors hover:bg-surface-2",
-          focado && editavel && "ring-1 ring-brand/60 ring-inset",
+          // Fundos opacos de propósito: a célula de ação fica presa à direita
+          // e herda o fundo da linha — com transparência, o que rola por baixo
+          // apareceria através dela.
+          "border-t border-line bg-surface align-middle transition-colors first:border-t-0 hover:bg-surface-2",
           // Gravando: a linha inteira se marca. Em nota de 40 itens o operador
-          // confirma em sequência e o olho já saiu daqui — o giro no botão
+          // confirma em sequência e o olho já saiu daqui — o giro no selo
           // sozinho não alcança quem está lendo a linha de baixo.
-          salvando && "bg-brand-soft/40 ring-1 ring-brand/40 ring-inset",
+          salvando && "bg-brand-soft hover:bg-brand-soft",
         )}
       >
-        <td className="py-2.5 pl-3">
-          {salvando ? (
-            <Loader2 className="mt-1 h-3 w-3 animate-spin text-brand" aria-label="Salvando" />
-          ) : (
-            <span
-              className={cn("mt-1.5 block h-2 w-2 rounded-full", ui.ponto)}
-              title={ui.titulo}
-              aria-label={ui.titulo}
-            />
+        <td
+          className={cn(
+            "py-2 pr-2 pl-3 font-semibold text-ink tabular-nums sm:pl-4",
           )}
+        >
+          {numero}
         </td>
 
         {/* ── O que chegou ─────────────────────────────────── */}
-        <td className="px-3 py-2.5">
-          <p className="text-ink">{item.descricao}</p>
-          {/* Código do fornecedor e código de barras não decidem nada — mas
-              são o que a pessoa confere contra o papel quando desconfia. */}
-          <p className="font-mono text-[11px] text-faint">
+        <td className="max-w-[13rem] px-2 py-2">
+          <p className="leading-snug font-medium text-ink">{item.descricao}</p>
+          {/* O código do fornecedor não decide nada — mas é o que a pessoa
+              confere contra o papel quando desconfia. */}
+          <p className="font-mono text-[10px] text-faint">
             {item.codigoFornecedor}
-            {item.gtin ? ` · ${item.gtin}` : ""}
-            {" · "}
-            {/* A sigla sozinha é o que engana: "0,6 MI" lido como "0,6" faz o
-                operador achar que chegou menos de um maço. O nome por extenso
-                fica a um hover — na linha, só a sigla, que é o que está no
-                papel que ele confere. */}
-            <span title={rotuloUnidade}>
-              {fmtQtd(item.quantidade)} {uCom}
-            </span>
+            {item.gtin && <span className="@[60rem]:hidden"> · {item.gtin}</span>}
           </p>
           {item.bonificacao && (
             <span className="mt-1 inline-block">
@@ -1342,164 +1140,262 @@ const LinhaItem = forwardRef<
           )}
         </td>
 
+        <td className="hidden px-2 py-2 font-mono text-[11px] whitespace-nowrap text-muted @[60rem]:table-cell">
+          {item.gtin || <span className="text-faint">—</span>}
+        </td>
+
+        {/* A sigla sozinha é o que engana: "0,6 MI" lido como "0,6" faz o
+            operador achar que chegou menos de um maço. O nome por extenso fica
+            a um hover — na linha, só a sigla, que é o que está no papel. */}
+        <td className="px-2 py-2 font-medium whitespace-nowrap text-ink" title={rotuloUnidade}>
+          {fmtQtd(item.quantidade)} {uCom}
+        </td>
+
         {/* ── O que isso é no NoHub ─────────────────────────── */}
-        <td className="px-3 py-2.5">
+        <td className="max-w-[13rem] px-2 py-2">
           {item.productId ? (
-            <div className="flex items-start gap-2">
+            <div className="flex items-center gap-2">
               <ProdutoThumb url={item.productImagemUrl} nome={item.productNome} size="xs" />
               <div className="min-w-0">
-                <p className="font-medium text-ink">{item.productNome}</p>
-                {/* Um menu no lugar de dois links soltos: "alterar" e
-                    "desfazer" lado a lado, em 11px, davam ao desfazer o mesmo
-                    peso do trocar — e desfazer apaga o de-para do fornecedor. */}
-                {editavel ? (
-                  <Menu
-                    align="start"
-                    trigger={
-                      <button
-                        type="button"
-                        onClick={(e) => e.stopPropagation()}
-                        className="mt-0.5 inline-flex items-center gap-1 rounded-full border border-line-button px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-brand/40 hover:text-brand"
-                      >
-                        <Check size={10} className="text-ok" aria-hidden />
-                        Produto relacionado
-                        <span className="font-mono">{item.productSku}</span>
-                        <ChevronDown size={10} aria-hidden />
-                      </button>
-                    }
-                  >
-                    <MenuItem icon={<Search size={15} />} onClick={onRelacionar}>
-                      Trocar produto
-                    </MenuItem>
-                    <MenuItem icon={<Unlink size={15} />} danger onClick={onDesrelacionar}>
-                      Remover relação
-                    </MenuItem>
-                  </Menu>
-                ) : (
-                  <p className="font-mono text-[11px] text-faint">{item.productSku}</p>
+                <p className="leading-snug font-medium text-ink">{item.productNome}</p>
+                {mostrarSku && (
+                  <p className="font-mono text-[10px] text-faint">{item.productSku}</p>
                 )}
-
                 {/* Chip só existe quando algo destoa — o caminho limpo segue
-                    sem ruído, e a comparação abre na própria linha. */}
+                    sem ruído, e a comparação abre logo abaixo da linha. */}
                 {divergencias.length > 0 && severidade && (
                   <button
                     type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setDetalhes((v) => !v);
-                    }}
+                    onClick={() => setDetalhes((v) => !v)}
                     aria-expanded={detalhes}
                     className={cn(
-                      "mt-1 flex items-center gap-1 rounded-full px-2 py-0.5 font-sans text-[10px] font-medium transition-colors",
+                      "mt-1 inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-0.5 text-left text-[10px] font-medium transition-colors",
                       SEVERIDADE_UI[severidade].chip,
                     )}
                   >
-                    <TriangleAlert size={10} aria-hidden />
+                    <TriangleAlert size={10} aria-hidden className="shrink-0" />
                     {divergencias.length === 1
                       ? divergencias[0].titulo
                       : `${divergencias.length} diferenças encontradas`}
-                    <ChevronDown
-                      size={10}
-                      aria-hidden
-                      className={cn("transition-transform", detalhes && "rotate-180")}
-                    />
                   </button>
                 )}
               </div>
             </div>
           ) : sugestao ? (
-            // Palpite do servidor: um clique resolve. O motivo aparece porque
-            // "mesmo código de barras" é prova e "nome parecido" é chute — e o
-            // operador confia diferente em cada um.
-            <div
-              className="flex items-start gap-2"
-              onClick={(e) => e.stopPropagation()}
-              role="presentation"
-            >
+            // Palpite do servidor: um clique na coluna Ação resolve. O motivo
+            // aparece porque "mesmo código de barras" é prova e "nome parecido"
+            // é chute — e o operador confia diferente em cada um.
+            <div className="flex items-center gap-2">
               <ProdutoThumb url={sugestao.imagemUrl} nome={sugestao.nome} size="xs" />
               <div className="min-w-0">
-                {/* Nível e motivo juntos: "confiança baixa" sem o porquê é só um
-                    rótulo, e o porquê sem o nível não diz se dá para confirmar
-                    de olhos fechados. Só a alta entra no lote. */}
                 <p
                   className={cn(
-                    "flex items-center gap-1.5 text-[11px] font-medium",
+                    "flex items-center gap-1 text-[10px] font-medium",
                     CONFIANCA[sugestao.motivo].nivel === "alta"
                       ? "text-ok"
                       : CONFIANCA[sugestao.motivo].nivel === "media"
-                        ? "text-brand"
+                        ? "text-info"
                         : "text-warn",
                   )}
+                  title={CONFIANCA[sugestao.motivo].justificativa}
                 >
-                  <Sparkles size={11} aria-hidden />
-                  {CONFIANCA[sugestao.motivo].rotulo}
+                  <Sparkles size={10} aria-hidden className="shrink-0" />
+                  {ORIGEM_SUGESTAO[sugestao.motivo]}
                 </p>
-                <p className="text-[11px] text-muted">{CONFIANCA[sugestao.motivo].justificativa}</p>
-                <p className="font-medium text-ink">{sugestao.nome}</p>
-                <p className="font-mono text-[11px] text-faint">{sugestao.sku}</p>
-                {sugestao.fatorConversao > 1 && (
-                  <p className="font-mono text-[11px] text-muted">
-                    1 {uCom} = {fmtQtd(sugestao.fatorConversao)} {UNIDADE_ENTRADA}
+                <p className="leading-snug text-ink-2">{sugestao.nome}</p>
+                {(mostrarSku || sugestao.fatorConversao > 1) && (
+                  <p className="font-mono text-[10px] text-faint">
+                    {[
+                      mostrarSku ? sugestao.sku : null,
+                      sugestao.fatorConversao > 1
+                        ? `1 ${uCom} = ${fmtQtd(sugestao.fatorConversao)} ${UNIDADE_ENTRADA}`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </p>
                 )}
-                <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    disabled={!editavel || salvando}
-                    onClick={() => onConfirmar(sugestao)}
-                  >
-                    {salvando ? (
-                      <Loader2 size={14} className="animate-spin" aria-hidden />
-                    ) : (
-                      <Check size={14} />
-                    )}
-                    {salvando ? "Relacionando…" : "É este"}
-                  </Button>
-                  {!salvando && (
-                    <button
-                      type="button"
-                      onClick={onRelacionar}
-                      className="text-xs font-medium text-brand underline"
-                    >
-                      outro produto
-                    </button>
-                  )}
-                </div>
               </div>
             </div>
+          ) : buscandoSugestao && editavel ? (
+            <span className="text-faint">Procurando no catálogo…</span>
+          ) : (
+            <span className="text-faint">—</span>
+          )}
+        </td>
+
+        {/* ── Quanto entra no estoque ───────────────────────── */}
+        <td className="px-2 py-2">
+          {!item.productId ? (
+            <span className="text-faint">—</span>
+          ) : pendencia === "SEM_EMBALAGEM" ? (
+            // O caso que estoura o estoque em silêncio: a nota veio em caixa e
+            // ninguém disse quantas cabem, então 3 caixas viram 3 unidades.
+            <span
+              className="inline-flex items-center gap-1 font-medium whitespace-nowrap text-warn"
+              title={`A unidade ${uCom} do XML não tem conversão cadastrada: falta dizer quantas unidades esta linha representa.`}
+            >
+              <TriangleAlert size={12} aria-hidden />
+              Sem conversão
+            </span>
+          ) : (
+            // O XML fica intacto: o que a conversão produz é OUTRO número, ao
+            // lado da quantidade da nota, nunca por cima dela.
+            <div title={explicacaoConversao}>
+              <p className="font-medium whitespace-nowrap text-ink">
+                {fmtQtd(entra)} {UNIDADE_ENTRADA}
+              </p>
+              {convertido && (
+                <p
+                  className={cn(
+                    "font-mono text-[10px] whitespace-nowrap",
+                    divergente ? "text-info" : "text-faint",
+                  )}
+                >
+                  1 {uCom} = {fmtQtd(item.fatorConversao)}
+                  {divergente ? ` · a nota diz ${fmtQtd(divergente)}` : ""}
+                </p>
+              )}
+            </div>
+          )}
+        </td>
+
+        {/* ── Custo da NF ───────────────────────────────────── */}
+        <td className="px-2 py-2 text-right whitespace-nowrap">
+          {item.bonificacao ? (
+            <span className="text-muted">sem custo</span>
           ) : (
             <>
-              <p className="font-medium text-warn">
-                {buscandoSugestao && editavel
-                  ? "Procurando no catálogo…"
-                  : "Nenhum produto relacionado"}
-              </p>
-              {editavel ? (
-                // Só "relacionar". Cadastrar produto novo mora DENTRO do painel
-                // de relacionar (e em Produtos): a busca vem primeiro porque o
-                // produto quase sempre já existe, e o atalho para cadastrar aqui
-                // fazia nascer duplicata do que estava a uma busca de distância.
-                <div
-                  className="mt-1.5 flex flex-wrap items-center gap-2"
-                  onClick={(e) => e.stopPropagation()}
-                  role="presentation"
+              <p className="font-mono text-ink">{fmtValor(custo)}</p>
+              {/* Por unidade de estoque — só quando a conversão é conhecida:
+                  dividir pela caixa e chamar de unitário é o erro que vira
+                  preço de venda errado. */}
+              {item.productId && entra > 0 && pendencia !== "SEM_EMBALAGEM" && (
+                <p
+                  className={cn(
+                    "inline-flex items-center gap-0.5 font-mono text-[10px]",
+                    desvio == null ? "text-faint" : desvio > 0 ? "text-danger" : "text-ok",
+                  )}
+                  title={
+                    desvio == null
+                      ? "Custo por unidade de estoque"
+                      : `${Math.abs(Math.round(desvio * 100))}% ${desvio > 0 ? "acima" : "abaixo"} do custo médio (${fmtMoney(item.productCustoMedio ?? 0)})`
+                  }
                 >
-                  <Button size="sm" variant="secondary" onClick={onRelacionar}>
-                    <Plus size={14} /> Relacionar produto
-                  </Button>
-                </div>
-              ) : (
-                <p className="text-[11px] text-faint">Este item não entrou no estoque.</p>
+                  {desvio != null &&
+                    (desvio > 0 ? (
+                      <TrendingUp size={10} aria-hidden />
+                    ) : (
+                      <TrendingDown size={10} aria-hidden />
+                    ))}
+                  ({fmtValor(custo / entra)})
+                </p>
               )}
             </>
           )}
         </td>
 
-        {/* ── Quanto entra no estoque ───────────────────────── */}
-        <td className="px-3 py-2.5">
-          {!item.productId ? (
-            <p className="font-mono text-faint">—</p>
-          ) : definindo ? (
+        {/* ── Em que pé está ────────────────────────────────── */}
+        {/* Só o ícone: a cor já diz o estado, e a frase completa fica no
+            hover — e no leitor de tela, que não vê cor. */}
+        <td className="px-2 py-2 text-center">
+          {salvando ? (
+            <span
+              role="status"
+              title="Salvando…"
+              className="inline-grid h-7 w-7 place-items-center rounded-full bg-brand-soft text-accent"
+            >
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+              <span className="sr-only">Salvando…</span>
+            </span>
+          ) : (
+            <span
+              title={explicacaoDoStatus}
+              className={cn("inline-grid h-7 w-7 cursor-help place-items-center rounded-full", situacao.selo)}
+            >
+              <situacao.Icone className="h-3.5 w-3.5" aria-hidden />
+              <span className="sr-only">{explicacaoDoStatus}</span>
+            </span>
+          )}
+        </td>
+
+        {/* ── O próximo passo ───────────────────────────────── */}
+        <td className={cn(CELULA_FIXA, "py-2 pr-2 pl-2")}>
+          {/* Botão e menu lado a lado: são as ações da mesma linha. */}
+          <div className="flex items-center justify-end gap-0.5">
+            {!editavel ? (
+              <span />
+            ) : !item.productId && sugestao ? (
+              <BotaoLinha tom="cheio" disabled={salvando} onClick={() => onConfirmar(sugestao)}>
+                <Check size={13} aria-hidden />
+                Confirmar
+              </BotaoLinha>
+            ) : !item.productId ? (
+              // Só "relacionar". Cadastrar produto novo mora DENTRO do painel de
+              // relacionar: a busca vem primeiro porque o produto quase sempre já
+              // existe, e o atalho para cadastrar aqui fazia nascer duplicata.
+              <BotaoLinha tom="marca" disabled={salvando} onClick={onRelacionar}>
+                Relacionar
+              </BotaoLinha>
+            ) : pendencia === "SEM_EMBALAGEM" ? (
+              <BotaoLinha tom="marca" disabled={salvando} onClick={() => setEditando(true)}>
+                Converter
+              </BotaoLinha>
+            ) : pendencia === "CONFERIR" ? (
+              <BotaoLinha tom="neutro" onClick={() => setDetalhes((v) => !v)} aria-expanded={detalhes}>
+                Revisar
+              </BotaoLinha>
+            ) : (
+              <BotaoLinha tom="neutro" disabled={salvando} onClick={onRelacionar}>
+                Editar
+              </BotaoLinha>
+            )}
+            <Menu
+              trigger={
+                <button
+                  type="button"
+                  className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  aria-label={`Mais ações da linha ${numero}`}
+                >
+                  <MoreVertical size={15} aria-hidden />
+                </button>
+              }
+            >
+              {editavel && !item.productId && sugestao && (
+                <MenuItem icon={<Search size={15} />} onClick={onRelacionar}>
+                  Escolher outro produto
+                </MenuItem>
+              )}
+              {editavel && item.productId && pendencia !== "PRONTO" && (
+                <MenuItem icon={<Search size={15} />} onClick={onRelacionar}>
+                  Trocar produto
+                </MenuItem>
+              )}
+              {editavel && item.productId && (
+                <MenuItem icon={<ArrowRightLeft size={15} />} onClick={() => setEditando(true)}>
+                  {convertido ? "Alterar conversão" : `Informar unidades por ${emb}`}
+                </MenuItem>
+              )}
+              <MenuItem icon={<Info size={15} />} onClick={() => setDetalhes((v) => !v)}>
+                {detalhes ? "Ocultar detalhes" : "Ver detalhes"}
+              </MenuItem>
+              {/* Desfazer apaga também o de-para do fornecedor: fica por último
+                  e em vermelho, longe do que se clica o tempo todo. */}
+              {editavel && item.productId && (
+                <MenuItem icon={<Unlink size={15} />} danger onClick={onDesrelacionar}>
+                  Remover relação
+                </MenuItem>
+              )}
+            </Menu>
+          </div>
+        </td>
+      </tr>
+
+      {/* "Quantas vêm na caixa?" abre logo abaixo da linha: a pergunta precisa
+          de mais largura do que uma célula de quantidade tem. */}
+      {definindo && (
+        <tr className="border-t border-line bg-surface-2/60">
+          <td colSpan={colunas} className="px-4 py-3 sm:px-6">
             <DefinirEmbalagem
               item={item}
               sugeridoPelaNota={divergente ?? fatorDaNota(item)}
@@ -1510,164 +1406,15 @@ const LinhaItem = forwardRef<
                 onDefinirEmbalagem(fator, packagingId);
               }}
             />
-          ) : pendencia === "SEM_EMBALAGEM" ? (
-            // O caso que estoura o estoque em silêncio: a nota veio em caixa e
-            // ninguém disse quantas cabem, então 3 caixas viram 3 unidades.
-            // Não é "ajustar conversão" — é uma pergunta em português.
-            <div className="flex flex-col items-start gap-1">
-              <p className="flex items-center gap-1.5 text-[12px] font-medium text-warn">
-                <TriangleAlert size={12} aria-hidden />
-                Conversão necessária
-              </p>
-              <p className="text-[12px] text-muted">
-                {unidadeInfo?.classe === "MEDIDA"
-                  ? `A nota fatura ${fmtQtd(item.quantidade)} ${uCom} e o estoque conta unidades. Quantas unidades esta linha representa?`
-                  : `A unidade ${uCom} do XML não tem conversão cadastrada. Quantas unidades vêm em cada ${emb}?`}
-              </p>
-              {editavel && (
-                <Button size="sm" variant="secondary" onClick={() => setEditando(true)}>
-                  Configurar conversão
-                </Button>
-              )}
-            </div>
-          ) : (
-            // Três linhas, na ordem da pergunta: o que a nota diz, o que vira
-            // estoque, e por que um virou o outro. "0,6 MI" sozinho fazia o
-            // operador ler "menos de um maço" — e o XML fica intacto: o que a
-            // conversão produz é OUTRO número, ao lado, nunca por cima.
-            <div className="flex flex-col items-start gap-0.5">
-              <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                <span className="text-[10px] font-medium tracking-wide text-faint uppercase">
-                  XML
-                </span>
-                <span className="font-mono text-[12px] text-ink-2" title={rotuloUnidade}>
-                  {fmtQtd(item.quantidade)} {uCom}
-                </span>
-                {convertido && (
-                  <Badge tone="brand" title={explicacaoConversao}>
-                    <ArrowRightLeft size={10} aria-hidden /> convertido
-                  </Badge>
-                )}
-              </p>
-
-              <p className="flex items-baseline gap-1.5">
-                <span className="text-[10px] font-medium tracking-wide text-faint uppercase">
-                  Estoque
-                </span>
-                <span className="font-mono text-[15px] font-semibold text-brand-strong">
-                  {fmtQtd(entra)} {UNIDADE_ENTRADA}
-                </span>
-              </p>
-              <p className="text-[11px] text-muted">
-                {entra === 1 ? "entrará no estoque" : "entrarão no estoque"}
-                {/* Produto medido em ml/g: dizer o conteúdo evita a leitura
-                    errada de que o saldo passou a ser contado em mililitro. */}
-                {medida && (
-                  <span
-                    className="text-faint"
-                    title="A compra soma unidades fechadas. O mililitro só conta no saldo aberto, quando alguém abre uma para usar em receita."
-                  >
-                    {" "}
-                    · {medida} cada
-                  </span>
-                )}
-              </p>
-
-              {convertido && (
-                <p
-                  className={cn(
-                    "flex flex-wrap items-center gap-x-1.5 text-[11px]",
-                    divergente ? "text-info" : "text-muted",
-                  )}
-                  title={explicacaoConversao}
-                >
-                  <span className="text-[10px] font-medium tracking-wide text-faint uppercase">
-                    Conversão
-                  </span>
-                  <span className={cn("font-mono", divergente ? "text-info" : "text-ink-2")}>
-                    1 {uCom} = {fmtQtd(item.fatorConversao)} {UNIDADE_ENTRADA}
-                  </span>
-                  <span className={cn(origem === "CADASTRO" ? "text-ok" : undefined)}>
-                    {origem === "CADASTRO" && <Check size={11} className="inline" aria-hidden />}{" "}
-                    {ORIGEM_FATOR[origem]}
-                  </span>
-                  {divergente ? (
-                    <span className="text-info">· a nota diz {fmtQtd(divergente)}</span>
-                  ) : null}
-                </p>
-              )}
-
-              {editavel && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setEditando(true);
-                  }}
-                  className="mt-0.5 text-[11px] font-medium text-brand underline"
-                >
-                  {convertido ? "Alterar conversão" : `Informar unidades por ${emb}`}
-                </button>
-              )}
-            </div>
-          )}
-        </td>
-
-        {/* ── Custo da NF ───────────────────────────────────── */}
-        <td className="px-3 py-2.5 pr-3 text-right whitespace-nowrap">
-          {item.bonificacao ? (
-            <p className="text-[12px] text-muted">sem custo</p>
-          ) : (
-            <>
-              <p className="font-mono text-ink-2">{fmtMoney(custoItem(item))}</p>
-              {desvio != null && (
-                <>
-                  <p
-                    className={cn(
-                      "flex items-center justify-end gap-0.5 font-mono text-[11px]",
-                      desvio > 0 ? "text-danger" : "text-ok",
-                    )}
-                  >
-                    {desvio > 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-                    {Math.abs(Math.round(desvio * 100))}%{" "}
-                    {desvio > 0 ? "acima do médio" : "abaixo do médio"}
-                  </p>
-                  <p className="font-mono text-[11px] text-faint">
-                    médio {fmtMoney(item.productCustoMedio ?? 0)}
-                  </p>
-                </>
-              )}
-            </>
-          )}
-
-          {/* O fiscal continua todo aqui — atrás de um clique, para não
-              competir com a decisão que a linha realmente pede. */}
-          {item.productId && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setDetalhes((v) => !v);
-              }}
-              aria-expanded={detalhes}
-              className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-muted underline hover:text-ink"
-            >
-              {detalhes ? "Ocultar detalhes" : "Mais detalhes"}
-              <ChevronDown
-                size={10}
-                aria-hidden
-                className={cn("transition-transform", detalhes && "rotate-180")}
-              />
-            </button>
-          )}
-        </td>
-      </tr>
+          </td>
+        </tr>
+      )}
 
       {/* Só quem abriu vê. NCM, CEST, CFOP, GTIN tributável e a lista de
           diferenças moram aqui — disponíveis, nunca no caminho. */}
       {detalhes && (
-        <tr className="border-b border-line bg-surface-2/60">
-          <td colSpan={5} className="px-3 py-3">
+        <tr className="border-t border-line bg-surface-2/60">
+          <td colSpan={colunas} className="px-4 py-3 sm:px-6">
             <div className="flex flex-col gap-3">
               {divergencias.length > 0 && (
                 <ul className="flex flex-col gap-2">
@@ -1695,7 +1442,8 @@ const LinhaItem = forwardRef<
       )}
     </Fragment>
   );
-});
+}
+
 
 /**
  * "Quantas unidades vêm nessa caixa?" — respondido na própria linha.

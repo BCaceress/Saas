@@ -1,5 +1,6 @@
 import "server-only";
 import { db } from "@/lib/prisma";
+import { urlImagemProduto } from "@/lib/imagem";
 import { sugerirPedidos, type SugestaoPedido } from "@/lib/compras/conciliacao";
 import { listarEventosDoRecebimento, type EventoPedido } from "@/lib/compras/eventos";
 import { sugestoesDaNota, type SugestaoDePara } from "@/lib/compras/sugestao-de-para";
@@ -40,7 +41,10 @@ export type LinhaRecebimento = {
   id: string;
   productId: string | null;
   inboundItemId: string | null;
+  /** Como o fornecedor escreveu (ou o nome do produto, na linha avulsa). */
   descricao: string;
+  /** Nome no catálogo do produto relacionado — o lado NoHub da linha. */
+  produtoNome: string | null;
   sku: string | null;
   imagemUrl: string | null;
   ean: string | null;
@@ -168,7 +172,7 @@ export type RecebimentoView = {
   sugestoes: SugestaoPedido[];
   /**
    * O que esta nota fez pelo cadastro do fornecedor — criou, atualizou, ou
-   * deixou uma sugestão esperando decisão. Só enquanto a nota está sendo lida.
+   * deixou uma sugestão esperando decisão. Só na etapa da nota.
    */
   fornecedor: ResumoSincronizacao | null;
   /**
@@ -183,7 +187,7 @@ export type RecebimentoView = {
    * precisa refazer a conta.
    */
   pedidoDasSugestoes: string | null;
-  /** Só preenchido enquanto a nota não entrou em conferência. */
+  /** Os itens crus do XML. Só preenchido na etapa da nota. */
   itensNota: ItemNotaView[];
   linhas: LinhaRecebimento[];
   resumo: ResumoRecebimento;
@@ -209,6 +213,12 @@ export async function carregarRecebimento(
      * ou "novo". Ainda não foi gravada — só orienta os palpites de produto.
      */
     origem?: string | null;
+    /**
+     * A pessoa pediu a etapa da nota com a conferência já aberta (ou fechada).
+     * Só aí os itens crus do XML e o fornecedor são carregados — a contagem
+     * revalida a rota a cada campo, e ela não usa nada disso.
+     */
+    verNota?: boolean;
   } = {},
 ): Promise<RecebimentoView | null> {
   const receipt = await db.goodsReceipt.findFirst({
@@ -294,6 +304,11 @@ export async function carregarRecebimento(
   const escolherPorta =
     receipt.origem === "XML" && !pedido && linhasCru.length === 0 && receipt.status !== "FINALIZADO";
   const semPedido = !pedido && linhasCru.length > 0;
+  // A etapa da nota é a tela inteira enquanto a porta não foi escolhida, e
+  // continua visitável depois: é lá que moram o fornecedor, o pedido e o
+  // de-para dos produtos.
+  const mostrarNota = Boolean(inboundId) && (escolherPorta || Boolean(opts.verNota));
+  const encerrado = receipt.status === "FINALIZADO" || receipt.status === "CANCELADO";
 
   // A linha da conferência já vem convertida em unidades. Para dizer de ONDE
   // aquele número saiu — "0,6 MI × 1.000" — a tela precisa do item cru da nota.
@@ -306,10 +321,10 @@ export async function carregarRecebimento(
       : [];
   const xmlPorItem = new Map(itensDaNota.map((i) => [i.id, i]));
 
-  // Antes de escolher a porta, o assunto da tela são os itens crus da nota: é
-  // neles que o operador relaciona o catálogo para poder escolher.
+  // Na etapa da nota o assunto são os itens crus do XML: é neles que o
+  // operador relaciona o catálogo.
   const itensCru =
-    inboundId && escolherPorta
+    inboundId && mostrarNota
       ? await db.fiscalInboundItem.findMany({
           where: { inboundId },
           select: {
@@ -408,6 +423,7 @@ export async function carregarRecebimento(
       productId: l.productId,
       inboundItemId: l.inboundItemId,
       descricao: l.descricao,
+      produtoNome: p?.nome ?? null,
       sku: p?.sku ?? null,
       imagemUrl: p?.imagemUrl ?? null,
       ean: l.ean ?? p?.ean ?? null,
@@ -458,9 +474,11 @@ export async function carregarRecebimento(
 
   const sugestoes = escolherPorta && inboundId ? await sugerirPedidos(inboundId) : [];
   // Mesma regra da tela: sem resposta na URL vale o pedido mais parecido; quem
-  // respondeu "sem pedido" não quer palpite de pedido nenhum.
-  const pedidoDasSugestoes =
-    opts.origem === "sem" || opts.origem === "novo"
+  // respondeu "sem pedido" não quer palpite de pedido nenhum. Com a conferência
+  // aberta não há o que adivinhar — o pedido é o que está vinculado.
+  const pedidoDasSugestoes = !escolherPorta
+    ? receipt.purchaseOrderId
+    : opts.origem === "sem" || opts.origem === "novo"
       ? null
       : (sugestoes.find((s) => s.purchaseOrderId === opts.origem)?.purchaseOrderId ??
         sugestoes[0]?.purchaseOrderId ??
@@ -531,11 +549,11 @@ export async function carregarRecebimento(
     // as sugestões são o conteúdo principal, então valem a consulta.
     sugestoes,
     pedidoDasSugestoes,
-    fornecedor: escolherPorta && inboundId ? await resumoSincronizacaoDaNota(inboundId) : null,
-    // Só antes da porta: depois dela o de-para pendente aparece na conferência,
-    // e são N buscas ranqueadas que ninguém pediu.
+    fornecedor: mostrarNota && inboundId ? await resumoSincronizacaoDaNota(inboundId) : null,
+    // Só na etapa da nota e só enquanto dá para relacionar: são N buscas
+    // ranqueadas que a contagem não usa e o recebimento fechado não aceita.
     sugestoesDePara:
-      escolherPorta && inboundId && itensNota.some((i) => !i.productId)
+      mostrarNota && inboundId && !encerrado && itensNota.some((i) => !i.productId)
         ? await sugestoesDaNota(inboundId, { purchaseOrderId: pedidoDasSugestoes })
         : [],
     itensNota,
@@ -578,6 +596,7 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
       ean: true,
       barcodes: { select: { codigo: true } },
       imagemUrl: true,
+      updatedAt: true,
       unidadeBase: true,
       conteudoPorUnidade: true,
       custoMedio: true,
@@ -594,7 +613,9 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
         nome: p.nome,
         sku: p.sku,
         ean: p.ean,
-        imagemUrl: p.imagemUrl,
+        // Foto guardada como `data:` vira caminho: a tela chega sem os KB de
+        // cada imagem e o navegador as baixa depois.
+        imagemUrl: urlImagemProduto(p.id, p.imagemUrl, p.updatedAt),
         unidadeBase: p.unidadeBase,
         conteudoPorUnidade:
           p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
