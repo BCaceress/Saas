@@ -2,13 +2,7 @@ import "server-only";
 import { db, basePrisma } from "@/lib/prisma";
 import type { GoodsReceiptOrigem, GoodsReceiptStatus, Prisma } from "@/generated/prisma";
 import { RECEBIMENTOS_ABERTOS } from "@/lib/compras/recebimento";
-import {
-  abasDeRecebimento,
-  montarPagina,
-  type Pagina,
-  type RecAba,
-  type RecFiltros,
-} from "./_query";
+import { montarPagina, periodoAplicavel, type Pagina, type RecFiltros, type RecMarca } from "./_query";
 
 // ── Leitura de /recebimento ─────────────────────────────────────
 //
@@ -37,13 +31,26 @@ import {
 export type RecebimentoRow = {
   id: string;
   numero: string;
+  /** Quando o recebimento foi aberto — mede há quanto tempo está parado. */
   data: Date;
+  /**
+   * Quando foi recebido de fato — conferência concluída, mercadoria no
+   * estoque. É a coluna "Recebido em". Nulo enquanto aberto.
+   */
+  concluidoEm: Date | null;
   supplierNome: string;
   /** Só dígitos. Nulo no fornecedor livre (avulso digitado à mão). */
   supplierCnpj: string | null;
   siteNome: string | null;
   origem: GoodsReceiptOrigem;
+  /**
+   * Concluído: o que entrou (recebido × custo). Aberto: o que se espera — o
+   * total da NF-e ou, sem nota, o esperado das linhas. Contar zero itens não
+   * faz a carga valer R$ 0,00.
+   */
   valor: number;
+  /** De onde vem `valor` enquanto a conferência não fecha. Nulo = já é o recebido. */
+  valorOrigem: "nota" | "previsto" | null;
   /** Linhas de produto. */
   itens: number;
   /** Quantidade total, em unidade base. */
@@ -57,6 +64,10 @@ export type RecebimentoRow = {
   avulso: boolean;
   inboundId: string | null;
   notaNumero: string | null;
+  /** Só com XML — a nota digitada à mão não guarda série. */
+  notaSerie: number | null;
+  /** Emissão da NF-e (só com XML) — data do fornecedor, não a do recebimento. */
+  notaEmissao: Date | null;
   divergencias: number;
   /** Entrou sem documento fiscal e ainda espera o XML. */
   semDocumento: boolean;
@@ -82,15 +93,27 @@ export type AguardandoRow = {
   valorSaldo: number;
   /** Já houve recebimento antes (é a segunda entrega deste pedido). */
   recebimentosAnteriores: number;
+  /** A previsão de entrega já passou e nada chegou ainda. */
+  atrasado: boolean;
 };
 
 export type ResumoRecebimentos = {
   aguardando: number;
-  emConferencia: number;
+  /** Dos aguardando, quantos já passaram da previsão de entrega. */
+  atrasados: number;
+  /** A conferir + em conferência + parados em divergência. */
+  emAberto: number;
+  /** Abertos com diferença — só o que ainda tem como resolver. */
   divergencia: number;
-  recebidosHoje: number;
   semDocumento: number;
 };
+
+/** Meia-noite de hoje: "atrasado" é previsão de ontem para trás, não de uma hora atrás. */
+function inicioDeHoje(): Date {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
 
 // ── Aguardando recebimento (pedidos, não recebimentos) ──────────
 
@@ -180,6 +203,7 @@ export async function loadAguardandoRecebimento(
     }),
   ]);
 
+  const hoje = inicioDeHoje();
   const rows = pedidos.map((p): AguardandoRow => {
     const pedido = p.items.reduce((a, i) => a + Number(i.qtdPedida), 0);
     const recebido = p.items.reduce(
@@ -203,6 +227,7 @@ export async function loadAguardandoRecebimento(
         0,
       ),
       recebimentosAnteriores: p._count.recebimentos,
+      atrasado: p.previsaoEntrega != null && p.previsaoEntrega < hoje,
     };
   });
 
@@ -224,84 +249,95 @@ const RECEBIMENTO_DIVERGENTE: Prisma.GoodsReceiptWhereInput = {
   ],
 };
 
-const ABERTOS_E_FINALIZADO: GoodsReceiptStatus[] = [...RECEBIMENTOS_ABERTOS, "FINALIZADO"];
+const ENCERRADOS: GoodsReceiptStatus[] = ["FINALIZADO", "CANCELADO"];
 
 /**
- * O recorte de UM status, completo em si mesmo — para poder ser unido (OR) aos
- * outros quando o operador marca mais de um.
- *
- * O período entra só onde recorta histórico: esconder uma conferência aberta
- * há 40 dias seria esconder justamente a que ninguém pode perder de vista.
+ * Finalizado esperando documento é a pendência que ninguém vê até a nota
+ * chegar e alguém receber a mesma mercadoria pela segunda vez.
  */
-function recorteDaAba(aba: RecAba, desde: Date | null): Prisma.GoodsReceiptWhereInput {
-  const noPeriodo = desde ? { iniciadoEm: { gte: desde } } : {};
-  switch (aba) {
-    case "andamento":
-      return { status: { in: RECEBIMENTOS_ABERTOS } };
+const AGUARDA_NFE: Prisma.GoodsReceiptWhereInput = {
+  status: "FINALIZADO",
+  inboundId: null,
+  entradas: { some: { aguardandoDocumento: true, chaveNfe: null } },
+};
+
+/** Cada marca restringe (E) o que o status mostrou. */
+function recorteDaMarca(marca: RecMarca): Prisma.GoodsReceiptWhereInput {
+  switch (marca) {
     case "divergencia":
-      // Divergência não é só a conferência parada nela: a que foi finalizada
-      // com diferença registrada continua sendo problema de alguém.
-      return { status: { in: ABERTOS_E_FINALIZADO }, ...RECEBIMENTO_DIVERGENTE };
-    case "concluidos":
-      return { status: { in: ["FINALIZADO", "CANCELADO"] }, ...noPeriodo };
-    case "avulsos":
-      // Avulso é origem, não estado — vale aberto e finalizado.
-      return { purchaseOrderId: null, status: { in: ABERTOS_E_FINALIZADO }, ...noPeriodo };
+      return RECEBIMENTO_DIVERGENTE;
     case "sem-nfe":
-      // Finalizado esperando documento é a pendência que ninguém vê até a nota
-      // chegar e alguém receber a mesma mercadoria pela segunda vez.
-      return {
-        status: "FINALIZADO",
-        inboundId: null,
-        entradas: { some: { aguardandoDocumento: true, chaveNfe: null } },
-      };
-    default:
-      return {};
+      return AGUARDA_NFE;
   }
 }
 
 /**
- * O WHERE dos recebimentos: a união dos recortes marcados.
+ * O WHERE dos recebimentos: o status escolhido E cada marca ligada.
  *
  * O recorte vive aqui, nunca num `filter()` depois da consulta: cortar em
  * memória o que o banco já cortou por `take` esconde linhas que existem, sem
  * avisar ninguém, e ainda faz a paginação contar errado.
+ *
+ * O período entra só onde recorta histórico: esconder uma conferência aberta
+ * há 40 dias seria esconder justamente a que ninguém pode perder de vista.
  */
+/**
+ * Avulso aberto e nunca salvo não é recebimento ainda — é alguém que clicou
+ * "Não tenho o XML". Entra na lista quando é salvo ou recebido.
+ */
+const VISIVEL: Prisma.GoodsReceiptWhereInput = { provisorio: false };
+
 function whereRecebimentos(filtro: RecFiltros): Prisma.GoodsReceiptWhereInput {
   const termo = filtro.q.trim();
-  const dias = Number(filtro.periodo);
+  const dias = periodoAplicavel(filtro) ? Number(filtro.periodo) : 0;
   const desde = dias > 0 ? new Date(Date.now() - dias * 86_400_000) : null;
+  const noPeriodo = desde ? { iniciadoEm: { gte: desde } } : {};
 
-  const abas = abasDeRecebimento(filtro.abas);
-  // Nada marcado = todos: o que está aberto aparece sempre, o histórico
-  // respeita o período.
-  const recortes = (abas.length > 0 ? abas : (["andamento", "concluidos"] as RecAba[])).map((a) =>
-    recorteDaAba(a, desde),
-  );
+  const abertos: Prisma.GoodsReceiptWhereInput = { status: { in: RECEBIMENTOS_ABERTOS } };
+  const encerrados: Prisma.GoodsReceiptWhereInput = { status: { in: ENCERRADOS }, ...noPeriodo };
+  const porStatus =
+    filtro.status === "aberto"
+      ? abertos
+      : filtro.status === "concluidos"
+        ? encerrados
+        : // Todos: o que está aberto aparece sempre, o histórico respeita o período.
+          { OR: [abertos, encerrados] };
 
   const and: Prisma.GoodsReceiptWhereInput[] = [
-    recortes.length === 1 ? recortes[0] : { OR: recortes },
+    VISIVEL,
+    porStatus,
+    ...filtro.marcas.map(recorteDaMarca),
   ];
-  const where: Prisma.GoodsReceiptWhereInput = {
+
+  if (termo) and.push(buscaRecebimento(termo));
+
+  return {
     ...(filtro.supplierId ? { supplierId: filtro.supplierId } : {}),
+    AND: and,
   };
+}
 
-  if (termo) {
-    and.push({
-      OR: [
-        { numero: { contains: termo, mode: "insensitive" } },
-        { numeroNota: { contains: termo, mode: "insensitive" } },
-        { fornecedorLivre: { contains: termo, mode: "insensitive" } },
-        { supplier: { razaoSocial: { contains: termo, mode: "insensitive" } } },
-        { supplier: { nomeFantasia: { contains: termo, mode: "insensitive" } } },
-        { purchaseOrder: { numero: { contains: termo, mode: "insensitive" } } },
-        { inbound: { chave: { contains: termo } } },
-      ],
-    });
-  }
-
-  where.AND = and;
-  return where;
+/**
+ * Número do recebimento, do pedido, da NF-e (digitada ou do XML), chave,
+ * fornecedor — e PRODUTO: "a Heineken já chegou?" é pergunta de doca. O item
+ * guarda a descrição como apareceu (nosso nome ou o xProd da nota) e o EAN.
+ */
+function buscaRecebimento(termo: string): Prisma.GoodsReceiptWhereInput {
+  const contem = { contains: termo, mode: "insensitive" as const };
+  const numeroNota = /^\d{1,9}$/.test(termo) ? Number(termo) : null;
+  return {
+    OR: [
+      { numero: contem },
+      { numeroNota: contem },
+      { fornecedorLivre: contem },
+      { supplier: { razaoSocial: contem } },
+      { supplier: { nomeFantasia: contem } },
+      { purchaseOrder: { numero: contem } },
+      { inbound: { chave: { contains: termo } } },
+      ...(numeroNota != null ? [{ inbound: { numero: numeroNota } }] : []),
+      { itens: { some: { OR: [{ descricao: contem }, { ean: termo }] } } },
+    ],
+  };
 }
 
 const selectRecebimento = {
@@ -320,7 +356,7 @@ const selectRecebimento = {
   supplier: { select: { razaoSocial: true, nomeFantasia: true, cnpj: true } },
   site: { select: { nome: true } },
   purchaseOrder: { select: { numero: true } },
-  inbound: { select: { id: true, numero: true, serie: true } },
+  inbound: { select: { id: true, numero: true, serie: true, valorTotal: true, dataEmissao: true } },
   itens: {
     select: {
       qtdPedida: true,
@@ -346,20 +382,29 @@ function paraLinha(r: ReceiptCru, usuarios: Map<string, string>): RecebimentoRow
   const recebidoDe = (i: ReceiptCru["itens"][number]) =>
     i.qtdRecebida == null ? (encerrado ? esperadoDe(i) : 0) : Number(i.qtdRecebida);
 
+  const aberto = RECEBIMENTOS_ABERTOS.includes(r.status);
+  const valorRecebido = r.itens.reduce(
+    (a, i) => a + (i.bonificacao ? 0 : recebidoDe(i) * Number(i.custoFaturado)),
+    0,
+  );
+  const valorEsperado = r.itens.reduce(
+    (a, i) => a + (i.bonificacao ? 0 : esperadoDe(i) * Number(i.custoFaturado)),
+    0,
+  );
+
   const entradas = r.entradas;
   return {
     id: r.id,
     numero: r.numero,
-    data: r.finalizadoEm ?? r.iniciadoEm,
+    data: r.iniciadoEm,
+    concluidoEm: r.finalizadoEm,
     supplierNome:
       r.supplier?.nomeFantasia || r.supplier?.razaoSocial || r.fornecedorLivre || "Sem fornecedor",
     supplierCnpj: r.supplier?.cnpj ?? null,
     siteNome: r.site?.nome ?? null,
     origem: r.origem,
-    valor: r.itens.reduce(
-      (a, i) => a + (i.bonificacao ? 0 : recebidoDe(i) * Number(i.custoFaturado)),
-      0,
-    ),
+    valor: aberto ? (r.inbound ? Number(r.inbound.valorTotal) : valorEsperado) : valorRecebido,
+    valorOrigem: aberto ? (r.inbound ? "nota" : "previsto") : null,
     itens: r.itens.length,
     unidades: r.itens.reduce((a, i) => a + recebidoDe(i), 0),
     esperado: r.itens.reduce((a, i) => a + esperadoDe(i), 0),
@@ -371,7 +416,9 @@ function paraLinha(r: ReceiptCru, usuarios: Map<string, string>): RecebimentoRow
     pedidoNumero: r.purchaseOrder?.numero ?? null,
     avulso: !r.purchaseOrderId,
     inboundId: r.inboundId,
-    notaNumero: r.inbound ? `${r.inbound.numero}/${r.inbound.serie}` : r.numeroNota,
+    notaNumero: r.inbound ? String(r.inbound.numero) : r.numeroNota,
+    notaSerie: r.inbound?.serie ?? null,
+    notaEmissao: r.inbound?.dataEmissao ?? null,
     divergencias: r.itens.filter((i) => i.resolucao || i.motivoDivergencia).length,
     // Sem a marca `aguardandoDocumento` não há espera nenhuma — é só uma carga
     // que nunca teve nota, e nunca vai ter.
@@ -401,7 +448,13 @@ export async function loadRecebimentos(
     db.goodsReceipt.findMany({
       where,
       select: selectRecebimento,
-      orderBy: { iniciadoEm: filtro.ordem },
+      // A ordem segue a coluna "Recebido em" (conclusão). Os abertos ainda não
+      // têm essa data e vêm sempre primeiro — é o trabalho da doca —, entre si
+      // pela abertura.
+      orderBy: [
+        { finalizadoEm: { sort: filtro.ordem, nulls: "first" } },
+        { iniciadoEm: filtro.ordem },
+      ],
       skip: opts.skip,
       take: opts.take,
     }),
@@ -425,33 +478,33 @@ export async function loadRecebimentos(
  * alguém faz a seguir.
  */
 export async function resumoRecebimentos(): Promise<ResumoRecebimentos> {
-  const hoje = new Date();
-  hoje.setHours(0, 0, 0, 0);
+  const pedidosEsperando: Prisma.PurchaseOrderWhereInput = {
+    status: PEDIDOS_ESPERANDO,
+    ...SEM_CONFERENCIA_ABERTA,
+    ...PEDIDO_COM_SALDO,
+  };
 
-  const [emConferencia, divergencia, recebidosHoje, semDocumento, aguardando] = await Promise.all([
-    db.goodsReceipt.count({ where: { status: { in: RECEBIMENTOS_ABERTOS } } }),
+  const [emAberto, divergencia, semDocumento, aguardando, atrasados] = await Promise.all([
+    db.goodsReceipt.count({ where: { ...VISIVEL, status: { in: RECEBIMENTOS_ABERTOS } } }),
+    // Só a divergência que ainda tem como resolver. Contar também as
+    // concluídas com diferença registrada fazia o número só crescer — e um
+    // indicador que nunca baixa vira papel de parede.
     db.goodsReceipt.count({
-      where: { status: { in: ABERTOS_E_FINALIZADO }, ...RECEBIMENTO_DIVERGENTE },
+      where: { AND: [VISIVEL, { status: { in: RECEBIMENTOS_ABERTOS } }, RECEBIMENTO_DIVERGENTE] },
     }),
-    db.goodsReceipt.count({ where: { status: "FINALIZADO", finalizadoEm: { gte: hoje } } }),
-    db.goodsReceipt.count({
-      where: {
-        status: "FINALIZADO",
-        inboundId: null,
-        entradas: { some: { aguardandoDocumento: true, chaveNfe: null } },
-      },
-    }),
+    db.goodsReceipt.count({ where: { AND: [VISIVEL, AGUARDA_NFE] } }),
+    db.purchaseOrder.count({ where: pedidosEsperando }),
     db.purchaseOrder.count({
-      where: { status: PEDIDOS_ESPERANDO, ...SEM_CONFERENCIA_ABERTA, ...PEDIDO_COM_SALDO },
+      where: { ...pedidosEsperando, previsaoEntrega: { lt: inicioDeHoje() } },
     }),
   ]);
 
-  return { aguardando, emConferencia, divergencia, recebidosHoje, semDocumento };
+  return { aguardando, atrasados, emAberto, divergencia, semDocumento };
 }
 
 export async function loadFornecedoresComRecebimento(): Promise<{ id: string; nome: string }[]> {
   const ids = await db.goodsReceipt.findMany({
-    where: { supplierId: { not: null } },
+    where: { ...VISIVEL, supplierId: { not: null } },
     select: { supplierId: true },
     distinct: ["supplierId"],
   });
@@ -464,66 +517,6 @@ export async function loadFornecedoresComRecebimento(): Promise<{ id: string; no
     orderBy: { razaoSocial: "asc" },
   });
   return fornecedores.map((f) => ({ id: f.id, nome: f.nomeFantasia || f.razaoSocial }));
-}
-
-// ── Detalhe de um recebimento (para o painel da linha) ──────────
-
-export type ItemRecebido = {
-  nome: string;
-  sku: string;
-  imagemUrl: string | null;
-  quantidade: number;
-  esperado: number;
-  custoTotal: number;
-  bonificacao: boolean;
-};
-
-export async function loadItensDoRecebimento(receiptId: string): Promise<ItemRecebido[]> {
-  const receipt = await db.goodsReceipt.findFirst({
-    where: { id: receiptId },
-    select: { status: true },
-  });
-  if (!receipt) return [];
-
-  const linhas = await db.purchaseReconciliationItem.findMany({
-    where: { receiptId },
-    select: {
-      productId: true,
-      descricao: true,
-      qtdPedida: true,
-      qtdFaturada: true,
-      qtdRecebida: true,
-      custoFaturado: true,
-      bonificacao: true,
-    },
-    orderBy: { descricao: "asc" },
-  });
-  if (linhas.length === 0) return [];
-
-  const produtoIds = [...new Set(linhas.map((l) => l.productId).filter((v): v is string => !!v))];
-  const produtos = produtoIds.length
-    ? await db.product.findMany({
-        where: { id: { in: produtoIds } },
-        select: { id: true, nome: true, sku: true, imagemUrl: true },
-      })
-    : [];
-  const porProduto = new Map(produtos.map((p) => [p.id, p]));
-
-  return linhas.map((l): ItemRecebido => {
-    const p = l.productId ? porProduto.get(l.productId) : null;
-    const esperado = Number(l.qtdFaturada) || Number(l.qtdPedida);
-    const quantidade =
-      l.qtdRecebida == null ? (receipt.status === "FINALIZADO" ? esperado : 0) : Number(l.qtdRecebida);
-    return {
-      nome: p?.nome ?? l.descricao,
-      sku: p?.sku ?? "—",
-      imagemUrl: p?.imagemUrl ?? null,
-      quantidade,
-      esperado,
-      custoTotal: l.bonificacao ? 0 : quantidade * Number(l.custoFaturado),
-      bonificacao: l.bonificacao,
-    };
-  });
 }
 
 // ── Auxiliares ──────────────────────────────────────────────────

@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useOptimistic, useState, useTransition } from "react";
+import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  ArrowRight,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  CircleCheck,
+  CircleX,
   ClipboardCheck,
   Clock,
   FileClock,
@@ -15,10 +16,10 @@ import {
   FileUp,
   Gift,
   Loader2,
-  MoreVertical,
   PackageCheck,
   Receipt,
   Search,
+  SlidersHorizontal,
   Store,
   TriangleAlert,
   Truck,
@@ -27,92 +28,133 @@ import {
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/misc";
-import { Menu, MenuItem } from "@/components/ui/menu";
 import { Sheet } from "@/components/ui/sheet";
+import { Combobox } from "@/components/ui/combobox";
 import { PageHeader } from "@/components/app/page-header";
 import { navIcon, navDescricao } from "@/components/app/nav-config";
-import { maskCnpj } from "@/lib/masks";
+import { maskCnpj, maskCpf } from "@/lib/masks";
 import { cn } from "@/lib/utils";
 import { EstadoVazio } from "../cotacoes/_catalogo/ui";
-import { fmtMoney, fmtQtd, relDia, Thumb } from "../cotacoes/_ui";
+import { fmtMoney, fmtQtd, relDia } from "../cotacoes/_ui";
 import { ReceberMercadoriaPanel } from "../pedidos/_receber-mercadoria";
 import { TransferReceber, type Transfer } from "../pedidos/_recebimentos";
-import { itensDoRecebimentoAction } from "./lista-actions";
 import { iniciarRecebimentoAction } from "./conferencia-actions";
 import { toast } from "@/components/ui/toast";
-import { MultiSelect } from "@/components/ui/multi-select";
 import {
   filtrosAtivos,
   periodoAplicavel,
   placeholderBusca,
-  REC_ABAS,
+  quantosFiltros,
   REC_FILTROS_VAZIO,
   REC_LIMITES,
-  REC_RECORTES,
+  REC_STATUS,
   soPedidos,
   urlDosFiltros,
   type Pagina,
-  type RecAba,
   type RecFiltros,
+  type RecMarca,
+  type RecStatus,
 } from "./_query";
 import type {
   AguardandoRow,
-  ItemRecebido,
   RecebimentoRow,
   ResumoRecebimentos,
 } from "./_lista";
 
 // ── Tela de Recebimentos ────────────────────────────────────────
 //
-// A tela abre em TODOS. O status é um filtro de seleção múltipla, ao lado do
-// fornecedor: nada marcado = tudo; marcados = a união deles. Tudo paginado no
-// banco — o histórico continua recortado pelo período.
+// A tela abre em TODOS. O status é uma escolha só (Todos · Aguardando · Em
+// aberto · Concluídos); os indicadores ainda recortam divergência e sem NF-e. Tudo
+// paginado no banco — o histórico continua recortado pelo período.
 //
 // E os recortes não mostram a mesma coisa, de propósito:
 //
 //   Aguardando  → PEDIDOS. Não são recebimentos: são o botão que cria um.
-//                 Quando dividem a tela com recebimentos, sobem num bloco
-//                 curto no topo; sozinhos, viram a lista paginada.
+//                 Na visão geral sobem num bloco curto no topo; sozinhos,
+//                 viram a lista paginada.
 //   Os demais   → RECEBIMENTOS. /pedidos responde "o que eu comprei?", esta
 //                 responde "o que chegou?".
 
 const PERIODOS = [
-  { value: "7", label: "7 dias" },
-  { value: "30", label: "30 dias" },
-  { value: "90", label: "90 dias" },
-  { value: "", label: "Tudo" },
+  { value: "7", label: "Últimos 7 dias" },
+  { value: "30", label: "Últimos 30 dias" },
+  { value: "90", label: "Últimos 90 dias" },
+  { value: "", label: "Todo o período" },
 ];
+
+/** A partir de quantos dias aberto o recebimento acende como parado na doca. */
+const DIAS_NA_DOCA_ALERTA = 2;
+
+/** Espera depois da última tecla antes de buscar — digitar não dispara uma consulta por letra. */
+const ESPERA_BUSCA_MS = 350;
+
+/** Dias de calendário entre a chegada e hoje — "ontem às 23h" já é 1 dia. */
+function diasDesde(d: Date): number {
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const dia = new Date(d);
+  dia.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.round((hoje.getTime() - dia.getTime()) / 86_400_000));
+}
+
+function tempoNaDoca(d: Date): string {
+  const n = diasDesde(d);
+  return n === 0 ? "desde hoje" : n === 1 ? "há 1 dia" : `há ${n} dias`;
+}
+
+const fmtDia = (d: Date) => d.toLocaleDateString("pt-BR");
+
+/** Enquanto aberto o valor é o esperado — o rótulo diz de onde ele vem. */
+const ROTULO_VALOR = { nota: "na nota", previsto: "previsto" } as const;
+
+/** Mesma seleção de marcas, em qualquer ordem. */
+const mesmasMarcas = (a: RecMarca[], b: RecMarca[]) =>
+  a.length === b.length && a.every((m) => b.includes(m));
+
+/**
+ * Select nativo com a pele dos outros filtros: seta do sistema de ícones, não
+ * a do navegador, para a barra parecer uma família só.
+ */
+function SelectFiltro({
+  className,
+  children,
+  ...props
+}: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <div className={cn("relative", className)}>
+      <select
+        {...props}
+        className="h-9 w-full cursor-pointer appearance-none truncate rounded-full border border-line bg-surface pr-9 pl-3.5 text-[13px] text-ink transition-colors focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
+      >
+        {children}
+      </select>
+      <ChevronDown
+        size={14}
+        className="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-muted"
+        aria-hidden
+      />
+    </div>
+  );
+}
 
 const VAZIO_TODOS = {
   titulo: "Nenhum recebimento por aqui ainda",
   descricao: "Quando um pedido sair para entrega ou uma mercadoria chegar, aparece aqui.",
 };
 
-/** O vazio de cada recorte diz o que fazer, não "nenhum resultado". */
-const VAZIO: Record<RecAba, { titulo: string; descricao: string }> = {
+/** O vazio de cada status diz o que fazer, não "nenhum resultado". */
+const VAZIO: Record<Exclude<RecStatus, "">, { titulo: string; descricao: string }> = {
   aguardando: {
     titulo: "Nenhum pedido aguardando recebimento",
     descricao: "Todos os pedidos estão em dia. Quando um pedido sair para entrega, ele aparece aqui.",
   },
-  andamento: {
-    titulo: "Nenhum recebimento em conferência",
-    descricao: "Quando uma conferência for iniciada, ela aparecerá aqui.",
-  },
-  divergencia: {
-    titulo: "Nenhuma divergência encontrada",
-    descricao: "O que chegou bateu com o que foi pedido e faturado.",
+  aberto: {
+    titulo: "Nenhum recebimento em aberto",
+    descricao: "Tudo o que chegou já foi conferido e entrou no estoque.",
   },
   concluidos: {
-    titulo: "Nenhum recebimento concluído encontrado",
-    descricao: "O histórico começa no primeiro recebimento finalizado.",
-  },
-  avulsos: {
-    titulo: "Nenhum recebimento avulso encontrado",
-    descricao: "Avulso é a mercadoria que chegou sem pedido por trás.",
-  },
-  "sem-nfe": {
-    titulo: "Nenhum recebimento aguardando NF-e",
-    descricao: "Toda mercadoria que entrou tem documento fiscal vinculado.",
+    titulo: "Nenhum recebimento concluído no período",
+    descricao: "O histórico começa no primeiro recebimento concluído.",
   },
 };
 
@@ -128,11 +170,11 @@ export function RecebimentosView({
   podeAvulso,
 }: {
   /**
-   * Pedidos aguardando — não são recebimentos. Com só "Aguardando" marcado é a
-   * lista paginada; dividindo a tela, é o bloco do topo (primeiros N + total).
+   * Pedidos aguardando — não são recebimentos. Em "Aguardando" é a lista
+   * paginada; na visão geral, é o bloco do topo (primeiros N + total).
    */
   aguardando: Pagina<AguardandoRow>;
-  /** A página de recebimentos. Vazia com só "Aguardando" marcado. */
+  /** A página de recebimentos. Vazia em "Aguardando". */
   recebimentos: Pagina<RecebimentoRow>;
   /** Transferências entre lojas esperando conferência na loja ativa. */
   transferencias: Transfer[];
@@ -146,19 +188,21 @@ export function RecebimentosView({
 }) {
   const router = useRouter();
   const [recebendo, setRecebendo] = useState(false);
-  const [detalhe, setDetalhe] = useState<RecebimentoRow | null>(null);
   const [receberTransfer, setReceberTransfer] = useState<Transfer | null>(null);
   const [busca, setBusca] = useState(filtros.q);
+  // No celular os filtros dobram atrás de um botão: quatro controles empilhados
+  // empurravam a lista para fora da primeira tela.
+  const [filtrosAbertos, setFiltrosAbertos] = useState(false);
   const [navegando, iniciarNavegacao] = useTransition();
 
   // O marcado responde no clique; a lista chega quando o servidor devolver.
-  const [abasMarcadas, marcarAbas] = useOptimistic(filtros.abas);
+  const [visao, marcarVisao] = useOptimistic({ status: filtros.status, marcas: filtros.marcas });
 
-  const ehPedidos = soPedidos(filtros.abas);
+  const ehPedidos = soPedidos(filtros);
   const pagina: Pagina<AguardandoRow | RecebimentoRow> = ehPedidos ? aguardando : recebimentos;
   // Pedidos dividindo a tela com recebimentos: bloco curto no topo.
   const pedidosNoTopo = !ehPedidos && aguardando.items.length > 0;
-  const umSo = filtros.abas.length === 1 ? filtros.abas[0] : null;
+  const focoDivergencia = filtros.marcas.includes("divergencia");
 
   // O recorte mora na URL: o servidor precisa lê-lo para consultar SÓ ele, e de
   // quebra fica compartilhável e sobrevive ao F5.
@@ -167,17 +211,27 @@ export function RecebimentosView({
     // Trocar o filtro com a página 3 aberta mostraria "nenhum resultado" para
     // um recorte que tem resultados — só a página é que não existe mais.
     if (!("pagina" in patch)) f.pagina = 1;
+    if (f.status === "aguardando") f.marcas = [];
     iniciarNavegacao(() => {
-      if (patch.abas) marcarAbas(patch.abas);
+      if (patch.status !== undefined || patch.marcas) {
+        marcarVisao({ status: f.status, marcas: f.marcas });
+      }
       router.push(`/recebimento${urlDosFiltros(f)}`, { scroll: false });
     });
   };
 
-  const contagens: Record<string, number> = {
-    aguardando: resumo.aguardando,
-    emConferencia: resumo.emConferencia,
-    divergencia: resumo.divergencia,
-  };
+  // Busca enquanto digita, com uma pausa: o Enter deixou de ser obrigatório.
+  // A referência evita reagendar a cada render (irPara nasce de novo em todos).
+  const irParaRef = useRef(irPara);
+  useEffect(() => {
+    irParaRef.current = irPara;
+  });
+  useEffect(() => {
+    const termo = busca.trim();
+    if (termo === filtros.q) return;
+    const t = setTimeout(() => irParaRef.current({ q: termo }), ESPERA_BUSCA_MS);
+    return () => clearTimeout(t);
+  }, [busca, filtros.q]);
 
   const limpar = () => {
     setBusca("");
@@ -186,14 +240,20 @@ export function RecebimentosView({
 
   const mostraTransferencias = transferencias.length > 0;
   const vazio = pagina.items.length === 0 && !mostraTransferencias && !pedidosNoTopo;
-  const vazioTexto = umSo ? VAZIO[umSo] : VAZIO_TODOS;
-  // Um status só, sem mais nada, tem o seu próprio vazio; qualquer recorte por
-  // cima disso é "nada bate com estes filtros".
+  const vazioTexto = filtros.status ? VAZIO[filtros.status] : VAZIO_TODOS;
+  // Um status sozinho tem o seu próprio vazio; qualquer recorte por cima disso
+  // é "nada bate com estes filtros".
   const recortado =
-    filtros.abas.length > 1 ||
+    filtros.marcas.length > 0 ||
     filtros.q.trim() !== "" ||
     filtros.supplierId !== "" ||
-    (periodoAplicavel(filtros.abas) && filtros.periodo !== REC_FILTROS_VAZIO.periodo);
+    (periodoAplicavel(filtros) && filtros.periodo !== REC_FILTROS_VAZIO.periodo);
+  const nFiltros = quantosFiltros(filtros);
+
+  const opcoesFornecedor = [
+    { value: "", label: "Todos os fornecedores" },
+    ...fornecedores.map((f) => ({ value: f.id, label: f.nome })),
+  ];
 
   return (
     <div className="flex flex-col gap-5">
@@ -226,106 +286,145 @@ export function RecebimentosView({
         />
       )}
 
-      <Resumo resumo={resumo} filtros={filtros} />
+      <Resumo resumo={resumo} visao={visao} onIr={irPara} />
 
-      {/* Busca e filtros numa linha só: procurar UM recebimento é a primeira
-          coisa que se faz aqui, e o status divide a linha com o fornecedor —
-          são os dois recortes que o operador combina. */}
-      <div className="flex flex-wrap items-center gap-2">
-        <form
-          className="relative w-full min-w-0 sm:w-72 sm:shrink-0"
-          onSubmit={(e) => {
-            e.preventDefault();
-            irPara({ q: busca.trim() });
-          }}
-        >
-          <Search
-            size={15}
-            className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-faint"
-            aria-hidden
-          />
-          <input
-            value={busca}
-            onChange={(e) => setBusca(e.target.value)}
-            placeholder={placeholderBusca(filtros.abas)}
-            aria-label={placeholderBusca(filtros.abas)}
-            className="h-9 w-full rounded-full border border-line-button bg-surface pr-8 pl-9 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
-          />
-          {busca && (
-            <button
-              type="button"
-              onClick={() => {
-                setBusca("");
-                irPara({ q: "" });
+      {/* Busca primeiro — procurar UM recebimento é a primeira coisa que se faz
+          aqui. Ela cresce e ocupa o que sobra: a linha de filtros vai de ponta
+          a ponta, sem buraco no fim. */}
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-0 flex-1 sm:min-w-64">
+            <Search
+              size={15}
+              className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-faint"
+              aria-hidden
+            />
+            <input
+              type="search"
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") irPara({ q: busca.trim() });
               }}
-              aria-label="Limpar busca"
-              className="absolute top-1/2 right-2.5 -translate-y-1/2 cursor-pointer text-faint hover:text-ink"
-            >
-              <X size={14} />
-            </button>
-          )}
-        </form>
+              placeholder={placeholderBusca(filtros)}
+              aria-label={placeholderBusca(filtros)}
+              className="h-9 w-full rounded-full border border-line bg-surface pr-8 pl-9 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none [&::-webkit-search-cancel-button]:hidden"
+            />
+            {busca && (
+              <button
+                type="button"
+                onClick={() => {
+                  setBusca("");
+                  irPara({ q: "" });
+                }}
+                aria-label="Limpar busca"
+                className="absolute top-1/2 right-2.5 -translate-y-1/2 cursor-pointer text-faint hover:text-ink"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
 
-        <MultiSelect
-          className="w-full sm:w-56"
-          ariaLabel="Filtrar por status"
-          placeholder="Todos os status"
-          plural="status"
-          value={abasMarcadas}
-          // Sempre na ordem canônica: a mesma seleção gera a mesma URL.
-          onChange={(v) => irPara({ abas: REC_ABAS.filter((a) => v.includes(a)) })}
-          options={REC_RECORTES.map((t) => ({
-            value: t.aba,
-            label: t.label,
-            count: t.contador ? contagens[t.contador] : null,
-          }))}
-        />
-
-        {fornecedores.length > 0 && (
-          <select
-            value={filtros.supplierId}
-            onChange={(e) => irPara({ supplierId: e.target.value })}
-            aria-label="Filtrar por fornecedor"
-            className="h-9 w-full cursor-pointer rounded-full border border-line bg-surface px-3.5 text-[13px] text-ink focus-visible:border-brand focus-visible:outline-none sm:w-auto sm:max-w-64"
-          >
-            <option value="">Todos os fornecedores</option>
-            {fornecedores.map((f) => (
-              <option key={f.id} value={f.id}>{f.nome}</option>
-            ))}
-          </select>
-        )}
-
-        {/* O período recorta histórico. Com só trabalho aberto na tela ele
-            serviria apenas para esconder pendência — por isso nem aparece. */}
-        {periodoAplicavel(filtros.abas) && (
-          <select
-            value={filtros.periodo}
-            onChange={(e) => irPara({ periodo: e.target.value })}
-            aria-label="Período"
-            className="h-9 cursor-pointer rounded-full border border-line bg-surface px-3.5 text-[13px] text-ink focus-visible:border-brand focus-visible:outline-none"
-          >
-            {PERIODOS.map((p) => (
-              <option key={p.value} value={p.value}>{p.label}</option>
-            ))}
-          </select>
-        )}
-
-        {filtrosAtivos(filtros) && (
           <button
             type="button"
-            onClick={limpar}
-            className="ml-auto cursor-pointer text-xs font-medium text-muted transition-colors hover:text-ink"
+            onClick={() => setFiltrosAbertos((v) => !v)}
+            aria-expanded={filtrosAbertos}
+            aria-controls="recebimento-filtros"
+            className={cn(
+              "flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-medium transition-colors sm:hidden",
+              nFiltros > 0 ? "border-brand text-brand" : "border-line text-ink",
+            )}
           >
-            Limpar filtros
+            <SlidersHorizontal size={14} aria-hidden />
+            Filtros{nFiltros > 0 && ` (${nFiltros})`}
           </button>
-        )}
+
+          {/* No celular este bloco dobra; da tela pequena para cima ele some
+              como caixa (`contents`) e os filhos entram na linha da busca. */}
+          <div
+            id="recebimento-filtros"
+            className={cn(
+              "w-full flex-col gap-2 sm:contents",
+              filtrosAbertos ? "flex" : "hidden",
+            )}
+          >
+            <div
+              role="radiogroup"
+              aria-label="Status"
+              className="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto rounded-full border border-line bg-surface p-0.5"
+            >
+              {REC_STATUS.map((s) => {
+                const ativo = visao.status === s.value;
+                return (
+                  <button
+                    key={s.value || "todos"}
+                    type="button"
+                    role="radio"
+                    aria-checked={ativo}
+                    onClick={() => !ativo && irPara({ status: s.value })}
+                    className={cn(
+                      "h-full shrink-0 cursor-pointer rounded-full px-3 text-[13px] whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none",
+                      ativo
+                        ? "bg-brand-soft font-semibold text-brand"
+                        : "text-muted hover:bg-surface-2 hover:text-ink",
+                    )}
+                  >
+                    {s.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {fornecedores.length > 0 && (
+              <Combobox
+                value={filtros.supplierId}
+                onChange={(v) => irPara({ supplierId: v })}
+                options={opcoesFornecedor}
+                placeholder="Todos os fornecedores"
+                emptyText="Nenhum fornecedor com esse nome."
+                className="w-full sm:w-56"
+                inputClassName={cn(
+                  "h-9 rounded-full pl-3.5 text-[13px]",
+                  filtros.supplierId ? "border-brand" : "border-line",
+                )}
+              />
+            )}
+
+            {/* O período recorta histórico. Com só trabalho aberto na tela ele
+                serviria apenas para esconder pendência — por isso nem aparece. */}
+            {periodoAplicavel(visao) && (
+              <SelectFiltro
+                value={filtros.periodo}
+                onChange={(e) => irPara({ periodo: e.target.value })}
+                aria-label="Período dos concluídos — conferências abertas aparecem sempre"
+                title="Recorta o histórico. Conferências abertas aparecem sempre, de qualquer data."
+                className="w-full sm:w-44"
+              >
+                {PERIODOS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </SelectFiltro>
+            )}
+
+          </div>
+
+          {filtrosAtivos(filtros) && (
+            <button
+              type="button"
+              onClick={limpar}
+              className="shrink-0 cursor-pointer text-xs font-medium whitespace-nowrap text-muted transition-colors hover:text-ink"
+            >
+              Limpar filtros
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* O recorte "Sem NF-e" avisa, não recebe: a mercadoria já entrou no
-          estoque à mão e o que falta é VINCULAR o XML ao recebimento que já
-          existe. Abrir um recebimento novo faria a mesma carga entrar duas
-          vezes — por isso a instrução vive aqui, onde a fila está. */}
-      {umSo === "sem-nfe" && recebimentos.total > 0 && (
+      {/* "Sem NF-e" avisa, não recebe: a mercadoria já entrou no estoque à mão
+          e o que falta é VINCULAR o XML ao recebimento que já existe. Abrir um
+          recebimento novo faria a mesma carga entrar duas vezes — por isso a
+          instrução vive aqui, onde a fila está. */}
+      {filtros.marcas.includes("sem-nfe") && recebimentos.total > 0 && (
         <div className="flex items-start gap-2.5 rounded-[var(--radius-lg)] border border-accent/40 bg-accent-soft px-4 py-3 text-sm text-accent">
           <FileClock size={16} className="mt-0.5 shrink-0" aria-hidden />
           <p className="min-w-56 flex-1">
@@ -401,7 +500,7 @@ export function RecebimentosView({
               <li className="px-4 py-2.5">
                 <button
                   type="button"
-                  onClick={() => irPara({ abas: ["aguardando"] })}
+                  onClick={() => irPara({ status: "aguardando" })}
                   className="cursor-pointer text-[13px] font-medium text-brand transition-colors hover:text-brand-strong"
                 >
                   Ver os {aguardando.total} pedidos aguardando
@@ -429,7 +528,7 @@ export function RecebimentosView({
                 >
                   Limpar filtros
                 </button>
-              ) : podeReceber && umSo !== "aguardando" ? (
+              ) : podeReceber && filtros.status !== "aguardando" ? (
                 <button
                   type="button"
                   onClick={() => setRecebendo(true)}
@@ -465,19 +564,12 @@ export function RecebimentosView({
                     linhas={recebimentos.items}
                     multiLoja={multiLoja}
                     ordem={filtros.ordem}
-                    focoDivergencia={umSo === "divergencia"}
+                    focoDivergencia={focoDivergencia}
                     onOrdem={() => irPara({ ordem: filtros.ordem === "asc" ? "desc" : "asc" })}
-                    onAbrir={setDetalhe}
                   />
                   <ul className="divide-y divide-line md:hidden">
                     {recebimentos.items.map((r) => (
-                      <LinhaRecebimento
-                        key={r.id}
-                        r={r}
-                        focoDivergencia={umSo === "divergencia"}
-                        linkDireto={umSo === "divergencia" || umSo === "avulsos"}
-                        onAbrir={() => setDetalhe(r)}
-                      />
+                      <LinhaRecebimento key={r.id} r={r} focoDivergencia={focoDivergencia} />
                     ))}
                   </ul>
                 </>
@@ -493,8 +585,6 @@ export function RecebimentosView({
           </section>
         )}
       </div>
-
-      <DetalheSheet recebimento={detalhe} onClose={() => setDetalhe(null)} />
 
       <Sheet
         open={receberTransfer !== null}
@@ -517,89 +607,144 @@ export function RecebimentosView({
 
 // ── Resumo ──────────────────────────────────────────────────────
 //
-// Faixa baixa, quatro indicadores, só o que pede ação hoje. "Entrou no mês" saiu
-// daqui: é pergunta de relatório, não de doca — ocupava a largura inteira sem
-// mudar o que alguém faz a seguir.
+// Faixa baixa, quatro indicadores, só o que pede ação hoje. Cada um é também
+// um atalho de filtro: o número diz que há trabalho, o clique mostra qual. O
+// indicador cujo recorte está na tela fica marcado, e clicar nele de novo
+// desliga o recorte.
 
-function Resumo({ resumo, filtros }: { resumo: ResumoRecebimentos; filtros: RecFiltros }) {
-  const atalho = (aba: RecAba) =>
-    `/recebimento${urlDosFiltros({ ...REC_FILTROS_VAZIO, abas: [aba], supplierId: filtros.supplierId })}`;
+type Indicador = {
+  icon: typeof Truck;
+  label: string;
+  valor: number;
+  sub: React.ReactNode;
+  tom: "brand" | "accent";
+  alvo: { status: RecStatus; marcas: RecMarca[] };
+};
 
-  const items = [
+function Resumo({
+  resumo,
+  visao,
+  onIr,
+}: {
+  resumo: ResumoRecebimentos;
+  /** Status e marcas na tela (otimista) — o indicador ativo segue o clique. */
+  visao: { status: RecStatus; marcas: RecMarca[] };
+  onIr: (patch: Partial<RecFiltros>) => void;
+}) {
+  const items: Indicador[] = [
     {
       icon: Truck,
       label: "Aguardando",
-      valor: String(resumo.aguardando),
-      sub: resumo.aguardando === 1 ? "pedido" : "pedidos",
-      tom: resumo.aguardando > 0 ? ("brand" as const) : undefined,
-      href: atalho("aguardando"),
+      valor: resumo.aguardando,
+      // Previsão vencida é o que leva alguém a ligar para o fornecedor.
+      sub: (
+        <>
+          {resumo.aguardando === 1 ? "pedido" : "pedidos"}
+          {resumo.atrasados > 0 && (
+            <span className="font-medium text-accent">
+              {" "}· {resumo.atrasados} {resumo.atrasados === 1 ? "atrasado" : "atrasados"}
+            </span>
+          )}
+        </>
+      ),
+      tom: "brand",
+      alvo: { status: "aguardando", marcas: [] },
     },
     {
       icon: ClipboardCheck,
-      label: "Em conferência",
-      valor: String(resumo.emConferencia),
-      sub: resumo.emConferencia === 1 ? "recebimento" : "recebimentos",
-      tom: resumo.emConferencia > 0 ? ("accent" as const) : undefined,
-      href: atalho("andamento"),
+      label: "Em aberto",
+      valor: resumo.emAberto,
+      sub: resumo.emAberto === 1 ? "recebimento" : "recebimentos",
+      tom: "accent",
+      alvo: { status: "aberto", marcas: [] },
     },
     {
-      icon: PackageCheck,
-      label: "Recebidos hoje",
-      valor: String(resumo.recebidosHoje),
-      sub: resumo.recebidosHoje === 1 ? "entrada" : "entradas",
-      tom: undefined,
-      href: undefined,
+      icon: TriangleAlert,
+      label: "Com divergência",
+      valor: resumo.divergencia,
+      sub: "a resolver",
+      tom: "accent",
+      alvo: { status: "aberto", marcas: ["divergencia"] },
     },
     {
       icon: Receipt,
       label: "Sem NF-e",
-      valor: String(resumo.semDocumento),
+      valor: resumo.semDocumento,
       sub: resumo.semDocumento > 0 ? "aguardando XML" : "tudo documentado",
-      tom: resumo.semDocumento > 0 ? ("accent" as const) : undefined,
+      tom: "accent",
       // A mercadoria pode ter chegado antes do XML. Quando ele chegar, o
       // caminho certo é VINCULAR ao recebimento que já existe — receber de novo
       // faria a mesma carga entrar no estoque duas vezes.
-      href: resumo.semDocumento > 0 ? atalho("sem-nfe") : undefined,
+      alvo: { status: "", marcas: ["sem-nfe"] },
     },
   ];
 
   return (
     <div className="grid grid-cols-2 divide-x divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface lg:grid-cols-4 lg:divide-y-0">
       {items.map((it) => {
+        const ativo =
+          visao.status === it.alvo.status && mesmasMarcas(visao.marcas, it.alvo.marcas);
+        // Zero sem estar ativo não leva a lugar nenhum — vira só leitura.
+        const clicavel = it.valor > 0 || ativo;
+        const zero = it.valor === 0;
         const conteudo = (
           <>
             <div className="flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-faint uppercase">
               <it.icon
                 size={12}
-                className={cn(it.tom === "accent" && "text-accent", it.tom === "brand" && "text-brand")}
+                className={cn(!zero && (it.tom === "accent" ? "text-accent" : "text-brand"))}
+                aria-hidden
               />
               <span className="truncate">{it.label}</span>
+              {clicavel && (
+                <ChevronRight
+                  size={12}
+                  className={cn(
+                    "ml-auto shrink-0 transition-opacity motion-reduce:transition-none",
+                    ativo ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100",
+                  )}
+                  aria-hidden
+                />
+              )}
             </div>
             <div className="mt-1 flex items-baseline gap-1.5">
+              {/* Zero apagado: o "1" que pede ação precisa saltar aos olhos. */}
               <span
                 className={cn(
                   "font-display text-[17px] leading-none font-semibold tabular-nums",
-                  it.tom === "accent" ? "text-accent" : it.tom === "brand" ? "text-brand" : "text-ink",
+                  zero ? "text-faint" : it.tom === "accent" ? "text-accent" : "text-brand",
                 )}
               >
                 {it.valor}
               </span>
-              <span className="truncate text-[11px] text-muted">{it.sub}</span>
+              <span className={cn("truncate text-[11px]", zero ? "text-faint" : "text-muted")}>
+                {it.sub}
+              </span>
             </div>
           </>
         );
-        // Métrica que aponta para pendência vira atalho: o número diz que há
-        // trabalho, e o clique leva direto à aba dele.
-        return it.href ? (
-          <Link
+        const base = "group relative min-w-0 px-4 py-3 text-left";
+        return clicavel ? (
+          <button
             key={it.label}
-            href={it.href}
-            className="min-w-0 cursor-pointer px-4 py-3 transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:ring-inset focus-visible:outline-none"
+            type="button"
+            aria-pressed={ativo}
+            title={ativo ? "Mostrar tudo de novo" : `Mostrar só: ${it.label.toLowerCase()}`}
+            // Mantém busca, fornecedor e período: o indicador troca o recorte,
+            // não apaga o resto do que o operador escolheu.
+            onClick={() =>
+              onIr(ativo ? { status: "", marcas: [] } : { status: it.alvo.status, marcas: it.alvo.marcas })
+            }
+            className={cn(
+              base,
+              "cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:ring-inset focus-visible:outline-none",
+              ativo ? "bg-brand-soft/60 shadow-[inset_0_-2px_0_var(--color-brand)]" : "hover:bg-surface-2",
+            )}
           >
             {conteudo}
-          </Link>
+          </button>
         ) : (
-          <div key={it.label} className="min-w-0 px-4 py-3">
+          <div key={it.label} className={base}>
             {conteudo}
           </div>
         );
@@ -639,19 +784,22 @@ function Paginacao({
       </p>
 
       <div className="flex items-center gap-3">
-        <label className="flex items-center gap-1.5 text-xs text-muted">
-          <span className="hidden sm:inline">Por página</span>
-          <select
-            value={limit}
-            onChange={(e) => onLimite(Number(e.target.value))}
-            aria-label="Registros por página"
-            className="h-8 cursor-pointer rounded-full border border-line bg-surface px-2.5 text-xs text-ink focus-visible:border-brand focus-visible:outline-none"
-          >
-            {REC_LIMITES.map((l) => (
-              <option key={l} value={l}>{l}</option>
-            ))}
-          </select>
-        </label>
+        {/* Com tudo cabendo na menor página, escolher o tamanho dela é ruído. */}
+        {total > REC_LIMITES[0] && (
+          <label className="flex items-center gap-1.5 text-xs text-muted">
+            <span className="hidden sm:inline">Por página</span>
+            <select
+              value={limit}
+              onChange={(e) => onLimite(Number(e.target.value))}
+              aria-label="Registros por página"
+              className="h-8 cursor-pointer rounded-full border border-line bg-surface px-2.5 text-xs text-ink focus-visible:border-brand focus-visible:outline-none"
+            >
+              {REC_LIMITES.map((l) => (
+                <option key={l} value={l}>{l}</option>
+              ))}
+            </select>
+          </label>
+        )}
 
         {totalPages > 1 && (
           <div className="flex items-center gap-1">
@@ -754,15 +902,65 @@ function Grupo({
 
 const STATUS_META: Record<
   RecebimentoRow["status"],
-  { label: string; tone: "neutral" | "brand" | "accent" | "ok" | "danger" }
+  {
+    label: string;
+    tone: "neutral" | "brand" | "accent" | "ok" | "danger";
+    /** Todo selo tem ícone: a cor sozinha não basta para quem não distingue tons. */
+    icon: typeof Clock;
+  }
 > = {
-  PENDENTE: { label: "Pendente", tone: "accent" },
-  EM_CONFERENCIA: { label: "Em conferência", tone: "brand" },
-  DIVERGENCIA: { label: "Com divergência", tone: "accent" },
-  FINALIZADO: { label: "Finalizado", tone: "ok" },
-  CANCELADO: { label: "Cancelado", tone: "neutral" },
-  ESTORNADO: { label: "Estornado", tone: "danger" },
+  // Mesmo vocabulário dos filtros e da conferência: "A conferir" diz o que
+  // falta fazer ("Pendente" não dizia de quê); "Concluído" é o nome do filtro.
+  PENDENTE: { label: "A conferir", tone: "accent", icon: Clock },
+  EM_CONFERENCIA: { label: "Em conferência", tone: "brand", icon: Clock },
+  DIVERGENCIA: { label: "Com divergência", tone: "accent", icon: TriangleAlert },
+  FINALIZADO: { label: "Concluído", tone: "ok", icon: CircleCheck },
+  CANCELADO: { label: "Cancelado", tone: "neutral", icon: CircleX },
+  ESTORNADO: { label: "Estornado", tone: "danger", icon: Undo2 },
 };
+
+/** "234517/39" — número e série, como a nota é citada no balcão. */
+function fmtNota(r: RecebimentoRow): string {
+  return r.notaSerie != null ? `${r.notaNumero}/${r.notaSerie}` : (r.notaNumero ?? "");
+}
+
+/** Só a máscara, sem rótulo: 11 dígitos é CPF (produtor), 14 é CNPJ. */
+function fmtDocFornecedor(doc: string): string {
+  if (doc.length === 11) return maskCpf(doc);
+  if (doc.length === 14) return maskCnpj(doc);
+  return doc;
+}
+
+/**
+ * Concluído: o que entrou, em destaque. Aberto: o esperado, apagado e com a
+ * origem ("na nota" / "previsto") — é estimativa, não estoque. Embaixo, o
+ * tamanho da carga: itens e unidades.
+ */
+function ValorDaLinha({ r, className }: { r: RecebimentoRow; className?: string }) {
+  const aberto = r.valorOrigem !== null;
+  const sub = [
+    aberto && r.valor > 0 ? ROTULO_VALOR[r.valorOrigem!] : null,
+    r.itens > 0 ? `${r.itens} ${r.itens === 1 ? "item" : "itens"}` : null,
+    r.unidades > 0 ? `${fmtQtd(r.unidades)} un` : null,
+  ].filter(Boolean);
+
+  return (
+    <span
+      className={cn(
+        "block font-display tabular-nums",
+        aberto ? "font-medium text-muted" : "font-semibold text-ink",
+        className,
+      )}
+    >
+      {aberto && r.valor <= 0 ? "—" : fmtMoney(r.valor)}
+      {sub.length > 0 && (
+        <span className="block font-sans text-[11px] font-normal whitespace-nowrap text-faint">
+          {sub.join(" · ")}
+        </span>
+      )}
+    </span>
+  );
+}
 
 /**
  * O pedido que ainda espera mercadoria.
@@ -822,7 +1020,10 @@ function LinhaAguardando({ a, podeReceber }: { a: AguardandoRow; podeReceber: bo
             <Store size={11} /> {a.siteNome}
           </span>
           {a.previsaoEntrega && (
-            <span>previsão {a.previsaoEntrega.toLocaleDateString("pt-BR")}</span>
+            <span className={cn(a.atrasado && "font-medium text-accent")}>
+              {a.atrasado ? "atrasado · previsto " : "previsão "}
+              {a.previsaoEntrega.toLocaleDateString("pt-BR")}
+            </span>
           )}
         </p>
       </div>
@@ -852,16 +1053,12 @@ function LinhaAguardando({ a, podeReceber }: { a: AguardandoRow; podeReceber: bo
 function LinhaRecebimento({
   r,
   focoDivergencia,
-  linkDireto,
-  onAbrir,
 }: {
   r: RecebimentoRow;
   /** A tela está só em "Com divergência": a linha abre pelo que faltou. */
   focoDivergencia: boolean;
-  /** A consulta leva direto ao recebimento, sem o painel de itens. */
-  linkDireto: boolean;
-  onAbrir: () => void;
 }) {
+  const router = useRouter();
   const status = STATUS_META[r.status];
   const emAndamento =
     r.status === "PENDENTE" || r.status === "EM_CONFERENCIA" || r.status === "DIVERGENCIA";
@@ -870,23 +1067,35 @@ function LinhaRecebimento({
   const faltou = focoDivergencia ? r.esperado - r.unidades : 0;
 
   return (
+    // O cartão inteiro abre o recebimento — sem botão de ação, como a tabela.
     <li
+      onClick={() => router.push(r.href)}
       className={cn(
-        "flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3",
+        "flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-surface-2 active:bg-surface-2",
         r.status === "ESTORNADO" && "opacity-60",
       )}
     >
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[11px] text-faint">{r.numero}</span>
+          <Link
+            href={r.href}
+            onClick={(e) => e.stopPropagation()}
+            className="rounded-sm font-mono text-[11px] text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
+          >
+            {r.numero}
+          </Link>
           <span className="truncate text-sm font-medium text-ink">{r.supplierNome}</span>
-          <Badge tone={status.tone}>{status.label}</Badge>
+          <Badge tone={status.tone}>
+            <status.icon size={11} aria-hidden />
+            {status.label}
+          </Badge>
 
           {r.avulso ? (
-            <Badge>Avulso</Badge>
+            <Badge>Sem pedido</Badge>
           ) : r.pedidoNumero ? (
             <Link
               href={`/pedidos?q=${encodeURIComponent(r.pedidoNumero)}`}
+              onClick={(e) => e.stopPropagation()}
               className="inline-flex items-center gap-1 font-mono text-[11px] text-muted transition-colors hover:text-brand"
             >
               <FileText size={11} />
@@ -895,8 +1104,8 @@ function LinhaRecebimento({
           ) : null}
 
           {r.notaNumero ? (
-            <span className="inline-flex items-center gap-1 font-mono text-[11px] text-muted">
-              <Receipt size={11} /> {r.notaNumero}
+            <span className="inline-flex items-center gap-1 font-mono text-[12px] font-semibold text-ink">
+              <Receipt size={11} className="text-muted" aria-label="Nota fiscal" /> {fmtNota(r)}
             </span>
           ) : r.semDocumento ? (
             <span
@@ -924,18 +1133,22 @@ function LinhaRecebimento({
         </div>
 
         <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
-          <span>{r.data.toLocaleDateString("pt-BR")}</span>
-          {focoDivergencia ? (
+          {emAndamento ? (
+            <span
+              className={cn(
+                diasDesde(r.data) >= DIAS_NA_DOCA_ALERTA && "font-medium text-accent",
+              )}
+            >
+              Em aberto {tempoNaDoca(r.data)}
+            </span>
+          ) : (
+            r.concluidoEm && <span>Recebido em {fmtDia(r.concluidoEm)}</span>
+          )}
+          {/* Itens e unidades moram sob o valor, como na tabela. */}
+          {focoDivergencia && (
             <span className="tabular-nums">
               Pedido: {fmtQtd(r.esperado)} · Recebido: {fmtQtd(r.unidades)}
             </span>
-          ) : (
-            r.itens > 0 && (
-              <span className="tabular-nums">
-                {r.itens} {r.itens === 1 ? "item" : "itens"}
-                {r.unidades > 0 && ` · ${fmtQtd(r.unidades)}`}
-              </span>
-            )
           )}
           {r.siteNome && (
             <span className="inline-flex items-center gap-1">
@@ -969,35 +1182,7 @@ function LinhaRecebimento({
         )}
       </div>
 
-      <p className="shrink-0 font-display text-[15px] font-semibold tabular-nums text-ink">
-        {fmtMoney(r.valor)}
-      </p>
-
-      {/* A ação depende do estado: o que está na doca pede continuação; o que
-          já entrou pede consulta. */}
-      {emAndamento ? (
-        <Link
-          href={r.href}
-          className="shrink-0 cursor-pointer rounded-full bg-brand px-3 py-1.5 text-xs font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-        >
-          Continuar
-        </Link>
-      ) : linkDireto ? (
-        <Link
-          href={r.href}
-          className="shrink-0 cursor-pointer rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-2"
-        >
-          Ver recebimento
-        </Link>
-      ) : (
-        <button
-          type="button"
-          onClick={onAbrir}
-          className="shrink-0 cursor-pointer rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-2"
-        >
-          Ver itens
-        </button>
-      )}
+      <ValorDaLinha r={r} className="shrink-0 text-right text-[15px]" />
     </li>
   );
 }
@@ -1018,7 +1203,6 @@ function TabelaRecebimentos({
   ordem,
   focoDivergencia,
   onOrdem,
-  onAbrir,
 }: {
   linhas: RecebimentoRow[];
   /** Com uma loja só, a coluna diria a mesma coisa em todas as linhas. */
@@ -1026,9 +1210,10 @@ function TabelaRecebimentos({
   ordem: RecFiltros["ordem"];
   focoDivergencia: boolean;
   onOrdem: () => void;
-  onAbrir: (r: RecebimentoRow) => void;
 }) {
   const router = useRouter();
+  // Links dentro da linha clicável: o clique é deles, não da linha.
+  const soAqui = (e: React.MouseEvent) => e.stopPropagation();
 
   return (
     <div className="hidden overflow-x-auto md:block">
@@ -1037,7 +1222,9 @@ function TabelaRecebimentos({
           <tr className="border-b border-line bg-surface-2/50 text-[11px] tracking-wide text-faint uppercase">
             <th scope="col" className={TH}>Recebimento</th>
             <th scope="col" className={TH}>Fornecedor</th>
-            <th scope="col" className={TH}>Documento</th>
+            <th scope="col" className={TH}>NF-e</th>
+            {multiLoja && <th scope="col" className={TH}>Loja</th>}
+            <th scope="col" className={TH}>Valor</th>
             <th
               scope="col"
               className={TH}
@@ -1046,10 +1233,10 @@ function TabelaRecebimentos({
               <button
                 type="button"
                 onClick={onOrdem}
-                title={ordem === "asc" ? "Mais antigos primeiro" : "Mais recentes primeiro"}
+                title={`Quando a conferência foi concluída e a mercadoria entrou no estoque — ${ordem === "asc" ? "mais antigos" : "mais recentes"} primeiro; os em aberto ficam no topo`}
                 className="-mx-1 inline-flex cursor-pointer items-center gap-1 rounded-sm px-1 font-medium tracking-wide uppercase transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
               >
-                Data
+                Recebido em
                 <ChevronDown
                   size={13}
                   className={cn(
@@ -1060,10 +1247,7 @@ function TabelaRecebimentos({
                 />
               </button>
             </th>
-            {multiLoja && <th scope="col" className={TH}>Loja</th>}
-            <th scope="col" className={cn(TH, "text-right")}>Valor</th>
-            <th scope="col" className={TH}>Status</th>
-            <th scope="col" className={cn(TH, "text-right")}>Ação</th>
+            <th scope="col" className={cn(TH, "text-right")}>Status</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-line">
@@ -1072,19 +1256,24 @@ function TabelaRecebimentos({
             const emAndamento =
               r.status === "PENDENTE" || r.status === "EM_CONFERENCIA" || r.status === "DIVERGENCIA";
             const faltou = focoDivergencia ? r.esperado - r.unidades : 0;
+            const parado = emAndamento && diasDesde(r.data) >= DIAS_NA_DOCA_ALERTA;
 
             return (
+              // A linha inteira abre o recebimento — sem botão de ação. O
+              // número continua sendo o link de teclado.
               <tr
                 key={r.id}
+                onClick={() => router.push(r.href)}
                 className={cn(
-                  "transition-colors hover:bg-surface-2/40",
+                  "cursor-pointer transition-colors hover:bg-surface-2",
                   r.status === "ESTORNADO" && "opacity-60",
                 )}
               >
                 <td className={TD}>
                   <Link
                     href={r.href}
-                    className="font-mono text-[13px] font-semibold whitespace-nowrap text-ink transition-colors hover:text-brand"
+                    onClick={soAqui}
+                    className="rounded-sm font-mono text-[13px] font-semibold whitespace-nowrap text-ink transition-colors hover:text-brand focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
                   >
                     {r.numero}
                   </Link>
@@ -1096,6 +1285,7 @@ function TabelaRecebimentos({
                     ) : r.pedidoNumero ? (
                       <Link
                         href={`/pedidos?q=${encodeURIComponent(r.pedidoNumero)}`}
+                        onClick={soAqui}
                         className="font-mono transition-colors hover:text-brand"
                       >
                         {r.pedidoNumero}
@@ -1104,24 +1294,29 @@ function TabelaRecebimentos({
                   </span>
                 </td>
 
+                {/* Filiais da mesma distribuidora têm nomes quase iguais — o
+                    documento desempata. O tamanho da carga mora sob o valor. */}
                 <td className={cn(TD, "max-w-64")}>
                   <span className="block truncate font-medium text-ink">{r.supplierNome}</span>
                   {r.supplierCnpj && (
                     <span className="block font-mono text-[11px] whitespace-nowrap text-faint">
-                      CNPJ {maskCnpj(r.supplierCnpj)}
+                      {fmtDocFornecedor(r.supplierCnpj)}
                     </span>
                   )}
                 </td>
 
+                {/* O cabeçalho já diz "NF-e": número/série e, embaixo, a emissão
+                    (data do fornecedor). Sem nota, o aviso ocupa a linha do
+                    número. */}
                 <td className={cn(TD, "whitespace-nowrap")}>
                   {r.notaNumero ? (
                     <>
-                      <span className="block font-mono text-[13px] font-medium text-ink">
-                        {r.inboundId ? "NF-e" : "NF"} {r.notaNumero}
+                      <span className="block font-mono text-[14px] font-semibold text-ink">
+                        {fmtNota(r)}
                       </span>
-                      {!r.inboundId && (
-                        <span className="block text-[11px] text-faint">Sem XML</span>
-                      )}
+                      <span className="block text-[11px] tabular-nums text-faint">
+                        {r.notaEmissao ? `emitida em ${fmtDia(r.notaEmissao)}` : "Sem XML"}
+                      </span>
                     </>
                   ) : r.semDocumento ? (
                     <span
@@ -1135,36 +1330,53 @@ function TabelaRecebimentos({
                   )}
                 </td>
 
-                <td className={cn(TD, "whitespace-nowrap tabular-nums text-ink-2")}>
-                  {r.data.toLocaleDateString("pt-BR")}
-                </td>
-
                 {multiLoja && (
                   <td className={cn(TD, "max-w-40 truncate text-ink-2")}>{r.siteNome ?? "—"}</td>
                 )}
 
-                <td
-                  className={cn(
-                    TD,
-                    "text-right font-display font-semibold whitespace-nowrap tabular-nums text-ink",
-                  )}
-                >
-                  {fmtMoney(r.valor)}
-                  {r.temBonificacao && (
-                    <span
-                      title="Inclui bonificação"
-                      aria-label="Inclui bonificação"
-                      className="ml-1.5 inline-block align-middle text-violet"
-                    >
-                      <Gift size={12} />
-                    </span>
+                <td className={cn(TD, "whitespace-nowrap")}>
+                  <span className="inline-flex items-start gap-1.5">
+                    <ValorDaLinha r={r} />
+                    {r.temBonificacao && (
+                      <span
+                        title="Inclui bonificação"
+                        aria-label="Inclui bonificação"
+                        className="mt-1 text-violet"
+                      >
+                        <Gift size={12} />
+                      </span>
+                    )}
+                  </span>
+                </td>
+
+                {/* Uma data só: quando foi recebido de fato (conferência
+                    concluída, mercadoria no estoque). Aberto ainda não tem essa
+                    data — mostra há quanto tempo espera fora do estoque vendável.
+                    A emissão é data do fornecedor e mora na coluna NF-e. */}
+                <td className={cn(TD, "whitespace-nowrap tabular-nums")}>
+                  {r.concluidoEm ? (
+                    <span className="block text-ink-2">{fmtDia(r.concluidoEm)}</span>
+                  ) : emAndamento ? (
+                    <>
+                      <span className="block text-muted">Em aberto</span>
+                      <span
+                        className={cn(
+                          "block text-[11px]",
+                          parado ? "font-medium text-accent" : "text-faint",
+                        )}
+                      >
+                        {tempoNaDoca(r.data)}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-faint">—</span>
                   )}
                 </td>
 
                 <td className={TD}>
-                  <div className="flex flex-col items-start gap-1">
+                  <div className="flex flex-col items-end gap-1">
                     <Badge tone={status.tone} title={r.estornoMotivo ?? undefined}>
-                      {emAndamento && <Clock size={11} aria-hidden />}
+                      <status.icon size={11} aria-hidden />
                       {status.label}
                     </Badge>
                     {r.divergencias > 0 && !focoDivergencia && (
@@ -1180,194 +1392,11 @@ function TabelaRecebimentos({
                     )}
                   </div>
                 </td>
-
-                <td className={TD}>
-                  <div className="flex items-center justify-end gap-1.5">
-                    {/* A ação depende do estado: o que está na doca pede
-                        continuação; o que já entrou pede consulta. */}
-                    {emAndamento ? (
-                      <Link
-                        href={r.href}
-                        className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-brand px-3.5 py-1.5 text-xs font-semibold text-on-brand transition-colors hover:bg-brand-strong"
-                      >
-                        Continuar <ArrowRight size={13} aria-hidden />
-                      </Link>
-                    ) : (
-                      <Link
-                        href={r.href}
-                        className="shrink-0 cursor-pointer rounded-full border border-line bg-surface px-3.5 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-2"
-                      >
-                        Abrir
-                      </Link>
-                    )}
-                    <Menu
-                      trigger={
-                        <button
-                          type="button"
-                          aria-label={`Mais opções de ${r.numero}`}
-                          className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-ink focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
-                        >
-                          <MoreVertical size={15} aria-hidden />
-                        </button>
-                      }
-                    >
-                      <MenuItem icon={<PackageCheck size={15} />} onClick={() => onAbrir(r)}>
-                        Ver itens
-                      </MenuItem>
-                      {r.pedidoNumero && (
-                        <MenuItem
-                          icon={<FileText size={15} />}
-                          onClick={() =>
-                            router.push(`/pedidos?q=${encodeURIComponent(r.pedidoNumero ?? "")}`)
-                          }
-                        >
-                          Ver pedido
-                        </MenuItem>
-                      )}
-                    </Menu>
-                  </div>
-                </td>
               </tr>
             );
           })}
         </tbody>
       </table>
     </div>
-  );
-}
-
-// ── Detalhe ─────────────────────────────────────────────────────
-// Recebimento avulso não tem nota para onde navegar — sem isto, a única linha
-// que nunca teve tela própria seria também a única sem como conferir o que
-// entrou.
-
-function DetalheSheet({
-  recebimento: r,
-  onClose,
-}: {
-  recebimento: RecebimentoRow | null;
-  onClose: () => void;
-}) {
-  return (
-    <Sheet
-      open={r !== null}
-      onClose={onClose}
-      title={r?.numero ?? "Recebimento"}
-      description={r ? `${r.supplierNome} · ${r.data.toLocaleDateString("pt-BR")}` : ""}
-      width="xl"
-    >
-      {r && (
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap gap-x-6 gap-y-2.5 border-y border-line py-3.5 text-sm">
-            <Campo rotulo="Valor" valor={fmtMoney(r.valor)} />
-            <Campo rotulo="Itens" valor={`${r.itens}`} />
-            <Campo rotulo="Pedido" valor={r.avulso ? "Avulso" : (r.pedidoNumero ?? "—")} />
-            <Campo rotulo="NF-e" valor={r.notaNumero ?? (r.semDocumento ? "Aguardando" : "—")} />
-            {r.siteNome && <Campo rotulo="Loja" valor={r.siteNome} />}
-            {r.usuario && <Campo rotulo="Conferido por" valor={r.usuario} />}
-          </div>
-
-          {r.divergenciaMotivo && (
-            <p className="rounded-[var(--radius)] bg-accent-soft px-3.5 py-2.5 text-[13px] text-accent">
-              <strong className="font-semibold">Divergência:</strong> {r.divergenciaMotivo}
-            </p>
-          )}
-
-          <Link
-            href={r.href}
-            className="flex cursor-pointer items-center gap-2 self-start rounded-full border border-line bg-surface px-3.5 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-surface-2"
-          >
-            <Receipt size={14} className="text-muted" />
-            Abrir o recebimento
-          </Link>
-
-          {/* `key` remonta ao trocar de recebimento: sem isso a lista do
-              anterior ficaria na tela enquanto a nova carrega. */}
-          <ItensDoRecebimento key={r.id} receiptId={r.id} />
-        </div>
-      )}
-    </Sheet>
-  );
-}
-
-function ItensDoRecebimento({ receiptId }: { receiptId: string }) {
-  const [itens, setItens] = useState<ItemRecebido[] | null>(null);
-  const [erro, setErro] = useState<string | null>(null);
-
-  useEffect(() => {
-    let vivo = true;
-    itensDoRecebimentoAction(receiptId)
-      .then((r) => vivo && setItens(r))
-      .catch((e: unknown) => {
-        if (vivo) setErro(e instanceof Error ? e.message : "Não foi possível carregar os itens.");
-      });
-    return () => {
-      vivo = false;
-    };
-  }, [receiptId]);
-
-  if (erro) {
-    return (
-      <p className="rounded-[var(--radius)] bg-danger-soft px-3.5 py-2.5 text-sm text-danger">
-        {erro}
-      </p>
-    );
-  }
-
-  if (itens === null) {
-    return (
-      <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted">
-        <Loader2 size={16} className="animate-spin" aria-hidden /> Carregando itens…
-      </div>
-    );
-  }
-
-  if (itens.length === 0) {
-    return (
-      <p className="rounded-[var(--radius)] border border-dashed border-line px-4 py-6 text-center text-[13px] text-muted">
-        Nenhum item registrado neste recebimento.
-      </p>
-    );
-  }
-
-  return (
-    <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
-      {itens.map((it, i) => (
-        <li key={`${it.sku}-${i}`} className="flex items-center gap-3 px-3.5 py-2.5">
-          <Thumb url={it.imagemUrl} nome={it.nome} size={36} />
-          <div className="min-w-0 flex-1">
-            <p className="flex items-center gap-1.5 truncate text-sm font-medium text-ink">
-              {it.nome}
-              {it.bonificacao && (
-                <span title="Bonificação" className="text-violet">
-                  <Gift size={12} />
-                </span>
-              )}
-            </p>
-            <p className="truncate font-mono text-[11px] text-faint">{it.sku}</p>
-          </div>
-          <div className="shrink-0 text-right text-sm">
-            <p className="font-semibold tabular-nums text-ink">
-              {fmtQtd(it.quantidade)}
-              {Math.abs(it.quantidade - it.esperado) > 0.001 && (
-                <span className="ml-1 text-[11px] font-normal text-accent">
-                  de {fmtQtd(it.esperado)}
-                </span>
-              )}
-            </p>
-            <p className="text-[11px] tabular-nums text-muted">{fmtMoney(it.custoTotal)}</p>
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function Campo({ rotulo, valor }: { rotulo: string; valor: string }) {
-  return (
-    <span className="flex min-w-0 flex-col">
-      <span className="text-[11px] font-semibold tracking-wide text-faint uppercase">{rotulo}</span>
-      <span className="truncate text-ink">{valor}</span>
-    </span>
   );
 }

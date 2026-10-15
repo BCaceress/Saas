@@ -30,6 +30,7 @@ import {
   registrarContagem,
   finalizarRecebimento,
   cancelarRecebimento,
+  salvarRascunhoRecebimento,
 } from "@/lib/compras/recebimento";
 import type { ActiveTenant } from "@/lib/current-tenant";
 
@@ -144,13 +145,8 @@ export async function importarXmlRecebimentoAction(
 
     await registrarImportacoes({ origem: "UPLOAD", siteId, usuarioId: ctx.user.id }, resultado);
 
-    // Cada nota importada já ganha o seu recebimento: é ele que a tela abre, e
-    // criá-lo aqui evita que a nota fique num limbo sem endereço.
-    for (const r of resultado) {
-      if (r.status === "IMPORTADA" && r.inboundId) {
-        r.receiptId = await recebimentoDaNota(ctx.tenant.id, r.inboundId, ctx.user.id);
-      }
-    }
+    // Cada nota importada já volta com o seu recebimento (`receiptId`) — quem o
+    // cria é a própria importação, para valer em todo canal.
 
     revalidar();
     revalidatePath("/fiscal/notas-recebidas");
@@ -535,6 +531,14 @@ export async function salvarObservacaoAction(input: z.input<typeof observacaoSch
 
 // ── Fechar ──────────────────────────────────────────────────
 
+/** Avulso sai do provisório e entra na lista — a contagem segue de onde parou. */
+export async function salvarRascunhoAction(receiptId: string) {
+  return tx(async () => {
+    await salvarRascunhoRecebimento(z.string().min(1).parse(receiptId));
+    revalidar(receiptId);
+  });
+}
+
 const finalizarSchema = z.object({
   receiptId: z.string().min(1),
   motivoDivergencia: z.string().trim().max(240).nullable().optional(),
@@ -578,5 +582,26 @@ export async function cancelarRecebimentoAction(input: z.input<typeof cancelarSc
       userId: ctx.user.id,
     });
     revalidar(d.receiptId);
+  });
+}
+
+// ── Painel "Receber mercadoria" ─────────────────────────────
+
+/**
+ * O recebimento de uma nota que já está no sistema, achada pela chave.
+ *
+ * Serve ao painel quando o XML arrastado é de uma nota já importada: em vez de
+ * só avisar "duplicada", leva ao recebimento dela — que é o que o operador
+ * queria ao arrastar o arquivo. Null = a chave não está aqui.
+ */
+export async function recebimentoDaChaveAction(chaveBruta: string): Promise<string | null> {
+  const chave = chaveBruta.replace(/\D/g, "");
+  if (chave.length !== 44) return null;
+  return tx(async (ctx) => {
+    const nota = await db.fiscalInbound.findFirst({ where: { chave }, select: { id: true } });
+    if (!nota) return null;
+    const id = await recebimentoDaNota(ctx.tenant.id, nota.id, ctx.user.id);
+    revalidar(id);
+    return id;
   });
 }

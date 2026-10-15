@@ -1800,6 +1800,11 @@ model GoodsReceipt {
   status GoodsReceiptStatus @default(EM_CONFERENCIA)
   origem GoodsReceiptOrigem
 
+  /// Avulso recém-aberto que ninguém salvou ainda. Fica fora da lista até o
+  /// operador "Salvar rascunho" ou receber no estoque — abrir e desistir não
+  /// pode deixar recebimento vazio pendurado na doca.
+  provisorio Boolean @default(false)
+
   /// 0 ou 1 pedido. Nulo = recebimento avulso (nunca houve pedido) — e isso
   /// NÃO é resolvido criando um pedido retroativo por baixo do pano.
   purchaseOrderId String?

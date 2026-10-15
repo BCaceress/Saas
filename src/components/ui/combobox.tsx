@@ -92,6 +92,7 @@ export function Combobox({
   renderCreate,
   onCommit,
   className,
+  inputClassName,
   disabled,
 }: {
   id?: string;
@@ -108,6 +109,8 @@ export function Combobox({
   /** Chamado quando o operador confirma um valor pelo teclado — usado para pular ao próximo campo. */
   onCommit?: () => void;
   className?: string;
+  /** Ajusta o campo (altura, raio) para caber numa barra de filtros. */
+  inputClassName?: string;
   disabled?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
@@ -252,6 +255,7 @@ export function Combobox({
           "placeholder:text-faint transition-colors",
           "focus-visible:border-brand/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]",
           "disabled:cursor-not-allowed disabled:opacity-60",
+          inputClassName,
         )}
       />
       <ChevronDown

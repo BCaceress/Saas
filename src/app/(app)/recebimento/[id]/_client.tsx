@@ -53,6 +53,7 @@ import {
   conferirItemAction,
   conferirTudoAction,
   finalizarRecebimentoAction,
+  salvarRascunhoAction,
   resolverDivergenciaAction,
   restaurarContagemAction,
   adicionarItemAction,
@@ -580,6 +581,26 @@ function Conferencia({
   }
 
   /**
+   * Avulso recém-aberto não aparece na lista até alguém salvar. O rascunho
+   * guarda o que já foi lançado (a contagem grava sozinha) e devolve a pessoa à
+   * lista, onde ele agora está esperando.
+   */
+  async function salvarRascunho() {
+    setEnviando(true);
+    try {
+      await salvarRascunhoAction(recebimento.id);
+      toast.success(
+        `Rascunho ${recebimento.numero} salvo.`,
+        "Nada entrou no estoque. Continue a conferência pela lista quando quiser.",
+      );
+      router.push("/recebimento");
+    } catch (e) {
+      toast.error("Não deu para salvar o rascunho", e instanceof Error ? e.message : "Tente de novo.");
+      setEnviando(false);
+    }
+  }
+
+  /**
    * Conferência abandonada — o caminhão foi embora, o pedido estava errado.
    *
    * Não apaga nada: o recebimento fica CANCELADO com o motivo. Some do caminho
@@ -1054,14 +1075,27 @@ function Conferencia({
             </p>
           </div>
 
-          <Button
-            onClick={() => setConfirmando(true)}
-            disabled={enviando || gravando || linhas.length === 0 || impedimento !== null}
-            className="w-full shrink-0 sm:w-auto"
-          >
-            <ClipboardCheck className="h-4 w-4" aria-hidden />
-            Receber no estoque
-          </Button>
+          <div className="flex w-full shrink-0 gap-2 sm:w-auto">
+            {recebimento.provisorio && (
+              <Button
+                variant="secondary"
+                onClick={() => void salvarRascunho()}
+                disabled={enviando || gravando || linhas.length === 0}
+                title={linhas.length === 0 ? "Adicione ao menos um item para salvar" : undefined}
+                className="flex-1 sm:flex-none"
+              >
+                Salvar rascunho
+              </Button>
+            )}
+            <Button
+              onClick={() => setConfirmando(true)}
+              disabled={enviando || gravando || linhas.length === 0 || impedimento !== null}
+              className="flex-1 sm:flex-none"
+            >
+              <ClipboardCheck className="h-4 w-4" aria-hidden />
+              Receber no estoque
+            </Button>
+          </div>
         </RodapeAcao>
       )}
 

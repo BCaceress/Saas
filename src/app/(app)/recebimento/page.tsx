@@ -18,10 +18,11 @@ import { RecebimentosView } from "./_lista-client";
 // chegou?", separada de "o que pedimos?" (/pedidos) e "que documento fiscal
 // chegou?" (/fiscal/notas-recebidas).
 //
-// A tela abre em TODOS; o status é um filtro de seleção múltipla. Pedidos
-// aguardando e recebimentos são tabelas diferentes: quando dividem a tela, os
-// pedidos sobem num bloco curto no topo e a lista paginada é a de recebimentos;
-// com só "Aguardando" marcado, a lista paginada passa a ser a de pedidos.
+// A tela abre em TODOS; o status é uma escolha só e as marcas (divergência,
+// sem pedido, sem NF-e) restringem por cima. Pedidos aguardando e recebimentos
+// são tabelas diferentes: na visão geral os pedidos sobem num bloco curto no
+// topo e a lista paginada é a de recebimentos; em "Aguardando", a lista
+// paginada passa a ser a de pedidos.
 
 export default async function RecebimentosPage({
   searchParams,
@@ -30,10 +31,10 @@ export default async function RecebimentosPage({
 }) {
   const ctx = await requireActiveTenant();
   const filtros = filtrosDaUrl(await searchParams);
-  const apenasPedidos = soPedidos(filtros.abas);
+  const apenasPedidos = soPedidos(filtros);
   // O bloco de pedidos no topo só existe na primeira página: repeti-lo a cada
   // página empurraria os recebimentos para baixo sem mostrar nada novo.
-  const comPedidos = apenasPedidos || (mostraPedidos(filtros.abas) && filtros.pagina === 1);
+  const comPedidos = apenasPedidos || (mostraPedidos(filtros) && filtros.pagina === 1);
   const janela = { skip: (filtros.pagina - 1) * filtros.limite, take: filtros.limite };
 
   const dados = await withTenant(ctx, async () => {

@@ -5,61 +5,40 @@
 // volta, com um vocabulário só. Dois vocabulários fariam a tela mostrar um
 // recorte e o servidor devolver outro.
 //
-// A tela abre em TODOS e o status é um filtro de seleção múltipla: nenhum
-// marcado = tudo; marcados = a união deles. A lista continua paginada no banco
-// — "todos" não significa ler o histórico inteiro, e o período segue recortando
-// o que já foi concluído.
+//   STATUS — UMA escolha, na barra de filtros: em que ponto do caminho a
+//            mercadoria está. Todos · Aguardando · Em aberto · Concluídos.
+//   MARCAS — só os atalhos dos indicadores ("Com divergência", "Sem NF-e")
+//            chegam aqui; restringem o status (E, nunca OU). Não têm controle
+//            próprio na barra — o indicador marcado é quem mostra que estão
+//            ligadas, e clicar nele de novo desliga.
 
-/** Recortes da tela. Cada um responde a uma pergunta do operador. */
-export type RecAba =
-  | "aguardando" // PEDIDO com mercadoria esperada e nenhuma conferência aberta
-  | "andamento" // recebimento chegou, ainda não foi conferido até o fim
-  | "divergencia" // conferido com diferença registrada
-  | "concluidos" // entrou no estoque — histórico
-  | "avulsos" // recebimento sem pedido por trás
-  | "sem-nfe"; // entrou sem documento fiscal — falta o XML
+/** Em que ponto do caminho a mercadoria está. "" = todos. */
+export type RecStatus = "" | "aguardando" | "aberto" | "concluidos";
 
-export const REC_ABAS: RecAba[] = [
-  "aguardando",
-  "andamento",
-  "divergencia",
-  "concluidos",
-  "avulsos",
-  "sem-nfe",
+/** Recortes dos indicadores que se somam ao status. */
+export type RecMarca = "divergencia" | "sem-nfe";
+
+export const REC_STATUS: { value: RecStatus; label: string }[] = [
+  { value: "", label: "Todos" },
+  { value: "aguardando", label: "Aguardando" },
+  { value: "aberto", label: "Em aberto" },
+  { value: "concluidos", label: "Concluídos" },
 ];
 
-/** Qual contador do resumo aparece no rótulo do recorte (null = sem contagem). */
-export type ContadorAba = "aguardando" | "emConferencia" | "divergencia" | null;
+/** Ordem canônica: a mesma seleção gera a mesma URL. */
+const MARCAS: RecMarca[] = ["divergencia", "sem-nfe"];
 
-/**
- * As opções do filtro de status, na ordem em que o operador precisa delas:
- * primeiro o que exige ação, por último o histórico e a exceção.
- */
-export const REC_RECORTES: { aba: RecAba; label: string; contador: ContadorAba }[] = [
-  { aba: "aguardando", label: "Aguardando recebimento", contador: "aguardando" },
-  { aba: "andamento", label: "Em conferência", contador: "emConferencia" },
-  { aba: "divergencia", label: "Com divergência", contador: "divergencia" },
-  { aba: "concluidos", label: "Concluídos", contador: null },
-  { aba: "avulsos", label: "Avulsos", contador: null },
-  { aba: "sem-nfe", label: "Sem NF-e", contador: null },
-];
-
-/**
- * "Aguardando" mostra PEDIDOS, não recebimentos — são tabelas diferentes. Eles
- * entram na tela quando nada está marcado (todos) ou quando o recorte os inclui.
- */
-export function mostraPedidos(abas: RecAba[]): boolean {
-  return abas.length === 0 || abas.includes("aguardando");
+/** "Aguardando" mostra PEDIDOS — tabela própria, as marcas não se aplicam a eles. */
+export function soPedidos(f: Pick<RecFiltros, "status">): boolean {
+  return f.status === "aguardando";
 }
 
-/** Só "Aguardando" marcado: a lista principal (paginada) é a de pedidos. */
-export function soPedidos(abas: RecAba[]): boolean {
-  return abas.length === 1 && abas[0] === "aguardando";
-}
-
-/** Os recortes que caem em recebimentos. Vazio = todos os recebimentos. */
-export function abasDeRecebimento(abas: RecAba[]): RecAba[] {
-  return abas.filter((a) => a !== "aguardando");
+/**
+ * Os pedidos aguardando sobem num bloco no topo só na visão geral: qualquer
+ * marca fala de recebimento, e pedido nenhum tem divergência ou NF-e ainda.
+ */
+export function mostraPedidos(f: Pick<RecFiltros, "status" | "marcas">): boolean {
+  return f.status === "aguardando" || (f.status === "" && f.marcas.length === 0);
 }
 
 /** Quantos pedidos aguardando cabem no topo quando dividem a tela com recebimentos. */
@@ -94,11 +73,12 @@ export function montarPagina<T>(items: T[], total: number, f: RecFiltros): Pagin
 export type RecFiltros = {
   q: string;
   supplierId: string;
-  /** Recortes marcados. Vazio = todos. Sempre na ordem de `REC_ABAS`. */
-  abas: RecAba[];
+  status: RecStatus;
+  /** Sempre na ordem canônica: a mesma seleção gera a mesma URL. */
+  marcas: RecMarca[];
   /** dias: "" | "7" | "30" | "90" */
   periodo: string;
-  /** Ordem da data na tabela de recebimentos. */
+  /** Ordem da data de recebimento (conclusão) na tabela. */
   ordem: "desc" | "asc";
   pagina: number;
   limite: number;
@@ -107,7 +87,8 @@ export type RecFiltros = {
 export const REC_FILTROS_VAZIO: RecFiltros = {
   q: "",
   supplierId: "",
-  abas: [],
+  status: "",
+  marcas: [],
   periodo: "30",
   ordem: "desc",
   pagina: 1,
@@ -119,11 +100,16 @@ export const REC_FILTROS_VAZIO: RecFiltros = {
  *
  * Uma conferência aberta há 40 dias é justamente a que ninguém pode perder de
  * vista; escondê-la por causa de um filtro padrão de 30 dias transformaria o
- * filtro num apagador de pendência. Por isso ele só vale quando há histórico
- * na tela: em "todos", em "concluídos" e em "avulsos".
+ * filtro num apagador de pendência. Por isso ele só vale onde há concluídos na
+ * tela — e nunca com "Sem NF-e", que é concluído com pendência.
  */
-export function periodoAplicavel(abas: RecAba[]): boolean {
-  return abas.length === 0 || abas.includes("concluidos") || abas.includes("avulsos");
+export function periodoAplicavel(f: Pick<RecFiltros, "status" | "marcas">): boolean {
+  return (f.status === "" || f.status === "concluidos") && !f.marcas.includes("sem-nfe");
+}
+
+/** Normaliza marcas: só as conhecidas, na ordem canônica. */
+export function marcasCanonicas(marcas: string[]): RecMarca[] {
+  return MARCAS.filter((m) => marcas.includes(m));
 }
 
 export function filtrosDaUrl(sp: Record<string, string | string[] | undefined>): RecFiltros {
@@ -131,23 +117,35 @@ export function filtrosDaUrl(sp: Record<string, string | string[] | undefined>):
     const v = sp[k];
     return (Array.isArray(v) ? v[0] : v) ?? "";
   };
+  const lista = (k: string) => {
+    const v = sp[k];
+    return (Array.isArray(v) ? v : [v ?? ""]).flatMap((x) => x.split(",")).filter(Boolean);
+  };
 
   const q = um("q").trim();
-  // O parâmetro continua chamando `status` na URL: links antigos
-  // (/recebimento?status=sem-nfe) precisam continuar caindo no lugar certo.
-  // Vários recortes vêm separados por vírgula; o desconhecido é ignorado.
-  const statusBruto = sp.status;
-  const marcados = (Array.isArray(statusBruto) ? statusBruto : [statusBruto ?? ""]).flatMap((v) =>
-    v.split(","),
-  );
-  const abas = REC_ABAS.filter((a) => marcados.includes(a));
+  const statusBruto = lista("status");
+  const marcasBrutas = lista("marca");
+
+  // Links antigos (/recebimento?status=sem-nfe, ?status=andamento…) vinham da
+  // seleção múltipla. Cada recorte velho cai no par status + marca que diz a
+  // mesma coisa.
+  let status: RecStatus = "";
+  for (const s of statusBruto) {
+    if (s === "aguardando" || s === "aberto" || s === "concluidos") status = s;
+    else if (s === "andamento") status = "aberto";
+    else if (s === "divergencia") marcasBrutas.push("divergencia");
+    else if (s === "sem-nfe") marcasBrutas.push("sem-nfe");
+  }
+
   const periodoBruto = um("periodo");
   const limiteBruto = Number(um("limite"));
 
   return {
     q,
     supplierId: um("fornecedor"),
-    abas,
+    status,
+    // Pedido aguardando não tem marca nenhuma — a combinação não existe.
+    marcas: status === "aguardando" ? [] : marcasCanonicas(marcasBrutas),
     // Quem chega buscando procura UM recebimento, que pode ser de meses atrás
     // — recortar por período esconderia justamente o que a pessoa veio ver.
     periodo: periodoBruto || (q ? "" : REC_FILTROS_VAZIO.periodo),
@@ -161,7 +159,10 @@ export function urlDosFiltros(f: RecFiltros): string {
   const q = new URLSearchParams();
   if (f.q.trim()) q.set("q", f.q.trim());
   if (f.supplierId) q.set("fornecedor", f.supplierId);
-  if (f.abas.length > 0) q.set("status", REC_ABAS.filter((a) => f.abas.includes(a)).join(","));
+  if (f.status) q.set("status", f.status);
+  if (f.marcas.length > 0 && f.status !== "aguardando") {
+    q.set("marca", marcasCanonicas(f.marcas).join(","));
+  }
   if (f.periodo !== REC_FILTROS_VAZIO.periodo) q.set("periodo", f.periodo);
   if (f.ordem === "asc") q.set("ordem", "asc");
   if (f.pagina > 1) q.set("pagina", String(f.pagina));
@@ -170,13 +171,26 @@ export function urlDosFiltros(f: RecFiltros): string {
   return s ? `?${s}` : "";
 }
 
-/** O que recorta a lista — o status marcado é filtro como os outros. */
+/** O que recorta a lista. */
 export function filtrosAtivos(f: RecFiltros): boolean {
   return (
     f.q.trim() !== "" ||
     f.supplierId !== "" ||
-    f.abas.length > 0 ||
-    (periodoAplicavel(f.abas) && f.periodo !== REC_FILTROS_VAZIO.periodo)
+    f.status !== "" ||
+    f.marcas.length > 0 ||
+    (periodoAplicavel(f) && f.periodo !== REC_FILTROS_VAZIO.periodo)
+  );
+}
+
+/**
+ * Quantos controles do painel "Filtros" (celular) estão ligados. Busca tem
+ * campo à vista e as marcas vêm dos indicadores — nenhum dos dois conta aqui.
+ */
+export function quantosFiltros(f: RecFiltros): number {
+  return (
+    (f.supplierId ? 1 : 0) +
+    (f.status ? 1 : 0) +
+    (periodoAplicavel(f) && f.periodo !== REC_FILTROS_VAZIO.periodo ? 1 : 0)
   );
 }
 
@@ -186,8 +200,6 @@ export function filtrosAtivos(f: RecFiltros): boolean {
  * Prometer "NF-e" no campo quando só há pedidos seria mentira — pedido não tem
  * nota; ela nasce no recebimento.
  */
-export function placeholderBusca(abas: RecAba[]): string {
-  return soPedidos(abas)
-    ? "Buscar pedido, fornecedor ou produto…"
-    : "Buscar recebimento, NF-e, pedido ou fornecedor…";
+export function placeholderBusca(f: Pick<RecFiltros, "status">): string {
+  return soPedidos(f) ? "Buscar pedido, fornecedor ou produto…" : "Buscar número, NF-e ou produto…";
 }

@@ -235,6 +235,9 @@ export async function abrirRecebimentoAvulso(input: {
       numero,
       status: "EM_CONFERENCIA",
       origem: "AVULSO",
+      // Fora da lista até alguém salvar: quem abre e desiste não deixa
+      // recebimento vazio na doca.
+      provisorio: true,
       supplierId: input.supplierId ?? null,
       fornecedorLivre: input.fornecedorLivre?.trim() || null,
       observacao: input.observacao ?? null,
@@ -371,6 +374,7 @@ export async function vincularNotaAoRecebimento(input: {
     data: {
       inboundId,
       supplierId: nota.supplierId ?? undefined,
+      provisorio: false,
     },
   });
 
@@ -458,7 +462,7 @@ export async function vincularPedidoAoRecebimento(input: {
 
   await db.goodsReceipt.update({
     where: { id: receipt.id },
-    data: { purchaseOrderId: pedido.id },
+    data: { purchaseOrderId: pedido.id, provisorio: false },
   });
   await db.purchaseReconciliationItem.updateMany({
     where: { receiptId: receipt.id },
@@ -617,6 +621,21 @@ export async function progressoDosPedidos(
 }
 
 // ── Fechamento ──────────────────────────────────────────────
+
+/**
+ * "Salvar rascunho" do avulso: o recebimento deixa de ser provisório e passa a
+ * aparecer na lista, em conferência. A contagem já grava sozinha — o que este
+ * passo decide é só que ele existe para os outros.
+ */
+export async function salvarRascunhoRecebimento(receiptId: string): Promise<void> {
+  const receipt = await db.goodsReceipt.findFirst({
+    where: { id: receiptId },
+    select: { id: true, status: true },
+  });
+  if (!receipt) throw new Error("Recebimento não encontrado.");
+  if (receipt.status === "CANCELADO") throw new Error("Este recebimento foi cancelado.");
+  await db.goodsReceipt.update({ where: { id: receipt.id }, data: { provisorio: false } });
+}
 
 /** Marca o recebimento como "alguém está contando" sem apagar DIVERGENCIA. */
 export async function marcarEmConferencia(receiptId: string): Promise<void> {
@@ -1008,7 +1027,12 @@ export async function finalizarRecebimento(input: {
 
   await db.goodsReceipt.update({
     where: { id: receipt.id },
-    data: { status: "FINALIZADO", finalizadoEm: new Date(), divergenciaMotivo: motivo },
+    data: {
+      status: "FINALIZADO",
+      finalizadoEm: new Date(),
+      divergenciaMotivo: motivo,
+      provisorio: false,
+    },
   });
 
   // Estoque e financeiro são o mesmo fato visto de dois lados. As duplicatas da

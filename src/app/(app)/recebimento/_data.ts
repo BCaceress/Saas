@@ -126,6 +126,8 @@ export type CabecalhoRecebimento = {
   divergenciaMotivo: string | null;
   canceladoMotivo: string | null;
   observacao: string | null;
+  /** Avulso ainda não salvo — fora da lista até "Salvar rascunho" ou receber. */
+  provisorio: boolean;
 };
 
 export type ResumoRecebimento = {
@@ -228,6 +230,7 @@ export async function carregarRecebimento(
       numero: true,
       status: true,
       origem: true,
+      provisorio: true,
       siteId: true,
       supplierId: true,
       fornecedorLivre: true,
@@ -505,6 +508,7 @@ export async function carregarRecebimento(
       divergenciaMotivo: receipt.divergenciaMotivo,
       canceladoMotivo: receipt.canceladoMotivo,
       observacao: receipt.observacao,
+      provisorio: receipt.provisorio,
     },
     nota: inbound
       ? {

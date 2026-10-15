@@ -225,10 +225,10 @@ const STATUS_RECEBIMENTO: Record<
   RecebimentoView["recebimento"]["status"],
   { rotulo: string; tom: "neutral" | "brand" | "ok" | "warn" | "danger" }
 > = {
-  PENDENTE: { rotulo: "Pendente", tom: "warn" },
+  PENDENTE: { rotulo: "A conferir", tom: "warn" },
   EM_CONFERENCIA: { rotulo: "Em conferência", tom: "brand" },
   DIVERGENCIA: { rotulo: "Com divergência", tom: "danger" },
-  FINALIZADO: { rotulo: "Finalizado", tom: "ok" },
+  FINALIZADO: { rotulo: "Concluído", tom: "ok" },
   CANCELADO: { rotulo: "Cancelado", tom: "neutral" },
 };
 

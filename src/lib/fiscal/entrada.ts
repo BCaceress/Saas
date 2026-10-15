@@ -402,11 +402,18 @@ async function importarUmXml(input: {
       .filter((id): id is string => Boolean(id)),
   });
 
+  // Toda nota de mercadoria nasce com o seu recebimento, venha de onde vier
+  // (tela de recebimento, tela fiscal, e-mail, SEFAZ). Sem isto, a nota que
+  // entrava pelo fiscal ficava num limbo: existia, mas não aparecia na lista
+  // que responde "o que chegou?".
+  const receipt = await garantirRecebimentoDaNota({ tenantId, inboundId: criada.id, userId });
+
   return {
     arquivo: xml.nome,
     status: "IMPORTADA",
     chave: nota.chave,
     inboundId: criada.id,
+    receiptId: receipt.id,
     itensResolvidos: resolvidos.filter((r) => r.resolucao.productId).length,
     itensTotal: resolvidos.length,
     pedidoNumero: vinculo.numero,

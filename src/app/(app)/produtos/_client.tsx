@@ -2400,8 +2400,11 @@ function codigosExtras(
 
 function MaisCodigos({ n }: { n: number }) {
   return (
-    <span className="ml-1 rounded-full bg-surface-2 px-1.5 py-px font-sans text-[10px] font-medium text-muted">
-      +{n} {n === 1 ? "código" : "códigos"}
+    <span
+      aria-label={`mais ${n} ${n === 1 ? "código" : "códigos"}`}
+      className="ml-1 rounded-full bg-surface-2 px-1.5 py-px font-sans text-[10px] font-medium text-muted"
+    >
+      +{n}
     </span>
   );
 }

@@ -356,8 +356,8 @@ export const NAV_GROUPS: NavGroup[] = [
         enabled: true,
         semAbas: true,
         permissao: "compras.receber",
-        descricao:
-          "O que efetivamente chegou na loja — vinculado a um pedido ou avulso.",
+        // O trabalho da tela, não o modelo de dados ("vinculado/avulso").
+        descricao: "Confira cada entrega e dê entrada no estoque.",
       },
       {
         href: "/fornecedores",
