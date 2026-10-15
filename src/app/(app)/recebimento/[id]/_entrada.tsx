@@ -7,7 +7,6 @@ import {
   ArrowRight,
   Calculator,
   Check,
-  CircleCheck,
   ClipboardCheck,
   Copy,
   Download,
@@ -15,7 +14,6 @@ import {
   FileCode2,
   FilePlus2,
   FileText,
-  Info,
   Link2,
   ListChecks,
   Loader2,
@@ -292,6 +290,9 @@ export function EtapaNota({
           <div className="grid gap-3 lg:grid-cols-2">
             <CartaoTopo
               icone={<Truck size={20} aria-hidden />}
+              // Fornecedor com logo no cadastro aparece com ela; sem logo (ou
+              // sem cadastro), o caminhão de sempre.
+              imagemUrl={fornecedor?.logoUrl}
               tom="bg-brand-soft text-brand"
               rotulo="Fornecedor"
               titulo={fornecedor?.nome ?? recebimento.supplierNome ?? nota.fornecedor}
@@ -489,7 +490,6 @@ export function EtapaNota({
                 relacionados={situacoes.RELACIONADO}
                 pendentes={situacoes.PENDENTE}
                 divergentes={situacoes.DIVERGENCIA}
-                encerrado={encerrado}
               />
             </CartaoLateral>
           )}
@@ -777,6 +777,7 @@ function valoresDaNota(nota: NotaView, itens: ItemNotaView[]): Valores {
  */
 function CartaoTopo({
   icone,
+  imagemUrl,
   tom,
   rotulo,
   titulo,
@@ -784,6 +785,8 @@ function CartaoTopo({
   acao,
 }: {
   icone: React.ReactNode;
+  /** Imagem no lugar do ícone (logo do fornecedor). Falhou ao carregar, volta o ícone. */
+  imagemUrl?: string | null;
   /** Fundo e cor do ícone. */
   tom: string;
   rotulo: string;
@@ -791,13 +794,29 @@ function CartaoTopo({
   detalhe: React.ReactNode;
   acao?: React.ReactNode;
 }) {
+  // Guarda QUAL url falhou, não um booleano: trocar de fornecedor com outra
+  // logo tenta de novo, sem efeito para resetar.
+  const [quebrou, setQuebrou] = React.useState<string | null>(null);
+  const imagem = imagemUrl && imagemUrl !== quebrou ? imagemUrl : null;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-3 rounded-[var(--radius-lg)] border border-line bg-surface px-4 py-3.5">
-      <span
-        className={cn("grid h-11 w-11 shrink-0 place-items-center rounded-[var(--radius-sm)]", tom)}
-      >
-        {icone}
-      </span>
+      {imagem ? (
+        // Logo é URL de terceiro colada no cadastro — host arbitrário não passa
+        // pelo next/image (mesmo padrão do cabeçalho do fornecedor).
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={imagem}
+          alt=""
+          onError={() => setQuebrou(imagem)}
+          className="h-11 w-11 shrink-0 rounded-[var(--radius-sm)] border border-line bg-surface-2 object-contain p-1"
+        />
+      ) : (
+        <span
+          className={cn("grid h-11 w-11 shrink-0 place-items-center rounded-[var(--radius-sm)]", tom)}
+        >
+          {icone}
+        </span>
+      )}
       <div className="min-w-0 flex-1 basis-40">
         <p className="text-[11px] text-muted">{rotulo}</p>
         <p className="truncate text-[14px] font-semibold text-ink">{titulo}</p>
@@ -850,19 +869,16 @@ function Andamento({
   relacionados,
   pendentes,
   divergentes,
-  encerrado,
 }: {
   total: number;
   relacionados: number;
   pendentes: number;
   divergentes: number;
-  encerrado: boolean;
 }) {
   const R = 40;
   const C = 2 * Math.PI * R;
   const fracRel = total > 0 ? relacionados / total : 0;
   const fracDiv = total > 0 ? divergentes / total : 0;
-  const falta = pendentes + divergentes;
 
   return (
     <>
@@ -915,28 +931,6 @@ function Andamento({
           <Legenda ponto="bg-danger" n={divergentes} um="com divergência" varios="com divergência" />
         </ul>
       </div>
-
-      {!encerrado && (
-        <p
-          className={cn(
-            "mt-3.5 flex items-start gap-2 rounded-[var(--radius-sm)] px-3 py-2.5 text-[12px]",
-            falta === 0 ? "bg-ok-soft text-ok" : "bg-brand-soft text-accent",
-          )}
-        >
-          {falta === 0 ? (
-            <CircleCheck className="mt-px h-4 w-4 shrink-0" aria-hidden />
-          ) : (
-            <Info className="mt-px h-4 w-4 shrink-0" aria-hidden />
-          )}
-          <span>
-            {falta === 0
-              ? "Tudo relacionado. A nota está pronta para a conferência."
-              : divergentes > 0 && pendentes === 0
-                ? `Revise ${divergentes === 1 ? "a divergência" : `as ${divergentes} divergências`} antes de receber.`
-                : `Relacione ${pendentes === 1 ? "o produto pendente" : `os ${pendentes} produtos pendentes`} para a entrada poder fechar.`}
-          </span>
-        </p>
-      )}
     </>
   );
 }

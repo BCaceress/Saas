@@ -39,6 +39,8 @@ export type ResumoSincronizacao = {
   supplierId: string;
   nome: string;
   cnpj: string;
+  /** Logo do cadastro, quando alguém colou um — a tela cai no ícone sem ele. */
+  logoUrl: string | null;
   /** O fornecedor não existia e nasceu desta nota. */
   criado: boolean;
   /** Dado oficial já gravado — a tela só informa. */
@@ -129,6 +131,7 @@ export async function sincronizarFornecedorComNota(input: {
       id: true,
       razaoSocial: true,
       nomeFantasia: true,
+      logoUrl: true,
       ie: true,
       crt: true,
       telefone: true,
@@ -195,6 +198,8 @@ export async function sincronizarFornecedorComNota(input: {
         supplierId: criado.id,
         nome: emit.nomeFantasia ?? emit.razaoSocial,
         cnpj: emit.cnpj,
+        // Nasceu agora, do XML: ninguém colou logo ainda.
+        logoUrl: null,
         criado: true,
         automaticas,
         sugestoes: [],
@@ -308,6 +313,7 @@ export async function sincronizarFornecedorComNota(input: {
       supplierId,
       nome: (dados.nomeFantasia as string) ?? existente.nomeFantasia ?? existente.razaoSocial,
       cnpj: emit.cnpj,
+      logoUrl: existente.logoUrl?.trim() || null,
       criado: false,
       automaticas,
       sugestoes,
@@ -592,7 +598,7 @@ export async function resumoSincronizacaoDaNota(
       emitRazaoSocial: true,
       supplierId: true,
       supplier: {
-        select: { razaoSocial: true, nomeFantasia: true, prazoMedioDias: true },
+        select: { razaoSocial: true, nomeFantasia: true, prazoMedioDias: true, logoUrl: true },
       },
     },
   });
@@ -616,6 +622,7 @@ export async function resumoSincronizacaoDaNota(
     supplierId,
     nome: nota.supplier?.nomeFantasia || nota.supplier?.razaoSocial || nota.emitRazaoSocial,
     cnpj: nota.emitCnpj,
+    logoUrl: nota.supplier?.logoUrl?.trim() || null,
     criado: aplicadas.some((a) => a.campo === "cadastro"),
     // "Fornecedor criado" já vira selo no card — repetir na lista seria ruído.
     automaticas: aplicadas
