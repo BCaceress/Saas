@@ -33,8 +33,8 @@ export type LojaOpcao = { id: string; nome: string };
 
 export async function listarLojasParaImportacao(): Promise<LojaOpcao[]> {
   const ctx = await requireGestor();
-  return runWithTenant(ctx.tenant.id, () =>
-    db.site.findMany({
+  return runWithTenant(ctx.tenant.id, async () =>
+    await db.site.findMany({
       where: { ativo: true },
       select: { id: true, nome: true },
       orderBy: { nome: "asc" },

@@ -144,8 +144,8 @@ export async function buscarPorNomeAction(termoRaw: string): Promise<ProdutoResu
   if (termo.length < 2) return [];
 
   const ctx = await contexto();
-  return runWithTenant(ctx.tenant.id, () =>
-    db.product.findMany({
+  return runWithTenant(ctx.tenant.id, async () =>
+    await db.product.findMany({
       where: {
         ativo: true,
         OR: [

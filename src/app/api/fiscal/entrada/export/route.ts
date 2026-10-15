@@ -37,8 +37,8 @@ export async function GET(req: Request) {
   // Fim do dia: quem pede "até 31/08" quer as notas do dia 31 também.
   const fim = new Date(ate.getFullYear(), ate.getMonth(), ate.getDate(), 23, 59, 59, 999);
 
-  const notas = await runWithTenant(ctx.tenant.id, () =>
-    db.fiscalInbound.findMany({
+  const notas = await runWithTenant(ctx.tenant.id, async () =>
+    await db.fiscalInbound.findMany({
       where: { dataEmissao: { gte: de, lte: fim } },
       orderBy: { dataEmissao: "asc" },
       take: LIMITE_NOTAS,

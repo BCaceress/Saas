@@ -28,8 +28,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     });
   }
 
-  const nota = await runWithTenant(ctx.tenant.id, () =>
-    db.fiscalInbound.findFirst({
+  const nota = await runWithTenant(ctx.tenant.id, async () =>
+    await db.fiscalInbound.findFirst({
       where: { id },
       select: { chave: true, xmlArquivo: { select: { conteudo: true, nomeArquivo: true } } },
     }),

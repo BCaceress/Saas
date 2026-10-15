@@ -53,8 +53,8 @@ export default async function EtiquetasPage({
   if (!podeEmAlguma(ctx.acessos, "produto.preco")) redirect("/sem-acesso");
 
   const pedidos = parsePedidos(itens);
-  const produtos = await withTenant(ctx, () =>
-    db.product.findMany({
+  const produtos = await withTenant(ctx, async () =>
+    await db.product.findMany({
       where: { id: { in: pedidos.map((p) => p.productId) } },
       select: {
         id: true,

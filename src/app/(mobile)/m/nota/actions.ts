@@ -60,8 +60,8 @@ export async function importarNotaPorChaveAction(chaveRaw: string): Promise<Resu
   // Nota que já entrou não é reimportada — o de-para e a entrada de estoque
   // dela podem estar em andamento. A trava real é o unique de
   // `FiscalInbound.chave`; isto aqui é só para a tela dizer o que houve.
-  const existente = await runWithTenant(ctx.tenant.id, () =>
-    db.fiscalInbound.findFirst({
+  const existente = await runWithTenant(ctx.tenant.id, async () =>
+    await db.fiscalInbound.findFirst({
       where: { chave },
       select: { id: true, emitRazaoSocial: true, numero: true },
     }),
@@ -96,8 +96,8 @@ export async function importarNotaPorChaveAction(chaveRaw: string): Promise<Resu
 
     // Sumiu da fila depois do sync = veio completa e o próprio sync importou.
     if (!alvo) {
-      const importada = await runWithTenant(ctx.tenant.id, () =>
-        db.fiscalInbound.findFirst({
+      const importada = await runWithTenant(ctx.tenant.id, async () =>
+        await db.fiscalInbound.findFirst({
           where: { chave },
           select: { id: true, emitRazaoSocial: true, numero: true },
         }),
@@ -138,8 +138,8 @@ export async function importarNotaPorChaveAction(chaveRaw: string): Promise<Resu
       return { tipo: "aguardando", mensagem: r.mensagem, numero: alvo.numero || numero };
     }
 
-    const inbound = await runWithTenant(ctx.tenant.id, () =>
-      db.fiscalInbound.findFirst({ where: { chave }, select: { id: true } }),
+    const inbound = await runWithTenant(ctx.tenant.id, async () =>
+      await db.fiscalInbound.findFirst({ where: { chave }, select: { id: true } }),
     );
     return {
       tipo: "importada",

@@ -25,8 +25,8 @@ export async function GET(
   const { id } = await params;
   const ctx = await requireActiveTenant();
 
-  const produto = await runWithTenant(ctx.tenant.id, () =>
-    db.product.findFirst({ where: { id }, select: { imagemUrl: true } }),
+  const produto = await runWithTenant(ctx.tenant.id, async () =>
+    await db.product.findFirst({ where: { id }, select: { imagemUrl: true } }),
   );
 
   const imagem = produto?.imagemUrl ? lerDataImagem(produto.imagemUrl) : null;
