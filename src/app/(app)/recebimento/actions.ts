@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { refresh, revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireActiveTenant, type ActiveTenant } from "@/lib/current-tenant";
 import { assertPodeEscrever } from "@/lib/assinatura";
@@ -56,6 +56,11 @@ function revalidar(inboundId?: string) {
   revalidatePath("/fiscal/notas-recebidas");
   revalidatePath("/pedidos");
   if (inboundId) revalidatePath(`/recebimento/${inboundId}`);
+  // A tela de onde veio a ação volta re-renderizada NA RESPOSTA dela — o
+  // cliente não precisa (e não deve) pedir router.refresh() depois: era a
+  // página inteira renderizada duas vezes por clique. A URL do recebimento é o
+  // id do recebimento, não o da nota, então o revalidatePath acima não a cobre.
+  refresh();
 }
 
 // ── Buscar no catálogo ──────────────────────────────────────
@@ -226,6 +231,12 @@ const criarDoItemSchema = z.object({
   /** Unidades de prateleira por unidade de compra da nota. */
   fatorConversao: z.coerce.number().positive().default(1),
   embalagemNome: z.string().trim().optional(),
+  /**
+   * Códigos de barras da UNIDADE (a garrafa, a lata) — o que o PDV vai bipar.
+   * Quase sempre a nota traz o código da caixa, que fica na embalagem de
+   * compra; o da unidade só o operador tem, com o produto na mão.
+   */
+  codigosUnidade: z.array(z.string().trim().max(32)).max(20).optional(),
 });
 
 /**
@@ -279,10 +290,23 @@ export async function criarProdutoDoItemAction(input: z.input<typeof criarDoItem
   // gravar como EAN do produto faria o PDV bipar a caixa e vender uma unidade.
   const daEmbalagem = d.fatorConversao > 1;
 
+  // Códigos que bipam a unidade. Sem conversão, o da nota JÁ é o da unidade e
+  // vai primeiro (principal: etiqueta e espelho `Product.ean`); com conversão,
+  // ele é da caixa e fica só na embalagem — aqui entram os que o operador deu.
+  const daUnidade = (d.codigosUnidade ?? []).map((c) => c.replace(/\D/g, "")).filter(Boolean);
+  const codigos = [...(!daEmbalagem && item.gtin ? [item.gtin] : []), ...daUnidade].filter(
+    (c, i, todos) => todos.indexOf(c) === i,
+  );
+
   const produto = await createProduct({
     nome: d.nome,
     subcategoryId: d.subcategoryId,
     ean: !daEmbalagem && item.gtin ? item.gtin : undefined,
+    // Com códigos extras, a lista manda (o `ean` vira espelho do principal);
+    // sem eles, segue o caminho de sempre.
+    codigos: daUnidade.length
+      ? codigos.map((codigo, i) => ({ codigo, principal: i === 0 }))
+      : undefined,
     custo,
     fornecedorPrincipalId: item.inbound.supplierId ?? undefined,
     custoFornecedor: custo > 0 ? custo : undefined,

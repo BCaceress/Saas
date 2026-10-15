@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   ArrowRight,
@@ -23,6 +22,7 @@ import { toast } from "@/components/ui/toast";
 import { Scanner } from "@/components/mobile/scanner";
 import { ProdutoThumb } from "@/components/recebimento/produto-thumb";
 import { useLeitorTeclado } from "@/lib/hooks/use-leitor-teclado";
+import { gtinValido } from "@/lib/codigo-lido";
 import { termoDeBuscaDoItem } from "@/lib/compras/conciliacao-regras";
 import { fatorDaNota } from "@/lib/fiscal/fator";
 import {
@@ -161,6 +161,9 @@ function termosAlternativosDaDescricao(descricao: string, atual: string): string
 
 type DonoDoCodigo = Awaited<ReturnType<typeof donoDoCodigoAction>>;
 
+/** Código da unidade no cadastro rápido. `dono` undefined = ainda conferindo. */
+type CodigoUnidade = { codigo: string; dono: DonoDoCodigo | null | undefined };
+
 /**
  * De onde veio o número que a tela sugere como conversão.
  *
@@ -249,7 +252,6 @@ export function RelacionarProduto({
   /** Relacionado com sucesso. Quem conhece a fila decide se avança ou fecha. */
   onRelacionado: (inboundItemId: string | null) => void;
 }) {
-  const router = useRouter();
   const [termo, setTermo] = React.useState(termoDeBuscaDoItem(item.descricao));
   const [resultados, setResultados] = React.useState<ProdutoBuscado[]>([]);
   /** Sugestões do histórico do fornecedor — enquanto a busca não tem resposta. */
@@ -394,10 +396,11 @@ export function RelacionarProduto({
       );
       // Fila: o pai decide se há próximo pendente (avança) ou fecha. Sempre
       // reabilita o form — se avançar, o efeito acima troca termo/resultados.
+      // Sem router.refresh(): a ação revalida a rota e a resposta dela já
+      // trouxe a tela nova — outro refresh renderizava a página duas vezes.
       onRelacionado(item.inboundItemId);
       setSelecionado(null);
       setSalvando(false);
-      router.refresh();
     } catch (e) {
       toast.error(
         "Não deu para relacionar",
@@ -414,6 +417,7 @@ export function RelacionarProduto({
     subcategoryId: string;
     fatorConversao: number;
     embalagemNome?: string;
+    codigosUnidade?: string[];
   }) {
     if (!item.inboundItemId) {
       toast.error(
@@ -435,7 +439,6 @@ export function RelacionarProduto({
       onRelacionado(item.inboundItemId);
       setSalvando(false);
       setCadastrando(false);
-      router.refresh();
     } catch (e) {
       toast.error(
         "Não deu para cadastrar",
@@ -1241,6 +1244,7 @@ function CadastroRapido({
     subcategoryId: string;
     fatorConversao: number;
     embalagemNome?: string;
+    codigosUnidade?: string[];
   }) => void;
 }) {
   const uCom = item.unidade?.trim().toUpperCase() || "item";
@@ -1270,6 +1274,16 @@ function CadastroRapido({
   // "CX" vira "Caixa" — a sigla do fornecedor não é nome de embalagem. E é só
   // o nome: quantas cabem é o campo de unidades ao lado, não parte do texto.
   const [embalagem, setEmbalagem] = React.useState(() => nomeDaEmbalagem(item.unidade));
+  /**
+   * Códigos de barras da UNIDADE. A nota quase sempre traz o da caixa (DUN-14,
+   * ou o EAN do fardo), que vai para a embalagem de compra; o que o caixa bipa
+   * é o da garrafa — e esse só o operador tem, com o produto na mão.
+   */
+  const gtinNota = (item.gtin ?? "").replace(/\D/g, "");
+  const [codigos, setCodigos] = React.useState<CodigoUnidade[]>([]);
+  const [novoCodigo, setNovoCodigo] = React.useState("");
+  const [erroCodigo, setErroCodigo] = React.useState<string | null>(null);
+  const [cameraCodigo, setCameraCodigo] = React.useState(false);
   const [subs, setSubs] = React.useState<SubcategoriaCadastro[] | null>(
     subcategoriasProp ?? null,
   );
@@ -1290,8 +1304,51 @@ function CadastroRapido({
   const custoUnitario =
     unidades > 0 && item.custoLinha ? item.custoLinha / unidades : 0;
   const cfopEntrada = cfopDeEntrada(item.cfop);
+  const palavraEmb = embalagem.trim().toLowerCase() || "caixa";
+
+  /**
+   * Põe um código na lista e já pergunta de quem ele é. Código repetido faz o
+   * PDV vender o produto errado — melhor dizer agora do que o servidor recusar
+   * o cadastro inteiro no fim.
+   */
+  function adicionarCodigo(bruto: string) {
+    const codigo = bruto.replace(/\D/g, "");
+    if (!codigo) return;
+    if (codigos.some((c) => c.codigo === codigo)) {
+      setErroCodigo(`${codigo} já está na lista.`);
+      return;
+    }
+    if (codigo === gtinNota) {
+      setErroCodigo(
+        fatorNum > 1
+          ? `${codigo} é o código da ${palavraEmb} que veio na nota — ele já fica na embalagem. Bipe o código da unidade.`
+          : `${codigo} é o código que veio na nota — ele já entra como código do produto.`,
+      );
+      return;
+    }
+    setErroCodigo(null);
+    setNovoCodigo("");
+    setCodigos((l) => [...l, { codigo, dono: undefined }]);
+    const marcar = (dono: DonoDoCodigo | null) =>
+      setCodigos((l) => l.map((c) => (c.codigo === codigo ? { ...c, dono } : c)));
+    donoDoCodigoAction(codigo)
+      .then(marcar)
+      // Sem resposta, o servidor confere de novo ao gravar: não trava aqui.
+      .catch(() => marcar(null));
+  }
+
+  // Leitor USB/Bluetooth com o foco fora dos campos: o bipe vira código da
+  // unidade. (O do painel, que busca produto, está desligado no cadastro.)
+  useLeitorTeclado(adicionarCodigo, { ativo: !cameraCodigo && !salvando });
+
+  /** Código de outro produto, ou ainda perguntando: não dá para cadastrar. */
+  const codigosOk = codigos.every((c) => c.dono === null);
   const valido =
-    nome.trim().length >= 2 && subcategoryId !== "" && fatorNum > 0 && confirmado;
+    nome.trim().length >= 2 &&
+    subcategoryId !== "" &&
+    fatorNum > 0 &&
+    confirmado &&
+    codigosOk;
 
   /** Linha da tabela de revisão. Sem valor no XML, a linha não existe. */
   const linhas: LinhaComparacao[] = [
@@ -1497,6 +1554,135 @@ function CadastroRapido({
         </label>
       )}
 
+      {/* ── Códigos de barras da unidade ── */}
+      <div className="flex flex-col gap-1.5">
+        <label
+          htmlFor="codigo-unidade"
+          className="text-[12px] font-medium text-muted"
+        >
+          {fatorNum > 1 ? "Código de barras da unidade" : "Outros códigos de barras"}
+        </label>
+
+        {((fatorNum <= 1 && gtinNota) || codigos.length > 0) && (
+          <ul className="flex flex-wrap gap-1.5" aria-label="Códigos de barras da unidade">
+            {fatorNum <= 1 && gtinNota && (
+              <li className="inline-flex h-7 items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 text-[12px]">
+                <span className="font-mono text-ink">{gtinNota}</span>
+                <span className="text-[11px] text-faint">da nota</span>
+              </li>
+            )}
+            {codigos.map((c) => {
+              const digito = gtinValido(c.codigo);
+              return (
+                <li
+                  key={c.codigo}
+                  className={cn(
+                    "pop-in inline-flex h-7 items-center gap-1.5 rounded-full border pr-1 pl-2.5 text-[12px]",
+                    c.dono
+                      ? "border-danger/40 bg-danger-soft"
+                      : digito === false
+                        ? "border-warn/40 bg-warn-soft"
+                        : "border-line bg-surface",
+                  )}
+                  title={
+                    c.dono
+                      ? `Já é de ${c.dono.onde} de ${c.dono.nome} (${c.dono.sku})`
+                      : digito === false
+                        ? "O dígito verificador não fecha — confira se foi digitado certo."
+                        : undefined
+                  }
+                >
+                  <span className="font-mono text-ink">{c.codigo}</span>
+                  {c.dono === undefined ? (
+                    <Loader2 className="h-3 w-3 animate-spin text-faint" aria-label="Conferindo" />
+                  ) : c.dono ? (
+                    <span className="text-[11px] font-medium text-danger">
+                      já é de {c.dono.nome}
+                    </span>
+                  ) : digito === false ? (
+                    <span className="text-[11px] font-medium text-warn">confira</span>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setCodigos((l) => l.filter((x) => x.codigo !== c.codigo))}
+                    aria-label={`Tirar o código ${c.codigo}`}
+                    className="grid h-5 w-5 cursor-pointer place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  >
+                    <X className="h-3 w-3" aria-hidden />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        <div className="flex items-center gap-2">
+          <input
+            id="codigo-unidade"
+            value={novoCodigo}
+            onChange={(e) => {
+              setNovoCodigo(e.target.value);
+              setErroCodigo(null);
+            }}
+            onKeyDown={(e) => {
+              // O leitor "digita" e manda Enter: Enter adiciona, não envia nada.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                adicionarCodigo(novoCodigo);
+              }
+            }}
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="Bipe ou digite o código"
+            aria-describedby="codigo-unidade-dica"
+            className="h-10 min-w-0 flex-1 rounded-[var(--radius)] border border-line-button bg-surface px-3 font-mono text-sm text-ink placeholder:font-sans placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          />
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => adicionarCodigo(novoCodigo)}
+            disabled={!novoCodigo.trim()}
+          >
+            <CirclePlus className="h-4 w-4" aria-hidden />
+            Adicionar
+          </Button>
+          <button
+            type="button"
+            onClick={() => setCameraCodigo(true)}
+            aria-label="Ler o código com a câmera"
+            title="Ler com a câmera"
+            className="grid h-10 w-10 shrink-0 cursor-pointer place-items-center rounded-[var(--radius)] border border-line-button bg-surface text-muted hover:text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+          >
+            <ScanBarcode className="h-4 w-4" aria-hidden />
+          </button>
+        </div>
+
+        {cameraCodigo && (
+          <Scanner
+            onCodigo={(codigo) => {
+              setCameraCodigo(false);
+              adicionarCodigo(codigo);
+            }}
+            onFechar={() => setCameraCodigo(false)}
+            dica="Aponte para o código da unidade"
+          />
+        )}
+
+        {erroCodigo && (
+          <p role="alert" className="shake-x text-[11px] font-medium text-danger">
+            {erroCodigo}
+          </p>
+        )}
+        <p id="codigo-unidade-dica" className="text-[11px] text-faint">
+          {fatorNum > 1
+            ? `O código da nota${gtinNota ? ` (${gtinNota})` : ""} é da ${palavraEmb} e fica na embalagem de compra. O da unidade é o que o caixa bipa — sem ele, o produto não vende pelo leitor.`
+            : gtinNota
+              ? "O código da nota já entra. Acrescente outros que bipam este mesmo produto."
+              : "A nota não trouxe código de barras. Bipe o da unidade para o caixa reconhecer o produto."}
+        </p>
+      </div>
+
       {/* ── XML × NoHub ── */}
       <TabelaComparacao linhas={linhas} />
 
@@ -1529,6 +1715,7 @@ function CadastroRapido({
               subcategoryId,
               fatorConversao: fatorNum,
               embalagemNome: fatorNum > 1 ? embalagem.trim() : undefined,
+              codigosUnidade: codigos.map((c) => c.codigo),
             })
           }
         >

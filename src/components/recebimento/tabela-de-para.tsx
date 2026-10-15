@@ -3,12 +3,12 @@
 import {
   Fragment,
   useEffect,
+  useOptimistic,
   useState,
   useTransition,
   type ButtonHTMLAttributes,
   type ReactNode,
 } from "react";
-import { useRouter } from "next/navigation";
 import {
   ArrowRightLeft,
   Check,
@@ -32,10 +32,7 @@ import { Badge } from "@/components/ui/misc";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { toast } from "@/components/ui/toast";
 import { ProdutoThumb } from "@/components/recebimento/produto-thumb";
-import {
-  RelacionarProduto,
-  type ItemDeNota,
-} from "@/components/recebimento/relacionar-produto";
+import { RelacionarProduto, type ItemDeNota } from "@/components/recebimento/relacionar-produto";
 import { fatorDaNota } from "@/lib/fiscal/fator";
 import { nomeDaEmbalagem } from "@/lib/fiscal/embalagem-nome";
 import {
@@ -52,10 +49,7 @@ import {
   severidadeMaxima,
   type Severidade,
 } from "@/lib/fiscal/divergencias";
-import {
-  TabelaComparacao,
-  type LinhaComparacao,
-} from "@/components/recebimento/comparacao-xml";
+import { TabelaComparacao, type LinhaComparacao } from "@/components/recebimento/comparacao-xml";
 import { cfopDeEntrada } from "@/lib/fiscal/cfop";
 import { fmtMoney, fmtQtd } from "@/app/(app)/cotacoes/_ui";
 import {
@@ -129,7 +123,12 @@ export type ItemDePara = {
   /** NCM que vale hoje no cadastro (perfil do produto ou da subcategoria). */
   productNcm: string | null;
   /** Dono atual do GTIN da linha, quando não é o produto relacionado. */
-  donoDoGtin: { productId: string; nome: string; sku: string; onde: string } | null;
+  donoDoGtin: {
+    productId: string;
+    nome: string;
+    sku: string;
+    onde: string;
+  } | null;
   /** Custo médio atual — base do alerta de custo fora da curva. */
   productCustoMedio: number | null;
   /**
@@ -137,12 +136,110 @@ export type ItemDePara = {
    * por embalagem ser corrigida NA LINHA: antes, mudar "12 por caixa" para 24
    * exigia desfazer o de-para, buscar o produto de novo e relacionar de novo.
    */
-  productEmbalagens: { id: string; nome: string; ean: string | null; fator: number }[];
+  productEmbalagens: {
+    id: string;
+    nome: string;
+    ean: string | null;
+    fator: number;
+  }[];
   packagingId: string | null;
   fatorConversao: number;
 };
 
 type Sugestao = SugestaoDePara;
+
+/** A linha como a tela mostra: com a mudança que ainda está a caminho do servidor. */
+type ItemNaTela = ItemDePara & { otimista?: boolean };
+
+/**
+ * O que o clique muda na linha ANTES de o servidor responder. Só o que o clique
+ * já sabe (produto, embalagem); o resto do cadastro — EAN, NCM, custo médio —
+ * chega com a resposta, e até lá a linha não julga divergência.
+ */
+type Mudanca =
+  | {
+      tipo: "relacionar";
+      itemId: string;
+      productId: string;
+      nome: string;
+      sku: string;
+      imagemUrl: string | null;
+      packagingId: string | null;
+      fatorConversao: number;
+    }
+  | {
+      tipo: "embalagem";
+      itemId: string;
+      packagingId: string | null;
+      fatorConversao: number;
+    }
+  | { tipo: "remover"; itemId: string };
+
+function aplicarMudanca(itens: ItemNaTela[], m: Mudanca): ItemNaTela[] {
+  const alvo = itens.find((i) => i.id === m.itemId);
+  if (!alvo) return itens;
+  if (m.tipo === "remover") {
+    return itens.map((i) =>
+      i.id === m.itemId
+        ? {
+            ...i,
+            otimista: true,
+            productId: null,
+            productNome: null,
+            productSku: null,
+            productMarca: null,
+            productImagemUrl: null,
+            productEmbalagens: [],
+            productCodigos: [],
+            packagingId: null,
+          }
+        : i,
+    );
+  }
+  if (m.tipo === "embalagem") {
+    return itens.map((i) =>
+      i.id === m.itemId
+        ? {
+            ...i,
+            otimista: true,
+            packagingId: m.packagingId,
+            fatorConversao: m.fatorConversao,
+          }
+        : i,
+    );
+  }
+  // O servidor leva junto as linhas pendentes com o mesmo código do fornecedor
+  // (ver `irmaosPendentesDoItem`) — a tela também.
+  const codigo = alvo.codigoFornecedor.trim();
+  return itens.map((i) =>
+    i.id === m.itemId || (codigo && !i.productId && i.codigoFornecedor === alvo.codigoFornecedor)
+      ? {
+          ...i,
+          otimista: true,
+          productId: m.productId,
+          productNome: m.nome,
+          productSku: m.sku,
+          productImagemUrl: m.imagemUrl,
+          packagingId: m.packagingId,
+          fatorConversao: m.fatorConversao,
+        }
+      : i,
+  );
+}
+
+const relacionarPelaSugestao = (s: Sugestao): Mudanca => ({
+  tipo: "relacionar",
+  itemId: s.itemId,
+  productId: s.productId,
+  nome: s.nome,
+  sku: s.sku,
+  imagemUrl: s.imagemUrl,
+  packagingId: s.packagingId,
+  fatorConversao: s.fatorConversao,
+});
+
+/** Quanto a linha recém-mexida fica à vista num filtro que já não a inclui. */
+const FIXA_MS = 1600;
 
 /**
  * Quantidade por embalagem salva × a que a nota declara. Diferença é erro de
@@ -326,12 +423,7 @@ export function custoItem(i: ItemDePara): number {
   if (i.bonificacao) return 0;
   return Math.max(
     0,
-    i.valorTotal -
-      i.valorDesconto +
-      i.valorIcmsSt +
-      i.valorFcpSt +
-      i.valorIpi +
-      i.valorFrete,
+    i.valorTotal - i.valorDesconto + i.valorIcmsSt + i.valorFcpSt + i.valorIpi + i.valorFrete,
   );
 }
 
@@ -382,9 +474,18 @@ const ORIGEM_FATOR: Record<OrigemFator, string> = {
 
 /** Verde pronto, laranja confirma, vermelho erro, cinza secundário — e só. */
 const SEVERIDADE_UI: Record<Severidade, { chip: string; ponto: string }> = {
-  CRITICA: { chip: "bg-danger-soft text-danger hover:bg-danger/15", ponto: "bg-danger" },
-  ATENCAO: { chip: "bg-warn-soft text-warn hover:bg-warn/15", ponto: "bg-warn" },
-  INFORMATIVA: { chip: "bg-surface-2 text-muted hover:text-ink", ponto: "bg-faint" },
+  CRITICA: {
+    chip: "bg-danger-soft text-danger hover:bg-danger/15",
+    ponto: "bg-danger",
+  },
+  ATENCAO: {
+    chip: "bg-warn-soft text-warn hover:bg-warn/15",
+    ponto: "bg-warn",
+  },
+  INFORMATIVA: {
+    chip: "bg-surface-2 text-muted hover:text-ink",
+    ponto: "bg-faint",
+  },
 };
 
 /**
@@ -431,7 +532,11 @@ export function situacaoDoItem(i: ItemDePara): SituacaoItem {
 
 /** Quantos itens em cada situação — a mesma conta nos filtros e no andamento. */
 export function contarSituacoes(itens: ItemDePara[]): Record<SituacaoItem, number> {
-  const n: Record<SituacaoItem, number> = { PENDENTE: 0, RELACIONADO: 0, DIVERGENCIA: 0 };
+  const n: Record<SituacaoItem, number> = {
+    PENDENTE: 0,
+    RELACIONADO: 0,
+    DIVERGENCIA: 0,
+  };
   for (const i of itens) n[situacaoDoItem(i)]++;
   return n;
 }
@@ -475,7 +580,10 @@ const ORIGEM_SUGESTAO: Record<SugestaoDePara["motivo"], string> = {
 
 /** "125,42" — o cabeçalho da coluna já diz que é em reais. */
 const fmtValor = (v: number) =>
-  v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  v.toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 
 export function TabelaDePara({
   inboundId,
@@ -513,33 +621,49 @@ export function TabelaDePara({
   /** SKU ligado nas configurações de produto. Desligado, a coluna não o mostra. */
   mostrarSku?: boolean;
 }) {
-  const router = useRouter();
   const [pending, start] = useTransition();
   const [relacionando, setRelacionando] = useState<ItemDePara | null>(null);
   /**
-   * Palpites. Começam prontos do servidor e são REFEITOS depois de cada
-   * de-para — relacionar uma linha pode criar embalagem/EAN que muda o palpite
-   * das outras. Null = recalculando.
+   * A linha muda no clique, não na volta do servidor. Cada ação de de-para
+   * revalida a rota e a resposta já traz a tabela nova; até ela chegar, a
+   * mudança fica aqui — e some sozinha se a gravação falhar.
+   */
+  const [itensNaTela, mudarNaTela] = useOptimistic<ItemNaTela[], Mudanca>(itens, aplicarMudanca);
+  /**
+   * Palpites. Começam prontos do servidor e voltam com cada resposta dele —
+   * relacionar uma linha pode criar embalagem/EAN que muda o palpite das outras.
+   * Null = recalculando.
    */
   const [palpites, setPalpites] = useState<Sugestao[] | null>(sugestoesIniciais);
-  // Props novas do servidor (refresh depois de gravar) mandam. Ajuste durante o
+  // Props novas do servidor (a resposta da ação) mandam. Ajuste durante o
   // render, não efeito: assim a tabela nunca pinta com o palpite velho.
-  /** Linha gravando agora — o giro fica nela, não numa barra global. */
-  const [confirmando, setConfirmando] = useState<string | null>(null);
   const [ultimoServidor, setUltimoServidor] = useState(sugestoesIniciais);
   if (ultimoServidor !== sugestoesIniciais) {
     setUltimoServidor(sugestoesIniciais);
     setPalpites(sugestoesIniciais);
-    // Chegou dado novo do servidor: o giro da linha cumpriu o que tinha a
-    // dizer. Sem isto, o de-para feito no painel lateral gravava, o painel
-    // fechava e a linha só mudava quando o refresh caía — em silêncio.
-    setConfirmando(null);
+  }
+  /**
+   * Linhas recém-mexidas que ficam à vista mesmo fora do filtro: confirmar na
+   * lente "Pendentes" faria a linha sumir antes de o operador ver que pegou.
+   */
+  const [fixas, setFixas] = useState<ReadonlySet<string>>(() => new Set());
+  function fixar(ids: string[]) {
+    setFixas((s) => new Set([...s, ...ids]));
+    setTimeout(
+      () =>
+        setFixas((s) => {
+          const n = new Set(s);
+          for (const id of ids) n.delete(id);
+          return n;
+        }),
+      FIXA_MS,
+    );
   }
   /** Gravando o lote inteiro. */
   const [emLote, setEmLote] = useState(false);
   const [busca, setBusca] = useState("");
   const [lente, setLente] = useState<Lente>("TODOS");
-  const faltam = itens.filter((i) => !i.productId).length;
+  const faltam = itensNaTela.filter((i) => !i.productId).length;
   // Derivado, não sincronizado: nota já resolvida não tem palpite a mostrar.
   const sugestoes = editavel && faltam > 0 ? palpites : [];
 
@@ -554,9 +678,9 @@ export function TabelaDePara({
 
   // A tabela segue a ordem da nota, com o número da linha à vista: é como o
   // operador confere contra o papel. Quem quer só o que falta usa o filtro.
-  const ordenados = [...itens].sort((a, b) => a.ordem - b.ordem);
+  const ordenados = [...itensNaTela].sort((a, b) => a.ordem - b.ordem);
   const numeroDe = new Map(ordenados.map((i, idx) => [i.id, idx + 1]));
-  const contagens = contarSituacoes(itens);
+  const contagens = contarSituacoes(itensNaTela);
 
   // Filtro que esvaziou — o operador resolveu a última pendência dele — deixaria
   // a tela em branco sem explicação. Derivado, não corrigido por efeito: a
@@ -565,7 +689,13 @@ export function TabelaDePara({
 
   const q = busca.trim().toLowerCase();
   const visiveis = ordenados.filter((i) => {
-    if (lenteAtiva !== "TODOS" && situacaoDoItem(i) !== lenteAtiva) return false;
+    if (
+      lenteAtiva !== "TODOS" &&
+      situacaoDoItem(i) !== lenteAtiva &&
+      !fixas.has(i.id) &&
+      !i.otimista
+    )
+      return false;
     if (!q) return true;
     const s = sugestaoDe(i.id);
     // Os dois lados da linha: como o fornecedor escreveu e o que isso é (ou
@@ -584,17 +714,11 @@ export function TabelaDePara({
       .some((c) => String(c).toLowerCase().includes(q));
   });
 
-  /** Refaz os palpites depois de mexer no de-para. */
-  function recalcularPalpites() {
-    setPalpites(null);
-    sugestoesDaNotaAction(inboundId, purchaseOrderId)
-      .then(setPalpites)
-      .catch(() => setPalpites([]));
-  }
-
   // O operador trocou de pedido sem ir ao servidor: os palpites que vieram
   // prontos foram calculados com outro pedido (ou sem nenhum). Busca os certos
-  // — e o próximo refresh já traz os dois iguais.
+  // — de novo a cada resposta do servidor, que segue calculando com o da URL.
+  // Com os dois iguais, a resposta da ação já traz o palpite certo: nada a
+  // buscar (antes, cada clique pedia os palpites uma segunda vez).
   useEffect(() => {
     if (purchaseOrderId === pedidoDasSugestoes) return;
     let vivo = true;
@@ -607,7 +731,7 @@ export function TabelaDePara({
     return () => {
       vivo = false;
     };
-  }, [inboundId, purchaseOrderId, pedidoDasSugestoes]);
+  }, [inboundId, purchaseOrderId, pedidoDasSugestoes, sugestoesIniciais]);
 
   /**
    * Grava de uma vez tudo que o código de barras já provou. Trinta linhas com
@@ -619,6 +743,7 @@ export function TabelaDePara({
     if (lista.length === 0) return;
     setEmLote(true);
     start(async () => {
+      for (const s of lista) mudarNaTela(relacionarPelaSugestao(s));
       try {
         const r = await relacionarEmLoteAction(
           lista.map((s) => ({
@@ -634,8 +759,7 @@ export function TabelaDePara({
             ? `${r.falhas} linha(s) não deram certo — continuam na lista.`
             : "Todos pelo código de barras do fornecedor.",
         );
-        recalcularPalpites();
-        router.refresh();
+        fixar(lista.map((s) => s.itemId));
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Falha ao relacionar em lote.");
       } finally {
@@ -646,11 +770,12 @@ export function TabelaDePara({
 
   /** Grava o palpite como o servidor propôs. Um clique, sem formulário. */
   function confirmarSugestao(s: Sugestao) {
-    // Qual linha está gravando. Em nota de 40 itens o operador confirma em
-    // sequência: sem o giro NA LINHA que ele clicou, o clique parece não ter
-    // pegado e ele clica de novo — e a segunda gravação briga com a primeira.
-    setConfirmando(s.itemId);
+    // A linha vira o produto no clique e gira até o servidor confirmar. Em nota
+    // de 40 itens o operador confirma em sequência: as outras linhas seguem
+    // clicáveis (as gravações entram em fila), só esta trava — clicar de novo
+    // nela faria a segunda gravação brigar com a primeira.
     start(async () => {
+      mudarNaTela(relacionarPelaSugestao(s));
       try {
         const r = await relacionarItemAction({
           itemId: s.itemId,
@@ -670,12 +795,9 @@ export function TabelaDePara({
             onClick: () => desrelacionar({ id: s.itemId }),
           },
         );
-        recalcularPalpites();
-        router.refresh();
+        fixar([s.itemId]);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Falha ao relacionar.");
-      } finally {
-        setConfirmando(null);
       }
     });
   }
@@ -691,9 +813,14 @@ export function TabelaDePara({
    */
   function definirEmbalagem(item: ItemDePara, fator: number, packagingId: string | null) {
     if (!item.productId) return;
-    setConfirmando(item.id);
     const emb = palavraDaEmbalagem(item);
     start(async () => {
+      mudarNaTela({
+        tipo: "embalagem",
+        itemId: item.id,
+        packagingId,
+        fatorConversao: fator,
+      });
       try {
         await relacionarItemAction({
           itemId: item.id,
@@ -707,33 +834,24 @@ export function TabelaDePara({
             ? `Salvo no cadastro de ${item.productNome ?? "produto"} — as próximas compras já vêm assim.`
             : "Esta linha entra como unidade avulsa.",
         );
-        recalcularPalpites();
-        router.refresh();
       } catch (e) {
-        toast.error(
-          e instanceof Error ? e.message : "Falha ao salvar a quantidade por embalagem.",
-        );
-      } finally {
-        setConfirmando(null);
+        toast.error(e instanceof Error ? e.message : "Falha ao salvar a quantidade por embalagem.");
       }
     });
   }
 
   function desrelacionar(item: Pick<ItemDePara, "id">) {
-    setConfirmando(item.id);
     start(async () => {
+      mudarNaTela({ tipo: "remover", itemId: item.id });
       try {
         await desrelacionarItemAction(item.id);
         toast.success(
           "Relação desfeita.",
           "O de-para salvo para este código do fornecedor também foi apagado.",
         );
-        recalcularPalpites();
-        router.refresh();
+        fixar([item.id]);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Falha ao desfazer.");
-      } finally {
-        setConfirmando(null);
       }
     });
   }
@@ -745,7 +863,11 @@ export function TabelaDePara({
       <div className="@container overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
         {/* ── Filtros e busca ── */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-3 sm:px-4">
-          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filtrar itens da nota">
+          <div
+            className="flex flex-wrap items-center gap-1.5"
+            role="group"
+            aria-label="Filtrar itens da nota"
+          >
             <Filtro
               rotulo="Todos"
               total={itens.length}
@@ -834,14 +956,16 @@ export function TabelaDePara({
                   item={i}
                   numero={numeroDe.get(i.id) ?? 0}
                   colunas={colunas}
-                  editavel={editavel && !pending}
-                  salvando={confirmando === i.id}
+                  editavel={editavel && !emLote}
+                  salvando={Boolean(i.otimista)}
                   mostrarSku={mostrarSku}
                   sugestao={sugestaoDe(i.id)}
                   buscandoSugestao={sugestoes === null}
                   onConfirmar={confirmarSugestao}
                   onRelacionar={() => setRelacionando(i)}
-                  onDefinirEmbalagem={(fator, packagingId) => definirEmbalagem(i, fator, packagingId)}
+                  onDefinirEmbalagem={(fator, packagingId) =>
+                    definirEmbalagem(i, fator, packagingId)
+                  }
                   onDesrelacionar={() => desrelacionar(i)}
                 />
               ))}
@@ -851,7 +975,7 @@ export function TabelaDePara({
 
         {visiveis.length === 0 && (
           <p className="border-t border-line px-4 py-8 text-center text-[13px] text-muted">
-            {itens.length === 0
+            {itensNaTela.length === 0
               ? "Esta nota não tem itens de mercadoria."
               : q
                 ? `Nenhum item da nota com “${busca.trim()}”. `
@@ -897,12 +1021,10 @@ export function TabelaDePara({
             // operador a caçar a próxima linha pendente na tabela.
             const proximo = ordenados.find((i) => !i.productId && i.id !== itemId);
             setRelacionando(proximo ?? null);
-            // O giro fica na linha que acabou de ser relacionada até o
-            // servidor devolver a tabela nova — o painel fecha na hora, a
-            // linha ainda não mudou, e sem sinal isso parece não ter gravado.
-            if (itemId) setConfirmando(itemId);
-            recalcularPalpites();
-            start(() => router.refresh());
+            // A resposta da ação já trouxe a tabela nova (a rota revalida) —
+            // pedir outro refresh era renderizar a página inteira duas vezes.
+            // A linha anima sozinha ao mudar; aqui só fica à vista no filtro.
+            if (itemId) fixar([itemId]);
           }}
         />
       )}
@@ -980,7 +1102,9 @@ export function Th({
           </span>
         )}
       </span>
-      {sub && <span className="block text-[10px] font-normal whitespace-nowrap text-faint">{sub}</span>}
+      {sub && (
+        <span className="block text-[10px] font-normal whitespace-nowrap text-faint">{sub}</span>
+      )}
     </th>
   );
 }
@@ -1004,7 +1128,9 @@ function BotaoLinha({
   tom,
   className,
   ...props
-}: { tom: keyof typeof BOTAO_LINHA } & ButtonHTMLAttributes<HTMLButtonElement>) {
+}: {
+  tom: keyof typeof BOTAO_LINHA;
+} & ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
       type="button"
@@ -1041,27 +1167,52 @@ function LinhaItem({
   onDefinirEmbalagem,
   onDesrelacionar,
 }: {
-    item: ItemDePara;
-    /** Número da linha na nota — o mesmo com ou sem filtro. */
-    numero: number;
-    /** Quantas colunas a tabela tem — para as sublinhas ocuparem a largura toda. */
-    colunas: number;
-    editavel: boolean;
-    /** Esta linha está gravando agora. */
-    salvando: boolean;
-    mostrarSku: boolean;
-    sugestao: Sugestao | null;
-    buscandoSugestao: boolean;
-    onConfirmar: (s: Sugestao) => void;
-    onRelacionar: () => void;
-    /** Só quantas unidades vêm na embalagem muda — o produto continua o mesmo. */
-    onDefinirEmbalagem: (fator: number, packagingId: string | null) => void;
-    onDesrelacionar: () => void;
+  item: ItemDePara;
+  /** Número da linha na nota — o mesmo com ou sem filtro. */
+  numero: number;
+  /** Quantas colunas a tabela tem — para as sublinhas ocuparem a largura toda. */
+  colunas: number;
+  editavel: boolean;
+  /** Esta linha está gravando agora. */
+  salvando: boolean;
+  mostrarSku: boolean;
+  sugestao: Sugestao | null;
+  buscandoSugestao: boolean;
+  onConfirmar: (s: Sugestao) => void;
+  onRelacionar: () => void;
+  /** Só quantas unidades vêm na embalagem muda — o produto continua o mesmo. */
+  onDefinirEmbalagem: (fator: number, packagingId: string | null) => void;
+  onDesrelacionar: () => void;
 }) {
   const [editando, setEditando] = useState(false);
   const [detalhes, setDetalhes] = useState(false);
-  const divergencias = divergenciasDaLinha(item);
-  const pendencia = pendenciaDoItem(item);
+
+  /**
+   * A animação nasce da MUDANÇA da linha, não do botão: confirmar, relacionar
+   * no painel, gravar em lote e remover passam todos por aqui. Dois tempos —
+   * o produto entra/sai quando a linha muda (no clique, se otimista) e a linha
+   * pisca quando assenta (o servidor devolveu). Ajuste no render, sem efeito.
+   */
+  const [visto, setVisto] = useState({ produto: item.productId, salvando });
+  const [entrada, setEntrada] = useState(0);
+  const [pulso, setPulso] = useState<{ tipo: "ok" | "sai"; n: number } | null>(null);
+  if (visto.produto !== item.productId || visto.salvando !== salvando) {
+    const trocouProduto = visto.produto !== item.productId;
+    setVisto({ produto: item.productId, salvando });
+    if (trocouProduto) setEntrada((n) => n + 1);
+    if (!salvando && (visto.salvando || trocouProduto)) {
+      setPulso({ tipo: item.productId ? "ok" : "sai", n: (pulso?.n ?? 0) + 1 });
+    }
+  }
+
+  // Gravando, a linha ainda não tem o cadastro do produto (EAN, NCM, custo
+  // médio): julgar divergência com metade do dado acenderia alerta falso.
+  const divergencias = salvando ? [] : divergenciasDaLinha(item);
+  const pendencia: Pendencia = !item.productId
+    ? "SEM_PRODUTO"
+    : salvando
+      ? "PRONTO"
+      : pendenciaDoItem(item);
   const situacao = SITUACAO_UI[situacaoDoItem(item)];
   /** O que o ícone de status quer dizer, dito por inteiro. */
   const explicacaoDoStatus =
@@ -1080,7 +1231,7 @@ function LinhaItem({
   const medida = medidaDoProduto(item);
   const entra = item.quantidade * item.fatorConversao;
   const custo = custoItem(item);
-  const desvio = desvioDeCusto(item);
+  const desvio = salvando ? null : desvioDeCusto(item);
   const origem = origemDoFator(item);
   const uCom = item.unidade.trim().toUpperCase() || UNIDADE_ENTRADA;
   const emb = palavraDaEmbalagem(item);
@@ -1112,13 +1263,15 @@ function LinhaItem({
           // confirma em sequência e o olho já saiu daqui — o giro no selo
           // sozinho não alcança quem está lendo a linha de baixo.
           salvando && "bg-brand-soft hover:bg-brand-soft",
+          pulso && (pulso.tipo === "ok" ? "depara-ok" : "depara-sai"),
         )}
+        // A linha pisca uma vez e volta ao normal; trocar a classe deixa o
+        // próximo pulso (outra mudança na mesma linha) recomeçar do zero.
+        onAnimationEnd={(e) => {
+          if (e.target === e.currentTarget) setPulso(null);
+        }}
       >
-        <td
-          className={cn(
-            "py-2 pr-2 pl-3 font-semibold text-ink tabular-nums sm:pl-4",
-          )}
-        >
+        <td className={cn("py-2 pr-2 pl-3 font-semibold text-ink tabular-nums sm:pl-4")}>
           {numero}
         </td>
 
@@ -1153,75 +1306,79 @@ function LinhaItem({
 
         {/* ── O que isso é no NoHub ─────────────────────────── */}
         <td className="max-w-[13rem] px-2 py-2">
-          {item.productId ? (
-            <div className="flex items-center gap-2">
-              <ProdutoThumb url={item.productImagemUrl} nome={item.productNome} size="xs" />
-              <div className="min-w-0">
-                <p className="leading-snug font-medium text-ink">{item.productNome}</p>
-                {mostrarSku && (
-                  <p className="font-mono text-[10px] text-faint">{item.productSku}</p>
-                )}
-                {/* Chip só existe quando algo destoa — o caminho limpo segue
-                    sem ruído, e a comparação abre logo abaixo da linha. */}
-                {divergencias.length > 0 && severidade && (
-                  <button
-                    type="button"
-                    onClick={() => setDetalhes((v) => !v)}
-                    aria-expanded={detalhes}
-                    className={cn(
-                      "mt-1 inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-0.5 text-left text-[10px] font-medium transition-colors",
-                      SEVERIDADE_UI[severidade].chip,
-                    )}
-                  >
-                    <TriangleAlert size={10} aria-hidden className="shrink-0" />
-                    {divergencias.length === 1
-                      ? divergencias[0].titulo
-                      : `${divergencias.length} diferenças encontradas`}
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : sugestao ? (
-            // Palpite do servidor: um clique na coluna Ação resolve. O motivo
-            // aparece porque "mesmo código de barras" é prova e "nome parecido"
-            // é chute — e o operador confia diferente em cada um.
-            <div className="flex items-center gap-2">
-              <ProdutoThumb url={sugestao.imagemUrl} nome={sugestao.nome} size="xs" />
-              <div className="min-w-0">
-                <p
-                  className={cn(
-                    "flex items-center gap-1 text-[10px] font-medium",
-                    CONFIANCA[sugestao.motivo].nivel === "alta"
-                      ? "text-ok"
-                      : CONFIANCA[sugestao.motivo].nivel === "media"
-                        ? "text-info"
-                        : "text-warn",
+          {/* A chave muda a cada troca de produto: o conteúdo remonta e entra
+              deslizando — inclusive o "—" de quando a relação sai. */}
+          <div key={entrada} className={cn(entrada > 0 && "depara-entra")}>
+            {item.productId ? (
+              <div className="flex items-center gap-2">
+                <ProdutoThumb url={item.productImagemUrl} nome={item.productNome} size="xs" />
+                <div className="min-w-0">
+                  <p className="leading-snug font-medium text-ink">{item.productNome}</p>
+                  {mostrarSku && (
+                    <p className="font-mono text-[10px] text-faint">{item.productSku}</p>
                   )}
-                  title={CONFIANCA[sugestao.motivo].justificativa}
-                >
-                  <Sparkles size={10} aria-hidden className="shrink-0" />
-                  {ORIGEM_SUGESTAO[sugestao.motivo]}
-                </p>
-                <p className="leading-snug text-ink-2">{sugestao.nome}</p>
-                {(mostrarSku || sugestao.fatorConversao > 1) && (
-                  <p className="font-mono text-[10px] text-faint">
-                    {[
-                      mostrarSku ? sugestao.sku : null,
-                      sugestao.fatorConversao > 1
-                        ? `1 ${uCom} = ${fmtQtd(sugestao.fatorConversao)} ${UNIDADE_ENTRADA}`
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </p>
-                )}
+                  {/* Chip só existe quando algo destoa — o caminho limpo segue
+                    sem ruído, e a comparação abre logo abaixo da linha. */}
+                  {divergencias.length > 0 && severidade && (
+                    <button
+                      type="button"
+                      onClick={() => setDetalhes((v) => !v)}
+                      aria-expanded={detalhes}
+                      className={cn(
+                        "mt-1 inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-0.5 text-left text-[10px] font-medium transition-colors",
+                        SEVERIDADE_UI[severidade].chip,
+                      )}
+                    >
+                      <TriangleAlert size={10} aria-hidden className="shrink-0" />
+                      {divergencias.length === 1
+                        ? divergencias[0].titulo
+                        : `${divergencias.length} diferenças encontradas`}
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          ) : buscandoSugestao && editavel ? (
-            <span className="text-faint">Procurando no catálogo…</span>
-          ) : (
-            <span className="text-faint">—</span>
-          )}
+            ) : sugestao ? (
+              // Palpite do servidor: um clique na coluna Ação resolve. O motivo
+              // aparece porque "mesmo código de barras" é prova e "nome parecido"
+              // é chute — e o operador confia diferente em cada um.
+              <div className="flex items-center gap-2">
+                <ProdutoThumb url={sugestao.imagemUrl} nome={sugestao.nome} size="xs" />
+                <div className="min-w-0">
+                  <p
+                    className={cn(
+                      "flex items-center gap-1 text-[10px] font-medium",
+                      CONFIANCA[sugestao.motivo].nivel === "alta"
+                        ? "text-ok"
+                        : CONFIANCA[sugestao.motivo].nivel === "media"
+                          ? "text-info"
+                          : "text-warn",
+                    )}
+                    title={CONFIANCA[sugestao.motivo].justificativa}
+                  >
+                    <Sparkles size={10} aria-hidden className="shrink-0" />
+                    {ORIGEM_SUGESTAO[sugestao.motivo]}
+                  </p>
+                  <p className="leading-snug text-ink-2">{sugestao.nome}</p>
+                  {(mostrarSku || sugestao.fatorConversao > 1) && (
+                    <p className="font-mono text-[10px] text-faint">
+                      {[
+                        mostrarSku ? sugestao.sku : null,
+                        sugestao.fatorConversao > 1
+                          ? `1 ${uCom} = ${fmtQtd(sugestao.fatorConversao)} ${UNIDADE_ENTRADA}`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ) : buscandoSugestao && editavel ? (
+              <span className="text-faint">Procurando no catálogo…</span>
+            ) : (
+              <span className="text-faint">—</span>
+            )}
+          </div>
         </td>
 
         {/* ── Quanto entra no estoque ───────────────────────── */}
@@ -1310,8 +1467,14 @@ function LinhaItem({
             </span>
           ) : (
             <span
+              // Estala quando o servidor confirma: o giro vira o selo de verdade.
+              key={pulso?.n ?? 0}
               title={explicacaoDoStatus}
-              className={cn("inline-grid h-7 w-7 cursor-help place-items-center rounded-full", situacao.selo)}
+              className={cn(
+                "inline-grid h-7 w-7 cursor-help place-items-center rounded-full",
+                situacao.selo,
+                pulso && "pop-in",
+              )}
             >
               <situacao.Icone className="h-3.5 w-3.5" aria-hidden />
               <span className="sr-only">{explicacaoDoStatus}</span>
@@ -1342,7 +1505,11 @@ function LinhaItem({
                 Converter
               </BotaoLinha>
             ) : pendencia === "CONFERIR" ? (
-              <BotaoLinha tom="neutro" onClick={() => setDetalhes((v) => !v)} aria-expanded={detalhes}>
+              <BotaoLinha
+                tom="neutro"
+                onClick={() => setDetalhes((v) => !v)}
+                aria-expanded={detalhes}
+              >
                 Revisar
               </BotaoLinha>
             ) : (
@@ -1444,7 +1611,6 @@ function LinhaItem({
   );
 }
 
-
 /**
  * "Quantas unidades vêm nessa caixa?" — respondido na própria linha.
  *
@@ -1515,9 +1681,7 @@ function DefinirEmbalagem({
           aria-label={`Unidades por ${emb}`}
           className="h-9 w-20 rounded-[var(--radius-sm)] border border-line-button bg-surface px-2 text-right font-mono text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
         />
-        <span className="text-[12px] whitespace-nowrap text-muted">
-          unidades por {emb}
-        </span>
+        <span className="text-[12px] whitespace-nowrap text-muted">unidades por {emb}</span>
       </div>
 
       {/* Embalagem já cadastrada é o caminho certo: grava o packagingId junto,
@@ -1585,9 +1749,8 @@ function DefinirEmbalagem({
         <p className="flex items-start gap-1.5 rounded-[var(--radius-sm)] bg-danger-soft px-2.5 py-2 text-[12px] text-danger">
           <TriangleAlert size={13} className="mt-0.5 shrink-0" aria-hidden />
           <span>
-            {fmtQtd(item.quantidade)} {uCom} × {fmtQtd(fator)} dá{" "}
-            {fmtQtd(conversao.bruto)} unidades. O estoque conta peça inteira — ajuste o
-            número.
+            {fmtQtd(item.quantidade)} {uCom} × {fmtQtd(fator)} dá {fmtQtd(conversao.bruto)}{" "}
+            unidades. O estoque conta peça inteira — ajuste o número.
           </span>
         </p>
       )}
@@ -1617,8 +1780,8 @@ function DefinirEmbalagem({
 
       {fator > 1 && (
         <p className="text-[11px] text-faint">
-          Fica salvo no cadastro do produto: as próximas compras deste fornecedor já vêm com
-          1 {uCom} = {fmtQtd(fator)} {UNIDADE_ENTRADA}.
+          Fica salvo no cadastro do produto: as próximas compras deste fornecedor já vêm com 1{" "}
+          {uCom} = {fmtQtd(fator)} {UNIDADE_ENTRADA}.
         </p>
       )}
     </div>

@@ -250,62 +250,67 @@ export async function carregarRecebimento(
 
   const inboundId = receipt.inboundId;
 
-  const inbound = inboundId
-    ? await db.fiscalInbound.findFirst({
-        where: { id: inboundId },
-        select: {
-          id: true,
-          status: true,
-          chave: true,
-          numero: true,
-          serie: true,
-          dataEmissao: true,
-          valorTotal: true,
-          emitRazaoSocial: true,
-          emitCnpj: true,
-          emitUf: true,
-          supplierId: true,
-          observacao: true,
-          semEstoqueMotivo: true,
-          purchaseId: true,
-          vinculoAutomatico: true,
-          conciliadoEm: true,
-          siteId: true,
-          site: { select: { nome: true } },
-          xmlArquivo: { select: { id: true } },
-          duplicatas: {
-            orderBy: { vencimento: "asc" },
-            select: { numero: true, vencimento: true, valor: true },
+  // Nota, pedido e linhas só dependem do recebimento: saem juntos, não em fila
+  // — cada ação do de-para re-renderiza esta tela inteira.
+  const [inbound, pedido, linhasCru] = await Promise.all([
+    inboundId
+      ? db.fiscalInbound.findFirst({
+          where: { id: inboundId },
+          select: {
+            id: true,
+            status: true,
+            chave: true,
+            numero: true,
+            serie: true,
+            dataEmissao: true,
+            valorTotal: true,
+            emitRazaoSocial: true,
+            emitCnpj: true,
+            emitUf: true,
+            supplierId: true,
+            observacao: true,
+            semEstoqueMotivo: true,
+            purchaseId: true,
+            vinculoAutomatico: true,
+            conciliadoEm: true,
+            siteId: true,
+            site: { select: { nome: true } },
+            xmlArquivo: { select: { id: true } },
+            duplicatas: {
+              orderBy: { vencimento: "asc" },
+              select: { numero: true, vencimento: true, valor: true },
+            },
           },
-        },
-      })
-    : null;
-
-  const pedido = receipt.purchaseOrderId
-    ? await db.purchaseOrder.findFirst({
-        where: { id: receipt.purchaseOrderId },
-        select: {
-          id: true,
-          numero: true,
-          status: true,
-          valorTotal: true,
-          previsaoEntrega: true,
-        },
-      })
-    : null;
-
-  const linhasCru = await db.purchaseReconciliationItem.findMany({
-    where: { receiptId: receipt.id },
-    // Ordem alfabética e estável: a lista é para conferir na sequência da
-    // paleteira, e o que está errado já subiu para o painel de divergências.
-    orderBy: { descricao: "asc" },
-  });
+        })
+      : null,
+    receipt.purchaseOrderId
+      ? db.purchaseOrder.findFirst({
+          where: { id: receipt.purchaseOrderId },
+          select: {
+            id: true,
+            numero: true,
+            status: true,
+            valorTotal: true,
+            previsaoEntrega: true,
+          },
+        })
+      : null,
+    db.purchaseReconciliationItem.findMany({
+      where: { receiptId: receipt.id },
+      // Ordem alfabética e estável: a lista é para conferir na sequência da
+      // paleteira, e o que está errado já subiu para o painel de divergências.
+      orderBy: { descricao: "asc" },
+    }),
+  ]);
 
   // Só a nota tem porta a escolher. Quem veio do pedido (ou do avulso) já
   // nasce com as linhas montadas — perguntar "de qual pedido é isto?" a quem
   // clicou "Iniciar recebimento" NESTE pedido seria pedir o que já se sabe.
   const escolherPorta =
-    receipt.origem === "XML" && !pedido && linhasCru.length === 0 && receipt.status !== "FINALIZADO";
+    receipt.origem === "XML" &&
+    !pedido &&
+    linhasCru.length === 0 &&
+    receipt.status !== "FINALIZADO";
   const semPedido = !pedido && linhasCru.length > 0;
   // A etapa da nota é a tela inteira enquanto a porta não foi escolhida, e
   // continua visitável depois: é lá que moram o fornecedor, o pedido e o
@@ -315,20 +320,22 @@ export async function carregarRecebimento(
 
   // A linha da conferência já vem convertida em unidades. Para dizer de ONDE
   // aquele número saiu — "0,6 MI × 1.000" — a tela precisa do item cru da nota.
-  const itensDaNota =
-    inboundId && linhasCru.length > 0
-      ? await db.fiscalInboundItem.findMany({
-          where: { inboundId },
-          select: { id: true, unidade: true, quantidade: true, fatorConversao: true },
-        })
-      : [];
-  const xmlPorItem = new Map(itensDaNota.map((i) => [i.id, i]));
-
   // Na etapa da nota o assunto são os itens crus do XML: é neles que o
-  // operador relaciona o catálogo.
-  const itensCru =
+  // operador relaciona o catálogo. As duas leituras dos itens saem juntas.
+  const [itensDaNota, itensCru] = await Promise.all([
+    inboundId && linhasCru.length > 0
+      ? db.fiscalInboundItem.findMany({
+          where: { inboundId },
+          select: {
+            id: true,
+            unidade: true,
+            quantidade: true,
+            fatorConversao: true,
+          },
+        })
+      : [],
     inboundId && mostrarNota
-      ? await db.fiscalInboundItem.findMany({
+      ? db.fiscalInboundItem.findMany({
           where: { inboundId },
           select: {
             id: true,
@@ -361,13 +368,42 @@ export async function carregarRecebimento(
           // não ajuda a achar o item na hora de relacionar ao catálogo.
           orderBy: { descricao: "asc" },
         })
-      : [];
-
-  const produtos = await produtosDe([
-    ...linhasCru.map((l) => l.productId),
-    ...itensCru.map((i) => i.productId),
+      : [],
   ]);
-  const donos = await donosDosCodigos(itensCru.map((i) => i.gtin));
+  const xmlPorItem = new Map(itensDaNota.map((i) => [i.id, i]));
+
+  // Palpites de pedido e de produto, o resumo do fornecedor, os produtos e os
+  // donos dos códigos não dependem uns dos outros (o palpite de produto só
+  // espera o de pedido): tudo em paralelo.
+  const pedidosSugeridos =
+    escolherPorta && inboundId ? sugerirPedidos(inboundId) : Promise.resolve([]);
+  // Mesma regra da tela: sem resposta na URL vale o pedido mais parecido; quem
+  // respondeu "sem pedido" não quer palpite de pedido nenhum. Com a conferência
+  // aberta não há o que adivinhar — o pedido é o que está vinculado.
+  const pedidoDasSugestoesP = pedidosSugeridos.then((sugestoes) =>
+    !escolherPorta
+      ? receipt.purchaseOrderId
+      : opts.origem === "sem" || opts.origem === "novo"
+        ? null
+        : (sugestoes.find((s) => s.purchaseOrderId === opts.origem)?.purchaseOrderId ??
+          sugestoes[0]?.purchaseOrderId ??
+          null),
+  );
+  const [produtos, donos, sugestoes, pedidoDasSugestoes, fornecedor, sugestoesDePara] =
+    await Promise.all([
+      produtosDe([...linhasCru.map((l) => l.productId), ...itensCru.map((i) => i.productId)]),
+      donosDosCodigos(itensCru.map((i) => i.gtin)),
+      pedidosSugeridos,
+      pedidoDasSugestoesP,
+      mostrarNota && inboundId ? resumoSincronizacaoDaNota(inboundId) : null,
+      // Só na etapa da nota e só enquanto dá para relacionar: são N buscas
+      // ranqueadas que a contagem não usa e o recebimento fechado não aceita.
+      mostrarNota && inboundId && !encerrado && itensCru.some((i) => !i.productId)
+        ? pedidoDasSugestoesP.then((purchaseOrderId) =>
+            sugestoesDaNota(inboundId, { purchaseOrderId }),
+          )
+        : [],
+    ]);
 
   const itensNota: ItemNotaView[] = itensCru.map((i) => {
     const p = i.productId ? produtos.get(i.productId) : null;
@@ -383,8 +419,7 @@ export async function carregarRecebimento(
       unidade: i.unidade,
       quantidade: Number(i.quantidade),
       unidadeTributavel: i.unidadeTributavel,
-      quantidadeTributavel:
-        i.quantidadeTributavel == null ? null : Number(i.quantidadeTributavel),
+      quantidadeTributavel: i.quantidadeTributavel == null ? null : Number(i.quantidadeTributavel),
       fatorConversao: Number(i.fatorConversao),
       valorUnitario: Number(i.valorUnitario),
       valorTotal: Number(i.valorTotal),
@@ -475,18 +510,6 @@ export async function carregarRecebimento(
     ),
   };
 
-  const sugestoes = escolherPorta && inboundId ? await sugerirPedidos(inboundId) : [];
-  // Mesma regra da tela: sem resposta na URL vale o pedido mais parecido; quem
-  // respondeu "sem pedido" não quer palpite de pedido nenhum. Com a conferência
-  // aberta não há o que adivinhar — o pedido é o que está vinculado.
-  const pedidoDasSugestoes = !escolherPorta
-    ? receipt.purchaseOrderId
-    : opts.origem === "sem" || opts.origem === "novo"
-      ? null
-      : (sugestoes.find((s) => s.purchaseOrderId === opts.origem)?.purchaseOrderId ??
-        sugestoes[0]?.purchaseOrderId ??
-        null);
-
   return {
     recebimento: {
       id: receipt.id,
@@ -553,13 +576,8 @@ export async function carregarRecebimento(
     // as sugestões são o conteúdo principal, então valem a consulta.
     sugestoes,
     pedidoDasSugestoes,
-    fornecedor: mostrarNota && inboundId ? await resumoSincronizacaoDaNota(inboundId) : null,
-    // Só na etapa da nota e só enquanto dá para relacionar: são N buscas
-    // ranqueadas que a contagem não usa e o recebimento fechado não aceita.
-    sugestoesDePara:
-      mostrarNota && inboundId && !encerrado && itensNota.some((i) => !i.productId)
-        ? await sugestoesDaNota(inboundId, { purchaseOrderId: pedidoDasSugestoes })
-        : [],
+    fornecedor,
+    sugestoesDePara,
     itensNota,
     linhas,
     resumo,
@@ -606,8 +624,12 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
       custoMedio: true,
       brand: { select: { nome: true } },
       fiscalProfile: { select: { ncm: true } },
-      subcategory: { select: { defaultFiscalProfile: { select: { ncm: true } } } },
-      packagings: { select: { id: true, nome: true, ean: true, fatorConversao: true } },
+      subcategory: {
+        select: { defaultFiscalProfile: { select: { ncm: true } } },
+      },
+      packagings: {
+        select: { id: true, nome: true, ean: true, fatorConversao: true },
+      },
     },
   });
   return new Map(
@@ -621,8 +643,7 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
         // cada imagem e o navegador as baixa depois.
         imagemUrl: urlImagemProduto(p.id, p.imagemUrl, p.updatedAt),
         unidadeBase: p.unidadeBase,
-        conteudoPorUnidade:
-          p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
+        conteudoPorUnidade: p.conteudoPorUnidade == null ? null : Number(p.conteudoPorUnidade),
         custoMedio: Number(p.custoMedio),
         marca: p.brand?.nome ?? null,
         codigos: p.barcodes,
@@ -707,12 +728,21 @@ async function donosDosCodigos(gtins: (string | null)[]): Promise<Map<string, Do
   }
   for (const p of produtos) {
     if (!p.ean) continue;
-    mapa.set(p.ean, { productId: p.id, nome: p.nome, sku: p.sku, onde: "o produto" });
+    mapa.set(p.ean, {
+      productId: p.id,
+      nome: p.nome,
+      sku: p.sku,
+      onde: "o produto",
+    });
   }
   return mapa;
 }
 
-export type SubcategoriaCadastro = { id: string; nome: string; categoriaNome: string };
+export type SubcategoriaCadastro = {
+  id: string;
+  nome: string;
+  categoriaNome: string;
+};
 
 /**
  * Só o suficiente pra um select — o cadastro rápido do recebimento não
@@ -728,5 +758,9 @@ export async function listarSubcategoriasParaCadastro(): Promise<SubcategoriaCad
     select: { id: true, nome: true, category: { select: { nome: true } } },
     orderBy: [{ category: { nome: "asc" } }, { nome: "asc" }],
   });
-  return subcategorias.map((s) => ({ id: s.id, nome: s.nome, categoriaNome: s.category.nome }));
+  return subcategorias.map((s) => ({
+    id: s.id,
+    nome: s.nome,
+    categoriaNome: s.category.nome,
+  }));
 }

@@ -1215,6 +1215,59 @@ body:has([data-app-shell]) {
   animation: ready-glow 0.7s ease-out both;
 }
 
+/* ── De-para da nota (recebimento) ───────────────────────────────────────
+   Relacionar, confirmar e remover respondem NA LINHA, em dois tempos: o
+   produto entra (ou sai) na hora do clique, e quando o servidor confirma a
+   linha pisca verde (relacionou) ou âmbar (soltou) e o selo de status estala.
+   Sem `both` no pulso de fundo: preso no último quadro, a linha perderia o
+   hover e o fundo de "gravando". */
+@keyframes depara-ok {
+  from,
+  45% {
+    background-color: var(--ok-soft);
+  }
+  to {
+    background-color: var(--surface);
+  }
+}
+.depara-ok {
+  animation: depara-ok 0.9s ease-out;
+}
+@keyframes depara-sai {
+  from,
+  40% {
+    background-color: var(--warn-soft);
+  }
+  to {
+    background-color: var(--surface);
+  }
+}
+.depara-sai {
+  animation: depara-sai 0.8s ease-out;
+}
+/* O conteúdo da coluna "Produto no NoHub" chegando: desliza da nota para o
+   catálogo, no sentido em que a linha é lida. */
+@keyframes depara-entra {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.depara-entra {
+  animation: depara-entra 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .depara-ok,
+  .depara-sai,
+  .depara-entra {
+    animation: none !important;
+  }
+}
+
 /* ============================================================
    Landing (marketing) — a primeira tela antes do login. Mesma
    linguagem do .auth-theme: canvas quente, poeira de pontos e

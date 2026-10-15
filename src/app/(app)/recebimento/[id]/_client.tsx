@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
+  ArrowRightLeft,
   CalendarClock,
   Check,
   CheckCheck,
@@ -44,6 +45,7 @@ import { useLeitorTeclado } from "@/lib/hooks/use-leitor-teclado";
 import { baixarXlsx } from "@/lib/baixar-xlsx";
 import { variacaoCusto } from "@/lib/compras/conciliacao-regras";
 import { frasesDeConversao, rotuloDaUnidade } from "@/lib/fiscal/unidades";
+import { nomeDaEmbalagem } from "@/lib/fiscal/embalagem-nome";
 import { fmtMoney, fmtQtd } from "../../cotacoes/_catalogo/ui";
 import {
   aceitarCustoAction,
@@ -207,6 +209,78 @@ function variacaoDaLinha(l: LinhaRecebimento): number | null {
  * Linha sem contagem entra pelo esperado.
  */
 const esperadoDe = (l: LinhaRecebimento) => l.qtdFaturada || l.qtdPedida;
+
+/** Inteiro, com folga para o ruído do decimal do banco. */
+const inteiro = (n: number) => Math.abs(n - Math.round(n)) < 1e-6;
+
+/**
+ * Quantas unidades vêm na embalagem em que a nota faturou — quando dá para
+ * contar nela. Só com XML (é "a quantidade que vem na nota") e só quando a
+ * conta fecha em embalagens inteiras: "0,5 CX" não se conta em caixa.
+ */
+function fatorDaEmbalagem(l: LinhaRecebimento): number | null {
+  const f = l.xml?.fatorConversao ?? 1;
+  if (f <= 1 || !inteiro(f)) return null;
+  return inteiro(esperadoDe(l) / f) ? f : null;
+}
+
+/**
+ * Régua da contagem desta linha.
+ *
+ * O padrão é contar como a nota faturou: 1 CX no papel, 1 CX na doca — quem
+ * confere tem a caixa fechada na frente, não 24 garrafas soltas. A exceção
+ * (caixa aberta, fardo misto, item que chega solto) conta por unidade, e
+ * contagem que já não fecha em caixas inteiras só cabe na unidade.
+ *
+ * O banco grava SEMPRE em unidade de estoque: a régua muda o que se digita e
+ * se lê, nunca o que é salvo.
+ */
+type Regua = { modo: "EMB" | "UN"; fator: number | null; sigla: string; forcado: boolean };
+
+function reguaDaLinha(l: LinhaRecebimento, pediuUnidade: boolean): Regua {
+  const fator = fatorDaEmbalagem(l);
+  const sigla = l.xml?.unidade.trim().toUpperCase() || UNIDADE_CONFERENCIA;
+  if (!fator) return { modo: "UN", fator: null, sigla, forcado: false };
+  const forcado = l.qtdRecebida != null && !inteiro(l.qtdRecebida / fator);
+  return { modo: pediuUnidade || forcado ? "UN" : "EMB", fator, sigla, forcado };
+}
+
+// A régua escolhida por linha mora no aparelho (localStorage). Sem
+// armazenamento (aba anônima, bloqueio) a troca ainda vale na tela, via a
+// cópia em memória — só não sobrevive ao recarregar.
+const EVENTO_POR_UNIDADE = "nohub:por-unidade";
+const memoriaPorUnidade = new Map<string, string>();
+
+function assinarPorUnidade(avisar: () => void) {
+  window.addEventListener("storage", avisar);
+  window.addEventListener(EVENTO_POR_UNIDADE, avisar);
+  return () => {
+    window.removeEventListener("storage", avisar);
+    window.removeEventListener(EVENTO_POR_UNIDADE, avisar);
+  };
+}
+
+function lerArmazenado(chave: string): string | null {
+  try {
+    return window.localStorage.getItem(chave) ?? memoriaPorUnidade.get(chave) ?? null;
+  } catch {
+    return memoriaPorUnidade.get(chave) ?? null;
+  }
+}
+
+function gravarArmazenado(chave: string, valor: string) {
+  memoriaPorUnidade.set(chave, valor);
+  try {
+    window.localStorage.setItem(chave, valor);
+  } catch {
+    // Fica só a cópia em memória.
+  }
+  window.dispatchEvent(new Event(EVENTO_POR_UNIDADE));
+}
+
+/** A quantidade em unidades lida na régua da linha. */
+const naRegua = (qtd: number, r: Regua) => (r.modo === "EMB" && r.fator ? qtd / r.fator : qtd);
+const siglaDaRegua = (r: Regua) => (r.modo === "EMB" ? r.sigla : UNIDADE_CONFERENCIA);
 const entrando = (l: LinhaRecebimento) => l.qtdRecebida ?? esperadoDe(l);
 
 const pct = (v: number) => `${v > 0 ? "▲" : "▼"}${Math.abs(v).toFixed(1).replace(".", ",")}%`;
@@ -362,6 +436,34 @@ function Conferencia({
   const [salvandoLinha, setSalvandoLinha] = React.useState<
     Record<string, EstadoSalvamento>
   >({});
+  /**
+   * Linhas que a pessoa pediu para contar por unidade — a exceção ao padrão de
+   * contar na embalagem da nota. Lembrado neste aparelho, por recebimento:
+   * recarregar no meio da contagem não pode trocar a régua de quem conta.
+   */
+  const chavePorUnidade = `nohub:recebimento:${recebimento.id}:por-unidade`;
+  const salvoPorUnidade = React.useSyncExternalStore(
+    assinarPorUnidade,
+    () => lerArmazenado(chavePorUnidade),
+    // No servidor não há aparelho: vale o padrão, contar na embalagem.
+    () => null,
+  );
+  const porUnidade = React.useMemo<ReadonlySet<string>>(() => {
+    try {
+      return new Set(salvoPorUnidade ? (JSON.parse(salvoPorUnidade) as string[]) : []);
+    } catch {
+      return new Set();
+    }
+  }, [salvoPorUnidade]);
+  const trocarRegua = React.useCallback(
+    (linhaId: string, unidade: boolean) => {
+      const n = new Set(porUnidade);
+      if (unidade) n.add(linhaId);
+      else n.delete(linhaId);
+      gravarArmazenado(chavePorUnidade, JSON.stringify([...n]));
+    },
+    [porUnidade, chavePorUnidade],
+  );
   const itensRef = React.useRef<Record<string, HTMLTableRowElement | null>>({});
   const timersRef = React.useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
@@ -478,12 +580,20 @@ function Conferencia({
         behavior: "smooth",
       });
       setPiscando(achado.linha.id);
+      // O toast fala na régua da linha: quem conta caixa lê "2 CX de 3".
+      const regua = reguaDaLinha(
+        { ...achado.linha, qtdRecebida: nova },
+        porUnidade.has(achado.linha.id),
+      );
+      const sigla = siglaDaRegua(regua);
       toast.success(
         achado.linha.descricao,
-        cega ? `${fmtQtd(nova)} contado(s)` : `${fmtQtd(nova)} de ${fmtQtd(achado.linha.qtdFaturada)}`,
+        cega
+          ? `${fmtQtd(naRegua(nova, regua))} ${sigla} contado(s)`
+          : `${fmtQtd(naRegua(nova, regua))} de ${fmtQtd(naRegua(esperadoDe(achado.linha), regua))} ${sigla}`,
       );
     },
-    [porCodigo, aplicarLocal, salvar, encerrada, cega],
+    [porCodigo, aplicarLocal, salvar, encerrada, cega, porUnidade],
   );
 
   // O destaque do bipe se apaga sozinho: é confirmação momentânea, não estado.
@@ -891,7 +1001,7 @@ function Conferencia({
                   </Th>
                   <Th
                     className={cn(COLUNA_LARGA, "text-center")}
-                    dica="A conferência conta unidades de estoque — garrafa, lata, maço. A embalagem que a nota faturou aparece embaixo da quantidade."
+                    dica="Por padrão a conferência conta na embalagem em que a nota faturou: 1 CX na nota, 1 CX na doca. Para contar um item unidade a unidade, troque para UN na linha. O estoque sempre recebe em unidades."
                   >
                     Unidade
                   </Th>
@@ -928,6 +1038,8 @@ function Conferencia({
                       itensRef.current[l.id] = el;
                     }}
                     linha={l}
+                    regua={reguaDaLinha(l, porUnidade.has(l.id))}
+                    onRegua={(unidade) => trocarRegua(l.id, unidade)}
                     numero={numeroDe.get(l.id) ?? 0}
                     situacao={situacoes.get(l.id) ?? "A_CONFERIR"}
                     temNota={Boolean(nota)}
@@ -2116,6 +2228,10 @@ const LinhaConferencia = React.forwardRef<
   HTMLTableRowElement,
   {
     linha: LinhaRecebimento;
+    /** Em que se conta esta linha: na embalagem da nota (padrão) ou na unidade. */
+    regua: Regua;
+    /** true = contar por unidade (a exceção); false = voltar à embalagem. */
+    onRegua: (unidade: boolean) => void;
     /** Número da linha no documento — o mesmo com ou sem filtro. */
     numero: number;
     situacao: Situacao;
@@ -2144,6 +2260,8 @@ const LinhaConferencia = React.forwardRef<
 >(function LinhaConferencia(
   {
     linha,
+    regua,
+    onRegua,
     numero,
     situacao,
     temNota,
@@ -2178,6 +2296,10 @@ const LinhaConferencia = React.forwardRef<
     linha.xml && linha.xml.fatorConversao !== 1
       ? { ...linha.xml, sigla: linha.xml.unidade.trim().toUpperCase() }
       : null;
+  /** Contando na embalagem da nota: o que se digita e se lê é caixa, não unidade. */
+  const naEmbalagem = regua.modo === "EMB" && regua.fator != null;
+  const sigla = siglaDaRegua(regua);
+  const emb = nomeDaEmbalagem(regua.sigla).toLowerCase();
   const temDetalhe = Boolean(linha.lote || linha.validade || linha.motivoDivergencia);
   const podeIgualar = !bloqueado && !cega;
   const temMenu = podeIgualar || !bloqueado || temDetalhe || Boolean(onRemover);
@@ -2249,11 +2371,52 @@ const LinhaConferencia = React.forwardRef<
           )}
         </td>
 
-        <td
-          className={cn(COLUNA_LARGA, "px-2 py-2 text-center font-medium text-ink-2")}
-          title="Unidade de estoque"
-        >
-          {UNIDADE_CONFERENCIA}
+        <td className={cn(COLUNA_LARGA, "px-2 py-2 text-center font-medium text-ink-2")}>
+          {regua.fator && !bloqueado ? (
+            // As duas réguas lado a lado: a da nota é o padrão, a unidade é a
+            // exceção de um item só. O número salvo não muda ao trocar.
+            <div
+              role="group"
+              aria-label={`Contar ${linha.descricao} em`}
+              className="inline-flex rounded-full border border-line-strong bg-surface p-0.5"
+            >
+              {(
+                [
+                  { unidade: false, rotulo: regua.sigla, dica: `Contar em ${emb} (como a nota)` },
+                  { unidade: true, rotulo: UNIDADE_CONFERENCIA, dica: "Contar por unidade" },
+                ] as const
+              ).map((o) => {
+                const ativo = (regua.modo === "UN") === o.unidade;
+                // Contagem que já não fecha em caixas inteiras só cabe na
+                // unidade: voltar para a caixa mostraria "1,5 CX".
+                const travado = !o.unidade && regua.forcado;
+                return (
+                  <button
+                    key={o.rotulo}
+                    type="button"
+                    aria-pressed={ativo}
+                    disabled={travado}
+                    title={
+                      travado
+                        ? `A contagem (${fmtQtd(recebido ?? 0)} ${UNIDADE_CONFERENCIA}) não fecha em ${emb}s inteiras de ${fmtQtd(regua.fator ?? 1)}.`
+                        : o.dica
+                    }
+                    onClick={() => onRegua(o.unidade)}
+                    className={cn(
+                      "h-6 min-w-9 cursor-pointer rounded-full px-2 text-[11px] font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40",
+                      ativo ? "bg-brand text-on-brand" : "text-muted enabled:hover:text-ink",
+                    )}
+                  >
+                    {o.rotulo}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <span title={naEmbalagem ? rotuloDaUnidade(regua.sigla) : "Unidade de estoque"}>
+              {sigla}
+            </span>
+          )}
         </td>
 
         {/* ── Quanto a nota diz ─────────────────────────────── */}
@@ -2266,6 +2429,22 @@ const LinhaConferencia = React.forwardRef<
             // O número que se compara com a contagem vem em destaque, do mesmo
             // tamanho do campo ao lado; embaixo, de onde ele saiu no papel —
             // "1 CX c/ 24" diz por que a nota de uma caixa espera 24.
+            naEmbalagem ? (
+              // Na régua da nota o número é o do papel — "1 CX" — e embaixo,
+              // quanto isso vira no estoque.
+              <>
+                <p className="text-[13px] font-semibold text-ink tabular-nums">
+                  {fmtQtd(naRegua(esperado, regua))}{" "}
+                  <span className="text-[11px] font-medium text-muted">{sigla}</span>
+                </p>
+                <p
+                  className="text-[10px] whitespace-nowrap text-muted"
+                  title={`${frasesDeConversao(regua.sigla, regua.fator ?? 1)}.`}
+                >
+                  = {fmtQtd(esperado)} {UNIDADE_CONFERENCIA}
+                </p>
+              </>
+            ) : (
             <>
               <p className="text-[13px] font-semibold text-ink tabular-nums">{fmtQtd(esperado)}</p>
               {doXml && (
@@ -2277,6 +2456,7 @@ const LinhaConferencia = React.forwardRef<
                 </p>
               )}
             </>
+            )
           )}
         </td>
 
@@ -2284,14 +2464,23 @@ const LinhaConferencia = React.forwardRef<
         <td className="px-2 py-1.5 text-center">
           {bloqueado ? (
             <span className="font-medium text-ink tabular-nums">
-              {recebido == null ? <span className="text-faint">—</span> : fmtQtd(recebido)}
+              {recebido == null ? (
+                <span className="text-faint">—</span>
+              ) : (
+                <>
+                  {fmtQtd(naRegua(recebido, regua))}
+                  {naEmbalagem && <span className="ml-1 text-[11px] text-muted">{sigla}</span>}
+                </>
+              )}
             </span>
           ) : (
+            <div className="inline-flex flex-col items-center gap-0.5">
             <input
-              // `key` amarrado ao valor do servidor: o campo é não controlado
-              // (para não brigar com a digitação), e sem remontar ele ficava
-              // exibindo 12 depois de o bipe somar 13.
-              key={`${linha.id}:${recebido ?? "-"}`}
+              // `key` amarrado ao valor do servidor E à régua: o campo é não
+              // controlado (para não brigar com a digitação), e sem remontar
+              // ele ficava exibindo 12 depois de o bipe somar 13 — ou "24"
+              // depois de a pessoa trocar para contar em caixa.
+              key={`${linha.id}:${recebido ?? "-"}:${regua.modo}`}
               type="number"
               // Peça inteira, sempre: o saldo conta garrafa, não meia garrafa.
               // Aceitar decimal aqui só empurraria o erro para a hora de
@@ -2302,23 +2491,31 @@ const LinhaConferencia = React.forwardRef<
               // Sem número sugerido: o campo nasce vazio e só se enche com o
               // que alguém contou. Um "24" cinza dentro dele passava por
               // contado — e era justamente o número que a pessoa não conferiu.
-              defaultValue={recebido ?? ""}
+              defaultValue={recebido == null ? "" : naRegua(recebido, regua)}
               data-contagem
-              aria-label={`Quantidade recebida de ${linha.descricao}, em unidades inteiras`}
+              aria-label={
+                naEmbalagem
+                  ? `Quantidade recebida de ${linha.descricao}, em ${emb}s inteiras de ${fmtQtd(regua.fator ?? 1)}`
+                  : `Quantidade recebida de ${linha.descricao}, em unidades inteiras`
+              }
               onBlur={(e) => {
                 const bruto = e.target.value.trim();
+                const mostrado = recebido == null ? "" : String(naRegua(recebido, regua));
                 // O cursor mora neste campo, e o leitor USB "digita" onde o
                 // cursor está: oito dígitos ou mais não são quantidade, são um
                 // código de barras. Volta o campo e trata como bipe.
                 if (/^\d{8,}$/.test(bruto)) {
-                  e.target.value = recebido == null ? "" : String(recebido);
+                  e.target.value = mostrado;
                   onBipe(bruto);
                   return;
                 }
-                const novo = bruto === "" ? null : Math.round(Number(bruto));
+                const digitado = bruto === "" ? null : Math.round(Number(bruto));
                 // O campo devolve o inteiro para a tela não ficar mostrando
                 // "1,5" que o servidor nunca vai gravar.
-                if (novo != null && String(novo) !== bruto) e.target.value = String(novo);
+                if (digitado != null && String(digitado) !== bruto) e.target.value = String(digitado);
+                // Digitou caixas; o banco guarda unidades. 2 CX de 24 = 48.
+                const novo =
+                  digitado != null && naEmbalagem ? digitado * (regua.fator ?? 1) : digitado;
                 if (novo === recebido) return;
                 onAlterar({ qtdRecebida: novo });
               }}
@@ -2329,6 +2526,18 @@ const LinhaConferencia = React.forwardRef<
               }}
               className="h-8 w-14 [appearance:textfield] rounded-[var(--radius)] border border-line-strong bg-surface px-2 text-center text-[13px] font-semibold text-ink tabular-nums focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none @[54rem]:w-16 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
             />
+            {/* Sem a coluna Unidade (celular), a régua fica colada no campo —
+                "2" sozinho não diz se é caixa ou garrafa. */}
+            {regua.fator && (
+              <span className="text-[10px] font-medium text-muted @[54rem]:hidden">{sigla}</span>
+            )}
+            {/* Contou em caixa: o quanto isso vira no estoque, à vista. */}
+            {naEmbalagem && recebido != null && (
+              <span className="hidden text-[10px] text-faint tabular-nums @[54rem]:inline">
+                = {fmtQtd(recebido)} {UNIDADE_CONFERENCIA}
+              </span>
+            )}
+            </div>
           )}
         </td>
 
@@ -2341,7 +2550,8 @@ const LinhaConferencia = React.forwardRef<
           ) : (
             <span className={cn("font-semibold", diferenca < 0 ? "text-danger" : "text-accent")}>
               {diferenca > 0 ? "+" : "−"}
-              {fmtQtd(Math.abs(diferenca))}
+              {fmtQtd(Math.abs(naRegua(diferenca, regua)))}
+              {naEmbalagem && <span className="ml-0.5 text-[10px] font-medium">{sigla}</span>}
             </span>
           )}
         </td>
@@ -2430,7 +2640,21 @@ const LinhaConferencia = React.forwardRef<
                   digitar o número que já está na tela ao lado. */}
               {podeIgualar && (
                 <MenuItem icon={<Check size={15} />} onClick={() => onAlterar({ qtdRecebida: esperado })}>
-                  Recebi {fmtQtd(esperado)}, igual {temNota ? "à nota" : "ao pedido"}
+                  Recebi {fmtQtd(naRegua(esperado, regua))} {sigla}, igual{" "}
+                  {temNota ? "à nota" : "ao pedido"}
+                </MenuItem>
+              )}
+              {/* A troca de régua também mora aqui: no celular a coluna
+                  Unidade, onde fica o botão, some. */}
+              {regua.fator && !bloqueado && (
+                <MenuItem
+                  icon={<ArrowRightLeft size={15} />}
+                  disabled={regua.modo === "UN" && regua.forcado}
+                  onClick={() => onRegua(regua.modo === "EMB")}
+                >
+                  {regua.modo === "EMB"
+                    ? "Contar por unidade"
+                    : `Contar em ${emb} (${fmtQtd(regua.fator)} ${UNIDADE_CONFERENCIA})`}
                 </MenuItem>
               )}
               {(!bloqueado || temDetalhe) && (
