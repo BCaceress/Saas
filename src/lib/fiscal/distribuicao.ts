@@ -1,13 +1,20 @@
 import "server-only";
+import { decifrar } from "@/lib/crypto";
 import { basePrisma, txComTenant } from "@/lib/prisma";
 import { runWithTenant } from "@/lib/tenant-context";
-import { whereFeature } from "@/lib/planos";
-import { logErro } from "@/lib/log";
+import { featureAtiva } from "@/lib/planos";
+import { logErro, logInfo } from "@/lib/log";
 import { carregarConfigFiscal, providerDoTenant } from "./index";
 import { distribuicaoNuvemFiscal, type DocumentoDistribuido } from "./nuvem-fiscal";
 import { importarNotasXml } from "./entrada";
 import { registrarImportacoes } from "./import-log";
-import type { ManifestacaoTipo } from "@/generated/prisma";
+import {
+  ambienteDistribuicao,
+  consultarDistribuicaoSefaz,
+  type DocumentoSefaz,
+} from "./sefaz-distribuicao";
+import { manifestarDistribuicaoSefaz } from "./sefaz-evento";
+import type { ManifestacaoTipo, Prisma } from "@/generated/prisma";
 
 // ============================================================
 // Distribuição DF-e — as notas que fornecedores emitiram CONTRA o nosso CNPJ.
@@ -23,8 +30,9 @@ import type { ManifestacaoTipo } from "@/generated/prisma";
 // de-para como se já estivesse conciliada e geraria entrada vazia no estoque.
 // Resumo fica na fila de manifestação, e só o XML completo é importado.
 //
-// Hoje só a Nuvem Fiscal expõe distribuição. Outros provedores caem no
-// `null` e a tela simplesmente não oferece o recurso.
+// A consulta é feita diretamente no serviço oficial quando o certificado A1
+// está guardado no NoHub. O adapter Nuvem Fiscal permanece como fallback de
+// compatibilidade para certificados antigos que ainda não foram reenviados.
 // ============================================================
 
 /** Nota que a SEFAZ conhece e nós ainda não importamos. */
@@ -52,24 +60,54 @@ function serieENumeroDaChave(chave: string): { serie: number; numero: number } {
 }
 
 type Contexto = {
+  emitenteId: string;
   cnpj: string;
+  uf: string;
   siteId: string;
-  distribuicao: ReturnType<typeof distribuicaoNuvemFiscal>;
+  certificadoPfx: string | null;
+  certificadoSenha: string | null;
+  distribuicao: ReturnType<typeof distribuicaoNuvemFiscal> | null;
 };
 
-/** null = provedor sem distribuição, ou loja sem emitente/CNPJ configurado. */
+/**
+ * null = loja sem emitente, ou sem certificado A1 guardado e sem o provedor
+ * legado (Nuvem Fiscal). Com o certificado, nada mais é exigido: nem provedor,
+ * nem config fiscal, nem o add-on de emissão — receber nota não emite nada.
+ */
 async function contexto(tenantId: string, siteId: string): Promise<Contexto | null> {
-  const cfg = await carregarConfigFiscal(tenantId);
-  if (!cfg || cfg.provider !== "NUVEM_FISCAL") return null;
-
   const emitente = await txComTenant(tenantId, (tx) =>
-    tx.fiscalEmitente.findFirst({ where: { siteId }, select: { cnpj: true } }),
+    tx.fiscalEmitente.findFirst({
+      where: { siteId },
+      select: {
+        id: true,
+        cnpj: true,
+        uf: true,
+        certificadoPfx: true,
+        certificadoSenha: true,
+      },
+    }),
   );
   if (!emitente) return null;
 
-  return {
+  const base = {
+    emitenteId: emitente.id,
     cnpj: emitente.cnpj,
+    uf: emitente.uf,
     siteId,
+  };
+  const certificadoPfx = decifrar(emitente.certificadoPfx);
+  const certificadoSenha = decifrar(emitente.certificadoSenha);
+  if (certificadoPfx && certificadoSenha) {
+    return { ...base, certificadoPfx, certificadoSenha, distribuicao: null };
+  }
+
+  // Legado: certificado enviado só ao provedor antes da consulta direta.
+  const cfg = await carregarConfigFiscal(tenantId);
+  if (cfg?.provider !== "NUVEM_FISCAL") return null;
+  return {
+    ...base,
+    certificadoPfx: null,
+    certificadoSenha: null,
     distribuicao: distribuicaoNuvemFiscal({ apiToken: cfg.apiToken, ambiente: cfg.ambiente }),
   };
 }
@@ -78,7 +116,165 @@ export async function distribuicaoDisponivel(
   tenantId: string,
   siteId: string,
 ): Promise<boolean> {
-  return (await contexto(tenantId, siteId)) !== null;
+  const ctx = await contexto(tenantId, siteId);
+  return Boolean(ctx?.certificadoPfx || ctx?.distribuicao);
+}
+
+const ESPERA_SEFAZ_MS = 60 * 60 * 1000;
+
+/**
+ * Quando a SEFAZ diz que não há mais nada (137, ou ultNSU == maxNSU), a regra
+ * é esperar 1 hora. Consultar antes disso devolve 656 "Consumo Indevido" — e o
+ * 656 reinicia a espera. Erro de rede/certificado não trava: pode tentar já.
+ */
+export function proximaConsultaSefaz(emitente: {
+  distribuicaoConsultadoEm: Date | null;
+  distribuicaoUltNsu: bigint;
+  distribuicaoMaxNsu: bigint;
+  distribuicaoUltimoErro: string | null;
+}): Date | null {
+  if (!emitente.distribuicaoConsultadoEm) return null;
+  const esgotou = emitente.distribuicaoUltimoErro
+    ? emitente.distribuicaoUltimoErro.startsWith("SEFAZ 656")
+    : emitente.distribuicaoUltNsu >= emitente.distribuicaoMaxNsu;
+  if (!esgotou) return null;
+  const libera = new Date(emitente.distribuicaoConsultadoEm.getTime() + ESPERA_SEFAZ_MS);
+  return libera > new Date() ? libera : null;
+}
+
+type ConsultaDireta = {
+  documentos: DocumentoDistribuido[];
+  /** Preenchido quando a SEFAZ não foi chamada (ou não pode ser de novo) até esta hora. */
+  proximaConsultaEm: Date | null;
+};
+
+async function consultarDireto(tenantId: string, ctx: Contexto): Promise<ConsultaDireta> {
+  if (!ctx.certificadoPfx || !ctx.certificadoSenha) {
+    throw new Error("Envie o certificado digital A1 desta loja para consultar a SEFAZ diretamente.");
+  }
+
+  const atual = await txComTenant(tenantId, (tx) =>
+    tx.fiscalEmitente.findFirst({
+      where: { id: ctx.emitenteId },
+      select: {
+        distribuicaoUltNsu: true,
+        distribuicaoMaxNsu: true,
+        distribuicaoConsultadoEm: true,
+        distribuicaoUltimoErro: true,
+      },
+    }),
+  );
+  const bloqueadoAte = atual ? proximaConsultaSefaz(atual) : null;
+  // Sem ir à SEFAZ: o acervo local ainda é processado por quem chamou.
+  if (bloqueadoAte) return { documentos: [], proximaConsultaEm: bloqueadoAte };
+
+  let resultado: Awaited<ReturnType<typeof consultarDistribuicaoSefaz>>;
+  try {
+    resultado = await consultarDistribuicaoSefaz({
+      ambiente: ambienteDistribuicao(),
+      uf: ctx.uf,
+      cnpj: ctx.cnpj,
+      pfxBase64: ctx.certificadoPfx,
+      senha: ctx.certificadoSenha,
+      ultNSU: atual?.distribuicaoUltNsu ?? BigInt(0),
+    });
+  } catch (e) {
+    // Fica gravado para a tela de configuração mostrar por que a nota não veio.
+    await txComTenant(tenantId, (tx) =>
+      tx.fiscalEmitente.update({
+        where: { id: ctx.emitenteId },
+        data: {
+          distribuicaoConsultadoEm: new Date(),
+          distribuicaoUltimoErro: (e instanceof Error ? e.message : String(e)).slice(0, 500),
+        },
+      }),
+    );
+    throw e;
+  }
+
+  logInfo("fiscal.distribuicao.consulta", {
+    tenantId,
+    emitenteId: ctx.emitenteId,
+    cStat: resultado.cStat,
+    ultNSU: resultado.ultNSU.toString(),
+    maxNSU: resultado.maxNSU.toString(),
+    notas: resultado.documentos.length,
+    ignorados: resultado.ignorados,
+  });
+
+  // Mesma chave no lote como resumo e como XML completo: fica a completa.
+  const porChave = new Map<string, DocumentoSefaz>();
+  for (const documento of resultado.documentos) {
+    const visto = porChave.get(documento.chave);
+    if (!visto || (visto.resumo && !documento.resumo)) porChave.set(documento.chave, documento);
+  }
+
+  // Em lote: com o acervo inicial (até 90 dias) uma ida e volta por nota
+  // estoura o tempo da transação, e aí o cursor também não avança.
+  await txComTenant(tenantId, async (tx) => {
+    await tx.fiscalEmitente.update({
+      where: { id: ctx.emitenteId },
+      data: {
+        distribuicaoUltNsu: resultado.ultNSU,
+        distribuicaoMaxNsu: resultado.maxNSU,
+        distribuicaoConsultadoEm: new Date(),
+        distribuicaoUltimoErro: null,
+      },
+    });
+    if (porChave.size === 0) return;
+
+    const existentes = await tx.fiscalDistribuicaoDocumento.findMany({
+      where: { emitenteId: ctx.emitenteId, chave: { in: [...porChave.keys()] } },
+      select: { id: true, chave: true, resumo: true },
+    });
+    const existentePorChave = new Map(existentes.map((e) => [e.chave, e]));
+    const novos: Prisma.FiscalDistribuicaoDocumentoCreateManyInput[] = [];
+
+    for (const documento of porChave.values()) {
+      const existente = existentePorChave.get(documento.chave);
+      // Resumo atrasado não rebaixa um XML completo que já chegou.
+      if (existente && !existente.resumo && documento.resumo) continue;
+      const data = {
+        nsu: documento.nsu,
+        chave: documento.chave,
+        emitCnpj: documento.emitCnpj,
+        emitRazaoSocial: documento.emitRazaoSocial,
+        valorTotal: documento.valorTotal,
+        dataEmissao: documento.dataEmissao,
+        schema: documento.schema,
+        resumo: documento.resumo,
+        xml: documento.resumo ? null : documento.xml,
+      };
+      if (existente) {
+        await tx.fiscalDistribuicaoDocumento.update({
+          where: { id: existente.id },
+          data: { ...data, xml: data.xml ?? undefined },
+        });
+      } else {
+        novos.push({ tenantId, emitenteId: ctx.emitenteId, ...data });
+      }
+    }
+    if (novos.length > 0) {
+      await tx.fiscalDistribuicaoDocumento.createMany({ data: novos, skipDuplicates: true });
+    }
+  });
+
+  const documentos = resultado.documentos.map((documento) => ({
+    externalId: documento.nsu.toString(),
+    nsu: Number(documento.nsu),
+    chave: documento.chave,
+    resumo: documento.resumo,
+    emitCnpj: documento.emitCnpj,
+    emitRazaoSocial: documento.emitRazaoSocial,
+    valorTotal: documento.valorTotal,
+    dataEmissao: documento.dataEmissao,
+    xml: documento.xml,
+  }));
+  const esgotou = resultado.ultNSU >= resultado.maxNSU;
+  return {
+    documentos,
+    proximaConsultaEm: esgotou ? new Date(Date.now() + ESPERA_SEFAZ_MS) : null,
+  };
 }
 
 export type ResultadoSincronizacao = {
@@ -87,6 +283,10 @@ export type ResultadoSincronizacao = {
   aguardandoManifestacao: number;
   /** Notas em que demos ciência sozinhos para liberar o XML completo. */
   manifestadas: number;
+  /** A SEFAZ só aceita nova consulta a partir daqui (regra de 1 h). */
+  proximaConsultaEm: Date | null;
+  /** true = a SEFAZ não foi chamada agora por causa da espera. */
+  aguardando: boolean;
 };
 
 /**
@@ -105,12 +305,61 @@ export async function sincronizarDistribuicao(input: {
   const ctx = await contexto(tenantId, siteId);
   if (!ctx) {
     throw new Error(
-      "A busca automática de notas exige o provedor Nuvem Fiscal e os dados fiscais da loja preenchidos.",
+      "A busca automática de notas exige os dados fiscais da loja e um certificado digital A1.",
     );
   }
 
-  await ctx.distribuicao.sincronizar(ctx.cnpj);
-  const documentos = await ctx.distribuicao.listarDocumentos(ctx.cnpj);
+  const direta = ctx.certificadoPfx ? await consultarDireto(tenantId, ctx) : null;
+  const documentosNovos = direta
+    ? direta.documentos
+    : ctx.distribuicao
+      ? (await ctx.distribuicao.sincronizar(ctx.cnpj),
+        await ctx.distribuicao.listarDocumentos(ctx.cnpj))
+      : [];
+  const aguardando = Boolean(direta?.proximaConsultaEm && direta.documentos.length === 0);
+  // O cursor só traz o que é novo; o acervo local cobre o XML que chegou e
+  // ainda não foi importado e o resumo ainda sem manifestação (a ciência
+  // automática ligada depois também alcança esses).
+  const documentosArmazenados = ctx.certificadoPfx
+    ? await txComTenant(tenantId, (tx) =>
+        tx.fiscalDistribuicaoDocumento.findMany({
+          where: {
+            emitenteId: ctx.emitenteId,
+            OR: [
+              { resumo: false, xml: { not: null } },
+              { resumo: true, manifestacao: null },
+            ],
+          },
+          select: {
+            nsu: true,
+            chave: true,
+            resumo: true,
+            emitCnpj: true,
+            emitRazaoSocial: true,
+            valorTotal: true,
+            dataEmissao: true,
+            xml: true,
+          },
+        }),
+      )
+    : [];
+  const documentos = [
+    ...documentosNovos,
+    ...documentosArmazenados.map((d) => ({
+      externalId: d.nsu.toString(),
+      nsu: Number(d.nsu),
+      chave: d.chave,
+      resumo: d.resumo,
+      emitCnpj: d.emitCnpj,
+      emitRazaoSocial: d.emitRazaoSocial,
+      valorTotal: d.valorTotal == null ? null : Number(d.valorTotal),
+      dataEmissao: d.dataEmissao,
+      xml: d.resumo ? undefined : (d.xml ?? undefined),
+    })),
+  ]
+    // Mesma chave como resumo e completa: vale a completa.
+    .sort((a, b) => Number(a.resumo) - Number(b.resumo))
+    .filter((d, i, all) => all.findIndex((item) => item.chave === d.chave) === i);
   const novos = await filtrarNaoImportados(tenantId, documentos);
 
   let importadas = 0;
@@ -127,6 +376,8 @@ export async function sincronizarDistribuicao(input: {
     importadas: importadas + manifestadas,
     aguardandoManifestacao: resumos.length - manifestadas,
     manifestadas,
+    proximaConsultaEm: direta?.proximaConsultaEm ?? null,
+    aguardando,
   };
 }
 
@@ -138,6 +389,25 @@ export async function listarAguardandoManifestacao(
   const ctx = await contexto(tenantId, siteId);
   if (!ctx) return [];
 
+  if (ctx.certificadoPfx) {
+    const aguardando = await txComTenant(tenantId, (tx) =>
+      tx.fiscalDistribuicaoDocumento.findMany({
+        where: { emitenteId: ctx.emitenteId, resumo: true, manifestacao: null },
+        orderBy: { dataEmissao: "desc" },
+      }),
+    );
+    return aguardando.map((d) => ({
+      chave: d.chave,
+      externalId: d.nsu.toString(),
+      emitCnpj: d.emitCnpj,
+      emitRazaoSocial: d.emitRazaoSocial,
+      valorTotal: d.valorTotal == null ? null : Number(d.valorTotal),
+      dataEmissao: d.dataEmissao?.toISOString() ?? null,
+      ...serieENumeroDaChave(d.chave),
+    }));
+  }
+
+  if (!ctx.distribuicao) return [];
   const documentos = await ctx.distribuicao.listarDocumentos(ctx.cnpj);
   const novos = await filtrarNaoImportados(tenantId, documentos);
 
@@ -182,10 +452,25 @@ export async function manifestarNota(input: {
   }
 
   const ctx = await contexto(tenantId, siteId);
-  if (!ctx) throw new Error("Manifestação exige o provedor Nuvem Fiscal configurado.");
+  if (!ctx) throw new Error("Manifestação exige os dados fiscais e o certificado A1 da loja.");
 
-  const provider = await providerDoTenant(tenantId, { exigirAtivo: false });
-  const r = await provider.manifestar({ cnpj: ctx.cnpj, chave, tipo, justificativa });
+  const r = ctx.certificadoPfx && ctx.certificadoSenha
+    ? await manifestarDistribuicaoSefaz({
+        ambiente: ambienteDistribuicao(),
+        cnpj: ctx.cnpj,
+        chave,
+        pfxBase64: ctx.certificadoPfx,
+        senha: ctx.certificadoSenha,
+        tipo,
+        justificativa,
+      })
+    : await (async () => {
+        if (!ctx.distribuicao) {
+          throw new Error("Envie o certificado digital A1 desta loja para manifestar a nota.");
+        }
+        const provider = await providerDoTenant(tenantId, { exigirAtivo: false });
+        return provider.manifestar({ cnpj: ctx.cnpj, chave, tipo, justificativa });
+      })();
 
   await txComTenant(tenantId, async (tx) => {
     await tx.fiscalEvent.create({
@@ -209,6 +494,10 @@ export async function manifestarNota(input: {
         where: { chave },
         data: { manifestacao: tipo, manifestadoEm: new Date() },
       });
+      await tx.fiscalDistribuicaoDocumento.updateMany({
+        where: { emitenteId: ctx.emitenteId, chave },
+        data: { manifestacao: tipo, manifestadoEm: new Date() },
+      });
     }
   });
 
@@ -223,6 +512,59 @@ export async function manifestarNota(input: {
   // Desconhecida ou não realizada não vira entrada — só o registro do evento.
   let importada = false;
   if (tipo === "CIENCIA" || tipo === "CONFIRMACAO") {
+    if (ctx.certificadoPfx && ctx.certificadoSenha) {
+      // Depois da ciência o procNFe sai pela consulta da chave. A SEFAZ às vezes
+      // demora a liberar — falhar aqui não desfaz a manifestação, que já valeu;
+      // a próxima sincronização traz o XML pelo cursor.
+      let completo: DocumentoSefaz | undefined;
+      try {
+        const liberado = await consultarDistribuicaoSefaz({
+          ambiente: ambienteDistribuicao(),
+          uf: ctx.uf,
+          cnpj: ctx.cnpj,
+          pfxBase64: ctx.certificadoPfx,
+          senha: ctx.certificadoSenha,
+          ultNSU: BigInt(0),
+          chaveConsulta: chave,
+        });
+        completo = liberado.documentos.find((d) => d.chave === chave && !d.resumo);
+      } catch (e) {
+        logErro("fiscal.distribuicao.xml-pos-manifestacao", e, { chave });
+      }
+      if (completo) {
+        const xml = completo.xml;
+        await txComTenant(tenantId, (tx) =>
+          tx.fiscalDistribuicaoDocumento.updateMany({
+            where: { emitenteId: ctx.emitenteId, chave },
+            data: { resumo: false, xml, schema: completo.schema },
+          }),
+        );
+        importada = await importarDoProvedor(
+          ctx,
+          { tenantId, siteId, userId },
+          {
+            externalId: completo.nsu.toString(),
+            nsu: Number(completo.nsu),
+            chave: completo.chave,
+            resumo: false,
+            emitCnpj: completo.emitCnpj,
+            emitRazaoSocial: completo.emitRazaoSocial,
+            valorTotal: completo.valorTotal,
+            dataEmissao: completo.dataEmissao,
+            xml,
+          },
+        );
+      }
+      return {
+        ok: true,
+        mensagem:
+          importada
+            ? "Manifestação registrada diretamente na SEFAZ e nota importada."
+            : "Manifestação registrada diretamente na SEFAZ. O XML completo costuma liberar em alguns minutos — sincronize de novo.",
+        importada,
+      };
+    }
+    if (!ctx.distribuicao) throw new Error("Envie o certificado digital A1 desta loja.");
     const documentos = await ctx.distribuicao.listarDocumentos(ctx.cnpj);
     const completo = documentos.find((d) => d.chave === chave && !d.resumo);
     if (completo) {
@@ -309,11 +651,15 @@ export async function sincronizarDistribuicaoTodos(): Promise<{
   importadas: number;
   erros: number;
 }> {
+  // Certificado guardado no NoHub não depende do add-on de emissão (receber
+  // nota não emite nada); o caminho legado pela Nuvem Fiscal tem custo por
+  // consulta e continua restrito a quem contratou o fiscal.
   const tenants = await basePrisma.tenant.findMany({
-    where: { moduloFiscal: true, ...whereFeature("fiscal") },
-    select: { id: true },
+    where: { status: { not: "CANCELED" } },
+    select: { id: true, moduloFiscal: true, plano: true, addons: true, lojasExtras: true },
   });
 
+  let comCertificado = 0;
   let lojas = 0;
   let importadas = 0;
   let erros = 0;
@@ -322,10 +668,17 @@ export async function sincronizarDistribuicaoTodos(): Promise<{
     try {
       const emitentes = await txComTenant(t.id, (tx) =>
         tx.fiscalEmitente.findMany({
-          where: { certificadoId: { not: null } },
+          where: {
+            OR: [
+              { certificadoPfx: { not: null } },
+              ...(featureAtiva(t, "fiscal") ? [{ certificadoId: { not: null } }] : []),
+            ],
+          },
           select: { siteId: true },
         }),
       );
+      if (emitentes.length === 0) continue;
+      comCertificado += 1;
 
       for (const e of emitentes) {
         try {
@@ -345,7 +698,7 @@ export async function sincronizarDistribuicaoTodos(): Promise<{
     }
   }
 
-  return { tenants: tenants.length, lojas, importadas, erros };
+  return { tenants: comCertificado, lojas, importadas, erros };
 }
 
 // ── Internos ────────────────────────────────────────────────
@@ -372,7 +725,10 @@ async function importarDoProvedor(
   alvo: { tenantId: string; siteId: string; userId?: string | null },
   documento: DocumentoDistribuido,
 ): Promise<boolean> {
-  const xml = await ctx.distribuicao.baixarXml(documento.externalId);
+  const xml = documento.xml ?? (ctx.distribuicao
+    ? await ctx.distribuicao.baixarXml(documento.externalId)
+    : null);
+  if (!xml) throw new Error("A SEFAZ ainda não liberou o XML completo desta nota.");
   const resultado = await importarNotasXml({
     tenantId: alvo.tenantId,
     siteId: alvo.siteId,

@@ -3,11 +3,13 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { guardAction } from "@/lib/guard";
-import { cifrar, decifrar } from "@/lib/crypto";
+import { cifrar } from "@/lib/crypto";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import { onlyDigits } from "@/lib/normalize";
 import { providerDoTenant, CRT_POR_REGIME } from "@/lib/fiscal";
+import { lerCertificadoA1 } from "@/lib/fiscal/certificado-a1";
+import { consultarCnpjReceita } from "@/lib/fiscal/cnpj-receita";
 
 // ============================================================
 // Configurações fiscais. Duas permissões distintas de propósito:
@@ -216,28 +218,31 @@ const certificadoSchema = z.object({
 });
 
 /**
- * Sobe o certificado para o PROVEDOR. A senha e o .pfx passam por aqui e
- * morrem aqui: guardamos só o id opaco, o titular e a validade. Chave privada
- * não fica no nosso banco — se vazar o banco, não vaza a assinatura.
+ * Valida o certificado localmente e, quando houver provedor de emissão, também
+ * o envia para ele. Para a Distribuição DF-e direta, o .pfx e a senha ficam
+ * cifrados com SECRETS_KEY; nunca são devolvidos ao browser.
  */
 export async function enviarCertificadoAction(input: z.input<typeof certificadoSchema>) {
   return tx(async (tid) => {
     const d = certificadoSchema.parse(input);
 
-    const emitente = await db.fiscalEmitente.findFirst({
-      where: { siteId: d.siteId },
-      select: { id: true, cnpj: true },
+    const infoLocal = lerCertificadoA1(d.arquivoBase64, d.senha);
+    const emitente =
+      (await db.fiscalEmitente.findFirst({
+        where: { siteId: d.siteId },
+        select: { id: true, cnpj: true },
+      })) ?? (await emitenteDoCertificado(tid, d.siteId, infoLocal.cnpj, infoLocal.titular));
+    const config = await db.fiscalConfig.findFirst({
+      select: { provider: true },
     });
-    if (!emitente) {
-      throw new Error("Cadastre os dados fiscais desta loja antes de enviar o certificado.");
-    }
-
-    const provider = await providerDoTenant(tid, { exigirAtivo: false });
-    const info = await provider.enviarCertificado({
-      cnpj: emitente.cnpj,
-      arquivo: Uint8Array.from(Buffer.from(d.arquivoBase64, "base64")),
-      senha: d.senha,
-    });
+    const info =
+      config && config.provider !== "SIMULADO"
+        ? await (await providerDoTenant(tid, { exigirAtivo: false })).enviarCertificado({
+            cnpj: emitente.cnpj,
+            arquivo: Uint8Array.from(Buffer.from(d.arquivoBase64, "base64")),
+            senha: d.senha,
+          })
+        : infoLocal;
 
     if (onlyDigits(info.cnpj) !== emitente.cnpj) {
       throw new Error(
@@ -251,10 +256,75 @@ export async function enviarCertificadoAction(input: z.input<typeof certificadoS
         certificadoId: info.id,
         certificadoTitular: info.titular,
         certificadoValidade: info.validade,
+        certificadoPfx: cifrar(d.arquivoBase64),
+        certificadoSenha: cifrar(d.senha),
+        distribuicaoUltimoErro: null,
       },
     });
     revalidatePath(ROTA);
+    revalidatePath("/configuracoes/notas-fiscais");
     return { titular: info.titular, validade: info.validade };
+  });
+}
+
+/**
+ * Loja sem dados fiscais: o certificado basta para receber nota pela SEFAZ.
+ * O CNPJ sai do próprio certificado e o resto (razão social, endereço, UF) da
+ * Receita, com o endereço da loja/empresa como reserva para a UF. A IE fica em
+ * branco — só a emissão precisa dela, e a tela fiscal pede antes de emitir.
+ */
+async function emitenteDoCertificado(
+  tenantId: string,
+  siteId: string,
+  cnpj: string,
+  titular: string,
+): Promise<{ id: string; cnpj: string }> {
+  const outraLoja = await db.fiscalEmitente.findFirst({
+    where: { cnpj },
+    select: { site: { select: { nome: true } } },
+  });
+  if (outraLoja) {
+    throw new Error(
+      `O CNPJ ${cnpj} deste certificado já está vinculado à loja ${outraLoja.site.nome}.`,
+    );
+  }
+
+  const [receita, site, tenant] = await Promise.all([
+    consultarCnpjReceita(cnpj),
+    db.site.findFirst({
+      where: { id: siteId },
+      select: { cep: true, rua: true, numero: true, cidade: true, estado: true },
+    }),
+    db.tenant.findFirst({ select: { estado: true, cidade: true } }),
+  ]);
+  if (!site) throw new Error("Loja não encontrada.");
+
+  const uf = (receita?.uf || site.estado || tenant?.estado || "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(uf)) {
+    throw new Error(
+      "Não conseguimos descobrir a UF deste CNPJ na Receita. Preencha o estado da loja em Configurações → Empresa e envie o certificado de novo.",
+    );
+  }
+
+  return db.fiscalEmitente.create({
+    data: {
+      tenantId,
+      siteId,
+      cnpj,
+      razaoSocial: receita?.razaoSocial || titular,
+      nomeFantasia: receita?.nomeFantasia || null,
+      ie: "",
+      cep: receita?.cep || onlyDigits(site.cep ?? ""),
+      logradouro: receita?.logradouro || site.rua || "",
+      numero: receita?.numero || site.numero || "",
+      complemento: receita?.complemento || null,
+      bairro: receita?.bairro || "",
+      municipio: receita?.municipio || site.cidade || tenant?.cidade || "",
+      codigoMunicipio: receita?.codigoMunicipio || "",
+      uf,
+      telefone: receita?.telefone || null,
+    },
+    select: { id: true, cnpj: true },
   });
 }
 

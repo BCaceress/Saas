@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Copy, PackageCheck, Receipt, Trash2, Undo2, Unlink } from "lucide-react";
+import { Copy, PackageCheck, Receipt, Trash2, Unlink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MenuItem } from "@/components/ui/menu";
 import { Input } from "@/components/ui/input";
@@ -13,13 +13,9 @@ import {
   candidatasEntradaManualAction,
   descartarNotaAction,
   receberNotaAction,
-  vincularEntradaManualAction,
 } from "@/app/(app)/fiscal/notas-recebidas/actions";
-import {
-  desvincularNotaAction,
-  entradaDaNotaAction,
-  estornarEntradaAction,
-} from "@/app/(app)/estoque/estorno-actions";
+import { desvincularNotaAction } from "@/app/(app)/estoque/estorno-actions";
+import { vincularNotaAEntradaAction } from "../conferencia-actions";
 import { fmtMoney } from "../../cotacoes/_ui";
 import type { NotaRecebimento } from "../_data";
 
@@ -36,7 +32,10 @@ import type { NotaRecebimento } from "../_data";
 //
 // O que NÃO está aqui é de propósito: os dados da nota e o pedido moram na
 // etapa 1, a contagem na etapa 2, e repetir a decisão em dois lugares é como
-// se criava divergência.
+// se criava divergência. O estorno também saiu daqui: ele desfaz o
+// RECEBIMENTO (a compra e a bonificação, que são entradas separadas da mesma
+// carga) e mora no menu do topo, para quem tem `estoque.ajustar` — daqui ele
+// desfazia só a entrada da nota e deixava a bonificação no estoque.
 // ============================================================
 
 type Candidata = Awaited<ReturnType<typeof candidatasEntradaManualAction>>[number];
@@ -44,12 +43,11 @@ type Candidata = Awaited<ReturnType<typeof candidatasEntradaManualAction>>[numbe
 /**
  * As decisões do documento que exigem motivo.
  *
- * Todas as três mexem em coisa feita — a nota some da fila, o saldo volta, o
- * vínculo se desfaz — e todas gravam o porquê no histórico. O texto de cada
- * uma diz a CONSEQUÊNCIA, não o mecanismo: quem clica em "Estornar" precisa
- * saber que os títulos em aberto são cancelados junto, antes de confirmar.
+ * As duas mexem em coisa feita — a nota some da fila, o vínculo se desfaz — e
+ * gravam o porquê no histórico. O texto de cada uma diz a CONSEQUÊNCIA, não o
+ * mecanismo.
  */
-type Confirmacao = "DESCARTAR" | "ESTORNAR" | "DESVINCULAR";
+type Confirmacao = "DESCARTAR" | "DESVINCULAR";
 
 const CONFIRMACOES: Record<
   Confirmacao,
@@ -62,15 +60,6 @@ const CONFIRMACOES: Record<
     placeholder: "Ex.: já lancei essa nota à mão",
     cta: "Descartar",
     fazendo: "Descartando…",
-  },
-  ESTORNAR: {
-    titulo: "Estornar entrada",
-    descricao:
-      "A mercadoria sai do estoque, o custo médio volta ao que era e os títulos em aberto desta nota são cancelados.",
-    hint: "Fica no histórico da entrada, com seu nome e a hora.",
-    placeholder: "Ex.: nota lançada em duplicidade",
-    cta: "Estornar entrada",
-    fazendo: "Estornando…",
   },
   DESVINCULAR: {
     titulo: "Desfazer vínculo",
@@ -152,29 +141,6 @@ export function PainelNota({
     setConfirmando(tipo);
   }
 
-  function estornar(motivo: string) {
-    start(async () => {
-      try {
-        const entrada = await entradaDaNotaAction(nota.id);
-        if (!entrada) {
-          toast.error("Não foi possível localizar a entrada desta nota.");
-          return;
-        }
-        const r = await estornarEntradaAction({ purchaseId: entrada.id, motivo });
-        toast.success(
-          "Entrada estornada.",
-          r.titulosCancelados > 0
-            ? `${r.itens} item(ns) saíram do estoque e ${r.titulosCancelados} título(s) foram cancelados.`
-            : `${r.itens} item(ns) saíram do estoque.`,
-        );
-        setConfirmando(null);
-        router.refresh();
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : "Falha ao estornar.");
-      }
-    });
-  }
-
   function desvincular(motivo: string) {
     start(async () => {
       try {
@@ -205,7 +171,6 @@ export function PainelNota({
     const texto = motivo.trim();
     if (texto.length < 3 || !confirmando) return;
     if (confirmando === "DESCARTAR") descartar(texto);
-    else if (confirmando === "ESTORNAR") estornar(texto);
     else desvincular(texto);
   }
 
@@ -213,7 +178,7 @@ export function PainelNota({
   // ao lado do que o operador clica o tempo todo eram atalhos com peso de
   // caminho principal.
   const menu =
-    editavel || nota.status === "RECEBIDO" || nota.status === "VINCULADO" ? (
+    editavel || nota.status === "VINCULADO" ? (
       <>
         {/* Atalho, não caminho: nota de serviço, frete ou compra que o
             operador já conferiu no papel não precisa de contagem. Some
@@ -225,17 +190,6 @@ export function PainelNota({
             onClick={() => setConfirmandoEntrada(true)}
           >
             Dar entrada sem conferir
-          </MenuItem>
-        )}
-        {/* Desfazer é operação de verdade, não “registre um ajuste”:
-            volta o saldo, cancela os títulos e libera a nota. */}
-        {nota.status === "RECEBIDO" && (
-          <MenuItem
-            icon={<Undo2 size={15} />}
-            disabled={pending}
-            onClick={() => pedirMotivo("ESTORNAR")}
-          >
-            Estornar entrada
           </MenuItem>
         )}
         {nota.status === "VINCULADO" && (
@@ -314,7 +268,7 @@ export function PainelNota({
                   onClick={() =>
                     start(async () => {
                       try {
-                        await vincularEntradaManualAction({
+                        const r = await vincularNotaAEntradaAction({
                           inboundId: nota.id,
                           purchaseId: c.purchaseId,
                         });
@@ -322,7 +276,11 @@ export function PainelNota({
                           "Nota vinculada à entrada.",
                           "O estoque não foi movimentado de novo.",
                         );
-                        router.refresh();
+                        // A nota passou a documentar o recebimento daquela
+                        // entrada — e este, que só guardava o lugar, foi
+                        // cancelado. A pessoa vai para onde a nota está agora.
+                        if (r.receiptId) router.push(`/recebimento/${r.receiptId}`);
+                        else router.refresh();
                       } catch (e) {
                         toast.error(e instanceof Error ? e.message : "Falha ao vincular.");
                       }

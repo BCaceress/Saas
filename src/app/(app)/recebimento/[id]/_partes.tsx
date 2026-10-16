@@ -2,7 +2,16 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowLeft, CircleX, FileText, MoreVertical } from "lucide-react";
+import {
+  ArrowLeft,
+  CircleX,
+  Download,
+  FilePlus2,
+  FileText,
+  MoreVertical,
+  Send,
+  Undo2,
+} from "lucide-react";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { Badge } from "@/components/ui/misc";
 import { toast } from "@/components/ui/toast";
@@ -126,15 +135,30 @@ export function Topo({
   podeTratarNota,
   podeBaixarXml,
   onCancelar,
+  onEstornar,
+  onAvisarFornecedor,
+  onExportar,
+  onVincularNota,
+  acoesDoConcluido,
 }: {
   dados: RecebimentoView;
   etapa: EtapaId;
-  /** Decide sobre o DOCUMENTO: descartar, estornar, dar entrada sem conferir. */
+  /** Decide sobre o DOCUMENTO: descartar, dar entrada sem conferir. */
   podeTratarNota: boolean;
   /** Abre e baixa o XML guardado (`fiscal.baixar`). */
   podeBaixarXml: boolean;
   /** Abandonar a conferência sem mover estoque. Ausente = não cabe agora. */
   onCancelar?: () => void;
+  /** Desfazer a entrada do recebimento concluído. Ausente = não cabe ou não pode. */
+  onEstornar?: () => void;
+  /** Texto pronto ao fornecedor, quando não há painel de diferenças com o botão. */
+  onAvisarFornecedor?: () => void;
+  /** A planilha da conferência — coisa que se faz uma vez, mora no menu. */
+  onExportar?: () => void;
+  /** A NF-e chegou depois da mercadoria: documentar este recebimento com ela. */
+  onVincularNota?: () => void;
+  /** O que fazer depois de receber — dentro do aviso de concluído. */
+  acoesDoConcluido?: React.ReactNode;
 }) {
   const { recebimento, nota, pedido, semPedido, resumo, escolherPorta } = dados;
   const naConferencia = etapa === "conferencia";
@@ -158,13 +182,17 @@ export function Topo({
       semPedido={naConferencia && semPedido}
       menuDoDocumento={menuDoDocumento}
       onCancelar={onCancelar}
+      onEstornar={onEstornar}
+      onAvisarFornecedor={onAvisarFornecedor}
+      onExportar={onExportar}
+      onVincularNota={onVincularNota}
       // Da contagem, um clique de volta ao que a nota diz. Sem nota, a
       // conferência é a tela inteira e não há para onde voltar.
       linkDaNota={naConferencia && nota ? `/recebimento/${recebimento.id}?etapa=nota` : null}
     />
   );
 
-  const encerrado = <AvisoEncerrado recebimento={recebimento} />;
+  const encerrado = <AvisoEncerrado recebimento={recebimento} acoes={acoesDoConcluido} />;
 
   if (nota && podeTratarNota) {
     return (
@@ -189,12 +217,20 @@ export function Topo({
 }
 
 /** Recebimento fechado: a tela inteira vira leitura, e isto diz por quê. */
-function AvisoEncerrado({ recebimento }: { recebimento: RecebimentoView["recebimento"] }) {
+function AvisoEncerrado({
+  recebimento,
+  acoes,
+}: {
+  recebimento: RecebimentoView["recebimento"];
+  /** Próximos passos do concluído — ficam no mesmo aviso, não num cartão a mais. */
+  acoes?: React.ReactNode;
+}) {
   if (recebimento.status === "FINALIZADO") {
     return (
-      <p className="rounded-[var(--radius)] bg-ok-soft px-4 py-3 text-[13px] text-ok">
-        Recebimento {recebimento.numero} finalizado — a mercadoria já entrou no estoque.
-      </p>
+      <div className="rounded-[var(--radius)] bg-ok-soft px-4 py-3 text-[13px] text-ok">
+        <p>Recebimento {recebimento.numero} finalizado — a mercadoria já entrou no estoque.</p>
+        {acoes}
+      </div>
     );
   }
   if (recebimento.status === "CANCELADO") {
@@ -251,7 +287,7 @@ function IdentidadeDaNota({
     </>
   );
   if (solta) return conteudo;
-  return <p className="truncate text-[13px] text-muted">{conteudo}</p>;
+  return <p className="text-[13px] text-muted sm:truncate">{conteudo}</p>;
 }
 
 function Cabecalho({
@@ -264,6 +300,10 @@ function Cabecalho({
   semPedido,
   menuDoDocumento,
   onCancelar,
+  onEstornar,
+  onAvisarFornecedor,
+  onExportar,
+  onVincularNota,
   linkDaNota,
 }: {
   recebimento: RecebimentoView["recebimento"];
@@ -279,14 +319,29 @@ function Cabecalho({
   /** Itens de menu das decisões do documento — só para quem trata a nota. */
   menuDoDocumento?: React.ReactNode;
   onCancelar?: () => void;
+  onEstornar?: () => void;
+  onAvisarFornecedor?: () => void;
+  onExportar?: () => void;
+  onVincularNota?: () => void;
   /** Endereço da etapa da nota — só na conferência. */
   linkDaNota?: string | null;
 }) {
   const xmlNoMenu = Boolean(nota?.temXml) && !xmlNaTela && podeBaixarXml;
-  const temMenu = Boolean(xmlNoMenu || menuDoDocumento || onCancelar);
+  const temMenu = Boolean(
+    xmlNoMenu ||
+      menuDoDocumento ||
+      onCancelar ||
+      onEstornar ||
+      onAvisarFornecedor ||
+      onExportar ||
+      onVincularNota,
+  );
 
   return (
-    <div className="flex items-start gap-3">
+    // No celular o título fica com a linha inteira e o selo e as ações descem
+    // para a linha de baixo: lado a lado, sobravam ~110px para o nome e ele
+    // virava "Dis…". Da tela pequena para cima, tudo numa linha só.
+    <div className="flex flex-wrap items-start gap-x-3 gap-y-2 sm:flex-nowrap">
       <Link
         href="/recebimento"
         className="mt-1 grid h-9 w-9 shrink-0 place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
@@ -298,21 +353,21 @@ function Cabecalho({
       {/* Hierarquia: quem mandou > qual documento > onde. Na etapa 1 quem manda
           e qual documento têm cartão próprio logo abaixo — sobra o recebimento. */}
       {resumido ? (
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-[calc(100%-3rem)] sm:basis-0">
           <h1 className="truncate font-display text-[20px] font-semibold text-ink">
             Recebimento <span className="font-mono">{recebimento.numero}</span>
           </h1>
           {nota && <IdentidadeDaNota nota={nota} />}
         </div>
       ) : (
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-[calc(100%-3rem)] sm:basis-0">
           <p className="font-mono text-[11px] font-semibold tracking-wider text-faint">
             {recebimento.numero}
           </p>
-          <h1 className="truncate font-display text-[20px] font-semibold text-ink">
+          <h1 className="line-clamp-2 font-display text-[20px] leading-tight font-semibold text-ink sm:line-clamp-1">
             {recebimento.supplierNome ?? "Sem fornecedor"}
           </h1>
-          <p className="truncate text-[13px] text-muted">
+          <p className="line-clamp-2 text-[13px] text-muted sm:truncate">
             {nota ? (
               <IdentidadeDaNota nota={nota} solta />
             ) : (
@@ -347,68 +402,97 @@ function Cabecalho({
         </div>
       )}
 
-      {/* Em que pé está o recebimento, à direita do título — o mesmo selo
-          nas duas etapas. */}
-      <Badge
-        tone={STATUS_RECEBIMENTO[recebimento.status].tom}
-        className="mt-1.5 shrink-0 px-2.5 py-1 text-[12px]"
-      >
-        {STATUS_RECEBIMENTO[recebimento.status].rotulo}
-      </Badge>
-
-      {linkDaNota && (
-        <Link
-          href={linkDaNota}
-          className="mt-1 inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-line-button bg-surface px-3.5 text-[13px] font-medium text-ink transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+      <div className="flex w-full items-center gap-2 pl-12 sm:w-auto sm:shrink-0 sm:items-start sm:gap-3 sm:pl-0">
+        {/* Em que pé está o recebimento, à direita do título — o mesmo selo
+            nas duas etapas. */}
+        <Badge
+          tone={STATUS_RECEBIMENTO[recebimento.status].tom}
+          className="shrink-0 px-2.5 py-1 text-[12px] sm:mt-1.5"
         >
-          <FileText className="h-4 w-4" aria-hidden />
-          <span className="hidden sm:inline">Nota e produtos</span>
-          <span className="sm:hidden">Nota</span>
-        </Link>
-      )}
+          {STATUS_RECEBIMENTO[recebimento.status].rotulo}
+        </Badge>
 
-      {/* Um menu só para o recebimento e para o documento dele. O que não é a
-          decisão da vez sai do caminho: baixar o XML, descartar a nota e
-          cancelar a conferência são coisas que se faz uma vez. */}
-      {temMenu && (
-        <Menu
-          trigger={
-            <button
-              type="button"
-              className="mt-1 grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
-              aria-label="Mais opções deste recebimento"
-            >
-              <MoreVertical className="h-4 w-4" aria-hidden />
-            </button>
-          }
-        >
-          {nota && xmlNoMenu && (
-            // O contador pede o XML, e sem isto o operador volta ao e-mail do
-            // fornecedor procurar o anexo que já está guardado aqui.
-            <MenuItem
-              icon={<FileText size={15} />}
-              onClick={() => {
-                buscarXmlDaNota(nota.id, nota.chave)
-                  .then(salvarComoArquivo)
-                  .catch((e: unknown) =>
-                    toast.error(
-                      "Não deu para baixar o XML",
-                      e instanceof Error ? e.message : "Tente de novo.",
-                    ),
-                  );
-              }}
-            >
-              Baixar XML
-            </MenuItem>
-          )}
-          {menuDoDocumento}
-          {onCancelar && (
-            <MenuItem icon={<CircleX size={15} />} onClick={onCancelar} danger>
-              Cancelar recebimento
-            </MenuItem>
-          )}
-        </Menu>
-      )}
+        {/* No celular os botões vão para a ponta direita da segunda linha. */}
+        <span className="flex-1 sm:hidden" aria-hidden />
+
+        {linkDaNota && (
+          <Link
+            href={linkDaNota}
+            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-line-button bg-surface px-3.5 text-[13px] font-medium text-ink transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none sm:mt-1"
+          >
+            <FileText className="h-4 w-4" aria-hidden />
+            <span className="hidden sm:inline">Nota e produtos</span>
+            <span className="sm:hidden">Nota</span>
+          </Link>
+        )}
+
+        {/* Um menu só para o recebimento e para o documento dele. O que não é a
+            decisão da vez sai do caminho: baixar o XML, descartar a nota e
+            cancelar a conferência são coisas que se faz uma vez. */}
+        {temMenu && (
+          <Menu
+            trigger={
+              <button
+                type="button"
+                className="grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-full border border-line-button text-ink-2 transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none sm:mt-1"
+                aria-label="Mais opções deste recebimento"
+              >
+                <MoreVertical className="h-4 w-4" aria-hidden />
+              </button>
+            }
+          >
+            {nota && xmlNoMenu && (
+              // O contador pede o XML, e sem isto o operador volta ao e-mail do
+              // fornecedor procurar o anexo que já está guardado aqui.
+              <MenuItem
+                icon={<FileText size={15} />}
+                onClick={() => {
+                  buscarXmlDaNota(nota.id, nota.chave)
+                    .then(salvarComoArquivo)
+                    .catch((e: unknown) =>
+                      toast.error(
+                        "Não deu para baixar o XML",
+                        e instanceof Error ? e.message : "Tente de novo.",
+                      ),
+                    );
+                }}
+              >
+                Baixar XML
+              </MenuItem>
+            )}
+            {onVincularNota && (
+              // Sem XML até agora: a nota que chegou depois documenta ESTE
+              // recebimento, em vez de abrir outro com a mesma carga.
+              <MenuItem icon={<FilePlus2 size={15} />} onClick={onVincularNota}>
+                Vincular NF-e
+              </MenuItem>
+            )}
+            {onExportar && (
+              <MenuItem icon={<Download size={15} />} onClick={onExportar}>
+                Exportar conferência (planilha)
+              </MenuItem>
+            )}
+            {onAvisarFornecedor && (
+              <MenuItem icon={<Send size={15} />} onClick={onAvisarFornecedor}>
+                Avisar fornecedor das diferenças
+              </MenuItem>
+            )}
+            {menuDoDocumento}
+            {onEstornar && (
+              // Desfazer é operação de verdade: volta o saldo, cancela os
+              // títulos em aberto e reabre a conferência.
+              <MenuItem icon={<Undo2 size={15} />} onClick={onEstornar} danger>
+                Estornar recebimento
+              </MenuItem>
+            )}
+            {onCancelar && (
+              <MenuItem icon={<CircleX size={15} />} onClick={onCancelar} danger>
+                Cancelar recebimento
+              </MenuItem>
+            )}
+          </Menu>
+        )}
+      </div>
     </div>
   );
 }

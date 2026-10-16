@@ -665,6 +665,7 @@ export type DocumentoDistribuido = {
   emitRazaoSocial: string;
   valorTotal: number | null;
   dataEmissao: Date | null;
+  xml?: string;
 };
 
 export function distribuicaoNuvemFiscal(cfg: {

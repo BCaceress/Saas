@@ -1,20 +1,33 @@
 import "server-only";
 import { db } from "@/lib/prisma";
-import { criarPedidoCompra, registrarDevolucao } from "@/lib/estoque";
+import { criarPedidoCompra } from "@/lib/estoque";
 import { custoDoItem } from "@/lib/fiscal/custo";
 import { unidadesDaLinha } from "@/lib/fiscal/unidades";
 import { registrarEvento } from "./eventos";
+import { garantirRecebimentoDaNota, fatoresDe } from "./recebimento";
+import { criarDevolucaoFornecedor } from "./devolucao";
+import { enviarEmail } from "@/lib/email";
+import { gerarXlsx } from "@/lib/relatorios/xlsx";
 import {
-  garantirRecebimentoDaNota,
-  finalizarRecebimento,
-  fatoresDe,
-  type ResultadoRecebimento,
-} from "./recebimento";
-import { TOL_QTD, vereditoDaLinha } from "./conciliacao-regras";
+  TOL_QTD,
+  absorverAvulsas,
+  mesclarContagemAnterior,
+  planejarConciliacao,
+  type ItemDoPedidoConciliado,
+} from "./conciliacao-regras";
+import {
+  custoDeEntradaDaLinha,
+  esperadoDaLinha,
+  frasesDeDivergencia,
+  lotesDoJson,
+  quantidadeQueEntra,
+} from "./recebimento-regras";
 import type {
+  Prisma,
   PurchaseOrderStatus,
   ReconciliationResolucao,
   ReconciliationStatus,
+  SupplierReturnMotivo,
 } from "@/generated/prisma";
 
 // ============================================================
@@ -267,13 +280,102 @@ function medidaDoItem(item: {
   return { qtdBase, custoBase: qtdBase > 0 ? custoTotal / qtdBase : 0 };
 }
 
+/** O que a doca já escreveu nas linhas — o que remontar não pode apagar. */
+const SELECT_CONTAGEM = {
+  id: true,
+  inboundItemId: true,
+  purchaseOrderItemId: true,
+  productId: true,
+  bonificacao: true,
+  status: true,
+  qtdRecebida: true,
+  lote: true,
+  validade: true,
+  lotes: true,
+  contadoPor: true,
+  contadoEm: true,
+  resolucao: true,
+  motivoDivergencia: true,
+} as const;
+
+/**
+ * Troca as linhas que nasceram da nota e do pedido pelas novas, com a contagem
+ * já carregada — e deixa em paz as que a doca acrescentou ("veio a mais",
+ * "Adicionar item"). Essas não nascem de documento nenhum, então remontar não
+ * as recria: apagá-las junto com as outras sumia com mercadoria contada sempre
+ * que alguém relacionava um item ao catálogo no meio da conferência.
+ */
+async function regravarLinhas(input: {
+  tenantId: string;
+  receiptId: string;
+  inboundId: string;
+  purchaseOrderId: string | null;
+  linhas: LinhaNova[];
+  decisaoSoComMesmoVeredito: boolean;
+  /**
+   * A nota acaba de chegar a um recebimento contado à mão: a contagem das
+   * linhas avulsas passa para a linha da nota do mesmo produto (ver
+   * `absorverAvulsas`). Só no vínculo — remontar por outro motivo não mexe na
+   * linha que a doca abriu.
+   */
+  absorverAvulsas?: boolean;
+}): Promise<void> {
+  const { tenantId, receiptId, inboundId, purchaseOrderId } = input;
+  const anteriores = await db.purchaseReconciliationItem.findMany({
+    where: { receiptId },
+    select: SELECT_CONTAGEM,
+  });
+  const todasAvulsas = anteriores.filter((a) => !a.inboundItemId && !a.purchaseOrderItemId);
+  const mescladas = mesclarContagemAnterior(input.linhas, anteriores, {
+    decisaoSoComMesmoVeredito: input.decisaoSoComMesmoVeredito,
+  });
+  const { linhas: novas, absorvidas } = input.absorverAvulsas
+    ? absorverAvulsas(mescladas, todasAvulsas)
+    : { linhas: mescladas, absorvidas: [] as string[] };
+  const avulsas = todasAvulsas.filter((a) => !absorvidas.includes(a.id));
+  if (absorvidas.length > 0) {
+    await db.purchaseReconciliationItem.deleteMany({ where: { id: { in: absorvidas } } });
+  }
+
+  await db.purchaseReconciliationItem.deleteMany({
+    where: {
+      receiptId,
+      OR: [{ inboundItemId: { not: null } }, { purchaseOrderItemId: { not: null } }],
+    },
+  });
+  if (avulsas.length > 0) {
+    // A linha avulsa acompanha o documento da vez: com o pedido trocado, ela
+    // passa a ser "fora deste pedido".
+    await db.purchaseReconciliationItem.updateMany({
+      where: { id: { in: avulsas.map((a) => a.id) } },
+      data: { inboundId, purchaseOrderId },
+    });
+  }
+  if (novas.length > 0) {
+    await db.purchaseReconciliationItem.createMany({
+      // JSON nulo não se grava como `null` — sem lote repartido, o campo fica de fora.
+      data: novas.map(({ lotes, ...l }) => ({
+        tenantId,
+        receiptId,
+        inboundId,
+        purchaseOrderId,
+        ...l,
+        ...(lotes != null ? { lotes: lotes as Prisma.InputJsonValue } : {}),
+      })),
+    });
+  }
+}
+
 /**
  * Monta (ou refaz) a conciliação da nota contra um pedido.
  *
- * Casar item da nota com item do pedido é por produto, não por posição: o
- * fornecedor reordena as linhas, quebra uma linha em duas e manda bonificação
- * no meio. Linha do pedido pode ficar sem par (NAO_FATURADO) e linha da nota
- * também (NAO_PEDIDO) — é exatamente isso que o painel de divergências mostra.
+ * Casar item da nota com item do pedido é por produto, não por posição — a
+ * regra mora em `planejarConciliacao`, pura e testada. Linha do pedido pode
+ * ficar sem par (NAO_FATURADO) e linha da nota também (NAO_PEDIDO) — é
+ * exatamente isso que o painel de divergências mostra.
+ *
+ * O pedido entra pelo SALDO: a segunda nota de um pedido entregue em duas
+ * vezes é conferida contra o que ainda faltava, não contra o pedido inteiro.
  */
 export async function conciliar(input: {
   tenantId: string;
@@ -282,6 +384,8 @@ export async function conciliar(input: {
   userId?: string | null;
   automatico?: boolean;
   score?: number | null;
+  /** A nota chegou a um recebimento contado à mão — ver `regravarLinhas`. */
+  absorverAvulsas?: boolean;
 }): Promise<void> {
   const { tenantId, inboundId, purchaseOrderId, userId } = input;
 
@@ -361,76 +465,40 @@ export async function conciliar(input: {
     ...inbound.items.map((i) => i.productId),
   ]);
 
-  // Lado do pedido, já em unidade base.
-  const doPedido = pedido.items.map((i) => {
+  // Lado do pedido, já em unidade base — e pelo que ainda falta chegar.
+  const doPedido: ItemDoPedidoConciliado[] = pedido.items.map((i) => {
     const fator = (i.packagingId ? fatorPacote.get(i.packagingId) : null) ?? 1;
+    const pedida = unidadesDaLinha(Number(i.qtdPedida), fator).unidades;
+    const recebida = unidadesDaLinha(Number(i.qtdRecebida), fator).unidades;
     return {
       id: i.id,
       productId: i.productId,
       compra: i.tipo === "COMPRA",
-      qtdBase: unidadesDaLinha(Number(i.qtdPedida), fator).unidades,
+      saldo: Math.max(0, pedida - recebida),
       custoBase: fator > 0 ? Number(i.custoUnitario) / fator : 0,
-      usado: false,
     };
   });
 
-  const linhas: LinhaNova[] = [];
-
-  for (const item of inbound.items) {
-    const { qtdBase, custoBase } = medidaDoItem(item);
-
-    // Par do pedido: mesmo produto, ainda livre. Bonificação da nota procura
-    // primeiro uma linha de bonificação do pedido — senão uma caixa de brinde
-    // consumiria a linha comprada e o preço "cairia" para zero.
-    const candidatos = item.productId
-      ? doPedido.filter((p) => !p.usado && p.productId === item.productId)
-      : [];
-    const par =
-      candidatos.find((p) => p.compra !== item.bonificacao) ?? candidatos[0] ?? null;
-    if (par) par.usado = true;
-
-    const qtdPedida = par?.qtdBase ?? 0;
-    const custoPedido = par?.custoBase ?? 0;
-    const status: ReconciliationStatus = par
-      ? vereditoDaLinha({ qtdPedida, qtdFaturada: qtdBase, custoPedido, custoFaturado: custoBase })
-      : "NAO_PEDIDO";
-
-    linhas.push({
-      purchaseOrderItemId: par?.id ?? null,
-      inboundItemId: item.id,
+  const itemDaNota = new Map(inbound.items.map((i) => [i.id, i]));
+  const planejadas = planejarConciliacao(
+    doPedido,
+    inbound.items.map((item) => ({
+      id: item.id,
       productId: item.productId,
-      codigoFornecedor: item.codigoFornecedor,
-      ean: item.gtin,
-      descricao: (item.productId && nomes.get(item.productId)) || item.descricao,
-      qtdPedida,
-      qtdFaturada: qtdBase,
-      custoPedido,
-      custoFaturado: custoBase,
       bonificacao: item.bonificacao,
-      status,
-    });
-  }
-
-  // Sobrou linha do pedido sem par: o fornecedor não faturou.
-  for (const p of doPedido) {
-    if (p.usado) continue;
-    // Já recebido em conferência anterior não é falta desta nota.
-    const pendente = p.qtdBase - restanteRecebido(pedido.items, p.id, fatorPacote);
-    linhas.push({
-      purchaseOrderItemId: p.id,
-      inboundItemId: null,
-      productId: p.productId,
-      codigoFornecedor: null,
-      ean: null,
-      descricao: nomes.get(p.productId) ?? "Produto do pedido",
-      qtdPedida: p.qtdBase,
-      qtdFaturada: 0,
-      custoPedido: p.custoBase,
-      custoFaturado: 0,
-      bonificacao: !p.compra,
-      status: pendente > TOL_QTD ? "NAO_FATURADO" : "OK",
-    });
-  }
+      ...medidaDoItem(item),
+    })),
+  );
+  const linhas: LinhaNova[] = planejadas.map((p) => {
+    const item = p.inboundItemId ? itemDaNota.get(p.inboundItemId) : null;
+    return {
+      ...p,
+      codigoFornecedor: item?.codigoFornecedor ?? null,
+      ean: item?.gtin ?? null,
+      descricao:
+        (p.productId && nomes.get(p.productId)) || item?.descricao || "Produto do pedido",
+    };
+  });
 
   // A conferência é do RECEBIMENTO, não da nota: é ele que existe também
   // quando o XML ainda não chegou, e é por ele que a tela abre.
@@ -440,62 +508,17 @@ export async function conciliar(input: {
     data: { purchaseOrderId, status: "EM_CONFERENCIA" },
   });
 
-  // Remontar a conciliação não pode apagar a contagem da porta — mesma regra
-  // de `conferirSemPedido`. Relacionar um item ao catálogo com a conferência
-  // aberta refaz as linhas, e quem já contou trinta caixas não conta de novo.
-  // A linha da nota é reconhecida pelo item do XML; a que só existe no pedido
-  // (não faturada), pelo item do pedido.
-  const anteriores = await db.purchaseReconciliationItem.findMany({
-    where: { receiptId: receipt.id },
-    select: {
-      inboundItemId: true,
-      purchaseOrderItemId: true,
-      status: true,
-      qtdRecebida: true,
-      lote: true,
-      validade: true,
-      resolucao: true,
-      motivoDivergencia: true,
-    },
-  });
-  const chaveDaLinha = (l: { inboundItemId: string | null; purchaseOrderItemId: string | null }) =>
-    l.inboundItemId
-      ? `nota:${l.inboundItemId}`
-      : l.purchaseOrderItemId
-        ? `pedido:${l.purchaseOrderItemId}`
-        : null;
-  const conferido = new Map(
-    anteriores.flatMap((a) => {
-      const chave = chaveDaLinha(a);
-      return chave ? [[chave, a] as const] : [];
-    }),
-  );
-
-  await db.purchaseReconciliationItem.deleteMany({ where: { receiptId: receipt.id } });
-  await db.purchaseReconciliationItem.createMany({
-    data: linhas.map((l) => {
-      const chave = chaveDaLinha(l);
-      // Recebimento aberto pelo pedido e que só agora ganhou a nota: a linha
-      // contada ainda não tinha item do XML, então vale o item do pedido.
-      const antes =
-        (chave ? conferido.get(chave) : null) ??
-        (l.purchaseOrderItemId ? conferido.get(`pedido:${l.purchaseOrderItemId}`) : null);
-      // A decisão sobre a divergência só vale enquanto a divergência é a
-      // mesma: linha que mudou de veredito volta a pedir resposta.
-      const mesmoVeredito = antes?.status === l.status;
-      return {
-        tenantId,
-        receiptId: receipt.id,
-        inboundId,
-        purchaseOrderId,
-        ...l,
-        qtdRecebida: antes?.qtdRecebida ?? null,
-        lote: antes?.lote ?? null,
-        validade: antes?.validade ?? null,
-        resolucao: mesmoVeredito ? (antes?.resolucao ?? null) : null,
-        motivoDivergencia: mesmoVeredito ? (antes?.motivoDivergencia ?? null) : null,
-      };
-    }),
+  // Remontar a conciliação não pode apagar a contagem da porta: relacionar um
+  // item ao catálogo com a conferência aberta refaz as linhas, e quem já
+  // contou trinta caixas não conta de novo.
+  await regravarLinhas({
+    tenantId,
+    receiptId: receipt.id,
+    inboundId,
+    purchaseOrderId,
+    linhas,
+    decisaoSoComMesmoVeredito: true,
+    absorverAvulsas: input.absorverAvulsas,
   });
 
   await db.fiscalInbound.update({
@@ -539,18 +562,6 @@ export async function conciliar(input: {
   });
 }
 
-/** Quanto desta linha do pedido já entrou em conferências anteriores (base). */
-function restanteRecebido(
-  items: { id: string; packagingId: string | null; qtdRecebida: unknown }[],
-  itemId: string,
-  fatores: Map<string, number>,
-): number {
-  const it = items.find((i) => i.id === itemId);
-  if (!it) return 0;
-  const fator = (it.packagingId ? fatores.get(it.packagingId) : null) ?? 1;
-  return Number(it.qtdRecebida) * fator;
-}
-
 async function nomesDeProdutos(ids: (string | null)[]): Promise<Map<string, string>> {
   const unicos = [...new Set(ids.filter((i): i is string => Boolean(i)))];
   if (unicos.length === 0) return new Map();
@@ -582,10 +593,18 @@ export async function desvincularPedido(input: {
     throw new Error("Esta nota já deu entrada no estoque — o vínculo não pode ser desfeito.");
   }
 
+  // As linhas são do recebimento DESTA nota. Apagar por nota levava junto a
+  // conferência de um recebimento já cancelado, que é história.
+  const receipt = await db.goodsReceipt.findFirst({
+    where: { inboundId: input.inboundId },
+    select: { id: true },
+  });
+
   await registrarEvento({
     tenantId: input.tenantId,
     purchaseOrderId: inbound.purchaseOrderId,
     inboundId: inbound.id,
+    receiptId: receipt?.id ?? null,
     tipo: "VINCULO_ALTERADO",
     descricao: inbound.purchaseOrderId
       ? `Nota ${inbound.numero}/${inbound.serie} desvinculada do pedido.`
@@ -593,7 +612,9 @@ export async function desvincularPedido(input: {
     createdBy: input.userId,
   });
 
-  await db.purchaseReconciliationItem.deleteMany({ where: { inboundId: input.inboundId } });
+  await db.purchaseReconciliationItem.deleteMany({
+    where: receipt ? { receiptId: receipt.id } : { inboundId: input.inboundId },
+  });
   await db.fiscalInbound.update({
     where: { id: input.inboundId },
     data: {
@@ -625,6 +646,8 @@ export async function conferirSemPedido(input: {
   tenantId: string;
   inboundId: string;
   userId?: string | null;
+  /** A nota chegou a um recebimento contado à mão — ver `regravarLinhas`. */
+  absorverAvulsas?: boolean;
 }): Promise<void> {
   const { tenantId, inboundId, userId } = input;
 
@@ -667,24 +690,7 @@ export async function conferirSemPedido(input: {
 
   const nomes = await nomesDeProdutos(inbound.items.map((i) => i.productId));
 
-  // Remontar a conciliação não pode apagar a contagem da porta. Aqui isto é
-  // rotina, não exceção: relacionar um item ao catálogo no meio da conferência
-  // refaz as linhas, e quem já contou trinta caixas não vai contar de novo.
   const recebimento = await garantirRecebimentoDaNota({ tenantId, inboundId, userId });
-  const anteriores = await db.purchaseReconciliationItem.findMany({
-    where: { receiptId: recebimento.id },
-    select: {
-      inboundItemId: true,
-      qtdRecebida: true,
-      lote: true,
-      validade: true,
-      resolucao: true,
-      motivoDivergencia: true,
-    },
-  });
-  const conferido = new Map(
-    anteriores.filter((a) => a.inboundItemId).map((a) => [a.inboundItemId as string, a]),
-  );
 
   const linhas: LinhaNova[] = inbound.items.map((item) => {
     const { qtdBase, custoBase } = medidaDoItem(item);
@@ -704,23 +710,18 @@ export async function conferirSemPedido(input: {
     };
   });
 
-  await db.purchaseReconciliationItem.deleteMany({ where: { receiptId: recebimento.id } });
-  await db.purchaseReconciliationItem.createMany({
-    data: linhas.map((l) => {
-      const antes = l.inboundItemId ? conferido.get(l.inboundItemId) : null;
-      return {
-        tenantId,
-        receiptId: recebimento.id,
-        inboundId,
-        purchaseOrderId: null,
-        ...l,
-        qtdRecebida: antes?.qtdRecebida ?? null,
-        lote: antes?.lote ?? null,
-        validade: antes?.validade ?? null,
-        resolucao: antes?.resolucao ?? null,
-        motivoDivergencia: antes?.motivoDivergencia ?? null,
-      };
-    }),
+  // Remontar a conciliação não pode apagar a contagem da porta. Aqui isto é
+  // rotina, não exceção: relacionar um item ao catálogo no meio da conferência
+  // refaz as linhas, e quem já contou trinta caixas não vai contar de novo.
+  // Toda linha nasce OK e continua OK: a decisão registrada vale sempre.
+  await regravarLinhas({
+    tenantId,
+    receiptId: recebimento.id,
+    inboundId,
+    purchaseOrderId: null,
+    linhas,
+    decisaoSoComMesmoVeredito: false,
+    absorverAvulsas: input.absorverAvulsas,
   });
 
   await db.fiscalInbound.update({
@@ -787,15 +788,6 @@ export async function remontarConferencia(
     throw new Error("Escolha primeiro como receber esta nota.");
   }
   await conferirSemPedido({ tenantId, inboundId, userId });
-}
-
-/** A nota já conciliada não tem pedido por trás? Então é conferência avulsa. */
-export async function ehRecebimentoSemPedido(inboundId: string): Promise<boolean> {
-  const nota = await db.fiscalInbound.findFirst({
-    where: { id: inboundId },
-    select: { purchaseOrderId: true, conciliadoEm: true },
-  });
-  return Boolean(nota && !nota.purchaseOrderId && nota.conciliadoEm);
 }
 
 // ── Pedido criado a partir da nota ───────────────────────────
@@ -923,71 +915,10 @@ export async function criarPedidoDaNota(input: {
   return purchaseOrderId;
 }
 
-// ── Conferência física ───────────────────────────────────────
-
-/**
- * O que o operador contou na porta. Quantidade em unidade base — a tela
- * converte quando o item é bipado por embalagem.
- *
- * Campo ausente (`undefined`) é campo NÃO MEXIDO; `null` é campo apagado de
- * propósito. A distinção não é preciosismo: a tela salva um campo por vez —
- * bipar manda só a quantidade, sair do campo de lote manda só o lote. Tratar
- * ausente como null fazia o bipe apagar o lote e a validade que o operador
- * acabara de digitar, e o lote zerar a contagem inteira. Silenciosamente, nos
- * dois casos.
- */
-export async function conferirItem(input: {
-  tenantId: string;
-  reconciliationItemId: string;
-  qtdRecebida?: number | null;
-  lote?: string | null;
-  validade?: string | null;
-}): Promise<void> {
-  const linha = await db.purchaseReconciliationItem.findFirst({
-    where: { id: input.reconciliationItemId },
-    select: { id: true, qtdFaturada: true, status: true, inbound: { select: { status: true } } },
-  });
-  if (!linha) throw new Error("Item não encontrado.");
-  if (linha.inbound?.status === "RECEBIDO") {
-    throw new Error("Esta nota já deu entrada — a conferência está encerrada.");
-  }
-
-  const mexeuNaQtd = input.qtdRecebida !== undefined;
-  const qtd = input.qtdRecebida == null ? null : Math.max(0, input.qtdRecebida);
-  const ajustou = qtd != null && Math.abs(qtd - Number(linha.qtdFaturada)) > TOL_QTD;
-
-  await db.purchaseReconciliationItem.update({
-    where: { id: linha.id },
-    data: {
-      ...(mexeuNaQtd ? { qtdRecebida: qtd } : {}),
-      ...(input.lote !== undefined ? { lote: input.lote?.trim() || null } : {}),
-      ...(input.validade !== undefined
-        ? { validade: input.validade ? new Date(`${input.validade}T00:00:00`) : null }
-        : {}),
-      // Divergir da nota na contagem é uma decisão do operador, e ela precisa
-      // sobreviver ao recarregamento da tela.
-      resolucao: mexeuNaQtd && ajustou ? "AJUSTADO" : undefined,
-    },
-  });
-}
-
-/** "Conferi tudo como está na nota" — o caminho de 90% dos recebimentos. */
-export async function conferirTudoConformeNota(input: {
-  tenantId: string;
-  inboundId: string;
-}): Promise<number> {
-  const linhas = await db.purchaseReconciliationItem.findMany({
-    where: { inboundId: input.inboundId },
-    select: { id: true, qtdFaturada: true },
-  });
-  for (const l of linhas) {
-    await db.purchaseReconciliationItem.update({
-      where: { id: l.id },
-      data: { qtdRecebida: l.qtdFaturada },
-    });
-  }
-  return linhas.length;
-}
+// ── Divergências ─────────────────────────────────────────────
+//
+// A contagem em si (quantidade, lote, validade) é gravada por
+// `registrarContagem`, em `recebimento.ts` — o dono da linha é o recebimento.
 
 /** Divergência vista e decidida. Fica no histórico com quem decidiu. */
 export async function resolverDivergencia(input: {
@@ -999,9 +930,20 @@ export async function resolverDivergencia(input: {
 }): Promise<void> {
   const linha = await db.purchaseReconciliationItem.findFirst({
     where: { id: input.reconciliationItemId },
-    select: { id: true, descricao: true, purchaseOrderId: true, inboundId: true, status: true },
+    select: {
+      id: true,
+      descricao: true,
+      purchaseOrderId: true,
+      inboundId: true,
+      receiptId: true,
+      status: true,
+      receipt: { select: { status: true } },
+    },
   });
   if (!linha) throw new Error("Item não encontrado.");
+  if (linha.receipt?.status === "FINALIZADO" || linha.receipt?.status === "CANCELADO") {
+    throw new Error("Este recebimento está encerrado — a decisão já não muda nada.");
+  }
 
   await db.purchaseReconciliationItem.update({
     where: { id: linha.id },
@@ -1012,6 +954,8 @@ export async function resolverDivergencia(input: {
     tenantId: input.tenantId,
     purchaseOrderId: linha.purchaseOrderId,
     inboundId: linha.inboundId,
+    // Sem o recebimento, a decisão sumia da história da tela que a tomou.
+    receiptId: linha.receiptId,
     tipo: "DIVERGENCIA_RESOLVIDA",
     descricao: `${linha.descricao}: ${LABEL_RESOLUCAO[input.resolucao]}${
       input.motivo?.trim() ? ` — ${input.motivo.trim()}` : ""
@@ -1022,24 +966,35 @@ export async function resolverDivergencia(input: {
 }
 
 /**
- * Devolve ao fornecedor o que veio a mais (ou avariado) e já entrou no estoque.
+ * Devolve ao fornecedor o que entrou no estoque e não devia ficar — o
+ * excedente, a caixa avariada que só apareceu ao abrir, a validade curta.
  *
  * Só depois da entrada, de propósito: antes dela, o excedente se resolve
  * baixando a quantidade recebida na conferência — criar movimento de devolução
  * de mercadoria que nunca entrou deixaria a razão contando duas vezes.
  *
- * O movimento sai pelo mesmo `registrarDevolucao` do resto do sistema: o
- * histórico do produto não pode ter duas versões de "saiu por devolução".
+ * Sai como DEVOLUÇÃO DE VERDADE (`SupplierReturn`), a mesma de
+ * /estoque/devolucoes: um documento com número, que tira do estoque e abate
+ * o que se deve ao fornecedor. Antes este botão só mexia no saldo — a
+ * mercadoria voltava no caminhão e o título continuava cobrando por ela.
+ *
+ * O custo é o com que a linha ENTROU: o custo da nota por unidade, que já é
+ * unitário (dividi-lo de novo pela quantidade devolvia a mercadoria por
+ * centavos).
  */
 export async function devolverItemDivergente(input: {
   tenantId: string;
   reconciliationItemId: string;
   quantidade: number;
   motivo: string;
+  /** Por que voltou — a mesma classificação das devoluções. */
+  tipoMotivo?: SupplierReturnMotivo;
   userId?: string | null;
-}): Promise<void> {
+}): Promise<{ numero: string; abatido: number; sobra: number }> {
   const { tenantId, quantidade, motivo, userId } = input;
-  if (!(quantidade > 0)) throw new Error("Informe a quantidade devolvida.");
+  if (!(quantidade > 0) || !Number.isInteger(quantidade)) {
+    throw new Error("Informe a quantidade devolvida, em unidades inteiras.");
+  }
   if (motivo.trim().length < 3) throw new Error("Explique o motivo da devolução.");
 
   const linha = await db.purchaseReconciliationItem.findFirst({
@@ -1048,82 +1003,176 @@ export async function devolverItemDivergente(input: {
       id: true,
       productId: true,
       descricao: true,
-      custoFaturado: true,
+      status: true,
+      bonificacao: true,
+      qtdPedida: true,
       qtdFaturada: true,
+      qtdRecebida: true,
+      custoPedido: true,
+      custoFaturado: true,
       purchaseOrderId: true,
       inboundId: true,
-      inbound: { select: { siteId: true, status: true, numero: true, purchaseId: true } },
+      receiptId: true,
+      inbound: { select: { numero: true, serie: true, chave: true } },
+      receipt: {
+        select: { id: true, numero: true, status: true, siteId: true, supplierId: true, numeroNota: true },
+      },
     },
   });
   if (!linha) throw new Error("Item não encontrado.");
   if (!linha.productId) throw new Error("Relacione o item a um produto antes de devolver.");
-  if (!linha.inbound || linha.inbound.status !== "RECEBIDO") {
+  if (!linha.receipt || linha.receipt.status !== "FINALIZADO") {
     throw new Error(
-      "A nota ainda não deu entrada. Antes da entrada, corrija a quantidade na conferência " +
-        "em vez de devolver.",
+      "Este recebimento ainda não deu entrada. Antes da entrada, corrija a quantidade na " +
+        "conferência em vez de devolver.",
+    );
+  }
+  if (!linha.receipt.supplierId) {
+    throw new Error(
+      "Este recebimento não tem fornecedor cadastrado — a devolução precisa dele para abater o que se deve. Corrija o estoque pelo inventário.",
     );
   }
 
-  const unitario = Number(linha.qtdFaturada) > 0
-    ? Number(linha.custoFaturado) / Number(linha.qtdFaturada)
-    : 0;
+  const entrou = quantidadeQueEntra(linha);
+  if (quantidade > entrou + TOL_QTD) {
+    throw new Error(
+      `Desta linha entraram ${entrou} — não dá para devolver ${quantidade}. Confira a quantidade.`,
+    );
+  }
 
-  await registrarDevolucao(
-    tenantId,
-    linha.inbound.siteId,
-    linha.productId,
-    "FORNECEDOR",
-    { fechado: quantidade },
-    `NF ${linha.inbound.numero} — ${motivo.trim()}`,
-    {
-      custoUnitario: unitario,
-      purchaseId: linha.inbound.purchaseId ?? undefined,
-      createdBy: userId ?? undefined,
+  // A entrada que esta linha gerou — é a ela que a devolução se refere.
+  const entrada = await db.purchase.findFirst({
+    where: {
+      receiptId: linha.receipt.id,
+      estornadaEm: null,
+      items: { some: { productId: linha.productId } },
     },
-  );
+    select: { id: true },
+  });
+
+  const nota = linha.inbound;
+  const dev = await criarDevolucaoFornecedor({
+    tenantId,
+    siteId: linha.receipt.siteId,
+    supplierId: linha.receipt.supplierId,
+    motivo: input.tipoMotivo ?? "DIVERGENCIA",
+    observacao: `${motivo.trim()} — recebimento ${linha.receipt.numero}`,
+    itens: [
+      {
+        productId: linha.productId,
+        quantidade,
+        custoUnitario: custoDeEntradaDaLinha(linha),
+        observacao: linha.descricao,
+      },
+    ],
+    purchaseId: entrada?.id ?? null,
+    purchaseOrderId: linha.purchaseOrderId,
+    inboundId: linha.inboundId,
+    numeroNota: nota ? `${nota.numero}/${nota.serie}` : linha.receipt.numeroNota,
+    chaveNfe: nota?.chave ?? null,
+    // Na doca a decisão já está tomada — o caminhão está levando a caixa.
+    confirmar: true,
+    userId,
+  });
+  const credito = await db.accountPayablePayment.aggregate({
+    where: { returnId: dev.id },
+    _sum: { valor: true },
+  });
+  const abatido = Number(credito._sum.valor ?? 0);
+  const valorDevolvido = quantidade * custoDeEntradaDaLinha(linha);
 
   await db.purchaseReconciliationItem.update({
     where: { id: linha.id },
-    data: { resolucao: "AJUSTADO", motivoDivergencia: `Devolvido ao fornecedor: ${motivo.trim()}` },
+    data: {
+      resolucao: "AJUSTADO",
+      motivoDivergencia: `Devolvido ao fornecedor (${dev.numero}): ${motivo.trim()}`,
+    },
   });
 
   await registrarEvento({
     tenantId,
     purchaseOrderId: linha.purchaseOrderId,
     inboundId: linha.inboundId,
-    tipo: "DIVERGENCIA_RESOLVIDA",
-    descricao: `${linha.descricao}: ${quantidade} devolvido(s) ao fornecedor — ${motivo.trim()}`,
-    meta: { quantidade, motivo: motivo.trim() },
+    receiptId: linha.receiptId,
+    purchaseId: entrada?.id ?? null,
+    tipo: "DEVOLUCAO_REGISTRADA",
+    descricao:
+      `${linha.descricao}: ${quantidade} devolvido(s) ao fornecedor na devolução ${dev.numero} — ${motivo.trim()}.` +
+      (abatido > 0.005
+        ? ` R$ ${abatido.toFixed(2)} abatidos de títulos em aberto.`
+        : " Nenhum título em aberto para abater."),
+    meta: { quantidade, motivo: motivo.trim(), returnId: dev.id, abatido },
     createdBy: userId,
   });
+
+  return {
+    numero: dev.numero,
+    abatido,
+    sobra: Math.max(0, Math.round((valorDevolvido - abatido) * 100) / 100),
+  };
 }
 
+/** Uma pessoa do fornecedor para quem a reclamação pode ir. */
+export type ContatoParaAviso = {
+  id: string;
+  nome: string;
+  cargo: string | null;
+  telefone: string | null;
+  email: string | null;
+  principal: boolean;
+};
+
+/** "07/10/2026" no dia da loja — o servidor roda em UTC. */
+const diaDaNota = (d: Date) => d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+
 /**
- * Texto pronto da reclamação, com os números da nota. Existe porque o desfecho
- * real de uma divergência acontece FORA do sistema — no WhatsApp do
+ * Texto pronto da reclamação, com os números da conferência. Existe porque o
+ * desfecho real de uma divergência acontece FORA do sistema — no WhatsApp do
  * representante — e reescrever isso à mão, item a item, é o que faz o operador
  * desistir e "deixar passar".
+ *
+ * É do RECEBIMENTO, não da nota: o pedido que chegou sem XML também tem
+ * caminhão com caixa faltando, e é a contagem da doca — não só o que a nota
+ * trouxe diferente do pedido — que mais vira reclamação.
+ *
+ * Vem com os CONTATOS do fornecedor: o telefone do cadastro costuma ser o do
+ * faturamento (é o que o XML traz), e a reclamação é para o vendedor.
  */
 export async function resumoDivergenciasParaFornecedor(input: {
   tenantId: string;
-  inboundId: string;
+  receiptId: string;
   empresa: string;
-}): Promise<{ texto: string; fornecedor: string; telefone: string | null; email: string | null }> {
-  const inbound = await db.fiscalInbound.findFirst({
-    where: { id: input.inboundId },
+}): Promise<{
+  texto: string;
+  fornecedor: string;
+  telefone: string | null;
+  email: string | null;
+  contatos: ContatoParaAviso[];
+}> {
+  const receipt = await db.goodsReceipt.findFirst({
+    where: { id: input.receiptId },
     select: {
       numero: true,
-      serie: true,
-      dataEmissao: true,
-      emitRazaoSocial: true,
+      numeroNota: true,
+      iniciadoEm: true,
+      fornecedorLivre: true,
+      supplierId: true,
       purchaseOrder: { select: { numero: true } },
       supplier: { select: { razaoSocial: true, nomeFantasia: true, telefone: true, email: true } },
+      inbound: {
+        select: {
+          numero: true,
+          serie: true,
+          dataEmissao: true,
+          emitRazaoSocial: true,
+        },
+      },
     },
   });
-  if (!inbound) throw new Error("Nota não encontrada.");
+  if (!receipt) throw new Error("Recebimento não encontrado.");
 
   const linhas = await db.purchaseReconciliationItem.findMany({
-    where: { inboundId: input.inboundId, status: { not: "OK" } },
+    where: { receiptId: input.receiptId },
     orderBy: { descricao: "asc" },
     select: {
       descricao: true,
@@ -1134,52 +1183,217 @@ export async function resumoDivergenciasParaFornecedor(input: {
       custoPedido: true,
       custoFaturado: true,
       motivoDivergencia: true,
+      inboundItemId: true,
+      purchaseOrderItemId: true,
     },
   });
-  if (linhas.length === 0) throw new Error("Esta nota não tem divergência para relatar.");
 
-  const n = (v: unknown) => Number(v ?? 0);
-  const qtd = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
-  const moeda = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  const nota = receipt.inbound;
+  const itens = frasesDeDivergencia(
+    linhas.map((l) => ({
+      descricao: l.descricao,
+      status: l.status,
+      qtdPedida: Number(l.qtdPedida),
+      qtdFaturada: Number(l.qtdFaturada),
+      qtdRecebida: l.qtdRecebida == null ? null : Number(l.qtdRecebida),
+      custoPedido: Number(l.custoPedido),
+      custoFaturado: Number(l.custoFaturado),
+      motivoDivergencia: l.motivoDivergencia,
+      avulsa: !l.inboundItemId && !l.purchaseOrderItemId,
+    })),
+    { temNota: Boolean(nota) },
+  );
+  if (itens.length === 0) throw new Error("Este recebimento não tem divergência para relatar.");
 
-  const itens = linhas.map((l) => {
-    const recebido = l.qtdRecebida == null ? n(l.qtdFaturada) : n(l.qtdRecebida);
-    switch (l.status) {
-      case "FALTANDO":
-      case "NAO_FATURADO":
-        return `• ${l.descricao}: pedimos ${qtd(n(l.qtdPedida))}, veio ${qtd(n(l.qtdFaturada))}`;
-      case "EXCEDENTE":
-      case "NAO_PEDIDO":
-        return `• ${l.descricao}: veio ${qtd(n(l.qtdFaturada))} e o pedido era de ${qtd(n(l.qtdPedida))}`;
-      case "PRECO_ALTERADO":
-        return `• ${l.descricao}: preço combinado ${moeda(n(l.custoPedido))}, faturado ${moeda(n(l.custoFaturado))}`;
-      default:
-        return `• ${l.descricao}: conferido ${qtd(recebido)} de ${qtd(n(l.qtdFaturada))}`;
-    }
-  });
+  const documento = nota
+    ? `a NF ${nota.numero}/${nota.serie} de ${diaDaNota(nota.dataEmissao)}`
+    : receipt.numeroNota
+      ? `a nota ${receipt.numeroNota}`
+      : `a entrega de ${diaDaNota(receipt.iniciadoEm)}`;
 
-  const comMotivo = linhas.filter((l) => l.motivoDivergencia);
+  const comMotivo = linhas.filter(
+    (l) => l.motivoDivergencia && itens.some((i) => i.startsWith(`• ${l.descricao}:`)),
+  );
   const texto = [
-    `Olá! Sobre a NF ${inbound.numero}/${inbound.serie} de ${new Date(inbound.dataEmissao).toLocaleDateString("pt-BR")}` +
-      (inbound.purchaseOrder ? ` (nosso pedido ${inbound.purchaseOrder.numero})` : "") +
+    `Olá! Sobre ${documento}` +
+      (receipt.purchaseOrder ? ` (nosso pedido ${receipt.purchaseOrder.numero})` : "") +
       ":",
     "",
     ...itens,
     ...(comMotivo.length > 0
-      ? ["", "Observações da conferência:", ...comMotivo.map((l) => `• ${l.descricao}: ${l.motivoDivergencia}`)]
+      ? [
+          "",
+          "Observações da conferência:",
+          ...comMotivo.map((l) => `• ${l.descricao}: ${l.motivoDivergencia}`),
+        ]
       : []),
     "",
     "Podem confirmar como resolvemos? Obrigado.",
     input.empresa,
   ].join("\n");
 
-  const s = inbound.supplier;
+  const contatos = receipt.supplierId
+    ? await db.supplierContact.findMany({
+        where: { supplierId: receipt.supplierId, ativo: true },
+        select: {
+          id: true,
+          nome: true,
+          cargo: true,
+          telefone: true,
+          email: true,
+          principal: true,
+        },
+        orderBy: [{ principal: "desc" }, { nome: "asc" }],
+      })
+    : [];
+
+  const s = receipt.supplier;
   return {
     texto,
-    fornecedor: s?.nomeFantasia ?? s?.razaoSocial ?? inbound.emitRazaoSocial,
+    fornecedor:
+      s?.nomeFantasia ?? s?.razaoSocial ?? nota?.emitRazaoSocial ?? receipt.fornecedorLivre ?? "Fornecedor",
     telefone: s?.telefone ?? null,
     email: s?.email ?? null,
+    contatos,
   };
+}
+
+const escaparHtml = (s: string) =>
+  s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] ?? c);
+
+/**
+ * Manda a reclamação por e-mail, com a planilha da conferência anexada — o
+ * papel que o fornecedor precisa para dar o crédito sem pedir "me manda os
+ * números". O texto é o que a pessoa revisou na tela, não um gerado de novo.
+ *
+ * WhatsApp oficial não entra aqui: mensagem que a empresa inicia só sai por
+ * template aprovado, e o do tenant é o de cotação. Lá o caminho segue sendo o
+ * link `wa.me` para o contato escolhido.
+ */
+export async function enviarAvisoPorEmail(input: {
+  tenantId: string;
+  receiptId: string;
+  email: string;
+  nomeContato?: string | null;
+  texto: string;
+  empresa: string;
+  userId?: string | null;
+}): Promise<void> {
+  const receipt = await db.goodsReceipt.findFirst({
+    where: { id: input.receiptId },
+    select: {
+      id: true,
+      numero: true,
+      numeroNota: true,
+      purchaseOrderId: true,
+      inboundId: true,
+      inbound: { select: { numero: true, serie: true } },
+    },
+  });
+  if (!receipt) throw new Error("Recebimento não encontrado.");
+
+  const linhas = await db.purchaseReconciliationItem.findMany({
+    where: { receiptId: receipt.id },
+    select: {
+      descricao: true,
+      codigoFornecedor: true,
+      ean: true,
+      status: true,
+      qtdPedida: true,
+      qtdFaturada: true,
+      qtdRecebida: true,
+      custoPedido: true,
+      custoFaturado: true,
+      bonificacao: true,
+      lote: true,
+      validade: true,
+      lotes: true,
+      motivoDivergencia: true,
+      inboundItemId: true,
+      inboundItem: { select: { ordem: true, descricao: true } },
+      createdAt: true,
+    },
+  });
+  // A ordem e o texto DA NOTA: é a linguagem do fornecedor, e é como ele acha
+  // o item no sistema dele.
+  linhas.sort(
+    (a, b) =>
+      (a.inboundItem?.ordem ?? Number.MAX_SAFE_INTEGER) -
+        (b.inboundItem?.ordem ?? Number.MAX_SAFE_INTEGER) ||
+      a.createdAt.getTime() - b.createdAt.getTime(),
+  );
+
+  const planilha = gerarXlsx({
+    aba: "Conferência",
+    cabecalho: [
+      "#",
+      "Produto",
+      "Código do fornecedor",
+      "EAN",
+      "Esperado (UN)",
+      "Recebido (UN)",
+      "Diferença",
+      "Custo unitário (R$)",
+      "Lote",
+      "Validade",
+      "Observação",
+    ],
+    linhas: linhas.map((l, i) => {
+      const esperado = esperadoDaLinha(l);
+      const recebido = l.qtdRecebida == null ? null : Number(l.qtdRecebida);
+      const dia = (iso: string) => iso.slice(0, 10).split("-").reverse().join("/");
+      // A linha dividida em lotes sai com cada lote e a sua quantidade.
+      const lotes = lotesDoJson(l.lotes);
+      return [
+        i + 1,
+        l.inboundItem?.descricao ?? l.descricao,
+        l.codigoFornecedor ?? "",
+        l.ean ?? "",
+        esperado,
+        recebido,
+        recebido == null ? null : recebido - esperado,
+        l.bonificacao ? 0 : Math.round(custoDeEntradaDaLinha(l) * 100) / 100,
+        lotes
+          ? lotes.map((x) => `${x.lote ?? "sem lote"} (${x.quantidade})`).join("; ")
+          : (l.lote ?? ""),
+        lotes
+          ? lotes.map((x) => (x.validade ? dia(x.validade) : "—")).join("; ")
+          : l.validade
+            ? dia(l.validade.toISOString())
+            : "",
+        l.motivoDivergencia ?? "",
+      ];
+    }),
+  });
+
+  const documento = receipt.inbound
+    ? `NF ${receipt.inbound.numero}/${receipt.inbound.serie}`
+    : receipt.numeroNota
+      ? `nota ${receipt.numeroNota}`
+      : `recebimento ${receipt.numero}`;
+
+  const r = await enviarEmail({
+    para: input.email,
+    assunto: `Divergência na entrega — ${documento} — ${input.empresa}`,
+    html: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5">${escaparHtml(
+      input.texto,
+    ).replace(/\n/g, "<br>")}</div>`,
+    texto: input.texto,
+    anexos: [{ nome: `conferencia-${receipt.numero}.xlsx`, conteudo: planilha }],
+  });
+  if (!r.ok) throw new Error(`O e-mail não saiu: ${r.erro}`);
+
+  await registrarEvento({
+    tenantId: input.tenantId,
+    purchaseOrderId: receipt.purchaseOrderId,
+    inboundId: receipt.inboundId,
+    receiptId: receipt.id,
+    tipo: "FORNECEDOR_AVISADO",
+    descricao: `Divergência enviada por e-mail para ${
+      input.nomeContato ? `${input.nomeContato} (${input.email})` : input.email
+    }, com a planilha da conferência.`,
+    createdBy: input.userId,
+  });
 }
 
 const LABEL_RESOLUCAO: Record<ReconciliationResolucao, string> = {
@@ -1210,6 +1424,7 @@ export async function aceitarCustoDaNota(input: {
       purchaseOrderId: true,
       purchaseOrderItemId: true,
       inboundId: true,
+      receiptId: true,
     },
   });
   if (!linha) throw new Error("Item não encontrado.");
@@ -1261,6 +1476,7 @@ export async function aceitarCustoDaNota(input: {
     tenantId: input.tenantId,
     purchaseOrderId: linha.purchaseOrderId,
     inboundId: linha.inboundId,
+    receiptId: linha.receiptId,
     tipo: "CUSTO_ACEITO",
     descricao: `${linha.descricao}: custo do pedido atualizado para o da nota.`,
     meta: {
@@ -1269,50 +1485,5 @@ export async function aceitarCustoDaNota(input: {
       unidade: "base",
     },
     createdBy: input.userId,
-  });
-}
-
-// ── Entrada no estoque ───────────────────────────────────────
-
-/**
- * Fecha o recebimento desta nota.
- *
- * Casca fina de propósito: quem move estoque é `finalizarRecebimento`, e ele é
- * o mesmo para as três origens (pedido, XML, avulso). Antes havia dois motores
- * de entrada — um aqui, outro no recebimento por pedido — e duas contas de
- * custo médio para a mesma caixa.
- */
-export async function confirmarEntradaConciliada(input: {
-  tenantId: string;
-  inboundId: string;
-  motivoDivergencia?: string | null;
-  userId?: string | null;
-}): Promise<ResultadoRecebimento> {
-  const nota = await db.fiscalInbound.findFirst({
-    where: { id: input.inboundId },
-    select: { id: true, status: true },
-  });
-  if (!nota) throw new Error("Nota não encontrada.");
-  if (nota.status === "RECEBIDO") throw new Error("Esta nota já gerou entrada de estoque.");
-  if (nota.status === "DESCARTADO") throw new Error("Esta nota foi descartada.");
-
-  const receipt = await garantirRecebimentoDaNota({
-    tenantId: input.tenantId,
-    inboundId: input.inboundId,
-    userId: input.userId,
-  });
-
-  const linhas = await db.purchaseReconciliationItem.count({ where: { receiptId: receipt.id } });
-  if (linhas === 0) {
-    throw new Error(
-      "Escolha primeiro como receber esta nota: vincular a um pedido, gerar o pedido ou conferir sem pedido.",
-    );
-  }
-
-  return finalizarRecebimento({
-    tenantId: input.tenantId,
-    receiptId: receipt.id,
-    motivoDivergencia: input.motivoDivergencia,
-    userId: input.userId,
   });
 }

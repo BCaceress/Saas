@@ -4,7 +4,7 @@ import { refresh, revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireActiveTenant, type ActiveTenant } from "@/lib/current-tenant";
 import { assertPodeEscrever } from "@/lib/assinatura";
-import { podeEmAlguma, SemPermissaoError } from "@/lib/permissoes";
+import { can, podeEmAlguma, SemPermissaoError } from "@/lib/permissoes";
 import { runWithTenant } from "@/lib/tenant-context";
 import { db } from "@/lib/prisma";
 import {
@@ -41,6 +41,22 @@ async function tx<T>(fn: (ctx: ActiveTenant) => Promise<T>): Promise<T> {
   if (!pode) throw new SemPermissaoError();
   assertPodeEscrever(ctx.tenant);
   return runWithTenant(ctx.tenant.id, () => fn(ctx));
+}
+
+/**
+ * A nota do item é de uma loja onde a pessoa recebe ou trata nota? `tx` só
+ * sabe que ela pode "em alguma loja" — e o id do item vem do navegador.
+ */
+async function exigirLojaDoItem(ctx: ActiveTenant, itemId: string): Promise<void> {
+  const item = await db.fiscalInboundItem.findFirst({
+    where: { id: itemId },
+    select: { inbound: { select: { siteId: true } } },
+  });
+  if (!item) throw new Error("Item não encontrado.");
+  const siteId = item.inbound.siteId;
+  if (!can(ctx.acessos, "compras.receber", siteId) && !can(ctx.acessos, "fiscal.importar", siteId)) {
+    throw new SemPermissaoError("Você não tem acesso a esta loja.");
+  }
 }
 
 /** Leitura pura — ver o catálogo para escolher não muda nada. */
@@ -132,6 +148,7 @@ const relacionarSchema = z.object({
 export async function relacionarItemAction(input: z.input<typeof relacionarSchema>) {
   return tx(async (ctx) => {
     const d = relacionarSchema.parse(input);
+    await exigirLojaDoItem(ctx, d.itemId);
     const r = await relacionarItemInbound({ tenantId: ctx.tenant.id, ...d });
 
     // Mesmo código do fornecedor na mesma nota é o mesmo produto — só em lote
@@ -174,6 +191,7 @@ export async function relacionarEmLoteAction(
 
     for (const s of sugestoes) {
       try {
+        await exigirLojaDoItem(ctx, s.itemId);
         await relacionarItemInbound({ tenantId: ctx.tenant.id, ...s });
         relacionados++;
         // Irmãos entram junto aqui também — a nota repete o mesmo cProd em
@@ -203,6 +221,7 @@ export async function relacionarEmLoteAction(
 /** Desfaz o de-para de uma linha — e o mapa do fornecedor que o gerou. */
 export async function desrelacionarItemAction(itemId: string) {
   return tx(async (ctx) => {
+    await exigirLojaDoItem(ctx, itemId);
     await desrelacionarItemInbound({ itemId });
     revalidar(await remontarSeEmConferencia(ctx, itemId));
   });
@@ -247,7 +266,8 @@ const criarDoItemSchema = z.object({
 export async function criarProdutoDoItemAction(input: z.input<typeof criarDoItemSchema>) {
   const d = criarDoItemSchema.parse(input);
 
-  const item = await tx(async () => {
+  const item = await tx(async (ctx) => {
+    await exigirLojaDoItem(ctx, d.itemId);
     const i = await db.fiscalInboundItem.findFirst({
       where: { id: d.itemId },
       select: {

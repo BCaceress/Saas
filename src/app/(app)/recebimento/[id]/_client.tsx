@@ -1,29 +1,37 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowRightLeft,
+  Beer,
   CalendarClock,
   Check,
   CheckCheck,
   CircleCheck,
   ClipboardCheck,
   Clock3,
-  Download,
+  FileUp,
   Gift,
   History,
+  Layers,
   Link2,
   Loader2,
+  Mail,
+  MessageCircle,
   MoreVertical,
   PackagePlus,
   Plus,
+  Tag,
   Trash2,
+  TrendingDown,
   ScanLine,
   Search,
   Send,
   Undo2,
   TriangleAlert,
+  Wallet,
   Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -44,7 +52,17 @@ import { MedidorRodape, RodapeAcao, Topo } from "./_partes";
 import { useLeitorTeclado } from "@/lib/hooks/use-leitor-teclado";
 import { baixarXlsx } from "@/lib/baixar-xlsx";
 import { variacaoCusto } from "@/lib/compras/conciliacao-regras";
-import { frasesDeConversao, rotuloDaUnidade } from "@/lib/fiscal/unidades";
+import {
+  avisoDeValidade,
+  custoDeEntradaDaLinha,
+  esperadoDaLinha,
+  faltaDaConferencia,
+  problemaNosLotes,
+  validadeMaisCurta,
+  type AvisoValidade,
+  type LoteDaLinha,
+} from "@/lib/compras/recebimento-regras";
+import { frasesDeConversao, rotuloDaUnidade, siglaDeExibicao } from "@/lib/fiscal/unidades";
 import { nomeDaEmbalagem } from "@/lib/fiscal/embalagem-nome";
 import { fmtMoney, fmtQtd } from "../../cotacoes/_catalogo/ui";
 import {
@@ -54,6 +72,13 @@ import {
   cancelarRecebimentoAction,
   conferirItemAction,
   conferirTudoAction,
+  enviarAvisoPorEmailAction,
+  estornarRecebimentoAction,
+  importarXmlParaRecebimentoAction,
+  notasParaVincularAction,
+  salvarVasilhameAction,
+  somarContagemAction,
+  vincularNotaAction,
   finalizarRecebimentoAction,
   salvarRascunhoAction,
   resolverDivergenciaAction,
@@ -116,17 +141,47 @@ const STATUS_INFO: Record<
  */
 type Situacao = "A_CONFERIR" | "CONFERIDO" | "DIVERGENCIA" | "AJUSTADO";
 
+/**
+ * Como a tela FALA do item com a pessoa (toast do bipe, painéis, leitor de
+ * tela): o nome do catálogo, que é o que ela conhece. O texto do fornecedor
+ * fica na coluna "Produto na nota", onde se confere contra o papel.
+ */
+const nomeDe = (l: LinhaRecebimento) => l.produtoNome ?? l.descricao;
+
 /** Contado diferente do esperado. */
 const contouDiferente = (l: LinhaRecebimento) =>
   l.qtdRecebida != null && Math.abs(l.qtdRecebida - esperadoDe(l)) > 0.001;
 
-function situacaoDaLinha(l: LinhaRecebimento, cega: boolean): Situacao {
+/**
+ * O que o recebimento tinha como referência. Sem pedido e sem nota (o avulso
+ * puro), cada linha foi acrescentada pela própria doca — "fora do pedido" ali
+ * não é divergência, é o recebimento inteiro.
+ */
+type Referencia = { temNota: boolean; temPedido: boolean };
+
+/** A linha discorda do que se esperava, no papel (pedido × nota)? */
+function divergeNoPapel(l: LinhaRecebimento, ref: Referencia): boolean {
+  if (l.avulsa && !ref.temNota && !ref.temPedido) return false;
+  return STATUS_INFO[l.status].grave;
+}
+
+function situacaoDaLinha(l: LinhaRecebimento, cega: boolean, ref: Referencia): Situacao {
   // Conferência cega: até a pessoa contar, nem o selo pode contar que o
   // pedido e a nota discordam — é o número que ela não pode ver.
   if (cega && l.qtdRecebida == null) return "A_CONFERIR";
   if (l.resolucao || l.motivoDivergencia) return "AJUSTADO";
-  if (!l.productId || STATUS_INFO[l.status].grave || contouDiferente(l)) return "DIVERGENCIA";
+  // A linha acrescentada na doca não tem "esperado": o número dela É o que
+  // chegou. Se ela diverge de algo, é do papel (fora da nota/do pedido).
+  if (!l.productId || divergeNoPapel(l, ref) || (!l.avulsa && contouDiferente(l))) {
+    return "DIVERGENCIA";
+  }
   return l.qtdRecebida == null ? "A_CONFERIR" : "CONFERIDO";
+}
+
+/** "Fora do pedido" só existe quando havia pedido; com nota, é "fora da nota". */
+function rotuloDoStatus(l: LinhaRecebimento, temNota: boolean): string {
+  if (l.status === "NAO_PEDIDO" && l.avulsa) return temNota ? "Fora da nota" : "Fora do pedido";
+  return STATUS_INFO[l.status].label;
 }
 
 const SITUACAO_UI: Record<
@@ -169,9 +224,16 @@ type Lente = "TODOS" | Situacao;
 
 /** A frase inteira por trás do selo — no hover e no leitor de tela. */
 function porqueDaSituacao(l: LinhaRecebimento, s: Situacao, temNota: boolean): string {
+  const quem = quemContou(l);
+  return quem ? `${fraseDaSituacao(l, s, temNota)} ${quem}` : fraseDaSituacao(l, s, temNota);
+}
+
+function fraseDaSituacao(l: LinhaRecebimento, s: Situacao, temNota: boolean): string {
   switch (s) {
     case "A_CONFERIR":
-      return `Ainda não contado — entra com a quantidade ${temNota ? "da nota" : "do pedido"} se ninguém contar.`;
+      return esperadoDe(l) > 0
+        ? `Ainda não contado — entra com a quantidade ${temNota ? "da nota" : "do pedido"} se ninguém contar.`
+        : "Ainda não contado — a nota não trouxe este item; sem contagem, nada entra.";
     case "CONFERIDO":
       return "Contado e igual ao esperado.";
     case "AJUSTADO":
@@ -180,10 +242,10 @@ function porqueDaSituacao(l: LinhaRecebimento, s: Situacao, temNota: boolean): s
         : "Divergência decidida — fica no histórico.";
     case "DIVERGENCIA":
       if (!l.productId) return "Sem produto relacionado — relacione antes de receber.";
-      if (contouDiferente(l)) {
+      if (contouDiferente(l) && !l.avulsa) {
         return `Contado ${fmtQtd(l.qtdRecebida ?? 0)}, esperado ${fmtQtd(esperadoDe(l))}.`;
       }
-      return `${STATUS_INFO[l.status].label}: ${explicacao(l, variacaoDaLinha(l))}`;
+      return `${rotuloDoStatus(l, temNota)}: ${explicacao(l, variacaoDaLinha(l), temNota)}`;
   }
 }
 
@@ -197,6 +259,47 @@ const fmtValor = (v: number) =>
  */
 const fmtDia = (iso: string) => iso.slice(0, 10).split("-").reverse().join("/");
 
+/** A validade que vence primeiro na linha (com lotes, a do lote mais curto). */
+const validadeDaLinha = (l: LinhaRecebimento) => validadeMaisCurta(l.validade, l.lotes);
+
+/** "lote A · val. 14/10/2026", ou "3 lotes · val. 14/10 a 30/11/2026". */
+function resumoDoLote(l: LinhaRecebimento): string {
+  if (l.lotes?.length) {
+    const datas = l.lotes
+      .map((x) => x.validade)
+      .filter((v): v is string => Boolean(v))
+      .sort();
+    const val =
+      datas.length === 0
+        ? null
+        : datas[0] === datas[datas.length - 1]
+          ? `val. ${fmtDia(datas[0])}`
+          : `val. ${fmtDia(datas[0]).slice(0, 5)} a ${fmtDia(datas[datas.length - 1])}`;
+    return [`${l.lotes.length} ${l.lotes.length === 1 ? "lote" : "lotes"}`, val].filter(Boolean).join(" · ");
+  }
+  return [l.lote ? `lote ${l.lote}` : null, l.validade ? `val. ${fmtDia(l.validade)}` : null]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/**
+ * "Contado por Ana em 15/10, 14:32." — quem responde pela contagem. O fuso é
+ * o da loja, fixo: a mesma frase sai no servidor (UTC) e no navegador.
+ */
+function quemContou(l: LinhaRecebimento): string | null {
+  if (l.qtdRecebida == null || (!l.contadoPor && !l.contadoEm)) return null;
+  const quando = l.contadoEm
+    ? new Date(l.contadoEm).toLocaleString("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: "America/Sao_Paulo",
+      })
+    : null;
+  return `Contado${l.contadoPor ? ` por ${l.contadoPor}` : ""}${quando ? ` em ${quando}` : ""}.`;
+}
+
 /** Quanto o custo da nota subiu (ou caiu) sobre o negociado, em %. */
 function variacaoDaLinha(l: LinhaRecebimento): number | null {
   if (l.status === "NAO_PEDIDO") return null;
@@ -204,11 +307,12 @@ function variacaoDaLinha(l: LinhaRecebimento): number | null {
 }
 
 /**
- * O que a linha esperava e o que entra se a entrada for confirmada agora —
- * mesma régua do servidor (`esperadoDaLinha`): a nota manda; sem ela, o pedido.
- * Linha sem contagem entra pelo esperado.
+ * O que a linha esperava e o que entra se a entrada for confirmada agora — a
+ * MESMA função do servidor (`esperadoDaLinha`): a nota manda; sem ela, o
+ * pedido; e o que a nota não trouxe espera zero. Linha sem contagem entra pelo
+ * esperado.
  */
-const esperadoDe = (l: LinhaRecebimento) => l.qtdFaturada || l.qtdPedida;
+const esperadoDe = (l: LinhaRecebimento) => esperadoDaLinha(l);
 
 /** Inteiro, com folga para o ruído do decimal do banco. */
 const inteiro = (n: number) => Math.abs(n - Math.round(n)) < 1e-6;
@@ -239,7 +343,8 @@ type Regua = { modo: "EMB" | "UN"; fator: number | null; sigla: string; forcado:
 
 function reguaDaLinha(l: LinhaRecebimento, pediuUnidade: boolean): Regua {
   const fator = fatorDaEmbalagem(l);
-  const sigla = l.xml?.unidade.trim().toUpperCase() || UNIDADE_CONFERENCIA;
+  // "CX027" vira "CX": o 27 já está no "= 27 UN" ao lado (ver `siglaDeExibicao`).
+  const sigla = l.xml ? siglaDeExibicao(l.xml.unidade) : UNIDADE_CONFERENCIA;
   if (!fator) return { modo: "UN", fator: null, sigla, forcado: false };
   const forcado = l.qtdRecebida != null && !inteiro(l.qtdRecebida / fator);
   return { modo: pediuUnidade || forcado ? "UN" : "EMB", fator, sigla, forcado };
@@ -299,11 +404,17 @@ export function RecebimentoClient({
   verNota,
   podeReceber,
   podeTratarNota,
+  podeEstornar,
+  podeDevolver,
+  podeEtiquetas,
+  podeVerFinanceiro,
   podeCriarProduto,
   podeEditarFornecedor,
   podeBaixarXml,
   mostrarSku,
   cega,
+  validadeAlertaDias,
+  hoje,
   subcategorias,
 }: {
   dados: RecebimentoView;
@@ -315,8 +426,16 @@ export function RecebimentoClient({
    * caixa — a conferência inteira vira leitura.
    */
   podeReceber: boolean;
-  /** Decide sobre o DOCUMENTO: descartar, estornar, documentar entrada manual. */
+  /** Decide sobre o DOCUMENTO: descartar, documentar entrada manual. */
   podeTratarNota: boolean;
+  /** Desfaz a entrada de um recebimento concluído (`estoque.ajustar` na loja). */
+  podeEstornar: boolean;
+  /** Devolve ao fornecedor o que já entrou (`compras.devolver` na loja). */
+  podeDevolver: boolean;
+  /** Imprime etiqueta de prateleira — é o preço impresso (`produto.preco`). */
+  podeEtiquetas: boolean;
+  /** Vê contas a pagar (`financeiro.ver`). */
+  podeVerFinanceiro: boolean;
   podeCriarProduto: boolean;
   /** Decide as sugestões de contato que o XML trouxe para o fornecedor. */
   podeEditarFornecedor: boolean;
@@ -326,6 +445,10 @@ export function RecebimentoClient({
   mostrarSku: boolean;
   /** Conferência cega: esconde pedido e NF até a pessoa contar. */
   cega: boolean;
+  /** "Vence em até N dias" — a mesma régua de Configurações → Estoque. */
+  validadeAlertaDias: number;
+  /** Dia de hoje na loja (`aaaa-mm-dd`), vindo do servidor: servidor e navegador contam igual. */
+  hoje: string;
   subcategorias: SubcategoriaCadastro[];
 }) {
   // A nota recém-importada ainda não tem conferência: antes de contar caixa é
@@ -353,10 +476,16 @@ export function RecebimentoClient({
       dados={dados}
       podeReceber={podeReceber}
       podeTratarNota={podeTratarNota}
+      podeEstornar={podeEstornar}
+      podeDevolver={podeDevolver}
+      podeEtiquetas={podeEtiquetas}
+      podeVerFinanceiro={podeVerFinanceiro}
       podeCriarProduto={podeCriarProduto}
       podeBaixarXml={podeBaixarXml}
       mostrarSku={mostrarSku}
       cega={cega}
+      validadeAlertaDias={validadeAlertaDias}
+      hoje={hoje}
       subcategorias={subcategorias}
     />
   );
@@ -368,29 +497,44 @@ function Conferencia({
   dados,
   podeReceber,
   podeTratarNota,
+  podeEstornar,
+  podeDevolver,
+  podeEtiquetas,
+  podeVerFinanceiro,
   podeCriarProduto,
   podeBaixarXml,
   mostrarSku,
   cega,
+  validadeAlertaDias,
+  hoje,
   subcategorias,
 }: {
   dados: RecebimentoView;
   podeReceber: boolean;
   podeTratarNota: boolean;
+  podeEstornar: boolean;
+  podeDevolver: boolean;
+  podeEtiquetas: boolean;
+  podeVerFinanceiro: boolean;
   podeCriarProduto: boolean;
   podeBaixarXml: boolean;
   mostrarSku: boolean;
   cega: boolean;
+  validadeAlertaDias: number;
+  hoje: string;
   subcategorias: SubcategoriaCadastro[];
 }) {
   const router = useRouter();
   const { recebimento, nota, pedido, semPedido, resumo, timeline } = dados;
+  const finalizado = recebimento.status === "FINALIZADO";
   // Recebimento fechado e pessoa que não recebe mercadoria dão no mesmo lugar:
   // a conferência é só leitura. Contar caixa é decisão de quem está na doca.
-  const encerrada =
-    recebimento.status === "FINALIZADO" ||
-    recebimento.status === "CANCELADO" ||
-    !podeReceber;
+  const encerrada = finalizado || recebimento.status === "CANCELADO" || !podeReceber;
+  const temNota = Boolean(nota);
+  const temPedido = Boolean(pedido);
+  const ref = React.useMemo<Referencia>(() => ({ temNota, temPedido }), [temNota, temPedido]);
+  /** O que se diz da linha que ninguém contou: entra como está "na nota" ou "no pedido". */
+  const comoNoPapel = nota ? "como está na nota" : "como está no pedido";
 
   // Cópia local para o bipe e os campos responderem na hora; o servidor é a
   // verdade e o refresh reconcilia.
@@ -414,6 +558,20 @@ function Conferencia({
   const [motivoEntrada, setMotivoEntrada] = React.useState("");
   const [verTimeline, setVerTimeline] = React.useState(false);
   const [relacionar, setRelacionar] = React.useState<ItemDeNota | null>(null);
+  /** Estorno do recebimento concluído — pede motivo, como o cancelamento. */
+  const [estornando, setEstornando] = React.useState(false);
+  const [motivoEstorno, setMotivoEstorno] = React.useState("");
+  /** O texto pronto para o representante (pedido × nota e caixa × papel). */
+  const [avisando, setAvisando] = React.useState(false);
+  /** Linha concluída que vai voltar, parcial ou toda, ao fornecedor. */
+  const [devolvendo, setDevolvendo] = React.useState<LinhaRecebimento | null>(null);
+  /** A NF-e chegou depois: escolher (ou enviar) a nota deste recebimento. */
+  const [vinculando, setVinculando] = React.useState(false);
+  /**
+   * Abater do título o que a nota cobra e não chegou. Ligado por padrão: o
+   * caminho comum é não pagar pela caixa que não veio.
+   */
+  const [abaterFalta, setAbaterFalta] = React.useState(true);
   /**
    * Item que ninguém esperava. É o único caminho de entrada do recebimento
    * AVULSO (que nasce sem linha nenhuma) e a resposta ao "veio uma caixa a
@@ -476,24 +634,47 @@ function Conferencia({
   }, []);
 
   const conferidos = linhas.filter((l) => l.qtdRecebida != null).length;
-  const divergentes = linhas.filter((l) => STATUS_INFO[l.status].grave && !l.resolucao);
+  const divergentes = linhas.filter((l) => divergeNoPapel(l, ref) && !l.resolucao);
   // O que vira saldo se a entrada for confirmada agora: o contado, quando
   // alguém contou; o esperado, quando ninguém contou. É a mesma regra que o
   // servidor aplica em `finalizarRecebimento` — a tela só a mostra antes.
   const itensEntrando = linhas.filter((l) => entrando(l) > 0);
   const entraNoEstoque = itensEntrando.reduce((s, l) => s + entrando(l), 0);
+  /** O dinheiro da mercadoria que entra, pelo custo com que ela entra. */
+  const valorEntrando = itensEntrando.reduce((s, l) => s + entrando(l) * custoDeEntradaDaLinha(l), 0);
+  /** O que a nota cobra e não chegou — o que dá para abater do título. */
+  const falta = faltaDaConferencia(linhas);
+  const vaiAbater = Boolean(nota) && falta.valor > 0.005 && abaterFalta;
+  /** Validade vencida em linha que vai entrar — avisa, não trava. */
+  const vencidosEntrando = itensEntrando.filter(
+    (l) => avisoDeValidade(validadeDaLinha(l), hoje, validadeAlertaDias)?.tipo === "VENCIDO",
+  ).length;
+  /** Linhas que o "Conferi tudo" preencheria agora. */
+  const naoContadas = linhas.filter((l) => l.qtdRecebida == null);
+  /** Diferença entre a caixa e o papel em alguma linha contada. */
+  const temDiferencaContada = linhas.some((l) => !l.avulsa && contouDiferente(l));
+  /**
+   * O painel das diferenças do papel (pedido × nota). Na conferência cega ele
+   * espera todo mundo ser contado: mostrá-lo antes entregaria justamente o
+   * número que a pessoa não pode ver.
+   */
+  const mostraPainel = divergentes.length > 0 && (!cega || conferidos === linhas.length);
   /** Tudo que ainda espera uma decisão da pessoa antes de receber. */
   const pendencias = divergentes.length + resumo.produtosNovos;
   const semProduto = itensEntrando.filter((l) => !l.productId).length;
   // Mesma régua do servidor (`divergenciasDaConferencia`): contado diferente do
-  // esperado e ainda sem explicação. Uma frase resolve todas de uma vez.
-  const naoExplicadas = linhas.filter(
-    (l) =>
-      !l.motivoDivergencia &&
-      l.resolucao !== "ACEITO" &&
-      l.resolucao !== "IGNORADO" &&
-      Math.abs(entrando(l) - esperadoDe(l)) > 0.001,
-  );
+  // esperado e ainda sem explicação. Uma frase resolve todas de uma vez. O
+  // avulso puro não tem contra o que divergir — o servidor também não cobra.
+  const naoExplicadas =
+    !ref.temNota && !ref.temPedido
+      ? []
+      : linhas.filter(
+          (l) =>
+            !l.motivoDivergencia &&
+            l.resolucao !== "ACEITO" &&
+            l.resolucao !== "IGNORADO" &&
+            Math.abs(entrando(l) - esperadoDe(l)) > 0.001,
+        );
   /** O que o servidor recusaria — dito antes do clique, não depois. */
   const impedimento =
     semProduto > 0
@@ -525,7 +706,12 @@ function Conferencia({
   const salvar = React.useCallback(
     async (
       linhaId: string,
-      dadosItem: { qtdRecebida?: number | null; lote?: string | null; validade?: string | null },
+      dadosItem: {
+        qtdRecebida?: number | null;
+        lote?: string | null;
+        validade?: string | null;
+        lotes?: LoteDaLinha[] | null;
+      },
     ) => {
       clearTimeout(timersRef.current[linhaId]);
       setSalvandoLinha((s) => ({ ...s, [linhaId]: "salvando" }));
@@ -552,6 +738,44 @@ function Conferencia({
     [],
   );
 
+  /**
+   * Bipes ainda a caminho do servidor, por linha. A tela soma na hora; quando
+   * a ÚLTIMA resposta da linha chega, o total do servidor manda — ele inclui o
+   * que outro celular bipou na mesma carga. Aplicar cada resposta no meio da
+   * rajada faria o número voltar e avançar diante de quem está bipando.
+   */
+  const bipesPendentesRef = React.useRef<Record<string, number>>({});
+  const somar = React.useCallback(
+    async (linhaId: string, incremento: number) => {
+      clearTimeout(timersRef.current[linhaId]);
+      bipesPendentesRef.current[linhaId] = (bipesPendentesRef.current[linhaId] ?? 0) + 1;
+      setSalvandoLinha((s) => ({ ...s, [linhaId]: "salvando" }));
+      const limpar = () =>
+        setSalvandoLinha((s) =>
+          Object.fromEntries(Object.entries(s).filter(([id]) => id !== linhaId)),
+        );
+      try {
+        const total = await somarContagemAction({
+          receiptId: recebimento.id,
+          itemId: linhaId,
+          incremento,
+        });
+        bipesPendentesRef.current[linhaId] -= 1;
+        if (bipesPendentesRef.current[linhaId] === 0) {
+          aplicarLocal(linhaId, { qtdRecebida: total });
+          setSalvandoLinha((s) => ({ ...s, [linhaId]: "salvo" }));
+          timersRef.current[linhaId] = setTimeout(limpar, 1800);
+        }
+      } catch (e) {
+        bipesPendentesRef.current[linhaId] = 0;
+        limpar();
+        toast.error("Não deu para somar o bipe", e instanceof Error ? e.message : "Tente de novo.");
+        router.refresh();
+      }
+    },
+    [recebimento.id, aplicarLocal, router],
+  );
+
   const aoLerCodigo = React.useCallback(
     (codigo: string) => {
       if (encerrada) return;
@@ -571,7 +795,7 @@ function Conferencia({
       const atual = achado.linha.qtdRecebida ?? 0;
       const nova = atual + achado.incremento;
       aplicarLocal(achado.linha.id, { qtdRecebida: nova });
-      void salvar(achado.linha.id, { qtdRecebida: nova });
+      void somar(achado.linha.id, achado.incremento);
       // O toast diz o QUE entrou; a linha diz ONDE. Sem ancorar, quem bipa
       // trinta caixas seguidas não tem como conferir se o número foi parar no
       // item certo — e a linha pode estar fora da tela.
@@ -587,13 +811,13 @@ function Conferencia({
       );
       const sigla = siglaDaRegua(regua);
       toast.success(
-        achado.linha.descricao,
+        nomeDe(achado.linha),
         cega
           ? `${fmtQtd(naRegua(nova, regua))} ${sigla} contado(s)`
           : `${fmtQtd(naRegua(nova, regua))} de ${fmtQtd(naRegua(esperadoDe(achado.linha), regua))} ${sigla}`,
       );
     },
-    [porCodigo, aplicarLocal, salvar, encerrada, cega, porUnidade],
+    [porCodigo, aplicarLocal, somar, encerrada, cega, porUnidade],
   );
 
   // O destaque do bipe se apaga sozinho: é confirmação momentânea, não estado.
@@ -624,15 +848,20 @@ function Conferencia({
   }, [encerrada]);
 
   async function conferirTudo() {
-    // Retrato de antes do clique. É o que "Desfazer" devolve — inclusive as
-    // linhas já contadas, que o "conferi tudo" sobrescreve.
-    const antes = linhas.map((l) => ({ itemId: l.id, qtdRecebida: l.qtdRecebida }));
+    // Só o que ninguém contou muda — a contagem feita e a linha acrescentada
+    // na doca ficam como estão (mesma régua do servidor). É também só isso
+    // que o "Desfazer" devolve.
+    const alvo = naoContadas.map((l) => l.id);
+    if (alvo.length === 0) return;
+    const antes = alvo.map((itemId) => ({ itemId, qtdRecebida: null }));
     try {
-      await conferirTudoAction(recebimento.id);
-      setLinhas((prev) => prev.map((l) => ({ ...l, qtdRecebida: l.qtdFaturada })));
+      const n = await conferirTudoAction(recebimento.id);
+      setLinhas((prev) =>
+        prev.map((l) => (l.qtdRecebida == null ? { ...l, qtdRecebida: esperadoDe(l) } : l)),
+      );
       toast.success(
-        "Tudo conferido conforme a nota.",
-        "Revise antes de receber no estoque.",
+        n === 1 ? "1 item marcado como está no papel." : `${n} itens marcados como estão no papel.`,
+        `Os já contados ficaram como estavam. Revise antes de receber no estoque.`,
         { rotulo: "Desfazer", onClick: () => desfazerConferirTudo(antes) },
       );
       router.refresh();
@@ -646,11 +875,9 @@ function Conferencia({
   ) {
     try {
       await restaurarContagemAction({ receiptId: recebimento.id, itens: antes });
+      const voltou = new Map(antes.map((a) => [a.itemId, a.qtdRecebida]));
       setLinhas((prev) =>
-        prev.map((l) => ({
-          ...l,
-          qtdRecebida: antes.find((a) => a.itemId === l.id)?.qtdRecebida ?? null,
-        })),
+        prev.map((l) => (voltou.has(l.id) ? { ...l, qtdRecebida: voltou.get(l.id) ?? null } : l)),
       );
       toast.info("Contagem restaurada.", "Voltou como estava antes do clique.");
       router.refresh();
@@ -672,14 +899,16 @@ function Conferencia({
       const r = await finalizarRecebimentoAction({
         receiptId: recebimento.id,
         motivoDivergencia: motivoEntrada.trim() || null,
+        abaterFalta: vaiAbater,
       });
       toast.success(
         `Recebimento ${r.numero} finalizado.`,
-        pedido
+        (pedido
           ? r.pedidoCompleto
             ? `Estoque atualizado. Pedido ${pedido.numero} recebido por completo.`
             : `Estoque atualizado. Pedido ${pedido.numero} segue aberto para o que falta.`
-          : "Estoque e custo atualizados.",
+          : "Estoque e custo atualizados.") +
+          (r.faltaAbatida > 0 ? ` ${fmtMoney(r.faltaAbatida)} de falta abatidos do título.` : ""),
       );
       setConfirmando(false);
       router.refresh();
@@ -737,10 +966,40 @@ function Conferencia({
     }
   }
 
+  /**
+   * Desfaz a entrada do recebimento concluído: o saldo volta, os títulos em
+   * aberto são cancelados e a conferência reabre com a contagem que tinha —
+   * para corrigir e receber de novo, ou cancelar de vez.
+   */
+  async function estornar() {
+    setEnviando(true);
+    try {
+      const r = await estornarRecebimentoAction({
+        receiptId: recebimento.id,
+        motivo: motivoEstorno.trim(),
+      });
+      toast.success(
+        `Recebimento ${recebimento.numero} estornado.`,
+        `${r.itens} ${r.itens === 1 ? "item saiu" : "itens saíram"} do estoque` +
+          (r.titulosCancelados > 0
+            ? ` e ${r.titulosCancelados} ${r.titulosCancelados === 1 ? "título foi cancelado" : "títulos foram cancelados"}.`
+            : ".") +
+          " A conferência está aberta de novo.",
+      );
+      setEstornando(false);
+      setMotivoEstorno("");
+      router.refresh();
+    } catch (e) {
+      toast.error("Não deu para estornar", e instanceof Error ? e.message : "Tente de novo.");
+    } finally {
+      setEnviando(false);
+    }
+  }
+
   /** Situação de cada linha — a mesma régua no selo, no filtro e na planilha. */
   const situacoes = React.useMemo(
-    () => new Map(linhas.map((l) => [l.id, situacaoDaLinha(l, cega)])),
-    [linhas, cega],
+    () => new Map(linhas.map((l) => [l.id, situacaoDaLinha(l, cega, ref)])),
+    [linhas, cega, ref],
   );
   /** Quantas linhas cada filtro tem hoje — o número mora no próprio chip. */
   const contagens = React.useMemo(() => {
@@ -807,10 +1066,13 @@ function Conferencia({
         "Total recebido (R$)",
         "Lote",
         "Validade",
+        "Contado por",
       ],
       linhas: linhas.map((l, i) => {
-        const oculto = cega && l.qtdRecebida == null && !encerrada;
-        const custo = l.bonificacao ? 0 : l.custoFaturado;
+        // Sem papel nenhum (avulso puro) não há esperado nem diferença — a
+        // planilha fica igual à tela.
+        const oculto = (cega && l.qtdRecebida == null && !encerrada) || (l.avulsa && !temNota && !temPedido);
+        const custo = custoDeEntradaDaLinha(l);
         return [
           i + 1,
           l.descricao,
@@ -821,12 +1083,20 @@ function Conferencia({
           UNIDADE_CONFERENCIA,
           oculto ? null : esperadoDe(l),
           l.qtdRecebida,
-          l.qtdRecebida == null ? null : l.qtdRecebida - esperadoDe(l),
+          l.qtdRecebida == null || oculto ? null : l.qtdRecebida - esperadoDe(l),
           SITUACAO_UI[situacoes.get(l.id) ?? "A_CONFERIR"].rotulo,
           custo,
           l.qtdRecebida == null ? null : custo * l.qtdRecebida,
-          l.lote ?? "",
-          l.validade ? fmtDia(l.validade) : "",
+          // Dividida em lotes: um por vez, com a quantidade de cada.
+          l.lotes?.length
+            ? l.lotes.map((x) => `${x.lote ?? "sem lote"} (${fmtQtd(x.quantidade)})`).join("; ")
+            : (l.lote ?? ""),
+          l.lotes?.length
+            ? l.lotes.map((x) => (x.validade ? fmtDia(x.validade) : "—")).join("; ")
+            : l.validade
+              ? fmtDia(l.validade)
+              : "",
+          l.qtdRecebida == null ? "" : (l.contadoPor ?? ""),
         ];
       }),
     });
@@ -852,18 +1122,48 @@ function Conferencia({
         podeTratarNota={podeTratarNota}
         podeBaixarXml={podeBaixarXml}
         onCancelar={encerrada ? undefined : () => setCancelando(true)}
+        onEstornar={finalizado && podeEstornar ? () => setEstornando(true) : undefined}
+        // O painel de diferenças tem o próprio "Avisar fornecedor". Sem ele
+        // na tela (só a caixa discordou do papel), o atalho mora no menu.
+        onAvisarFornecedor={
+          podeReceber && !mostraPainel && temDiferencaContada ? () => setAvisando(true) : undefined
+        }
+        onExportar={linhas.length > 0 ? exportar : undefined}
+        onVincularNota={
+          !nota && podeReceber && recebimento.status !== "CANCELADO"
+            ? () => setVinculando(true)
+            : undefined
+        }
+        acoesDoConcluido={
+          finalizado ? (
+            <ProximosPassos
+              produtos={[...new Set(linhas.filter((l) => l.productId && entrando(l) > 0).map((l) => l.productId as string))]}
+              podeEtiquetas={podeEtiquetas}
+              podeVerFinanceiro={podeVerFinanceiro && Boolean(recebimento.supplierId)}
+              supplierId={recebimento.supplierId}
+              temDiferenca={podeReceber && (divergentes.length > 0 || temDiferencaContada)}
+              onAvisar={() => setAvisando(true)}
+              // Fechado sem XML: a nota que chegar depois documenta a entrada
+              // e traz o boleto. O atalho fica onde a pessoa já está olhando.
+              onVincularNota={!nota && podeReceber ? () => setVinculando(true) : undefined}
+              margens={dados.margens}
+            />
+          ) : undefined
+        }
       />
 
       {/* Conferência cega: mostrar as divergências antes da contagem entregaria
           justamente o número que a pessoa não pode ver. O painel espera todo
           mundo ser contado. */}
-      {divergentes.length > 0 && (!cega || conferidos === linhas.length) && (
+      {mostraPainel && (
         <PainelDivergencias
           receiptId={recebimento.id}
-          inboundId={nota?.id ?? null}
           linhas={divergentes}
+          temNota={Boolean(nota)}
           impactoCusto={resumo.custosAlterados > 0 ? resumo.impactoCusto : 0}
           bloqueado={encerrada}
+          podeAvisar={podeReceber}
+          onAvisar={() => setAvisando(true)}
           onRelacionar={(l) => setRelacionar(paraRelacionar(l))}
         />
       )}
@@ -891,8 +1191,11 @@ function Conferencia({
           </span>
           <p className="text-sm font-medium text-ink">Nada conferido ainda</p>
           <p className="max-w-sm text-[13px] text-muted">
-            Este recebimento não tem pedido nem nota por trás. Bipe ou busque cada produto que
-            chegou — nada entra no estoque até você finalizar.
+            {nota
+              ? "A conferência desta nota ainda não tem itens. Volte à nota e produtos para escolher como receber — ou bipe o que chegou."
+              : pedido
+                ? "O pedido não tem saldo a conferir neste recebimento. Bipe ou busque cada produto que chegou — nada entra no estoque até você finalizar."
+                : "Este recebimento não tem pedido nem nota por trás. Bipe ou busque cada produto que chegou — nada entra no estoque até você finalizar."}
           </p>
           {!encerrada && (
             <div className="mt-1 flex gap-2">
@@ -964,22 +1267,17 @@ function Conferencia({
                   size="sm"
                   variant="secondary"
                   onClick={() => void conferirTudo()}
-                  title={`Marca cada linha com a quantidade ${nota ? "da nota" : "esperada"}`}
+                  disabled={naoContadas.length === 0 || gravando}
+                  title={
+                    naoContadas.length === 0
+                      ? "Todos os itens já foram contados."
+                      : `Marca ${naoContadas.length === 1 ? "o item ainda não contado" : `os ${naoContadas.length} itens ainda não contados`} com a quantidade ${nota ? "da nota" : "do pedido"}. O que já foi contado fica como está.`
+                  }
                 >
                   <CheckCheck size={14} aria-hidden />
                   Conferi tudo
                 </Button>
               )}
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={exportar}
-                aria-label="Exportar conferência"
-                title="Exportar conferência (planilha)"
-              >
-                <Download size={14} aria-hidden />
-                <span className="hidden @[40rem]:inline">Exportar conferência</span>
-              </Button>
             </div>
           </div>
 
@@ -1043,13 +1341,29 @@ function Conferencia({
                     numero={numeroDe.get(l.id) ?? 0}
                     situacao={situacoes.get(l.id) ?? "A_CONFERIR"}
                     temNota={Boolean(nota)}
+                    semEsperado={l.avulsa && !temNota && !temPedido}
                     mostrarSku={mostrarSku}
                     bloqueado={encerrada}
                     cega={cega}
                     piscando={piscando === l.id}
                     salvamento={salvandoLinha[l.id] ?? null}
+                    validade={avisoDeValidade(validadeDaLinha(l), hoje, validadeAlertaDias)}
+                    onDevolver={
+                      // Depois da entrada, o que voltou para o caminhão sai do
+                      // estoque pela linha — a do produto que voltou.
+                      finalizado && podeDevolver && l.productId && entrando(l) > 0
+                        ? () => setDevolvendo(l)
+                        : undefined
+                    }
                     onAlterar={(patch) => {
-                      aplicarLocal(l.id, patch);
+                      // "Um lote só" vai ao servidor como lista vazia; na tela é
+                      // a linha sem lotes, como o servidor a devolve.
+                      aplicarLocal(
+                        l.id,
+                        patch.lotes !== undefined
+                          ? { ...patch, lotes: patch.lotes?.length ? patch.lotes : null }
+                          : patch,
+                      );
                       void salvar(l.id, patch);
                     }}
                     onRelacionar={() => setRelacionar(paraRelacionar(l))}
@@ -1110,6 +1424,16 @@ function Conferencia({
         </div>
       )}
 
+      {dados.vasilhame && dados.vasilhame.length > 0 && (
+        <CartaoVasilhame
+          receiptId={recebimento.id}
+          tipos={dados.vasilhame}
+          // O caminhão leva os vazios depois de descarregar: vale também com o
+          // recebimento já concluído.
+          editavel={podeReceber && recebimento.status !== "CANCELADO"}
+        />
+      )}
+
       <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
         <button
           type="button"
@@ -1117,7 +1441,9 @@ function Conferencia({
           className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-medium text-ink hover:bg-surface-2"
         >
           <History className="h-4 w-4 text-faint" aria-hidden />
-          {pedido ? `Histórico do pedido ${pedido.numero}` : "Histórico desta nota"}
+          {/* A história é DESTE recebimento — a do pedido inteiro, com as
+              outras entregas, mora na tela do pedido. */}
+          Histórico do recebimento
           <span className="ml-auto text-[12px] text-muted">
             {verTimeline ? "ocultar" : `${timeline.length} eventos`}
           </span>
@@ -1169,7 +1495,7 @@ function Conferencia({
                   <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden />
                   <span>
                     {pendencias} {pendencias === 1 ? "item precisa" : "itens precisam"} de
-                    atenção — o que não for conferido entra como está na nota.
+                    atenção — o que não for conferido entra {comoNoPapel}.
                   </span>
                 </>
               ) : conferidos === linhas.length ? (
@@ -1180,8 +1506,8 @@ function Conferencia({
               ) : (
                 <span>
                   {linhas.length - conferidos}{" "}
-                  {linhas.length - conferidos === 1 ? "item entra" : "itens entram"} como está
-                  na nota se ninguém contar.
+                  {linhas.length - conferidos === 1 ? "item entra" : "itens entram"} {comoNoPapel}{" "}
+                  se ninguém contar.
                 </span>
               )}
             </p>
@@ -1244,13 +1570,35 @@ function Conferencia({
                 {itensEntrando.length === 1 ? "item" : "itens"}
               </dd>
             </div>
+            {/* O custo com que a mercadoria entra — é ele que mexe no custo
+                médio. Difere da nota quando chegou menos (ou mais) do que ela
+                cobra; a diferença é a conversa com o fornecedor. */}
+            <div className="flex items-baseline justify-between gap-3 px-3 py-2">
+              <dt className="text-muted">Mercadoria recebida</dt>
+              <dd className="text-right text-ink">
+                <span className="font-mono">{fmtMoney(valorEntrando)}</span>
+                {nota && Math.abs(valorEntrando - nota.valorTotal) >= 0.01 && (
+                  <span className="block text-[11px] text-muted">
+                    nota: <span className="font-mono">{fmtMoney(nota.valorTotal)}</span>
+                  </span>
+                )}
+              </dd>
+            </div>
             <div className="flex items-baseline justify-between gap-3 px-3 py-2">
               <dt className="text-muted">Contas a pagar</dt>
               <dd className="text-right text-ink">
                 {nota ? (
                   <>
-                    <span className="font-mono">{fmtMoney(valorTitulos)}</span>
+                    <span className="font-mono">
+                      {fmtMoney(Math.max(0, valorTitulos - (vaiAbater ? falta.valor : 0)))}
+                    </span>
                     {nota.duplicatas.length > 1 && ` em ${nota.duplicatas.length} títulos`}
+                    {vaiAbater && (
+                      <span className="block text-[11px] text-muted">
+                        nota <span className="font-mono">{fmtMoney(valorTitulos)}</span> − falta{" "}
+                        <span className="font-mono">{fmtMoney(falta.valor)}</span>
+                      </span>
+                    )}
                   </>
                 ) : (
                   <span className="text-muted">sem NF-e, nenhum título agora</span>
@@ -1259,6 +1607,28 @@ function Conferencia({
             </div>
           </dl>
 
+          {nota && falta.valor > 0.005 && (
+            // A nota cobra a carga inteira; o título não precisa nascer
+            // cobrando a caixa que não veio. Ligado por padrão.
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-[var(--radius)] border border-line px-3 py-2.5 text-[13px]">
+              <input
+                type="checkbox"
+                checked={abaterFalta}
+                onChange={(e) => setAbaterFalta(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-brand)]"
+              />
+              <span>
+                <span className="font-medium text-ink">Abater a falta do título a pagar</span>
+                <span className="block text-[12px] text-muted">
+                  A nota cobra <span className="font-mono">{fmtMoney(falta.valor)}</span> em{" "}
+                  {falta.itens === 1 ? "1 item que não entrou" : `${falta.itens} itens que não entraram`}.
+                  O título já nasce com o desconto — o boleto do fornecedor vem cheio, combine com
+                  ele.
+                </span>
+              </span>
+            </label>
+          )}
+
           {conferidos < linhas.length && (
             <p className="rounded-[var(--radius)] bg-accent-soft px-3 py-2 text-[13px] text-accent">
               {linhas.length - conferidos}{" "}
@@ -1266,6 +1636,18 @@ function Conferencia({
                 ? "item não foi contado — entra"
                 : "itens não foram contados — entram"}{" "}
               com a quantidade {nota ? "da nota" : "do pedido"}.
+            </p>
+          )}
+
+          {vencidosEntrando > 0 && (
+            // Avisa, não trava: vencido é decisão de quem recebe (devolver ao
+            // motorista ou dar baixa depois), não do sistema.
+            <p className="flex items-start gap-2 rounded-[var(--radius)] bg-danger-soft px-3 py-2 text-[13px] text-danger">
+              <CalendarClock className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              {vencidosEntrando === 1
+                ? "1 item entra com a validade já vencida."
+                : `${vencidosEntrando} itens entram com a validade já vencida.`}{" "}
+              Confira antes de receber — depois, só com devolução ou baixa.
             </p>
           )}
 
@@ -1283,7 +1665,7 @@ function Conferencia({
               <ul className="mb-2 space-y-0.5 text-[12px] text-muted">
                 {naoExplicadas.slice(0, 4).map((l) => (
                   <li key={l.id} className="flex flex-wrap gap-x-2">
-                    <span className="min-w-0 truncate text-ink-2">{l.descricao}</span>
+                    <span className="min-w-0 truncate text-ink-2">{nomeDe(l)}</span>
                     <span className="font-mono">
                       esperado {fmtQtd(esperadoDe(l))} · contado {fmtQtd(entrando(l))}
                     </span>
@@ -1346,6 +1728,76 @@ function Conferencia({
         </label>
       </Sheet>
 
+      <Sheet
+        open={estornando}
+        onClose={() => setEstornando(false)}
+        title="Estornar recebimento"
+        description="A mercadoria sai do estoque, o custo médio volta ao que era e os títulos em aberto deste recebimento são cancelados. A conferência reabre com a contagem que tinha."
+        width="sm"
+        footer={
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => setEstornando(false)} className="flex-1">
+              Voltar
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => void estornar()}
+              disabled={enviando || motivoEstorno.trim().length < 3}
+              className="flex-1"
+            >
+              {enviando && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+              Estornar entrada
+            </Button>
+          </div>
+        }
+      >
+        <label className="block">
+          <span className="mb-1 block text-[13px] font-medium text-ink">
+            Por que esta entrada está sendo desfeita?
+          </span>
+          <textarea
+            value={motivoEstorno}
+            onChange={(e) => setMotivoEstorno(e.target.value)}
+            rows={2}
+            maxLength={240}
+            placeholder="Ex.: contagem lançada errada, a nota era de outra loja."
+            className="w-full rounded-[var(--radius)] border border-line-button bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-(--ring) focus-visible:outline-none"
+          />
+          <span className="mt-1 block text-[12px] text-muted">
+            Fica na razão de estoque e no histórico, com seu nome e a hora. Título já pago não é
+            cancelado — o crédito com o fornecedor é tratado no financeiro.
+          </span>
+        </label>
+      </Sheet>
+
+      {avisando && (
+        <SheetAvisarFornecedor receiptId={recebimento.id} onClose={() => setAvisando(false)} />
+      )}
+
+      {vinculando && (
+        <SheetVincularNota
+          receiptId={recebimento.id}
+          finalizado={finalizado}
+          onClose={() => setVinculando(false)}
+          onFeito={() => {
+            setVinculando(false);
+            router.refresh();
+          }}
+        />
+      )}
+
+      {devolvendo && (
+        <SheetDevolver
+          receiptId={recebimento.id}
+          linha={devolvendo}
+          onClose={() => setDevolvendo(null)}
+          onFeito={() => {
+            setDevolvendo(null);
+            router.refresh();
+          }}
+        />
+      )}
+
       {adicionando && !encerrada && (
         <AdicionarItem
           receiptId={recebimento.id}
@@ -1377,25 +1829,459 @@ function Conferencia({
   );
 }
 
+// ── Vincular a NF-e que chegou depois ───────────────────────
+//
+// A carga entrou (ou está sendo contada) sem o XML. Quando ele chega, a pessoa
+// escolhe entre as notas livres da loja — do mesmo fornecedor, emitidas perto
+// da chegada — ou envia o arquivo, que é importado e vinculado de uma vez.
+
+type NotaCandidata = Awaited<ReturnType<typeof notasParaVincularAction>>[number];
+
+function SheetVincularNota({
+  receiptId,
+  finalizado,
+  onClose,
+  onFeito,
+}: {
+  receiptId: string;
+  finalizado: boolean;
+  onClose: () => void;
+  onFeito: () => void;
+}) {
+  const [notas, setNotas] = React.useState<NotaCandidata[] | null>(null);
+  const [erro, setErro] = React.useState<string | null>(null);
+  /** O que está indo para o servidor: o id da nota escolhida, ou "arquivo". */
+  const [enviando, setEnviando] = React.useState<string | null>(null);
+  const arquivoRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    let vivo = true;
+    notasParaVincularAction(receiptId)
+      .then((r) => vivo && setNotas(r))
+      .catch((e: unknown) => {
+        if (vivo) setErro(e instanceof Error ? e.message : "Não deu para buscar as notas.");
+      });
+    return () => {
+      vivo = false;
+    };
+  }, [receiptId]);
+
+  const depois = finalizado
+    ? "Ela documenta o que já entrou: o estoque não se move de novo."
+    : "A conferência passa a seguir a nota; o que já foi contado continua contado.";
+
+  async function vincular(n: NotaCandidata) {
+    setEnviando(n.inboundId);
+    try {
+      await vincularNotaAction({ receiptId, inboundId: n.inboundId });
+      toast.success(`NF-e ${n.numero}/${n.serie} vinculada.`, depois);
+      onFeito();
+    } catch (e) {
+      toast.error("Não deu para vincular", e instanceof Error ? e.message : "Tente de novo.");
+      setEnviando(null);
+    }
+  }
+
+  async function enviarArquivo(arquivo: File) {
+    setEnviando("arquivo");
+    try {
+      const form = new FormData();
+      form.set("arquivo", arquivo);
+      await importarXmlParaRecebimentoAction(receiptId, form);
+      toast.success("XML importado e vinculado.", depois);
+      onFeito();
+    } catch (e) {
+      toast.error("Não deu para usar este XML", e instanceof Error ? e.message : "Tente de novo.");
+      setEnviando(null);
+      if (arquivoRef.current) arquivoRef.current.value = "";
+    }
+  }
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      width="md"
+      title="Vincular NF-e"
+      description={
+        finalizado
+          ? "A mercadoria já entrou. A nota documenta a entrada e as duplicatas dela viram contas a pagar — nada entra no estoque de novo."
+          : "A nota passa a ser a referência desta conferência. O que já foi contado fica, inclusive os itens abertos à mão."
+      }
+    >
+      <div className="flex flex-col gap-4">
+        {erro ? (
+          <p className="rounded-[var(--radius)] bg-danger-soft px-4 py-3 text-[13px] text-danger">{erro}</p>
+        ) : notas === null ? (
+          <p className="flex items-center gap-2 text-[13px] text-muted">
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            Procurando notas desta loja…
+          </p>
+        ) : notas.length === 0 ? (
+          <p className="rounded-[var(--radius)] bg-surface-2 px-4 py-3 text-[13px] text-muted">
+            Nenhuma NF-e livre desta loja, deste fornecedor, emitida perto da chegada. Envie o XML
+            abaixo — ele é importado e vinculado de uma vez.
+          </p>
+        ) : (
+          <ul className="divide-y divide-line rounded-[var(--radius)] border border-line">
+            {notas.map((n) => (
+              <li key={n.inboundId} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] font-medium text-ink">
+                    NF-e <span className="font-mono">{n.numero}/{n.serie}</span>
+                    <span className="font-normal text-muted"> · {n.emitente}</span>
+                  </p>
+                  <p className="font-mono text-[12px] text-muted">
+                    {new Date(n.dataEmissao).toLocaleDateString("pt-BR")} · {fmtMoney(n.valorTotal)} ·{" "}
+                    {n.itens} {n.itens === 1 ? "item" : "itens"}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void vincular(n)}
+                  disabled={enviando !== null}
+                >
+                  {enviando === n.inboundId ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  ) : (
+                    <Link2 className="h-3.5 w-3.5" aria-hidden />
+                  )}
+                  É esta nota
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* O XML que ainda não está no sistema: importa na loja deste
+            recebimento e já vincula. Nota repetida usa a que existe. */}
+        <label
+          className={cn(
+            "flex cursor-pointer items-center gap-3 rounded-[var(--radius)] border border-dashed border-line-strong px-4 py-3 text-[13px] transition-colors hover:bg-surface-2 focus-within:ring-2 focus-within:ring-[var(--ring)]",
+            enviando !== null && "pointer-events-none opacity-60",
+          )}
+        >
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-surface-2 text-muted">
+            {enviando === "arquivo" ? (
+              <Loader2 size={16} className="animate-spin" aria-hidden />
+            ) : (
+              <FileUp size={16} aria-hidden />
+            )}
+          </span>
+          <span className="min-w-0">
+            <span className="block font-medium text-ink">
+              {enviando === "arquivo" ? "Importando o XML…" : "Enviar o XML da nota"}
+            </span>
+            <span className="block text-[12px] text-muted">
+              Arquivo .xml que o fornecedor mandou por e-mail ou WhatsApp.
+            </span>
+          </span>
+          <input
+            ref={arquivoRef}
+            type="file"
+            accept=".xml,text/xml,application/xml"
+            className="sr-only"
+            disabled={enviando !== null}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void enviarArquivo(f);
+            }}
+          />
+        </label>
+      </div>
+    </Sheet>
+  );
+}
+
+// ── Vasilhame com o fornecedor ──────────────────────────────
+//
+// Cerveja retornável e barril chegam cheios e o caminhão leva os vazios. A
+// conta do casco era de caderno; aqui ela fica no recebimento em que
+// aconteceu. Recolhido quando não há nada lançado — a maioria das cargas não
+// tem casco, e uma seção aberta à toa é uma faixa a mais na tela.
+
+type TipoVasilhame = NonNullable<RecebimentoView["vasilhame"]>[number];
+type ContagemCasco = { recebidos: string; devolvidos: string };
+
+const cascosDe = (tipos: TipoVasilhame[]): Record<string, ContagemCasco> =>
+  Object.fromEntries(
+    tipos.map((t) => [
+      t.containerTypeId,
+      { recebidos: t.recebidos ? String(t.recebidos) : "", devolvidos: t.devolvidos ? String(t.devolvidos) : "" },
+    ]),
+  );
+
+function CartaoVasilhame({
+  receiptId,
+  tipos,
+  editavel,
+}: {
+  receiptId: string;
+  tipos: TipoVasilhame[];
+  editavel: boolean;
+}) {
+  const router = useRouter();
+  const lancado = tipos.some((t) => t.recebidos > 0 || t.devolvidos > 0);
+  const [aberto, setAberto] = React.useState(lancado);
+  const [valores, setValores] = React.useState(() => cascosDe(tipos));
+  // Dado novo do servidor (depois de gravar) substitui o rascunho local —
+  // ajuste durante o render, como a cópia das linhas da conferência.
+  const [ultimo, setUltimo] = React.useState(tipos);
+  if (ultimo !== tipos) {
+    setUltimo(tipos);
+    setValores(cascosDe(tipos));
+  }
+  const [salvando, setSalvando] = React.useState<string | null>(null);
+
+  const numero = (v: string) => (v.trim() === "" ? 0 : Number(v));
+
+  async function salvar(t: TipoVasilhame) {
+    const v = valores[t.containerTypeId];
+    const recebidos = numero(v.recebidos);
+    const devolvidos = numero(v.devolvidos);
+    if (recebidos === t.recebidos && devolvidos === t.devolvidos) return;
+    if (![recebidos, devolvidos].every((n) => Number.isInteger(n) && n >= 0)) {
+      toast.error("Casco se conta inteiro", "Informe quantos cheios chegaram e quantos vazios voltaram, de 0 para cima.");
+      setValores((s) => ({ ...s, [t.containerTypeId]: cascosDe([t])[t.containerTypeId] }));
+      return;
+    }
+    setSalvando(t.containerTypeId);
+    try {
+      await salvarVasilhameAction({ receiptId, containerTypeId: t.containerTypeId, recebidos, devolvidos });
+      router.refresh();
+    } catch (e) {
+      toast.error("Não deu para salvar o vasilhame", e instanceof Error ? e.message : "Tente de novo.");
+    } finally {
+      setSalvando(null);
+    }
+  }
+
+  const resumo = lancado
+    ? tipos
+        .filter((t) => t.recebidos > 0 || t.devolvidos > 0)
+        .map((t) => `${t.nome}: ${t.recebidos} cheio(s), ${t.devolvidos} vazio(s)`)
+        .join(" · ")
+    : "nada lançado";
+
+  return (
+    <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line bg-surface">
+      <button
+        type="button"
+        onClick={() => setAberto((v) => !v)}
+        aria-expanded={aberto}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-medium text-ink hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none focus-visible:ring-inset"
+      >
+        <Beer className="h-4 w-4 text-faint" aria-hidden />
+        Vasilhame com o fornecedor
+        <span className="ml-auto min-w-0 truncate text-[12px] font-normal text-muted">
+          {aberto ? "ocultar" : resumo}
+        </span>
+      </button>
+      {aberto && (
+        <div className="border-t border-line px-4 py-3">
+          <p className="mb-2.5 text-[12px] text-muted">
+            Cheio que chegou, vazio que o caminhão levou. O saldo é quanto casco a loja deve a este
+            fornecedor, somando todas as entregas.
+          </p>
+          <ul className="flex flex-col divide-y divide-line">
+            {tipos.map((t) => {
+              const v = valores[t.containerTypeId] ?? { recebidos: "", devolvidos: "" };
+              // O saldo do servidor já conta este recebimento; o que está sendo
+              // digitado troca a parte dele.
+              const saldo =
+                t.saldo - (t.recebidos - t.devolvidos) + (numero(v.recebidos) - numero(v.devolvidos));
+              const campo = (chave: keyof ContagemCasco, rotulo: string) => (
+                <label className="flex items-center gap-1.5 text-[12px] text-muted">
+                  {rotulo}
+                  <input
+                    value={v[chave]}
+                    onChange={(e) =>
+                      setValores((s) => ({
+                        ...s,
+                        [t.containerTypeId]: { ...v, [chave]: e.target.value.replace(/\D/g, "") },
+                      }))
+                    }
+                    onBlur={() => void salvar(t)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") e.currentTarget.blur();
+                    }}
+                    inputMode="numeric"
+                    placeholder="0"
+                    disabled={!editavel || salvando === t.containerTypeId}
+                    aria-label={`${rotulo} — ${t.nome}`}
+                    className="h-8 w-16 rounded-[var(--radius)] border border-line-strong bg-surface px-2 text-center font-mono text-[13px] text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none disabled:bg-surface-2"
+                  />
+                </label>
+              );
+              return (
+                <li key={t.containerTypeId} className="flex flex-wrap items-center gap-x-4 gap-y-2 py-2">
+                  <span className="min-w-32 flex-1 text-[13px] font-medium text-ink">{t.nome}</span>
+                  {campo("recebidos", "Cheios")}
+                  {campo("devolvidos", "Vazios")}
+                  <span
+                    className={cn(
+                      "w-28 text-right font-mono text-[12px]",
+                      saldo > 0 ? "text-accent" : saldo < 0 ? "text-brand-strong" : "text-muted",
+                    )}
+                  >
+                    {salvando === t.containerTypeId ? (
+                      <Loader2 className="ml-auto h-3.5 w-3.5 animate-spin" aria-label="Salvando" />
+                    ) : saldo > 0 ? (
+                      `deve ${saldo}`
+                    ) : saldo < 0 ? (
+                      `crédito de ${-saldo}`
+                    ) : (
+                      "em dia"
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Próximos passos do concluído ────────────────────────────
+//
+// A mercadoria entrou; o trabalho não acabou. Etiqueta de prateleira para o
+// que chegou, a reclamação ao fornecedor quando houve diferença, o título que
+// nasceu — e o produto que ficou sem margem com o custo novo. Tudo dentro do
+// próprio aviso de concluído: um cartão a mais seria uma faixa a mais.
+
+const CHIP_PASSO =
+  "inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-ok/30 bg-surface px-3 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none";
+
+function ProximosPassos({
+  produtos,
+  podeEtiquetas,
+  podeVerFinanceiro,
+  supplierId,
+  temDiferenca,
+  onAvisar,
+  onVincularNota,
+  margens,
+}: {
+  /** Produtos que entraram — uma etiqueta de cada. */
+  produtos: string[];
+  podeEtiquetas: boolean;
+  podeVerFinanceiro: boolean;
+  supplierId: string | null;
+  temDiferenca: boolean;
+  onAvisar: () => void;
+  /** Recebido sem NF-e: o XML que chegar depois documenta a entrada. */
+  onVincularNota?: () => void;
+  margens: RecebimentoView["margens"];
+}) {
+  // A folha de etiquetas aceita 60 produtos por vez (`/documento/etiquetas`).
+  const paraEtiqueta = produtos.slice(0, 60);
+  const urlEtiquetas = `/documento/etiquetas?itens=${encodeURIComponent(
+    paraEtiqueta.map((id) => `${id}:1`).join(","),
+  )}`;
+  const temAcao =
+    (podeEtiquetas && paraEtiqueta.length > 0) ||
+    temDiferenca ||
+    Boolean(onVincularNota) ||
+    (podeVerFinanceiro && supplierId);
+  if (!temAcao && margens.length === 0) return null;
+
+  return (
+    <div className="mt-2.5 flex flex-col gap-2.5 border-t border-ok/20 pt-2.5">
+      {temAcao && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[12px] font-medium text-ok">Próximos passos:</span>
+          {podeEtiquetas && paraEtiqueta.length > 0 && (
+            <a href={urlEtiquetas} target="_blank" rel="noreferrer" className={CHIP_PASSO}>
+              <Tag size={13} aria-hidden />
+              Imprimir etiquetas ({paraEtiqueta.length})
+            </a>
+          )}
+          {onVincularNota && (
+            <button type="button" onClick={onVincularNota} className={CHIP_PASSO}>
+              <FileUp size={13} aria-hidden />
+              Vincular NF-e
+            </button>
+          )}
+          {temDiferenca && (
+            <button type="button" onClick={onAvisar} className={CHIP_PASSO}>
+              <Send size={13} aria-hidden />
+              Avisar fornecedor
+            </button>
+          )}
+          {podeVerFinanceiro && supplierId && (
+            <Link href={`/financeiro/contas-a-pagar?fornecedor=${supplierId}`} className={CHIP_PASSO}>
+              <Wallet size={13} aria-hidden />
+              Ver contas a pagar
+            </Link>
+          )}
+        </div>
+      )}
+
+      {margens.length > 0 && (
+        // Aviso, não remarcação: o preço de venda mora no cadastro, e é lá que
+        // a pessoa decide. Aqui só não deixa o custo novo passar calado.
+        <div className="rounded-[var(--radius)] border border-warn/30 bg-surface px-3 py-2.5 text-ink-2">
+          <p className="flex items-center gap-1.5 text-[12px] font-medium text-warn">
+            <TrendingDown size={13} aria-hidden />
+            {margens.length === 1
+              ? "1 produto ficou com margem abaixo de 15% com o custo desta entrada"
+              : `${margens.length} produtos ficaram com margem abaixo de 15% com o custo desta entrada`}
+          </p>
+          <ul className="mt-1.5 flex flex-col gap-1">
+            {margens.slice(0, 6).map((m) => (
+              <li key={m.productId} className="flex flex-wrap items-baseline gap-x-2 text-[12px]">
+                <span className="min-w-0 font-medium text-ink">{m.nome}</span>
+                <span className="font-mono text-muted">
+                  preço {fmtMoney(m.precoVenda)} · custo {fmtMoney(m.custo)} ·{" "}
+                  <span className={m.nivel === "NEGATIVA" ? "text-danger" : "text-warn"}>
+                    margem {m.pct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%
+                  </span>
+                </span>
+                <Link
+                  href={`/produtos/${m.productId}/editar`}
+                  className="font-medium text-brand-strong underline-offset-2 hover:underline"
+                >
+                  Revisar preço
+                </Link>
+              </li>
+            ))}
+            {margens.length > 6 && (
+              <li className="text-[12px] text-muted">e mais {margens.length - 6}.</li>
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Painel de divergências ──────────────────────────────────
 // Ninguém deve caçar erro numa lista de trinta itens: o que está errado sobe
 // para o topo, com a decisão ao lado.
 
 function PainelDivergencias({
   receiptId,
-  inboundId,
   linhas,
+  temNota,
   impactoCusto,
   bloqueado,
+  podeAvisar,
+  onAvisar,
   onRelacionar,
 }: {
   receiptId: string;
-  /** Nulo quando ainda não há NF-e — aí não há fornecedor a quem reclamar. */
-  inboundId: string | null;
   linhas: LinhaRecebimento[];
+  /** Há NF-e: a linha acrescentada na doca é "fora da nota". */
+  temNota: boolean;
   /** Quanto a nota custou a mais (ou a menos) que o negociado. Zero = não mudou. */
   impactoCusto: number;
   bloqueado: boolean;
+  /** O texto ao fornecedor sai da action de quem recebe. */
+  podeAvisar: boolean;
+  onAvisar: () => void;
   onRelacionar: (l: LinhaRecebimento) => void;
 }) {
   const router = useRouter();
@@ -1404,8 +2290,6 @@ function PainelDivergencias({
     linha: LinhaRecebimento;
     resolucao: "ACEITO" | "IGNORADO";
   } | null>(null);
-  const [avisar, setAvisar] = React.useState(false);
-  const [devolver, setDevolver] = React.useState<LinhaRecebimento | null>(null);
 
   async function agir(id: string, fn: () => Promise<unknown>, msg: string) {
     setOcupado(id);
@@ -1439,32 +2323,28 @@ function PainelDivergencias({
         )}
         {/* O desfecho de verdade acontece com o representante — o sistema só
             precisa entregar o texto pronto, com os números certos. */}
-        <Button
-          size="sm"
-          variant="secondary"
-          className="ml-auto"
-          onClick={() => setAvisar(true)}
-        >
-          <Send className="h-3.5 w-3.5" aria-hidden />
-          Avisar fornecedor
-        </Button>
+        {podeAvisar && (
+          <Button size="sm" variant="secondary" className="ml-auto" onClick={onAvisar}>
+            <Send className="h-3.5 w-3.5" aria-hidden />
+            Avisar fornecedor
+          </Button>
+        )}
       </div>
 
       <ul className="divide-y divide-line border-t border-line bg-surface">
         {linhas.map((l) => {
           const v = variacaoDaLinha(l);
           return (
-            <li key={l.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+            // No celular a frase vem inteira em cima e os botões embaixo: lado
+            // a lado, a descrição era espremida até virar "Dis…".
+            <li
+              key={l.id}
+              className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3"
+            >
               <div className="min-w-0 flex-1">
-                <p className="truncate text-[13px] font-medium text-ink">{l.descricao}</p>
-                <p className="truncate text-[12px] text-muted">{explicacao(l, v)}</p>
+                <p className="text-[13px] font-medium text-ink sm:truncate">{nomeDe(l)}</p>
+                <p className="text-[12px] text-muted sm:truncate">{explicacao(l, v, temNota)}</p>
               </div>
-
-              {bloqueado && l.productId && (
-                <Button size="sm" variant="secondary" onClick={() => setDevolver(l)}>
-                  Devolver ao fornecedor
-                </Button>
-              )}
 
               {!bloqueado && (
                 <div className="flex shrink-0 flex-wrap items-center gap-1.5">
@@ -1517,25 +2397,10 @@ function PainelDivergencias({
         })}
       </ul>
 
-      {avisar && inboundId && (
-        <SheetAvisarFornecedor inboundId={inboundId} onClose={() => setAvisar(false)} />
-      )}
-
-      {devolver && (
-        <SheetDevolver
-          receiptId={receiptId}
-          linha={devolver}
-          onClose={() => setDevolver(null)}
-          onFeito={() => {
-            setDevolver(null);
-            router.refresh();
-          }}
-        />
-      )}
-
       {decisao && (
         <SheetMotivoDivergencia
           linha={decisao.linha}
+          temNota={temNota}
           resolucao={decisao.resolucao}
           salvando={ocupado === decisao.linha.id}
           onClose={() => setDecisao(null)}
@@ -1565,31 +2430,50 @@ function PainelDivergencias({
 // ── Avisar o fornecedor ─────────────────────────────────────
 
 function SheetAvisarFornecedor({
-  inboundId,
+  receiptId,
   onClose,
 }: {
-  inboundId: string;
+  receiptId: string;
   onClose: () => void;
 }) {
+  const router = useRouter();
   const [dados, setDados] = React.useState<{
     texto: string;
     fornecedor: string;
     telefone: string | null;
     email: string | null;
+    contatos: {
+      id: string;
+      nome: string;
+      cargo: string | null;
+      telefone: string | null;
+      email: string | null;
+      principal: boolean;
+    }[];
   } | null>(null);
   const [erro, setErro] = React.useState<string | null>(null);
   const [texto, setTexto] = React.useState("");
+  /**
+   * Para quem vai. A reclamação é para o VENDEDOR — o telefone do cadastro
+   * costuma ser o do faturamento, que é o que o XML traz. "cadastro" é o
+   * telefone/e-mail do próprio fornecedor, quando não há contato.
+   */
+  const [destino, setDestino] = React.useState<string>("cadastro");
+  const [enviando, setEnviando] = React.useState(false);
 
   // Carrega uma vez, ao montar. O texto vem do servidor porque ele tem os
-  // números da nota e do pedido — remontar isso no cliente duplicaria a regra.
+  // números da nota, do pedido e da contagem — remontar isso no cliente
+  // duplicaria a regra.
   React.useEffect(() => {
     let vivo = true;
     void (async () => {
       try {
-        const r = await resumoDivergenciasAction(inboundId);
+        const r = await resumoDivergenciasAction(receiptId);
         if (!vivo) return;
         setDados(r);
         setTexto(r.texto);
+        // O principal primeiro; sem contato, o cadastro do fornecedor.
+        setDestino(r.contatos[0]?.id ?? "cadastro");
       } catch (e) {
         if (vivo) setErro(e instanceof Error ? e.message : "Falha ao montar o resumo.");
       }
@@ -1597,13 +2481,37 @@ function SheetAvisarFornecedor({
     return () => {
       vivo = false;
     };
-  }, [inboundId]);
+  }, [receiptId]);
 
-  const digitos = (dados?.telefone ?? "").replace(/\D/g, "");
-  const zap = digitos.length >= 10 ? `https://wa.me/${digitos.length <= 11 ? "55" : ""}${digitos}?text=${encodeURIComponent(texto)}` : null;
-  const email = dados?.email
-    ? `mailto:${dados.email}?subject=${encodeURIComponent("Divergência na entrega")}&body=${encodeURIComponent(texto)}`
-    : null;
+  const contato = dados?.contatos.find((c) => c.id === destino) ?? null;
+  const telefone = contato ? contato.telefone : (dados?.telefone ?? null);
+  const email = contato ? contato.email : (dados?.email ?? null);
+  const nomeDestino = contato?.nome ?? dados?.fornecedor ?? null;
+
+  const digitos = (telefone ?? "").replace(/\D/g, "");
+  const zap =
+    digitos.length >= 10
+      ? `https://wa.me/${digitos.length <= 11 ? "55" : ""}${digitos}?text=${encodeURIComponent(texto)}`
+      : null;
+
+  async function enviarEmail() {
+    if (!email) return;
+    setEnviando(true);
+    try {
+      await enviarAvisoPorEmailAction({
+        receiptId,
+        email,
+        nomeContato: nomeDestino,
+        texto,
+      });
+      toast.success("E-mail enviado.", `Para ${nomeDestino ?? email}, com a planilha da conferência.`);
+      onClose();
+      router.refresh();
+    } catch (e) {
+      toast.error("Não deu para enviar", e instanceof Error ? e.message : "Tente de novo.");
+      setEnviando(false);
+    }
+  }
 
   return (
     <Sheet
@@ -1624,18 +2532,27 @@ function SheetAvisarFornecedor({
           >
             Copiar
           </Button>
-          {email && (
-            <a href={email}>
+          {zap && (
+            <a href={zap} target="_blank" rel="noreferrer">
               <Button size="sm" variant="secondary">
-                E-mail
+                <MessageCircle className="h-3.5 w-3.5" aria-hidden />
+                WhatsApp
               </Button>
             </a>
           )}
-          {zap && (
-            <a href={zap} target="_blank" rel="noreferrer">
-              <Button size="sm">WhatsApp</Button>
-            </a>
-          )}
+          <Button
+            size="sm"
+            onClick={() => void enviarEmail()}
+            disabled={!email || enviando || texto.trim().length < 10}
+            title={email ? `Enviar para ${email}, com a planilha anexada` : "Este contato não tem e-mail"}
+          >
+            {enviando ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+            ) : (
+              <Mail className="h-3.5 w-3.5" aria-hidden />
+            )}
+            {enviando ? "Enviando…" : "Enviar por e-mail"}
+          </Button>
         </div>
       }
     >
@@ -1645,19 +2562,65 @@ function SheetAvisarFornecedor({
         </p>
       ) : (
         <div className="flex flex-col gap-3">
+          {dados && (dados.contatos.length > 0 || dados.telefone || dados.email) && (
+            <fieldset>
+              <legend className="mb-1.5 text-[13px] font-medium text-ink">Para quem vai</legend>
+              <div className="flex flex-wrap gap-1.5">
+                {dados.contatos.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    aria-pressed={destino === c.id}
+                    onClick={() => setDestino(c.id)}
+                    className={cn(
+                      "flex cursor-pointer flex-col items-start rounded-[var(--radius)] border px-3 py-1.5 text-left text-[12px] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
+                      destino === c.id ? "border-brand bg-brand-soft" : "border-line hover:bg-surface-2",
+                    )}
+                  >
+                    <span className="font-medium text-ink">
+                      {c.nome}
+                      {c.principal && <span className="ml-1 text-faint">· principal</span>}
+                    </span>
+                    <span className="text-muted">
+                      {[c.cargo, c.telefone ? "WhatsApp" : null, c.email ? "e-mail" : null]
+                        .filter(Boolean)
+                        .join(" · ") || "sem telefone nem e-mail"}
+                    </span>
+                  </button>
+                ))}
+                {(dados.telefone || dados.email) && (
+                  <button
+                    type="button"
+                    aria-pressed={destino === "cadastro"}
+                    onClick={() => setDestino("cadastro")}
+                    className={cn(
+                      "flex cursor-pointer flex-col items-start rounded-[var(--radius)] border px-3 py-1.5 text-left text-[12px] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
+                      destino === "cadastro" ? "border-brand bg-brand-soft" : "border-line hover:bg-surface-2",
+                    )}
+                  >
+                    <span className="font-medium text-ink">Cadastro do fornecedor</span>
+                    <span className="text-muted">costuma ser o faturamento</span>
+                  </button>
+                )}
+              </div>
+            </fieldset>
+          )}
+
           <p className="text-[13px] text-muted">
-            Revise antes de mandar — o texto sai com os números da nota e do pedido.
+            Revise antes de mandar — o texto sai com os números do papel e da contagem. Por
+            e-mail, a planilha da conferência vai anexada.
           </p>
           <textarea
             value={texto}
             onChange={(e) => setTexto(e.target.value)}
-            rows={14}
+            rows={12}
             className="w-full rounded-[var(--radius)] border border-line-strong bg-surface px-3.5 py-2.5 font-mono text-[12px] text-ink focus-visible:border-brand/70 focus-visible:ring-1 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
           />
-          {dados && !dados.telefone && !dados.email && (
+          {dados && !telefone && !email && (
             <p className="text-[12px] text-muted">
-              Este fornecedor não tem telefone nem e-mail cadastrado — copie o texto e mande
-              pelo canal que você usa com ele.
+              {contato
+                ? "Este contato não tem telefone nem e-mail — escolha outro ou copie o texto."
+                : "Este fornecedor não tem telefone nem e-mail cadastrado — copie o texto e mande pelo canal que você usa com ele."}
             </p>
           )}
         </div>
@@ -1667,6 +2630,15 @@ function SheetAvisarFornecedor({
 }
 
 // ── Devolver ao fornecedor ──────────────────────────────────
+
+/** Os motivos de devolução que a doca encontra — os mesmos do módulo de devoluções. */
+const TIPOS_DEVOLUCAO = [
+  { id: "AVARIA", rotulo: "Avaria" },
+  { id: "VALIDADE", rotulo: "Validade" },
+  { id: "DIVERGENCIA", rotulo: "Veio diferente" },
+  { id: "RECUSA", rotulo: "Recusado" },
+  { id: "OUTRO", rotulo: "Outro" },
+] as const;
 
 function SheetDevolver({
   receiptId,
@@ -1679,25 +2651,39 @@ function SheetDevolver({
   onClose: () => void;
   onFeito: () => void;
 }) {
-  const sugerida = Math.max(0, linha.qtdFaturada - linha.qtdPedida);
+  /** O que esta linha pôs no estoque — o teto do que pode voltar. */
+  const entrou = entrando(linha);
+  // O excedente faturado é o palpite natural; sem ele, a pessoa diz quanto.
+  const sugerida = Math.min(entrou, Math.max(0, linha.qtdFaturada - linha.qtdPedida));
   const [quantidade, setQuantidade] = React.useState(String(sugerida > 0 ? sugerida : ""));
+  // O mesmo vocabulário de /estoque/devolucoes: a devolução nasce lá também.
+  const [tipoMotivo, setTipoMotivo] = React.useState<(typeof TIPOS_DEVOLUCAO)[number]["id"]>(
+    linha.validade ? "VALIDADE" : "AVARIA",
+  );
   const [motivo, setMotivo] = React.useState("");
   const [enviando, setEnviando] = React.useState(false);
 
   const qtd = Number(quantidade.replace(",", "."));
-  const podeEnviar = qtd > 0 && motivo.trim().length >= 3 && !enviando;
+  const qtdValida = Number.isInteger(qtd) && qtd > 0 && qtd <= entrou;
+  const podeEnviar = qtdValida && motivo.trim().length >= 3 && !enviando;
 
   function enviar() {
     setEnviando(true);
     void (async () => {
       try {
-        await devolverDivergenciaAction({
+        const r = await devolverDivergenciaAction({
           receiptId,
           itemId: linha.id,
           quantidade: qtd,
+          tipoMotivo,
           motivo: motivo.trim(),
         });
-        toast.success("Devolução registrada.", "O estoque já foi ajustado.");
+        toast.success(
+          `Devolução ${r.numero} registrada.`,
+          r.abatido > 0.005
+            ? `Saiu do estoque e ${fmtMoney(r.abatido)} foram abatidos do que se deve ao fornecedor.`
+            : "Saiu do estoque. Não havia título em aberto para abater — trate o crédito com o fornecedor.",
+        );
         onFeito();
       } catch (e) {
         toast.error("Não deu para devolver", e instanceof Error ? e.message : "Tente de novo.");
@@ -1712,7 +2698,7 @@ function SheetDevolver({
       onClose={onClose}
       width="md"
       title="Devolver ao fornecedor"
-      description={linha.descricao}
+      description={nomeDe(linha)}
       footer={
         <div className="flex justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={onClose}>
@@ -1727,21 +2713,55 @@ function SheetDevolver({
     >
       <div className="flex flex-col gap-4">
         <p className="rounded-[var(--radius)] bg-surface-2 px-3.5 py-2.5 text-[13px] text-muted">
-          Sai do estoque como devolução ao fornecedor, com o custo desta nota. Só use para
-          mercadoria que já entrou — o que ainda não entrou se resolve na conferência.
+          Vira uma devolução com número (a mesma de Estoque → Devoluções): sai do estoque pelo
+          custo com que entrou e abate o que se deve ao fornecedor. Só para mercadoria que já
+          entrou — o que ainda não entrou se resolve na conferência.
         </p>
 
-        <Campo label="Quantidade devolvida">
+        <fieldset className="flex flex-col gap-1.5">
+          <legend className="mb-1 text-[13px] font-medium text-ink">Por que está voltando?</legend>
+          <div className="flex flex-wrap gap-1.5">
+            {TIPOS_DEVOLUCAO.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                aria-pressed={tipoMotivo === t.id}
+                onClick={() => setTipoMotivo(t.id)}
+                className={cn(
+                  "h-8 cursor-pointer rounded-full border px-3 text-[12px] font-medium transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none",
+                  tipoMotivo === t.id
+                    ? "border-brand bg-brand-soft text-ink"
+                    : "border-line-strong bg-surface text-ink-2 hover:bg-surface-2",
+                )}
+              >
+                {t.rotulo}
+              </button>
+            ))}
+          </div>
+        </fieldset>
+
+        <Campo label="Quantidade devolvida (UN)">
           <input
             type="number"
-            step="0.001"
-            min={0}
+            inputMode="numeric"
+            step="1"
+            min={1}
+            max={entrou}
             value={quantidade}
             onChange={(e) => setQuantidade(e.target.value)}
             placeholder={sugerida > 0 ? fmtQtd(sugerida) : "0"}
+            aria-describedby="devolucao-teto"
             className="h-10 w-32 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink tabular-nums focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
           />
         </Campo>
+        <p
+          id="devolucao-teto"
+          className={cn("-mt-2 text-[12px]", quantidade && !qtdValida ? "text-danger" : "text-muted")}
+        >
+          {quantidade && !qtdValida
+            ? `Use um número inteiro de 1 a ${fmtQtd(entrou)} — foi o que entrou por esta linha.`
+            : `Entraram ${fmtQtd(entrou)} UN por esta linha.`}
+        </p>
 
         <label className="flex flex-col gap-1.5">
           <span className="text-[13px] font-medium text-ink">
@@ -1777,12 +2797,14 @@ const MOTIVOS_DIVERGENCIA = [
 
 function SheetMotivoDivergencia({
   linha,
+  temNota,
   resolucao,
   salvando,
   onClose,
   onConfirmar,
 }: {
   linha: LinhaRecebimento;
+  temNota: boolean;
   resolucao: "ACEITO" | "IGNORADO";
   salvando: boolean;
   onClose: () => void;
@@ -1801,7 +2823,7 @@ function SheetMotivoDivergencia({
       onClose={onClose}
       width="md"
       title={resolucao === "ACEITO" ? "Aceitar divergência" : "Ignorar divergência"}
-      description={linha.descricao}
+      description={nomeDe(linha)}
       footer={
         <div className="flex justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={onClose}>
@@ -1819,7 +2841,7 @@ function SheetMotivoDivergencia({
     >
       <div className="flex flex-col gap-4">
         <p className="rounded-[var(--radius)] bg-surface-2 px-3.5 py-2.5 text-[13px] text-muted">
-          {explicacao(linha, variacaoDaLinha(linha))}
+          {explicacao(linha, variacaoDaLinha(linha), temNota)}
         </p>
 
         <fieldset className="flex flex-col gap-2">
@@ -1857,7 +2879,7 @@ function SheetMotivoDivergencia({
             className="w-full rounded-[var(--radius)] border border-line-strong bg-surface px-3.5 py-2.5 text-sm text-ink placeholder:text-faint focus-visible:border-brand/70 focus-visible:ring-1 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
           />
           <span className="text-[12px] text-muted">
-            Fica na timeline do pedido, com seu nome e a hora.
+            Fica no histórico do recebimento, com seu nome e a hora.
           </span>
         </label>
       </div>
@@ -1881,7 +2903,7 @@ function sugestaoDeMotivo(status: ReconciliationStatus): string {
   }
 }
 
-function explicacao(l: LinhaRecebimento, v: number | null): string {
+function explicacao(l: LinhaRecebimento, v: number | null, temNota: boolean): string {
   const falta = Math.abs(l.qtdPedida - l.qtdFaturada);
   switch (l.status) {
     case "FALTANDO":
@@ -1889,9 +2911,12 @@ function explicacao(l: LinhaRecebimento, v: number | null): string {
     case "EXCEDENTE":
       return `Pedido ${fmtQtd(l.qtdPedida)} · faturado ${fmtQtd(l.qtdFaturada)} — ${fmtQtd(falta)} a mais.`;
     case "NAO_FATURADO":
-      return `Estava no pedido (${fmtQtd(l.qtdPedida)}) e não veio nesta nota.`;
+      return `Estava no pedido (${fmtQtd(l.qtdPedida)}) e não veio nesta nota — sem contagem, não entra no estoque.`;
     case "NAO_PEDIDO":
-      return `Veio na nota (${fmtQtd(l.qtdFaturada)}) sem estar no pedido.`;
+      // A linha acrescentada na doca não "veio na nota": chegou fora dela.
+      return l.avulsa
+        ? `Chegou fora ${temNota ? "da nota" : "do pedido"} — ${fmtQtd(l.qtdRecebida ?? 0)} acrescentado(s) na conferência.`
+        : `Veio na nota (${fmtQtd(l.qtdFaturada)}) sem estar no pedido.`;
     case "PRECO_ALTERADO":
       return `Negociado ${fmtMoney(l.custoPedido)} · faturado ${fmtMoney(l.custoFaturado)}${
         v ? ` (${pct(v)})` : ""
@@ -1948,7 +2973,13 @@ function AdicionarItem({
     { id: string | null } | null
   >(inicial ? { id: inicial.packagingId } : null);
   const [quantidade, setQuantidade] = React.useState("");
-  const [custo, setCusto] = React.useState("");
+  /**
+   * Custo digitado À MÃO. Nulo = vale o custo médio do produto na embalagem
+   * escolhida, derivado abaixo — quem confere na porta raramente sabe o preço,
+   * e o campo vazio fazia o item entrar a R$ 0, puxando o custo médio para
+   * baixo sem ninguém ter ganhado nada.
+   */
+  const [custoDigitado, setCustoDigitado] = React.useState<string | null>(null);
   const [lote, setLote] = React.useState("");
   const [validade, setValidade] = React.useState("");
   const [bonificacao, setBonificacao] = React.useState(false);
@@ -1983,9 +3014,17 @@ function AdicionarItem({
   const pacote = escolhido?.packagings.find((e) => e.id === packagingId) ?? null;
   const fator = pacote?.fatorConversao ?? 1;
   const qtd = Number(quantidade.replace(",", "."));
+  /** Custo médio da unidade × fator da embalagem: o "quanto custou da última vez". */
+  const custoSugerido =
+    escolhido?.custoMedio && escolhido.custoMedio > 0
+      ? (escolhido.custoMedio * fator).toFixed(2).replace(".", ",")
+      : "";
+  const custo = custoDigitado ?? custoSugerido;
   const custoNum = custo.trim() === "" ? 0 : Number(custo.replace(",", "."));
-  const podeEnviar =
-    Boolean(escolhido) && qtd > 0 && !enviando && (bonificacao || custoNum >= 0);
+  // Peça inteira: a embalagem é inteira e o estoque não guarda meia garrafa.
+  const qtdValida = Number.isInteger(qtd) && qtd > 0;
+  const custoValido = bonificacao || (Number.isFinite(custoNum) && custoNum > 0);
+  const podeEnviar = Boolean(escolhido) && qtdValida && custoValido && !enviando;
 
   async function enviar() {
     if (!escolhido) return;
@@ -2101,6 +3140,7 @@ function AdicionarItem({
                 onClick={() => {
                   setEscolhido(null);
                   setPackagingManual(null);
+                  setCustoDigitado(null);
                 }}
                 className="shrink-0 text-xs font-medium text-muted hover:text-ink"
               >
@@ -2113,7 +3153,12 @@ function AdicionarItem({
                 <Campo label="Embalagem">
                   <select
                     value={packagingId ?? ""}
-                    onChange={(e) => setPackagingId(e.target.value || null)}
+                    onChange={(e) => {
+                      setPackagingId(e.target.value || null);
+                      // O custo sugerido acompanha a embalagem; o digitado
+                      // valia para a outra.
+                      setCustoDigitado(null);
+                    }}
                     className="h-10 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
                   >
                     <option value="">Unidade</option>
@@ -2128,32 +3173,51 @@ function AdicionarItem({
               <Campo label="Quantidade">
                 <input
                   autoFocus
-                  inputMode="decimal"
+                  inputMode="numeric"
                   value={quantidade}
                   onChange={(e) => setQuantidade(e.target.value)}
                   placeholder="0"
-                  className="h-10 w-24 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-center text-sm tabular-nums text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                  aria-invalid={quantidade !== "" && !qtdValida}
+                  className="h-10 w-24 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-center text-sm tabular-nums text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none aria-invalid:border-danger"
                 />
               </Campo>
               {!bonificacao && (
-                <Campo label={`Custo por ${pacote?.nome ?? "unidade"}`}>
+                <Campo label={`Custo por ${pacote?.nome ?? "unidade"} (R$)`}>
                   <input
                     inputMode="decimal"
                     value={custo}
-                    onChange={(e) => setCusto(e.target.value)}
+                    onChange={(e) => setCustoDigitado(e.target.value)}
                     placeholder="0,00"
-                    className="h-10 w-28 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-right text-sm tabular-nums text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                    aria-invalid={custo !== "" && !custoValido}
+                    className="h-10 w-28 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-right text-sm tabular-nums text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none aria-invalid:border-danger"
                   />
                 </Campo>
               )}
             </div>
 
-            {qtd > 0 && fator !== 1 && (
-              <p className="text-[12px] text-muted">
-                Entram <span className="font-mono text-ink-2">{fmtQtd(qtd * fator)}</span> unidades
-                no estoque.
-              </p>
-            )}
+            {/* Uma linha só de ajuda, a que importa agora: a conta do estoque,
+                de onde veio o custo, ou o que falta para poder adicionar. */}
+            <p className="text-[12px] text-muted">
+              {quantidade !== "" && !qtdValida ? (
+                <span className="text-danger">
+                  Quantidade em número inteiro — o estoque conta peças.
+                </span>
+              ) : !bonificacao && !custoValido ? (
+                "Informe quanto custou — sem custo, o item puxaria o custo médio para baixo. Se veio de graça, marque bonificação."
+              ) : (
+                <>
+                  {qtdValida && fator !== 1 && (
+                    <>
+                      Entram <span className="font-mono text-ink-2">{fmtQtd(qtd * fator)}</span>{" "}
+                      unidades no estoque.{" "}
+                    </>
+                  )}
+                  {!bonificacao && custoDigitado == null && custoSugerido && (
+                    <>Custo sugerido pelo custo médio do produto — corrija se a nota disser outro.</>
+                  )}
+                </>
+              )}
+            </p>
 
             <label className="flex items-center gap-2 text-[13px] text-ink-2">
               <input
@@ -2237,6 +3301,11 @@ const LinhaConferencia = React.forwardRef<
     situacao: Situacao;
     /** Há NF-e: o esperado é "da nota"; sem ela, do pedido. */
     temNota: boolean;
+    /**
+     * Linha do avulso puro: não havia papel nenhum dizendo quanto viria. Sem
+     * esperado, não há diferença — "+6" em toda linha seria ruído.
+     */
+    semEsperado: boolean;
     /** SKU ligado nas configurações de produto. */
     mostrarSku: boolean;
     bloqueado: boolean;
@@ -2246,10 +3315,16 @@ const LinhaConferencia = React.forwardRef<
     piscando: boolean;
     /** Gravando esta linha agora, ou acabou de gravar. */
     salvamento: EstadoSalvamento | null;
+    /** A validade digitada já venceu, ou vence dentro do alerta da loja. */
+    validade: AvisoValidade;
+    /** Só depois da entrada: devolver ao fornecedor o que voltou no caminhão. */
+    onDevolver?: () => void;
     onAlterar: (patch: {
       qtdRecebida?: number | null;
       lote?: string | null;
       validade?: string | null;
+      /** Lista vazia = volta a um lote só. */
+      lotes?: LoteDaLinha[] | null;
     }) => void;
     onRelacionar: () => void;
     /** Código de barras que o leitor digitou dentro do campo de quantidade. */
@@ -2265,11 +3340,14 @@ const LinhaConferencia = React.forwardRef<
     numero,
     situacao,
     temNota,
+    semEsperado,
     mostrarSku,
     bloqueado,
     cega,
     piscando,
     salvamento,
+    validade,
+    onDevolver,
     onAlterar,
     onRelacionar,
     onBipe,
@@ -2282,7 +3360,7 @@ const LinhaConferencia = React.forwardRef<
   /** Contou? Então pode ver. Antes disso, o número da nota enviesa a contagem. */
   const oculto = cega && recebido == null && !bloqueado;
   const esperado = esperadoDe(linha);
-  const diferenca = recebido == null ? null : recebido - esperado;
+  const diferenca = recebido == null || semEsperado ? null : recebido - esperado;
   const v = variacaoDaLinha(linha);
   const ui = SITUACAO_UI[situacao];
   const porque = porqueDaSituacao(linha, situacao, temNota);
@@ -2294,15 +3372,31 @@ const LinhaConferencia = React.forwardRef<
    */
   const doXml =
     linha.xml && linha.xml.fatorConversao !== 1
-      ? { ...linha.xml, sigla: linha.xml.unidade.trim().toUpperCase() }
+      ? { ...linha.xml, sigla: siglaDeExibicao(linha.xml.unidade) }
       : null;
   /** Contando na embalagem da nota: o que se digita e se lê é caixa, não unidade. */
   const naEmbalagem = regua.modo === "EMB" && regua.fator != null;
   const sigla = siglaDaRegua(regua);
   const emb = nomeDaEmbalagem(regua.sigla).toLowerCase();
-  const temDetalhe = Boolean(linha.lote || linha.validade || linha.motivoDivergencia);
-  const podeIgualar = !bloqueado && !cega;
-  const temMenu = podeIgualar || !bloqueado || temDetalhe || Boolean(onRemover);
+  const temDetalhe = Boolean(
+    linha.lote || linha.validade || linha.lotes?.length || linha.motivoDivergencia,
+  );
+  const resumoLote = resumoDoLote(linha);
+  /** Lote e validade, ou a linha dividida em lotes — o que o detalhe edita. */
+  const [emLotes, setEmLotes] = React.useState(Boolean(linha.lotes?.length));
+  // "Igual à nota" não existe para a linha acrescentada na doca: o papel diz
+  // zero para ela, e o atalho zeraria o que alguém acabou de contar.
+  const podeIgualar = !bloqueado && !cega && !linha.avulsa;
+  const temMenu =
+    podeIgualar || !bloqueado || temDetalhe || Boolean(onRemover) || Boolean(onDevolver);
+  /** "vencida há 3 dias" / "vence em 5 dias" — a frase do selo de validade. */
+  const fraseValidade = !validade
+    ? null
+    : validade.tipo === "VENCIDO"
+      ? `vencida há ${validade.dias} ${validade.dias === 1 ? "dia" : "dias"}`
+      : validade.dias === 0
+        ? "vence hoje"
+        : `vence em ${validade.dias} ${validade.dias === 1 ? "dia" : "dias"}`;
 
   return (
     <>
@@ -2334,14 +3428,24 @@ const LinhaConferencia = React.forwardRef<
               </Badge>
             </span>
           )}
-          {(linha.lote || linha.validade) && (
+          {(resumoLote || fraseValidade) && (
             <p className="mt-0.5 text-[10px] text-muted">
-              {[
-                linha.lote ? `lote ${linha.lote}` : null,
-                linha.validade ? `val. ${fmtDia(linha.validade)}` : null,
-              ]
-                .filter(Boolean)
-                .join(" · ")}
+              {resumoLote}
+              {/* Vencido na porta é a hora de devolver ao motorista — não o
+                  inventário do mês que vem. Avisa; quem decide é a doca. */}
+              {fraseValidade && validade && (
+                <span
+                  className={cn(
+                    "ml-1.5 inline-flex items-center gap-0.5 rounded-full px-1.5 py-px text-[10px] font-semibold",
+                    validade.tipo === "VENCIDO"
+                      ? "bg-danger-soft text-danger"
+                      : "bg-warn-soft text-warn",
+                  )}
+                >
+                  <CalendarClock size={10} aria-hidden />
+                  {fraseValidade}
+                </span>
+              )}
             </p>
           )}
         </td>
@@ -2377,7 +3481,7 @@ const LinhaConferencia = React.forwardRef<
             // exceção de um item só. O número salvo não muda ao trocar.
             <div
               role="group"
-              aria-label={`Contar ${linha.descricao} em`}
+              aria-label={`Contar ${nomeDe(linha)} em`}
               className="inline-flex rounded-full border border-line-strong bg-surface p-0.5"
             >
               {(
@@ -2421,7 +3525,11 @@ const LinhaConferencia = React.forwardRef<
 
         {/* ── Quanto a nota diz ─────────────────────────────── */}
         <td className="px-2 py-2 text-center whitespace-nowrap">
-          {oculto ? (
+          {semEsperado ? (
+            <span className="text-faint" title="Sem pedido e sem nota: não havia quantidade esperada.">
+              —
+            </span>
+          ) : oculto ? (
             <span className="text-faint" title="Conferência cega: aparece depois que você contar">
               •••
             </span>
@@ -2495,8 +3603,8 @@ const LinhaConferencia = React.forwardRef<
               data-contagem
               aria-label={
                 naEmbalagem
-                  ? `Quantidade recebida de ${linha.descricao}, em ${emb}s inteiras de ${fmtQtd(regua.fator ?? 1)}`
-                  : `Quantidade recebida de ${linha.descricao}, em unidades inteiras`
+                  ? `Quantidade recebida de ${nomeDe(linha)}, em ${emb}s inteiras de ${fmtQtd(regua.fator ?? 1)}`
+                  : `Quantidade recebida de ${nomeDe(linha)}, em unidades inteiras`
               }
               onBlur={(e) => {
                 const bruto = e.target.value.trim();
@@ -2560,7 +3668,9 @@ const LinhaConferencia = React.forwardRef<
         {/* Enquanto grava, o selo dá lugar ao do salvamento: são a mesma
             informação em momentos diferentes — a situação da linha só vale
             depois que o servidor confirmou o número novo. No celular sobra
-            o ícone; a frase inteira fica no hover e no leitor de tela. */}
+            o ícone; a frase inteira fica no hover e no leitor de tela.
+            `not-sr-only` devolve `white-space: normal` — sem o nowrap forçado,
+            o selo quebrava em "A / conferir" e dobrava a altura da linha. */}
         <td className="px-2 py-2">
           {salvamento ? (
             <span
@@ -2575,7 +3685,7 @@ const LinhaConferencia = React.forwardRef<
               ) : (
                 <Check className="h-3.5 w-3.5" aria-hidden />
               )}
-              <span className="sr-only @[54rem]:not-sr-only">
+              <span className="sr-only @[54rem]:not-sr-only @[54rem]:whitespace-nowrap!">
                 {salvamento === "salvando" ? "Salvando…" : "Salvo"}
               </span>
             </span>
@@ -2588,7 +3698,7 @@ const LinhaConferencia = React.forwardRef<
               )}
             >
               <ui.Icone className="h-3.5 w-3.5" aria-hidden />
-              <span className="sr-only @[54rem]:not-sr-only">{ui.rotulo}</span>
+              <span className="sr-only @[54rem]:not-sr-only @[54rem]:whitespace-nowrap!">{ui.rotulo}</span>
               <span className="sr-only">: {porque}</span>
             </span>
           )}
@@ -2659,7 +3769,7 @@ const LinhaConferencia = React.forwardRef<
               )}
               {(!bloqueado || temDetalhe) && (
                 <MenuItem icon={<CalendarClock size={15} />} onClick={() => setDetalhe((d) => !d)}>
-                  {detalhe ? "Fechar lote e validade" : "Lote e validade"}
+                  {detalhe ? "Fechar lote e validade" : linha.lotes?.length ? "Lotes e validades" : "Lote e validade"}
                 </MenuItem>
               )}
               {!bloqueado && !linha.productId && (
@@ -2670,6 +3780,11 @@ const LinhaConferencia = React.forwardRef<
               {onRemover && (
                 <MenuItem icon={<Trash2 size={15} />} danger onClick={onRemover}>
                   Remover do recebimento
+                </MenuItem>
+              )}
+              {onDevolver && (
+                <MenuItem icon={<Undo2 size={15} />} onClick={onDevolver}>
+                  Devolver ao fornecedor
                 </MenuItem>
               )}
             </Menu>
@@ -2683,14 +3798,40 @@ const LinhaConferencia = React.forwardRef<
         <tr className="border-t border-line bg-surface-2/60">
           <td colSpan={12} className="px-4 py-3 sm:px-6">
             {bloqueado ? (
-              <p className="text-[13px] text-muted">
-                {[
-                  linha.lote ? `Lote ${linha.lote}` : null,
-                  linha.validade ? `validade ${fmtDia(linha.validade)}` : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ") || "Sem lote nem validade."}
-              </p>
+              linha.lotes?.length ? (
+                <ul className="flex flex-col gap-0.5 text-[13px] text-muted">
+                  {linha.lotes.map((x, i) => (
+                    <li key={i} className="font-mono">
+                      {[
+                        x.lote ? `Lote ${x.lote}` : "Sem lote",
+                        x.validade ? `validade ${fmtDia(x.validade)}` : null,
+                        `${fmtQtd(x.quantidade)} ${UNIDADE_CONFERENCIA}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-[13px] text-muted">
+                  {[
+                    linha.lote ? `Lote ${linha.lote}` : null,
+                    linha.validade ? `validade ${fmtDia(linha.validade)}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ") || "Sem lote nem validade."}
+                </p>
+              )
+            ) : emLotes ? (
+              <EditorDeLotes
+                linha={linha}
+                total={entrando(linha)}
+                onSalvar={(lotes) => {
+                  onAlterar({ lotes });
+                  if (lotes.length === 0) setEmLotes(false);
+                }}
+                onCancelar={() => setEmLotes(Boolean(linha.lotes?.length))}
+              />
             ) : (
               <div className="flex flex-wrap items-end gap-3">
                 <Campo label="Lote">
@@ -2715,6 +3856,16 @@ const LinhaConferencia = React.forwardRef<
                     className="h-9 w-40 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
                   />
                 </Campo>
+                {/* Duas produções no mesmo caminhão, na mesma linha da nota: o
+                    FEFO só vende primeiro a que vence primeiro se souber. */}
+                <button
+                  type="button"
+                  onClick={() => setEmLotes(true)}
+                  className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-full px-3 text-[13px] font-medium text-brand-strong transition-colors hover:bg-surface focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+                >
+                  <Layers size={14} aria-hidden />
+                  Dividir em lotes
+                </button>
               </div>
             )}
             {linha.motivoDivergencia && (
@@ -2726,6 +3877,138 @@ const LinhaConferencia = React.forwardRef<
     </>
   );
 });
+
+/**
+ * A linha da nota repartida em lotes: a mesma cerveja, duas produções, duas
+ * validades. As quantidades são em unidades (o que o estoque guarda) e somam
+ * até o que entra pela linha; o que sobrar entra sem lote. Grava num clique —
+ * lote pela metade não vai ao servidor a cada tecla.
+ */
+type RascunhoLote = { lote: string; validade: string; quantidade: string };
+
+function EditorDeLotes({
+  linha,
+  total,
+  onSalvar,
+  onCancelar,
+}: {
+  linha: LinhaRecebimento;
+  /** O que entra pela linha: o contado, ou o esperado se ninguém contou. */
+  total: number;
+  /** Lista vazia = voltar a um lote só. */
+  onSalvar: (lotes: LoteDaLinha[]) => void;
+  onCancelar: () => void;
+}) {
+  const [rascunho, setRascunho] = React.useState<RascunhoLote[]>(() =>
+    linha.lotes?.length
+      ? linha.lotes.map((x) => ({
+          lote: x.lote ?? "",
+          validade: x.validade ?? "",
+          quantidade: String(x.quantidade),
+        }))
+      : [
+          // O lote que já estava nos campos simples abre a divisão.
+          { lote: linha.lote ?? "", validade: linha.validade ?? "", quantidade: "" },
+          { lote: "", validade: "", quantidade: "" },
+        ],
+  );
+
+  const preenchidos = rascunho.filter((r) => r.lote.trim() || r.validade || r.quantidade.trim());
+  const lotes: LoteDaLinha[] = preenchidos.map((r) => ({
+    lote: r.lote.trim() || null,
+    validade: r.validade || null,
+    quantidade: Number(r.quantidade || 0),
+  }));
+  const soma = lotes.reduce((s, l) => s + (Number.isFinite(l.quantidade) ? l.quantidade : 0), 0);
+  // Nada digitado ainda não é erro — só não há o que salvar.
+  const vazio = lotes.length === 0;
+  const problema = vazio ? null : problemaNosLotes(lotes, total);
+  const resto = Math.max(0, total - soma);
+
+  const mudar = (i: number, campo: keyof RascunhoLote, valor: string) =>
+    setRascunho((rs) => rs.map((r, j) => (j === i ? { ...r, [campo]: valor } : r)));
+
+  const INPUT =
+    "h-9 rounded-[var(--radius)] border border-line-button bg-surface px-3 text-sm text-ink placeholder:text-faint focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none";
+
+  return (
+    <div className="flex max-w-xl flex-col gap-2">
+      <p className="text-[12px] text-muted">
+        Quantidades em unidades ({UNIDADE_CONFERENCIA}). Entram {fmtQtd(total)}{" "}
+        {UNIDADE_CONFERENCIA} por esta linha; o que os lotes não cobrirem entra sem lote.
+      </p>
+      <ul className="flex flex-col gap-2">
+        {rascunho.map((r, i) => (
+          <li key={i} className="flex flex-wrap items-center gap-2">
+            <input
+              value={r.lote}
+              onChange={(e) => mudar(i, "lote", e.target.value)}
+              placeholder={`Lote ${i + 1}`}
+              maxLength={60}
+              aria-label={`Lote ${i + 1}`}
+              className={cn(INPUT, "min-w-28 flex-1")}
+            />
+            <input
+              type="date"
+              value={r.validade}
+              onChange={(e) => mudar(i, "validade", e.target.value)}
+              aria-label={`Validade do lote ${i + 1}`}
+              className={cn(INPUT, "w-40")}
+            />
+            <input
+              value={r.quantidade}
+              onChange={(e) => mudar(i, "quantidade", e.target.value.replace(/\D/g, ""))}
+              inputMode="numeric"
+              placeholder="Qtd."
+              aria-label={`Quantidade do lote ${i + 1}, em unidades`}
+              className={cn(INPUT, "w-20 text-center font-mono")}
+            />
+            <button
+              type="button"
+              onClick={() => setRascunho((rs) => rs.filter((_, j) => j !== i))}
+              disabled={rascunho.length <= 1}
+              aria-label={`Tirar o lote ${i + 1}`}
+              className="grid h-8 w-8 cursor-pointer place-items-center rounded-full text-muted transition-colors hover:bg-surface hover:text-danger focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none disabled:cursor-default disabled:opacity-40"
+            >
+              <Trash2 size={14} aria-hidden />
+            </button>
+          </li>
+        ))}
+      </ul>
+      {rascunho.length < 20 && (
+        <button
+          type="button"
+          onClick={() => setRascunho((rs) => [...rs, { lote: "", validade: "", quantidade: "" }])}
+          className="inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-full px-2 py-1 text-[13px] font-medium text-brand-strong hover:bg-surface focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:outline-none"
+        >
+          <Plus size={14} aria-hidden />
+          Adicionar lote
+        </button>
+      )}
+      <p className={cn("text-[12px]", problema ? "text-danger" : "text-muted")} role="status">
+        {problema ??
+          `Os lotes somam ${fmtQtd(soma)} de ${fmtQtd(total)} ${UNIDADE_CONFERENCIA}${
+            resto > 0 ? ` — ${fmtQtd(resto)} entram sem lote.` : "."
+          }`}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={() => onSalvar(lotes)} disabled={vazio || problema !== null}>
+          <Check className="h-3.5 w-3.5" aria-hidden />
+          Salvar lotes
+        </Button>
+        {linha.lotes?.length ? (
+          <Button size="sm" variant="ghost" onClick={() => onSalvar([])}>
+            Voltar a um lote só
+          </Button>
+        ) : (
+          <Button size="sm" variant="ghost" onClick={onCancelar}>
+            Cancelar
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function Campo({ label, children }: { label: string; children: React.ReactNode }) {
   return (

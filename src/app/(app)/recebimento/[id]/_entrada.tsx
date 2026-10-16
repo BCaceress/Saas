@@ -418,6 +418,8 @@ export function EtapaNota({
                 }
                 pedidoDasSugestoes={dados.pedidoDasSugestoes}
                 mostrarSku={mostrarSku}
+                // NCM diferente é conversa do contador; na doca era só ruído.
+                mostrarFiscal={podeTratarNota}
               />
             </div>
 

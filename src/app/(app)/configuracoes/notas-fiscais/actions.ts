@@ -5,7 +5,6 @@ import { z } from "zod";
 import { guardAction } from "@/lib/guard";
 import { db } from "@/lib/prisma";
 import { runWithTenant } from "@/lib/tenant-context";
-import { getActiveSiteId, getOrCreateDefaultSite } from "@/lib/sites";
 import {
   dadosOauthDaCaixa,
   listarCaixas,
@@ -22,7 +21,7 @@ import {
   urlDeConsentimento,
 } from "@/lib/fiscal/email-oauth";
 import { listarImportacoes } from "@/lib/fiscal/import-log";
-import { sincronizarDistribuicao } from "@/lib/fiscal/distribuicao";
+import { manifestarNota, sincronizarDistribuicao } from "@/lib/fiscal/distribuicao";
 import type { ActiveTenant } from "@/lib/current-tenant";
 
 // ============================================================
@@ -172,21 +171,80 @@ export async function listarCaixasAction() {
 
 // ── SEFAZ ───────────────────────────────────────────────────
 
-/** Pergunta à SEFAZ o que os fornecedores emitiram contra o nosso CNPJ. */
+/**
+ * Pergunta à SEFAZ o que os fornecedores emitiram contra o CNPJ de cada loja
+ * com certificado. A tela é da empresa, não da loja ativa no seletor — por isso
+ * varre todas, e a falha de uma não esconde o resultado das outras.
+ */
 export async function consultarSefazAction() {
   return tx(async (ctx) => {
-    const ativo = await getActiveSiteId();
-    const siteId = ativo ?? (await getOrCreateDefaultSite(ctx.tenant.id)).id;
-
-    const r = await sincronizarDistribuicao({
-      tenantId: ctx.tenant.id,
-      siteId,
-      userId: ctx.user.id,
+    const emitentes = await db.fiscalEmitente.findMany({
+      where: { OR: [{ certificadoPfx: { not: null } }, { certificadoId: { not: null } }] },
+      select: { siteId: true, site: { select: { nome: true } } },
     });
+    if (emitentes.length === 0) {
+      throw new Error("Envie o certificado digital A1 de uma loja para consultar a SEFAZ.");
+    }
+
+    const total = {
+      consultadas: 0,
+      importadas: 0,
+      aguardandoManifestacao: 0,
+      erros: [] as string[],
+      /** Lojas que não foram à SEFAZ agora por causa da espera de 1 h, com a hora liberada. */
+      aguardando: [] as { loja: string; liberaEm: string }[],
+    };
+    for (const e of emitentes) {
+      try {
+        const r = await sincronizarDistribuicao({
+          tenantId: ctx.tenant.id,
+          siteId: e.siteId,
+          userId: ctx.user.id,
+        });
+        total.consultadas += r.consultadas;
+        total.importadas += r.importadas;
+        total.aguardandoManifestacao += r.aguardandoManifestacao;
+        if (r.aguardando && r.proximaConsultaEm) {
+          total.aguardando.push({ loja: e.site.nome, liberaEm: r.proximaConsultaEm.toISOString() });
+        }
+      } catch (err) {
+        total.erros.push(`${e.site.nome}: ${err instanceof Error ? err.message : "falha na consulta."}`);
+      }
+    }
 
     revalidatePath(ROTA);
-    revalidatePath("/pedidos");
+    revalidatePath("/recebimento");
     revalidatePath("/fiscal/notas-recebidas");
+    if (total.erros.length === emitentes.length) throw new Error(total.erros[0]);
+    return total;
+  });
+}
+
+const manifestarSchema = z.object({
+  siteId: z.string().min(1),
+  chave: z.string().trim().length(44, "A chave de acesso tem 44 dígitos."),
+  tipo: z.enum(["CIENCIA", "CONFIRMACAO", "DESCONHECIMENTO", "NAO_REALIZADA"]),
+  justificativa: z.string().trim().optional(),
+});
+
+/** Manifesta no CNPJ da loja dona do resumo — não na loja ativa do seletor. */
+export async function manifestarNotaSefazAction(input: z.input<typeof manifestarSchema>) {
+  const d = manifestarSchema.parse(input);
+  // Ciência libera o XML e a nota entra no recebimento daquela loja.
+  const ctx = await guardAction("fiscal.importar", d.siteId);
+  return runWithTenant(ctx.tenant.id, async () => {
+    const r = await manifestarNota({
+      tenantId: ctx.tenant.id,
+      siteId: d.siteId,
+      chave: d.chave,
+      tipo: d.tipo,
+      justificativa: d.justificativa,
+      userId: ctx.user.id,
+    });
+    revalidatePath(ROTA);
+    revalidatePath("/recebimento");
+    revalidatePath("/fiscal/notas-recebidas");
+    revalidatePath("/fiscal/eventos");
     return r;
   });
 }
@@ -196,15 +254,20 @@ export async function consultarSefazAction() {
  * por isso a decisão é explícita, com o aviso na tela, e nunca um padrão.
  */
 export async function salvarManifestacaoAutomaticaAction(ativa: boolean) {
-  return tx(async () => {
+  return tx(async (ctx) => {
     const atual = await db.fiscalConfig.findFirst({ select: { id: true } });
-    if (!atual) {
-      throw new Error("Configure o provedor fiscal antes de ligar a ciência automática.");
+    if (atual) {
+      await db.fiscalConfig.updateMany({
+        where: { id: atual.id },
+        data: { manifestacaoAutomatica: ativa },
+      });
+    } else {
+      // Quem só recebe nota não configurou emissão: a config nasce com os
+      // padrões (simulado, desligada) só para guardar esta preferência.
+      await db.fiscalConfig.create({
+        data: { tenantId: ctx.tenant.id, manifestacaoAutomatica: ativa },
+      });
     }
-    await db.fiscalConfig.updateMany({
-      where: { id: atual.id },
-      data: { manifestacaoAutomatica: ativa },
-    });
     revalidatePath(ROTA);
   });
 }

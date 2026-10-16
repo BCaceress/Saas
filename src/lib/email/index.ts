@@ -23,6 +23,8 @@ export type Mensagem = {
   texto?: string;
   /** Para onde a resposta vai (suporte), quando diferente do remetente. */
   responderPara?: string;
+  /** Arquivos junto — a planilha da conferência que vai ao fornecedor. */
+  anexos?: { nome: string; conteudo: Uint8Array }[];
 };
 
 const API = "https://api.resend.com/emails";
@@ -73,6 +75,15 @@ export async function enviarEmail(msg: Mensagem): Promise<ResultadoEnvio> {
         html: msg.html,
         text: msg.texto ?? textoDoHtml(msg.html),
         ...(msg.responderPara ? { reply_to: msg.responderPara } : {}),
+        // A API do Resend recebe o anexo em base64, no próprio JSON.
+        ...(msg.anexos?.length
+          ? {
+              attachments: msg.anexos.map((a) => ({
+                filename: a.nome,
+                content: Buffer.from(a.conteudo).toString("base64"),
+              })),
+            }
+          : {}),
       }),
       // Envio não pode segurar a resposta da Server Action indefinidamente.
       signal: AbortSignal.timeout(10_000),

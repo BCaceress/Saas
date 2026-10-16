@@ -183,6 +183,21 @@ export function unidadeContinua(unidade: string | null | undefined): boolean {
 }
 
 /**
+ * A sigla como a TELA escreve: "CX027" → "CX", "cx24" → "CX", "LT" → "L".
+ *
+ * O número colado na sigla é o fator que o distribuidor imprime ("caixa de
+ * 27"), e a linha já diz "= 27 UN" logo ao lado — repetido na pílula, ele só
+ * fazia "CX027" parecer um código a decifrar. O que o XML escreveu continua
+ * intacto no dado e no hover (`rotuloDaUnidade`). Sigla desconhecida fica como
+ * veio: inventar nome engana mais do que mostrar o original.
+ */
+export function siglaDeExibicao(unidade: string | null | undefined): string {
+  const bruto = (unidade ?? "").trim().toUpperCase();
+  if (!bruto) return UNIDADE_ESTOQUE;
+  return canonica(bruto) ?? bruto;
+}
+
+/**
  * Como escrever a unidade para o operador: "MI (milheiro)".
  *
  * A sigla sozinha é o que ele lê no papel; o nome é o que faz "0,6" parar de

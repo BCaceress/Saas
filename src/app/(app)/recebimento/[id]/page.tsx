@@ -1,8 +1,10 @@
 import { notFound, redirect } from "next/navigation";
 import { requireActiveTenant, withTenant } from "@/lib/current-tenant";
-import { podeEmAlguma, SemPermissaoError } from "@/lib/permissoes";
+import { can, podeEmAlguma, SemPermissaoError } from "@/lib/permissoes";
 import { db } from "@/lib/prisma";
 import { camposDoTenant } from "@/lib/cadastro-campos";
+import { diaDaLoja } from "@/lib/datas";
+import { featureAtiva } from "@/lib/planos";
 import { garantirRecebimentoDaNota } from "@/lib/compras/recebimento";
 import { carregarRecebimento, listarSubcategoriasParaCadastro } from "../_data";
 import { RecebimentoClient } from "./_client";
@@ -63,24 +65,44 @@ export default async function RecebimentoDetalhePage({
 
   const [dados, subcategorias] = await withTenant(ctx, () =>
     Promise.all([
-      carregarRecebimento(ctx.tenant.id, id, { origem: origem ?? null, verNota }),
+      carregarRecebimento(ctx.tenant.id, id, {
+        origem: origem ?? null,
+        verNota,
+        // Os tipos de casco moram no comodato: sem o módulo, não há vasilhame.
+        comVasilhame: featureAtiva(ctx.tenant, "comodato"),
+      }),
       podeCriarProduto ? listarSubcategoriasParaCadastro() : Promise.resolve([]),
     ]),
   );
   if (!dados) notFound();
 
+  // Ver é com a permissão em alguma loja; MEXER é com a permissão na loja
+  // DESTE recebimento — a mesma régua que as actions aplicam. Sem isto, quem
+  // recebe na loja A abria a carga da loja B com todos os botões ativos, para
+  // tomar "sem acesso a esta loja" só depois do clique.
+  const loja = dados.recebimento.siteId;
+
   return (
     <RecebimentoClient
       dados={dados}
       verNota={verNota}
-      podeReceber={podeReceber}
-      podeTratarNota={podeTratarNota}
+      podeReceber={can(ctx.acessos, "compras.receber", loja)}
+      podeTratarNota={can(ctx.acessos, "fiscal.importar", loja)}
+      podeEstornar={can(ctx.acessos, "estoque.ajustar", loja)}
+      podeDevolver={can(ctx.acessos, "compras.devolver", loja)}
+      // A etiqueta é o preço impresso (`/documento/etiquetas` exige o mesmo).
+      podeEtiquetas={podeEmAlguma(ctx.acessos, "produto.preco")}
+      podeVerFinanceiro={podeEmAlguma(ctx.acessos, "financeiro.ver")}
       podeCriarProduto={podeCriarProduto}
       podeEditarFornecedor={podeEditarFornecedor}
       podeBaixarXml={podeBaixarXml}
       // SKU desligado nas configurações de produto some daqui também.
       mostrarSku={camposDoTenant(ctx.tenant).sku}
       cega={ctx.tenant.conferenciaCega}
+      validadeAlertaDias={ctx.tenant.validadeAlertaDias || 30}
+      // "Hoje" no fuso da loja, decidido aqui: o servidor roda em UTC e o
+      // navegador no fuso do aparelho — das 21h à meia-noite eles discordam.
+      hoje={diaDaLoja(new Date())}
       subcategorias={subcategorias}
     />
   );

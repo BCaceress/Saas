@@ -1,12 +1,12 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, FileDown, RefreshCw, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/sheet";
-import { Badge, Field } from "@/components/ui/misc";
+import { Badge } from "@/components/ui/misc";
+import { ModalManifestacao } from "@/components/fiscal/modal-manifestacao";
 import { toast } from "@/components/ui/toast";
 import { maskCnpj } from "@/lib/masks";
 import { cn } from "@/lib/utils";
@@ -300,31 +300,6 @@ function PainelSincronizacao({
 
 type NotaSefaz = Awaited<ReturnType<typeof notasAguardandoManifestacaoAction>>[number];
 
-const MANIFESTACOES = [
-  {
-    tipo: "CIENCIA",
-    label: "Dar ciência",
-    ajuda: "Só avisa a SEFAZ que você viu a nota. Libera o XML completo e não assume nada.",
-  },
-  {
-    tipo: "CONFIRMACAO",
-    label: "Confirmar operação",
-    ajuda: "A mercadoria chegou e a nota está correta. É definitivo.",
-  },
-  {
-    tipo: "DESCONHECIMENTO",
-    label: "Desconhecer",
-    ajuda: "Você não reconhece essa compra. Exige justificativa.",
-  },
-  {
-    tipo: "NAO_REALIZADA",
-    label: "Operação não realizada",
-    ajuda: "A nota existe mas a entrega não aconteceu (recusa, devolução). Exige justificativa.",
-  },
-] as const;
-
-type TipoManifestacao = (typeof MANIFESTACOES)[number]["tipo"];
-
 /**
  * A SEFAZ entrega primeiro só um resumo da nota do fornecedor; o XML com itens
  * depende de manifestação. Por isso este painel é separado da lista: são notas
@@ -352,6 +327,15 @@ function PainelSefaz({ podeImportar }: { podeImportar: boolean }) {
         toast.info(
           `${pendentes.length} nota(s) esperando manifestação.`,
           "Dê ciência para liberar o XML completo.",
+        );
+      } else if (r.aguardando && r.proximaConsultaEm) {
+        const hora = new Date(r.proximaConsultaEm).toLocaleTimeString("pt-BR", {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        toast.info(
+          "Sem consulta à SEFAZ agora.",
+          `A SEFAZ exige 1 hora entre consultas quando não há nota nova. Tente às ${hora}.`,
         );
       } else {
         toast.info("Nada novo na SEFAZ.", `${r.consultadas} documento(s) já conhecidos.`);
@@ -414,6 +398,7 @@ function PainelSefaz({ podeImportar }: { podeImportar: boolean }) {
 
       {alvo && (
         <ModalManifestacao
+          manifestar={manifestarNotaAction}
           nota={alvo}
           onClose={() => setAlvo(null)}
           onFeito={() => {
@@ -424,93 +409,5 @@ function PainelSefaz({ podeImportar }: { podeImportar: boolean }) {
         />
       )}
     </div>
-  );
-}
-
-function ModalManifestacao({
-  nota,
-  onClose,
-  onFeito,
-}: {
-  nota: NotaSefaz;
-  onClose: () => void;
-  onFeito: () => void;
-}) {
-  const [tipo, setTipo] = useState<TipoManifestacao>("CIENCIA");
-  const [justificativa, setJustificativa] = useState("");
-  const [pending, start] = useTransition();
-
-  const escolha = MANIFESTACOES.find((m) => m.tipo === tipo)!;
-  const precisaJustificativa = tipo === "DESCONHECIMENTO" || tipo === "NAO_REALIZADA";
-
-  function confirmar() {
-    start(async () => {
-      try {
-        const r = await manifestarNotaAction({
-          chave: nota.chave,
-          tipo,
-          justificativa: precisaJustificativa ? justificativa : undefined,
-        });
-        if (r.ok) toast.success(r.mensagem);
-        else toast.error(r.mensagem);
-        onFeito();
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : "Falha ao manifestar.");
-      }
-    });
-  }
-
-  return (
-    <Modal
-      open
-      onClose={onClose}
-      title="Manifestar nota"
-      description={`${nota.emitRazaoSocial} — NF-e ${nota.numero}/${nota.serie}`}
-      width="md"
-    >
-      <div className="flex flex-col gap-4">
-        <Field label="O que você quer registrar" htmlFor="tipo" hint={escolha.ajuda}>
-          <Select
-            id="tipo"
-            value={tipo}
-            onChange={(e) => setTipo(e.target.value as TipoManifestacao)}
-          >
-            {MANIFESTACOES.map((m) => (
-              <option key={m.tipo} value={m.tipo}>
-                {m.label}
-              </option>
-            ))}
-          </Select>
-        </Field>
-
-        {precisaJustificativa && (
-          <Field
-            label="Justificativa"
-            htmlFor="justificativa"
-            hint="Mínimo de 15 caracteres — a SEFAZ recusa textos curtos."
-          >
-            <Input
-              id="justificativa"
-              value={justificativa}
-              onChange={(e) => setJustificativa(e.target.value)}
-              placeholder="Ex.: mercadoria recusada na portaria por avaria"
-            />
-          </Field>
-        )}
-
-        <p className="text-xs text-muted">
-          Manifestação não tem desfazer na SEFAZ. A chave fica registrada no histórico fiscal.
-        </p>
-      </div>
-
-      <div className="mt-4 flex justify-end gap-2">
-        <Button variant="ghost" onClick={onClose} disabled={pending}>
-          Cancelar
-        </Button>
-        <Button onClick={confirmar} disabled={pending}>
-          {pending ? "Enviando…" : escolha.label}
-        </Button>
-      </div>
-    </Modal>
   );
 }

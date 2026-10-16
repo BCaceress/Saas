@@ -43,8 +43,11 @@ export async function gerarTitulosDaNota(input: {
 }): Promise<ResumoTitulos> {
   const { tenantId, inboundId, purchaseId, userId } = input;
 
+  // Título cancelado não conta: é o rastro de uma entrada estornada. Contá-lo
+  // fazia a nota recebida de novo, depois do estorno, ficar sem conta a pagar.
+  // Título pago (ou com baixa) conta — o dinheiro já saiu por esta nota.
   const jaTem = await db.accountPayable.findFirst({
-    where: { inboundId },
+    where: { inboundId, status: { not: "CANCELADO" } },
     select: { id: true },
   });
   if (jaTem) return { criados: 0, valorTotal: 0, estimado: false };
@@ -309,6 +312,72 @@ export async function creditarDevolucao(input: {
   }
 
   return { abatido: input.valor - restante, sobra: restante, titulos: tocados };
+}
+
+/**
+ * O que a nota cobra e não chegou sai dos títulos DESTA nota — não de
+ * qualquer título do fornecedor, como o crédito de devolução: a falta é desta
+ * entrega, e o boleto que vai vir errado é o dela.
+ *
+ * Abate pela ordem de vencimento. A baixa tem origem AJUSTE: não é dinheiro
+ * que saiu (o fluxo de caixa só olha o saldo em aberto), e o extrato do
+ * título diz por que ele vale menos do que a nota. O que não couber nos
+ * títulos em aberto volta como `sobra` — é conversa com o fornecedor, não
+ * saldo automático.
+ */
+export async function abaterFaltaNaNota(input: {
+  tenantId: string;
+  inboundId: string;
+  valor: number;
+  referencia: string;
+  userId?: string | null;
+}): Promise<{ abatido: number; sobra: number }> {
+  if (!(input.valor > 0)) return { abatido: 0, sobra: 0 };
+
+  const abertos = await db.accountPayable.findMany({
+    where: { inboundId: input.inboundId, status: "ABERTO" },
+    select: { id: true, valor: true, valorPago: true, observacao: true },
+    orderBy: { vencimento: "asc" },
+  });
+
+  let restante = Math.round(input.valor * 100) / 100;
+  for (const t of abertos) {
+    if (restante <= 0.005) break;
+    const devido = Number(t.valor) - Number(t.valorPago);
+    if (devido <= 0.005) continue;
+
+    const abate = Math.min(devido, restante);
+    const acumulado = Number(t.valorPago) + abate;
+    const quitado = acumulado >= Number(t.valor) - 0.005;
+    const agora = new Date();
+
+    await db.accountPayablePayment.create({
+      data: {
+        tenantId: input.tenantId,
+        payableId: t.id,
+        origem: "AJUSTE",
+        valor: abate,
+        pagoEm: agora,
+        observacao: `Abatimento: ${input.referencia}`,
+        createdBy: input.userId ?? null,
+      },
+    });
+    await db.accountPayable.update({
+      where: { id: t.id },
+      data: {
+        valorPago: acumulado,
+        status: quitado ? "PAGO" : "ABERTO",
+        pagoEm: quitado ? agora : null,
+        observacao: [t.observacao, `Abatido ${abate.toFixed(2)}: ${input.referencia}`]
+          .filter(Boolean)
+          .join(" · "),
+      },
+    });
+    restante -= abate;
+  }
+
+  const sobra = Math.max(0, Math.round(restante * 100) / 100);
+  return { abatido: Math.round((input.valor - sobra) * 100) / 100, sobra };
 }
 
 // ── Leitura ───────────────────────────────────────────────────

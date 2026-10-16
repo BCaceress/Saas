@@ -39,6 +39,7 @@ import {
   fatorDaUnidade,
   frasesDeConversao,
   rotuloDaUnidade,
+  siglaDeExibicao,
   unidadeComercial,
   unidadesDaLinha,
 } from "@/lib/fiscal/unidades";
@@ -48,6 +49,7 @@ import {
   divergenciasDoItem,
   severidadeMaxima,
   type Severidade,
+  type TipoDivergencia,
 } from "@/lib/fiscal/divergencias";
 import { TabelaComparacao, type LinhaComparacao } from "@/components/recebimento/comparacao-xml";
 import { cfopDeEntrada } from "@/lib/fiscal/cfop";
@@ -472,6 +474,9 @@ const ORIGEM_FATOR: Record<OrigemFator, string> = {
   SEM_CONVERSAO: "ninguém informou",
 };
 
+/** Diferenças que são assunto do contador, não de quem recebe a mercadoria. */
+const DIVERGENCIAS_FISCAIS: ReadonlySet<TipoDivergencia> = new Set(["NCM_DIFERENTE"]);
+
 /** Verde pronto, laranja confirma, vermelho erro, cinza secundário — e só. */
 const SEVERIDADE_UI: Record<Severidade, { chip: string; ponto: string }> = {
   CRITICA: {
@@ -597,6 +602,7 @@ export function TabelaDePara({
   purchaseOrderId = null,
   pedidoDasSugestoes = null,
   mostrarSku = true,
+  mostrarFiscal = true,
 }: {
   inboundId: string;
   itens: ItemDePara[];
@@ -620,6 +626,12 @@ export function TabelaDePara({
   pedidoDasSugestoes?: string | null;
   /** SKU ligado nas configurações de produto. Desligado, a coluna não o mostra. */
   mostrarSku?: boolean;
+  /**
+   * A pessoa trata a parte fiscal da nota. Quem só recebe não vê o chip de
+   * "NCM diferente" na linha: fiscal nunca bloqueia e não é decisão da doca —
+   * a diferença continua em "Ver detalhes" e na aba Informações fiscais.
+   */
+  mostrarFiscal?: boolean;
 }) {
   const [pending, start] = useTransition();
   const [relacionando, setRelacionando] = useState<ItemDePara | null>(null);
@@ -959,6 +971,7 @@ export function TabelaDePara({
                   editavel={editavel && !emLote}
                   salvando={Boolean(i.otimista)}
                   mostrarSku={mostrarSku}
+                  mostrarFiscal={mostrarFiscal}
                   sugestao={sugestaoDe(i.id)}
                   buscandoSugestao={sugestoes === null}
                   onConfirmar={confirmarSugestao}
@@ -1121,6 +1134,10 @@ const BOTAO_LINHA = {
   cheio: "border-brand bg-brand text-on-brand hover:bg-brand-strong",
   marca: "border-brand/60 bg-surface text-accent hover:bg-brand-soft",
   neutro: "border-line-strong bg-surface text-ink hover:bg-surface-2",
+  // A linha já resolvida não pede nada: o botão fica, sem peso de chamada.
+  // Uma coluna de "Editar" com borda em toda linha competia com o que falta.
+  discreto:
+    "border-transparent bg-transparent text-muted hover:border-line-strong hover:bg-surface hover:text-ink",
 } as const;
 
 /** O botão da coluna Ação: um por linha, e ele diz o próximo passo dela. */
@@ -1160,6 +1177,7 @@ function LinhaItem({
   editavel,
   salvando,
   mostrarSku,
+  mostrarFiscal,
   sugestao,
   buscandoSugestao,
   onConfirmar,
@@ -1176,6 +1194,8 @@ function LinhaItem({
   /** Esta linha está gravando agora. */
   salvando: boolean;
   mostrarSku: boolean;
+  /** Mostra no chip da linha as diferenças fiscais (NCM). */
+  mostrarFiscal: boolean;
   sugestao: Sugestao | null;
   buscandoSugestao: boolean;
   onConfirmar: (s: Sugestao) => void;
@@ -1214,6 +1234,10 @@ function LinhaItem({
       ? "PRONTO"
       : pendenciaDoItem(item);
   const situacao = SITUACAO_UI[situacaoDoItem(item)];
+  /** O que o chip da linha anuncia — o fiscal só para quem trata a nota. */
+  const noChip = mostrarFiscal
+    ? divergencias
+    : divergencias.filter((d) => !DIVERGENCIAS_FISCAIS.has(d.tipo));
   /** O que o ícone de status quer dizer, dito por inteiro. */
   const explicacaoDoStatus =
     pendencia === "SEM_PRODUTO"
@@ -1223,7 +1247,7 @@ function LinhaItem({
         : pendencia === "CONFERIR"
           ? "Divergência: revise antes de receber"
           : "Relacionado";
-  const severidade = severidadeMaxima(divergencias);
+  const severidade = severidadeMaxima(noChip);
   const divergente = fatorDivergente(item);
   // O que entra na compra é SEMPRE unidade fechada. Rotular com a unidadeBase
   // fazia a tela dizer "entra 12 ML" numa caixa de 12 garrafas de suco — e o
@@ -1233,7 +1257,9 @@ function LinhaItem({
   const custo = custoItem(item);
   const desvio = salvando ? null : desvioDeCusto(item);
   const origem = origemDoFator(item);
-  const uCom = item.unidade.trim().toUpperCase() || UNIDADE_ENTRADA;
+  // Na linha, a sigla limpa ("CX027" → "CX"); o que o XML escreveu fica no
+  // hover (`rotuloDaUnidade`) e na comparação de "Ver detalhes".
+  const uCom = siglaDeExibicao(item.unidade);
   const emb = palavraDaEmbalagem(item);
   const rotuloUnidade = rotuloDaUnidade(item.unidade);
   /** A linha entra no estoque num número diferente do que a nota escreveu. */
@@ -1319,7 +1345,7 @@ function LinhaItem({
                   )}
                   {/* Chip só existe quando algo destoa — o caminho limpo segue
                     sem ruído, e a comparação abre logo abaixo da linha. */}
-                  {divergencias.length > 0 && severidade && (
+                  {noChip.length > 0 && severidade && (
                     <button
                       type="button"
                       onClick={() => setDetalhes((v) => !v)}
@@ -1330,9 +1356,9 @@ function LinhaItem({
                       )}
                     >
                       <TriangleAlert size={10} aria-hidden className="shrink-0" />
-                      {divergencias.length === 1
-                        ? divergencias[0].titulo
-                        : `${divergencias.length} diferenças encontradas`}
+                      {noChip.length === 1
+                        ? noChip[0].titulo
+                        : `${noChip.length} diferenças encontradas`}
                     </button>
                   )}
                 </div>
@@ -1513,7 +1539,7 @@ function LinhaItem({
                 Revisar
               </BotaoLinha>
             ) : (
-              <BotaoLinha tom="neutro" disabled={salvando} onClick={onRelacionar}>
+              <BotaoLinha tom="discreto" disabled={salvando} onClick={onRelacionar}>
                 Editar
               </BotaoLinha>
             )}
@@ -1652,7 +1678,7 @@ function DefinirEmbalagem({
   const fracionada = fator > 0 && !conversao.exata;
   const medida = medidaDoProduto(item);
   const emb = palavraDaEmbalagem(item);
-  const uCom = item.unidade.trim().toUpperCase() || UNIDADE_ENTRADA;
+  const uCom = siglaDeExibicao(item.unidade);
   const unidadeInfo = unidadeComercial(item.unidade);
 
   return (

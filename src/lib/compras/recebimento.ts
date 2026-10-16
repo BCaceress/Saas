@@ -2,15 +2,23 @@ import "server-only";
 import { db } from "@/lib/prisma";
 import { proximoNumeroDocumento } from "@/lib/numeracao";
 import { registrarEntrada, type EntradaItem, type TipoItemPedido } from "@/lib/estoque";
-import { gerarTitulosDaNota } from "@/lib/financeiro/contas-pagar";
+import { abaterFaltaNaNota, gerarTitulosDaNota } from "@/lib/financeiro/contas-pagar";
 import { atualizarCustoDeReferencia } from "@/lib/fiscal/enriquecer-produto";
+import { unidadesParaEstoque } from "@/lib/fiscal/unidades";
 import { registrarEvento } from "./eventos";
 import { TOL_QTD } from "./conciliacao-regras";
 import {
+  custoDeEntradaDaLinha,
   divergenciasDaConferencia,
   esperadoDaLinha,
+  faltaDaConferencia,
+  fatiasDeLote,
+  lotesDoJson,
+  problemaNosLotes,
+  quantidadeQueEntra,
   statusDoPedidoPeloSaldo,
   type Divergencia,
+  type LoteDaLinha,
 } from "./recebimento-regras";
 import type {
   GoodsReceiptOrigem,
@@ -177,6 +185,8 @@ export async function iniciarRecebimentoDoPedido(input: {
       origem: "PEDIDO",
       purchaseOrderId: pedido.id,
       supplierId: pedido.supplierId,
+      // "Iniciar recebimento" se clica com o caminhão na porta.
+      chegadaEm: new Date(),
       createdBy: userId ?? null,
       itens: {
         create: linhas.map((l) => ({
@@ -238,6 +248,8 @@ export async function abrirRecebimentoAvulso(input: {
       // Fora da lista até alguém salvar: quem abre e desiste não deixa
       // recebimento vazio na doca.
       provisorio: true,
+      // O avulso nasce na porta, com a mercadoria na frente de quem abre.
+      chegadaEm: new Date(),
       supplierId: input.supplierId ?? null,
       fornecedorLivre: input.fornecedorLivre?.trim() || null,
       observacao: input.observacao ?? null,
@@ -291,24 +303,37 @@ export async function garantirRecebimentoDaNota(input: {
   if (!nota) throw new Error("Nota não encontrada.");
 
   const numero = await proximoNumeroDocumento(input.tenantId, "REC");
-  const receipt = await db.goodsReceipt.create({
-    data: {
-      tenantId: input.tenantId,
-      siteId: nota.siteId,
-      numero,
-      // Nota sem de-para não dá para começar a contar: o item ainda não é um
-      // produto do catálogo.
-      status: nota.status === "PENDENTE" ? "PENDENTE" : "EM_CONFERENCIA",
-      origem: "XML",
-      inboundId: nota.id,
-      purchaseOrderId: nota.purchaseOrderId,
-      supplierId: nota.supplierId,
-      fornecedorLivre: nota.supplierId ? null : nota.emitRazaoSocial,
-      iniciadoEm: nota.dataEmissao,
-      createdBy: input.userId ?? nota.importadoPor ?? null,
-    },
-    select: { id: true, numero: true, status: true, origem: true, purchaseOrderId: true, inboundId: true },
-  });
+  let receipt: RecebimentoResumo;
+  try {
+    receipt = await db.goodsReceipt.create({
+      data: {
+        tenantId: input.tenantId,
+        siteId: nota.siteId,
+        numero,
+        // Nota sem de-para não dá para começar a contar: o item ainda não é um
+        // produto do catálogo.
+        status: nota.status === "PENDENTE" ? "PENDENTE" : "EM_CONFERENCIA",
+        origem: "XML",
+        inboundId: nota.id,
+        purchaseOrderId: nota.purchaseOrderId,
+        supplierId: nota.supplierId,
+        fornecedorLivre: nota.supplierId ? null : nota.emitRazaoSocial,
+        iniciadoEm: nota.dataEmissao,
+        createdBy: input.userId ?? nota.importadoPor ?? null,
+      },
+      select: { id: true, numero: true, status: true, origem: true, purchaseOrderId: true, inboundId: true },
+    });
+  } catch (e) {
+    // Duas abertas da mesma nota ao mesmo tempo (o duplo clique, a importação
+    // e a tela juntas): `inboundId` é único, e quem chegou depois perde a
+    // corrida. Perder a corrida não é erro — o recebimento existe, é o outro.
+    const vencedor = await db.goodsReceipt.findFirst({
+      where: { inboundId: input.inboundId },
+      select: { id: true, numero: true, status: true, origem: true, purchaseOrderId: true, inboundId: true },
+    });
+    if (vencedor) return resumo(vencedor);
+    throw e;
+  }
 
   await registrarEvento({
     tenantId: input.tenantId,
@@ -324,6 +349,60 @@ export async function garantirRecebimentoDaNota(input: {
 }
 
 // ── Vínculos que podem chegar depois ────────────────────────
+
+/**
+ * A nota que chega DEPOIS da mercadoria não move estoque — mas traz o boleto.
+ * As duplicatas dela viram títulos aqui, como teriam virado se ela tivesse
+ * chegado junto com a carga. Antes, o recebimento fechado sem nota nunca
+ * ganhava conta a pagar: nem no fechamento (não havia nota) nem no vínculo.
+ *
+ * A exceção é a entrada que já tem título lançado à mão (entrada manual com
+ * financeiro): gerar outro cobraria a carga duas vezes. Qual dos dois vale é
+ * conversa do financeiro com o boleto na mão — devolve a frase que avisa.
+ */
+export async function titulosDaNotaQueDocumenta(input: {
+  tenantId: string;
+  inboundId: string;
+  /** As entradas que a nota passa a documentar. */
+  purchaseIds: string[];
+  receiptId: string | null;
+  purchaseOrderId: string | null;
+  userId?: string | null;
+}): Promise<string> {
+  if (input.purchaseIds.length === 0) return "";
+
+  const existente = await db.accountPayable.findFirst({
+    where: { purchaseId: { in: input.purchaseIds }, status: { not: "CANCELADO" } },
+    select: { inboundId: true },
+  });
+  if (existente) {
+    return existente.inboundId === input.inboundId
+      ? ""
+      : " A entrada já tinha título a pagar lançado à mão — confira o valor com o da nota no financeiro.";
+  }
+
+  const titulos = await gerarTitulosDaNota({
+    tenantId: input.tenantId,
+    inboundId: input.inboundId,
+    purchaseId: input.purchaseIds[0],
+    userId: input.userId,
+  });
+  if (titulos.criados === 0) return "";
+
+  await registrarEvento({
+    tenantId: input.tenantId,
+    purchaseOrderId: input.purchaseOrderId,
+    inboundId: input.inboundId,
+    receiptId: input.receiptId,
+    tipo: "TITULOS_GERADOS",
+    descricao: titulos.estimado
+      ? `1 título a pagar de R$ ${titulos.valorTotal.toFixed(2)} — a nota chegou depois da mercadoria e não trouxe duplicata; o vencimento veio do prazo do fornecedor.`
+      : `${titulos.criados} título(s) a pagar, somando R$ ${titulos.valorTotal.toFixed(2)} — a nota chegou depois da mercadoria.`,
+    meta: { criados: titulos.criados, valorTotal: titulos.valorTotal },
+    createdBy: input.userId,
+  });
+  return "";
+}
 
 /**
  * A NF-e chegou DEPOIS da mercadoria. Documenta um recebimento que já existe
@@ -361,13 +440,15 @@ export async function vincularNotaAoRecebimento(input: {
     throw new Error("A nota é de outra loja — a mercadoria entraria no lugar errado.");
   }
 
-  const jaVinculada = await db.goodsReceipt.findFirst({
-    where: { inboundId, id: { not: receiptId } },
-    select: { numero: true },
+  // Toda nota importada nasce com um recebimento próprio. Se ninguém conferiu
+  // nada nele, ele só guardava o lugar — e sai do caminho deste.
+  await liberarRecebimentoDaNota({
+    tenantId,
+    inboundId,
+    exceto: receiptId,
+    destinoNumero: receipt.numero,
+    userId,
   });
-  if (jaVinculada) {
-    throw new Error(`Esta nota já documenta o recebimento ${jaVinculada.numero}.`);
-  }
 
   await db.goodsReceipt.update({
     where: { id: receiptId },
@@ -381,6 +462,7 @@ export async function vincularNotaAoRecebimento(input: {
   // Recebimento já fechado: a nota documenta o que entrou, e o estoque NÃO se
   // move de novo. É o mesmo contrato de `vincularNotaAEntradaManual`.
   const encerrado = receipt.status === "FINALIZADO";
+  let aviso = "";
   if (encerrado) {
     await db.purchase.updateMany({
       where: { receiptId },
@@ -391,8 +473,8 @@ export async function vincularNotaAoRecebimento(input: {
         numeroNota: `${nota.numero}/${nota.serie}`,
       },
     });
-    const entrada = await db.purchase.findFirst({
-      where: { receiptId },
+    const entradas = await db.purchase.findMany({
+      where: { receiptId, estornadaEm: null },
       select: { id: true },
       orderBy: { data: "asc" },
     });
@@ -400,12 +482,20 @@ export async function vincularNotaAoRecebimento(input: {
       where: { id: inboundId },
       data: {
         status: "VINCULADO",
-        purchaseId: entrada?.id ?? null,
+        purchaseId: entradas[0]?.id ?? null,
         purchaseOrderId: receipt.purchaseOrderId,
         semEstoqueMotivo:
           "Documenta um recebimento já finalizado — o estoque não foi movimentado de novo.",
         conciliadoEm: new Date(),
       },
+    });
+    aviso = await titulosDaNotaQueDocumenta({
+      tenantId,
+      inboundId,
+      purchaseIds: entradas.map((e) => e.id),
+      receiptId,
+      purchaseOrderId: receipt.purchaseOrderId,
+      userId,
     });
   } else {
     await db.purchaseReconciliationItem.updateMany({
@@ -425,10 +515,163 @@ export async function vincularNotaAoRecebimento(input: {
     receiptId,
     tipo: "DOCUMENTO_VINCULADO",
     descricao: encerrado
-      ? `NF-e ${nota.numero}/${nota.serie} documentou o recebimento ${receipt.numero} — estoque não movimentado de novo.`
+      ? `NF-e ${nota.numero}/${nota.serie} documentou o recebimento ${receipt.numero} — estoque não movimentado de novo.${aviso}`
       : `NF-e ${nota.numero}/${nota.serie} vinculada ao recebimento ${receipt.numero}.`,
     createdBy: userId,
   });
+}
+
+/**
+ * A nota vai documentar OUTRO recebimento — a mercadoria entrou antes do XML.
+ *
+ * Toda nota importada ganha um recebimento na hora (é o que a faz aparecer na
+ * lista). Quando o XML é de uma carga que já entrou, esse recebimento só
+ * guardava o lugar: se ninguém contou nada nele, ele é cancelado e solta a
+ * nota. Sem isto, documentar a entrada antiga esbarrava no "esta nota já
+ * documenta o recebimento…" do próprio recebimento reservado — e a mesma carga
+ * acabava recebida duas vezes por falta de outra saída.
+ *
+ * Com contagem feita, a decisão não é do sistema: recusa e diz onde está.
+ */
+export async function liberarRecebimentoDaNota(input: {
+  tenantId: string;
+  inboundId: string;
+  /** O recebimento que vai ficar com a nota. */
+  exceto: string;
+  destinoNumero: string;
+  userId?: string | null;
+}): Promise<void> {
+  const outro = await db.goodsReceipt.findFirst({
+    where: { inboundId: input.inboundId, id: { not: input.exceto } },
+    select: {
+      id: true,
+      numero: true,
+      status: true,
+      origem: true,
+      purchaseOrderId: true,
+      itens: { where: { qtdRecebida: { not: null } }, select: { id: true }, take: 1 },
+    },
+  });
+  if (!outro) return;
+
+  const soReservado =
+    outro.origem === "XML" &&
+    (outro.status === "PENDENTE" || outro.status === "EM_CONFERENCIA") &&
+    outro.itens.length === 0;
+  if (!soReservado) {
+    throw new Error(
+      outro.status === "FINALIZADO"
+        ? `Esta nota já deu entrada pelo recebimento ${outro.numero}.`
+        : `Esta nota está em conferência no recebimento ${outro.numero} — cancele aquela conferência antes de vincular a nota aqui.`,
+    );
+  }
+
+  await db.goodsReceipt.update({
+    where: { id: outro.id },
+    data: {
+      status: "CANCELADO",
+      canceladoEm: new Date(),
+      canceladoMotivo: `A NF-e passou a documentar o recebimento ${input.destinoNumero}, que já tinha a mercadoria.`,
+      inboundId: null,
+      provisorio: false,
+    },
+  });
+  // Linhas montadas sozinhas pela importação, sem uma contagem sequer: não
+  // são história de ninguém.
+  await db.purchaseReconciliationItem.deleteMany({ where: { receiptId: outro.id } });
+
+  await registrarEvento({
+    tenantId: input.tenantId,
+    purchaseOrderId: outro.purchaseOrderId,
+    inboundId: input.inboundId,
+    receiptId: outro.id,
+    tipo: "RECEBIMENTO_CANCELADO",
+    descricao: `Recebimento ${outro.numero} cancelado: a NF-e passou a documentar o recebimento ${input.destinoNumero}.`,
+    createdBy: input.userId,
+  });
+}
+
+/** Uma NF-e que pode estar documentando um recebimento que chegou sem ela. */
+export type NotaParaVincular = {
+  inboundId: string;
+  numero: number;
+  serie: number;
+  emitente: string;
+  dataEmissao: string;
+  valorTotal: number;
+  itens: number;
+};
+
+/**
+ * As NF-e que podem documentar este recebimento: mesma loja, mesmo
+ * fornecedor (quando o recebimento sabe qual), emitidas perto da chegada, e
+ * ainda livres — sem entrada e sem conferência começada em outro recebimento.
+ * É a lista que a tela oferece em "Vincular NF-e"; quem decide é a pessoa.
+ */
+export async function notasParaVincular(receiptId: string): Promise<NotaParaVincular[]> {
+  const receipt = await db.goodsReceipt.findFirst({
+    where: { id: receiptId },
+    select: {
+      siteId: true,
+      supplierId: true,
+      inboundId: true,
+      iniciadoEm: true,
+      chegadaEm: true,
+      status: true,
+    },
+  });
+  if (!receipt || receipt.inboundId || receipt.status === "CANCELADO") return [];
+
+  const referencia = (receipt.chegadaEm ?? receipt.iniciadoEm).getTime();
+  const dia = 86_400_000;
+  const notas = await db.fiscalInbound.findMany({
+    where: {
+      siteId: receipt.siteId,
+      status: { in: ["PENDENTE", "CONCILIADO"] },
+      // A nota sai antes da mercadoria (às vezes semanas); depois dela, pouco.
+      dataEmissao: { gte: new Date(referencia - 45 * dia), lte: new Date(referencia + 15 * dia) },
+      ...(receipt.supplierId ? { supplierId: receipt.supplierId } : {}),
+    },
+    select: {
+      id: true,
+      numero: true,
+      serie: true,
+      emitRazaoSocial: true,
+      dataEmissao: true,
+      valorTotal: true,
+      _count: { select: { items: true } },
+    },
+    orderBy: { dataEmissao: "desc" },
+    take: 30,
+  });
+  if (notas.length === 0) return [];
+
+  // Nota cujo recebimento já tem contagem (ou entrada) não está livre — é de
+  // outra carga. O recebimento só "reservado" pela importação, sim.
+  const ocupadas = await db.goodsReceipt.findMany({
+    where: {
+      inboundId: { in: notas.map((n) => n.id) },
+      OR: [
+        { status: { in: ["FINALIZADO"] } },
+        { origem: { not: "XML" } },
+        { itens: { some: { qtdRecebida: { not: null } } } },
+      ],
+    },
+    select: { inboundId: true },
+  });
+  const presas = new Set(ocupadas.map((o) => o.inboundId));
+
+  return notas
+    .filter((n) => !presas.has(n.id))
+    .map((n) => ({
+      inboundId: n.id,
+      numero: n.numero,
+      serie: n.serie,
+      emitente: n.emitRazaoSocial,
+      dataEmissao: n.dataEmissao.toISOString(),
+      valorTotal: Number(n.valorTotal),
+      itens: n._count.items,
+    }));
 }
 
 /**
@@ -499,6 +742,8 @@ export async function adicionarItemAoRecebimento(input: {
   validade?: string | null;
   bonificacao?: boolean;
   motivo?: string | null;
+  /** Quem acrescentou — a linha já nasce contada. */
+  userId?: string | null;
 }): Promise<string> {
   const receipt = await db.goodsReceipt.findFirst({
     where: { id: input.receiptId },
@@ -514,6 +759,9 @@ export async function adicionarItemAoRecebimento(input: {
     select: { id: true, nome: true, ean: true },
   });
   if (!produto) throw new Error("Produto não encontrado.");
+  // Peça inteira já aqui: aceitar 1,5 garrafa só adiaria o erro para a hora
+  // de receber, quando o recebimento inteiro trava.
+  unidadesParaEstoque(input.quantidade, 1, produto.nome);
 
   const linha = await db.purchaseReconciliationItem.create({
     data: {
@@ -527,6 +775,8 @@ export async function adicionarItemAoRecebimento(input: {
       qtdPedida: 0,
       qtdFaturada: 0,
       qtdRecebida: input.quantidade,
+      contadoPor: input.userId ?? null,
+      contadoEm: new Date(),
       custoPedido: 0,
       custoFaturado: input.bonificacao ? 0 : input.custoUnitario,
       bonificacao: input.bonificacao ?? false,
@@ -637,11 +887,20 @@ export async function salvarRascunhoRecebimento(receiptId: string): Promise<void
   await db.goodsReceipt.update({ where: { id: receipt.id }, data: { provisorio: false } });
 }
 
-/** Marca o recebimento como "alguém está contando" sem apagar DIVERGENCIA. */
+/**
+ * Marca o recebimento como "alguém está contando" sem apagar DIVERGENCIA — e
+ * registra a CHEGADA na primeira mão que a doca põe na carga. A nota pode ter
+ * sido emitida (e importada) dias antes do caminhão; é daqui que "há N dias na
+ * doca" passa a contar.
+ */
 export async function marcarEmConferencia(receiptId: string): Promise<void> {
   await db.goodsReceipt.updateMany({
     where: { id: receiptId, status: "PENDENTE" },
     data: { status: "EM_CONFERENCIA" },
+  });
+  await db.goodsReceipt.updateMany({
+    where: { id: receiptId, chegadaEm: null },
+    data: { chegadaEm: new Date() },
   });
 }
 
@@ -675,11 +934,19 @@ export async function cancelarRecebimento(input: {
   });
 
   // A nota volta para a fila: cancelar a conferência não descarta o documento.
+  // E volta INTEIRA para a escolha — sem pedido nem conciliação —, senão o
+  // próximo recebimento dela nasceria preso a um pedido e sem linha nenhuma
+  // para contar. O pedido mais parecido continua vindo marcado na sugestão.
   if (receipt.inboundId) {
     await db.goodsReceipt.update({ where: { id: receipt.id }, data: { inboundId: null } });
     await db.fiscalInbound.update({
       where: { id: receipt.inboundId },
-      data: { conciliadoEm: null },
+      data: {
+        conciliadoEm: null,
+        purchaseOrderId: null,
+        vinculoAutomatico: false,
+        scoreVinculo: null,
+      },
     });
   }
 
@@ -761,6 +1028,8 @@ export type ResultadoRecebimento = {
   supplierId: string | null;
   siteId: string;
   itens: number;
+  /** Quanto da falta foi abatido dos títulos da nota (0 quando não se pediu). */
+  faltaAbatida: number;
 };
 
 /**
@@ -781,6 +1050,12 @@ export async function finalizarRecebimento(input: {
   /** Obrigatório quando a contagem não bate com o esperado. */
   motivoDivergencia?: string | null;
   gerarFinanceiro?: boolean;
+  /**
+   * Abater dos títulos da nota o que ela cobra e não chegou (falta, avaria
+   * recusada). Sem isto o título nascia com o valor cheio da nota e a loja
+   * pagava a caixa que nunca entrou.
+   */
+  abaterFalta?: boolean;
   userId?: string | null;
 }): Promise<ResultadoRecebimento> {
   const { tenantId, receiptId, userId } = input;
@@ -826,6 +1101,7 @@ export async function finalizarRecebimento(input: {
       id: true,
       productId: true,
       descricao: true,
+      status: true,
       qtdPedida: true,
       qtdFaturada: true,
       qtdRecebida: true,
@@ -836,14 +1112,21 @@ export async function finalizarRecebimento(input: {
       motivoDivergencia: true,
       lote: true,
       validade: true,
+      lotes: true,
       purchaseOrderItemId: true,
+      inboundItemId: true,
     },
   });
   if (linhas.length === 0) throw new Error("Não há nada conferido neste recebimento.");
 
   // Divergência sem justificativa vira, meses depois, a palavra do estoquista
   // contra a do fornecedor. Mesma régua da conferência por XML.
-  const divergencias = divergenciasDaConferencia(linhas);
+  //
+  // O avulso puro (sem pedido e sem nota) não tem contra o que divergir: cada
+  // linha foi acrescentada pela própria doca. Cobrar ali "o que aconteceu com
+  // as linhas que não bateram" era pedir explicação do recebimento inteiro.
+  const avulsoPuro = !receipt.purchaseOrderId && !receipt.inboundId;
+  const divergencias = avulsoPuro ? [] : divergenciasDaConferencia(linhas);
   const motivo = input.motivoDivergencia?.trim() || null;
   if (divergencias.length > 0 && !motivo) {
     const primeira = divergencias[0];
@@ -859,10 +1142,7 @@ export async function finalizarRecebimento(input: {
   }
 
   const entrando = linhas
-    .map((l) => ({
-      ...l,
-      qtd: l.qtdRecebida == null ? esperadoDaLinha(l) : Number(l.qtdRecebida),
-    }))
+    .map((l) => ({ ...l, qtd: quantidadeQueEntra(l), custo: custoDeEntradaDaLinha(l) }))
     .filter((l) => l.qtd > TOL_QTD);
 
   if (entrando.length === 0) throw new Error("Nenhum item foi recebido — nada a dar entrada.");
@@ -876,6 +1156,10 @@ export async function finalizarRecebimento(input: {
         .join(", ")}${semProduto.length > 3 ? "…" : ""}`,
     );
   }
+
+  // Peça inteira, conferida ANTES de qualquer saldo se mover: o erro de
+  // conversão tem de travar o recebimento inteiro, não a metade dele.
+  for (const l of entrando) unidadesParaEstoque(l.qtd, 1, l.descricao);
 
   // O motivo fino da entrada sem custo (brinde × troca × amostra) mora no item
   // do PEDIDO. Sem pedido, tudo que é bonificado entra como BONIFICACAO.
@@ -893,16 +1177,22 @@ export async function finalizarRecebimento(input: {
       )
     : new Map<string, TipoItemPedido>();
 
-  const paraEntrada = (l: (typeof entrando)[number]): EntradaItem => ({
-    productId: l.productId as string,
-    // Quantidade JÁ em unidade base — packagingId null de propósito, senão
-    // `registrarEntrada` converteria de novo e dobraria o fardo.
-    quantidade: l.qtd,
-    custoTotal: l.bonificacao ? 0 : l.qtd * Number(l.custoFaturado),
-    packagingId: null,
-    lote: l.lote,
-    validade: l.validade ? l.validade.toISOString().slice(0, 10) : null,
-  });
+  // Uma linha que chegou em dois lotes entra como duas fatias — cada uma com a
+  // sua validade, para o FEFO vender primeiro a que vence primeiro.
+  const paraEntrada = (l: (typeof entrando)[number]): EntradaItem[] =>
+    fatiasDeLote(l.qtd, lotesDoJson(l.lotes), {
+      lote: l.lote,
+      validade: l.validade ? l.validade.toISOString().slice(0, 10) : null,
+    }).map((f) => ({
+      productId: l.productId as string,
+      // Quantidade JÁ em unidade base — packagingId null de propósito, senão
+      // `registrarEntrada` converteria de novo e dobraria o fardo.
+      quantidade: f.quantidade,
+      custoTotal: f.quantidade * l.custo,
+      packagingId: null,
+      lote: f.lote,
+      validade: f.validade,
+    }));
 
   const nota = receipt.inbound;
   const pedido = receipt.purchaseOrder;
@@ -915,28 +1205,11 @@ export async function finalizarRecebimento(input: {
 
   const comprados = entrando.filter((l) => !l.bonificacao);
   const semCusto = entrando.filter((l) => l.bonificacao);
-  const valorRecebido = comprados.reduce((a, l) => a + l.qtd * Number(l.custoFaturado), 0);
+  const valorRecebido = comprados.reduce((a, l) => a + l.qtd * l.custo, 0);
 
   // Sem XML a entrada nasce marcada esperando o documento — é o que impede a
   // mesma carga de entrar de novo quando a nota chegar.
   const aguardandoDocumento = !nota;
-
-  let purchaseId: string | null = null;
-  if (comprados.length > 0) {
-    purchaseId = await registrarEntrada(tenantId, receipt.siteId, comprados.map(paraEntrada), {
-      tipo: "FORNECEDOR",
-      motivo: pedido ? null : "COMPRA_SEM_PEDIDO",
-      supplierId: receipt.supplierId,
-      purchaseOrderId: pedido?.id ?? null,
-      receiptId: receipt.id,
-      numero: receipt.numero,
-      numeroNota,
-      chaveNfe: nota?.chave ?? null,
-      observacao: referencia,
-      createdBy: userId ?? undefined,
-      aguardandoDocumento,
-    });
-  }
 
   // Um grupo por motivo — cada um vira sua própria Purchase, sempre com custo
   // zero, para o histórico do produto e o financeiro não confundirem mercadoria
@@ -955,21 +1228,71 @@ export async function finalizarRecebimento(input: {
     g.push(l);
     grupos.set(m, g);
   }
-  for (const [m, grupo] of grupos) {
-    const id = await registrarEntrada(tenantId, receipt.siteId, grupo.map(paraEntrada), {
-      tipo: "FORNECEDOR",
-      motivo: m,
-      supplierId: receipt.supplierId,
-      purchaseOrderId: pedido?.id ?? null,
-      receiptId: receipt.id,
-      numero: receipt.numero,
-      numeroNota,
-      chaveNfe: nota?.chave ?? null,
-      observacao: `${referencia} — ${MOTIVO_LABEL[m]}`,
-      createdBy: userId ?? undefined,
-      aguardandoDocumento,
+
+  // ── Daqui em diante o estoque se move ──
+  //
+  // A trava vem antes do primeiro saldo: o duplo clique, as duas abas e as
+  // duas pessoas conferindo a mesma carga chegam aqui juntos, e só um pode
+  // passar. Sem ela, os dois liam "em conferência", os dois davam entrada, e
+  // a mesma caixa entrava duas vezes no estoque.
+  const travou = await db.goodsReceipt.updateMany({
+    where: { id: receipt.id, status: { in: RECEBIMENTOS_ABERTOS } },
+    data: { status: "FINALIZADO", finalizadoEm: new Date() },
+  });
+  if (travou.count === 0) {
+    throw new Error(
+      "Este recebimento acabou de ser finalizado — em outra aba ou por outra pessoa. Recarregue a tela.",
+    );
+  }
+
+  let purchaseId: string | null = null;
+  try {
+    if (comprados.length > 0) {
+      purchaseId = await registrarEntrada(tenantId, receipt.siteId, comprados.flatMap(paraEntrada), {
+        tipo: "FORNECEDOR",
+        motivo: pedido ? null : "COMPRA_SEM_PEDIDO",
+        supplierId: receipt.supplierId,
+        purchaseOrderId: pedido?.id ?? null,
+        receiptId: receipt.id,
+        numero: receipt.numero,
+        numeroNota,
+        chaveNfe: nota?.chave ?? null,
+        observacao: referencia,
+        createdBy: userId ?? undefined,
+        aguardandoDocumento,
+      });
+    }
+
+    for (const [m, grupo] of grupos) {
+      const id = await registrarEntrada(tenantId, receipt.siteId, grupo.flatMap(paraEntrada), {
+        tipo: "FORNECEDOR",
+        motivo: m,
+        supplierId: receipt.supplierId,
+        purchaseOrderId: pedido?.id ?? null,
+        receiptId: receipt.id,
+        numero: receipt.numero,
+        numeroNota,
+        chaveNfe: nota?.chave ?? null,
+        observacao: `${referencia} — ${MOTIVO_LABEL[m]}`,
+        createdBy: userId ?? undefined,
+        aguardandoDocumento,
+      });
+      purchaseId ||= id;
+    }
+  } catch (e) {
+    // Nada entrou: o recebimento volta a ficar aberto, para a pessoa corrigir
+    // e tentar de novo. Se alguma entrada já foi lançada, ele fica fechado —
+    // destravar deixaria o segundo clique lançar tudo de novo.
+    const lancadas = await db.purchase.count({
+      where: { receiptId: receipt.id, estornadaEm: null },
     });
-    purchaseId ||= id;
+    if (lancadas === 0) {
+      await db.goodsReceipt.updateMany({
+        where: { id: receipt.id, status: "FINALIZADO" },
+        data: { status: receipt.status, finalizadoEm: null },
+      });
+    }
+    throw e;
   }
 
   // Acumula o recebido no pedido, de volta em unidade de compra. Sem pedido não
@@ -1027,12 +1350,7 @@ export async function finalizarRecebimento(input: {
 
   await db.goodsReceipt.update({
     where: { id: receipt.id },
-    data: {
-      status: "FINALIZADO",
-      finalizadoEm: new Date(),
-      divergenciaMotivo: motivo,
-      provisorio: false,
-    },
+    data: { divergenciaMotivo: motivo, provisorio: false },
   });
 
   // Estoque e financeiro são o mesmo fato visto de dois lados. As duplicatas da
@@ -1060,12 +1378,43 @@ export async function finalizarRecebimento(input: {
     }
   }
 
+  // A nota cobra a carga inteira; o que não chegou não se paga. O título já
+  // nasce com o abatimento — o boleto do fornecedor vem cheio, e é essa a
+  // conversa que o "Avisar fornecedor" prepara.
+  let faltaAbatida = 0;
+  const falta = faltaDaConferencia(linhas);
+  if (nota && input.abaterFalta && falta.valor > 0.005) {
+    const r = await abaterFaltaNaNota({
+      tenantId,
+      inboundId: nota.id,
+      valor: falta.valor,
+      referencia: `falta no recebimento ${receipt.numero}`,
+      userId,
+    });
+    faltaAbatida = r.abatido;
+    await registrarEvento({
+      tenantId,
+      purchaseOrderId: pedido?.id ?? null,
+      inboundId: nota.id,
+      receiptId: receipt.id,
+      purchaseId,
+      tipo: "DIVERGENCIA_RESOLVIDA",
+      descricao:
+        r.abatido > 0
+          ? `Falta de R$ ${falta.valor.toFixed(2)} (${falta.itens} ${falta.itens === 1 ? "item" : "itens"}) abatida do título a pagar da NF-e ${numeroNota}.` +
+            (r.sobra > 0.005 ? ` R$ ${r.sobra.toFixed(2)} não couberam nos títulos em aberto — trate com o fornecedor.` : "")
+          : `Falta de R$ ${falta.valor.toFixed(2)} não abatida: a NF-e ${numeroNota} não tem título em aberto. Trate o crédito com o fornecedor.`,
+      meta: { falta: falta.valor, abatido: r.abatido, sobra: r.sobra },
+      createdBy: userId,
+    });
+  }
+
   // Custo de referência do produto: agora o dinheiro é real, então o que se
   // pagou vira o "quanto custou da última vez" que o cadastro mostra.
   await atualizarCustoDeReferencia(
     comprados.map((l) => ({
       productId: l.productId as string,
-      custoUnitarioBase: Number(l.custoFaturado),
+      custoUnitarioBase: l.custo,
     })),
   );
 
@@ -1124,6 +1473,7 @@ export async function finalizarRecebimento(input: {
     supplierId: receipt.supplierId,
     siteId: receipt.siteId,
     itens: entrando.length,
+    faltaAbatida,
   };
 }
 
@@ -1141,14 +1491,24 @@ export async function registrarContagem(input: {
   custoUnitario?: number | null;
   lote?: string | null;
   validade?: string | null;
+  /**
+   * A linha dividida em lotes (validades diferentes na mesma carga). `null`
+   * ou lista vazia = volta a ser um lote só. Ausente = não mexe.
+   */
+  lotes?: LoteDaLinha[] | null;
   motivoDivergencia?: string | null;
+  /** Quem está contando — vai para "contado por" da linha. */
+  userId?: string | null;
 }): Promise<void> {
   const linha = await db.purchaseReconciliationItem.findFirst({
     where: { id: input.itemId, receiptId: input.receiptId },
     select: {
       id: true,
+      status: true,
+      resolucao: true,
       qtdPedida: true,
       qtdFaturada: true,
+      qtdRecebida: true,
       receipt: { select: { status: true } },
     },
   });
@@ -1159,21 +1519,56 @@ export async function registrarContagem(input: {
 
   // Contar diferente do esperado é uma DECISÃO do operador, e ela precisa
   // sobreviver ao recarregamento da tela: sem isto o fechamento voltaria a
-  // pedir justificativa de algo que já foi resolvido na linha.
+  // pedir justificativa de algo que já foi resolvido na linha. E desfazê-la
+  // também: quem corrige a contagem de volta para o número da nota não deixou
+  // ajuste nenhum para trás. Aceitar ou ignorar a divergência do pedido é
+  // outra decisão, e contar não mexe nela.
   const esperado = esperadoDaLinha(linha);
   const mexeuNaQtd = input.qtdRecebida !== undefined;
   const qtd = input.qtdRecebida == null ? null : Math.max(0, input.qtdRecebida);
   const ajustou = qtd != null && Math.abs(qtd - esperado) > TOL_QTD;
+  const resolucao = !mexeuNaQtd
+    ? undefined
+    : ajustou
+      ? ("AJUSTADO" as const)
+      : linha.resolucao === "AJUSTADO"
+        ? null
+        : undefined;
+
+  // Os lotes dividem o que ENTRA pela linha: o contado, ou o esperado se
+  // ninguém contou ainda. Passar disso inventaria mercadoria no FEFO.
+  if (input.lotes && input.lotes.length > 0) {
+    const entra = mexeuNaQtd
+      ? (qtd ?? esperado)
+      : linha.qtdRecebida == null
+        ? esperado
+        : Number(linha.qtdRecebida);
+    const problema = problemaNosLotes(input.lotes, entra);
+    if (problema) throw new Error(problema);
+  }
 
   await db.purchaseReconciliationItem.update({
     where: { id: linha.id },
     data: {
-      ...(mexeuNaQtd ? { qtdRecebida: qtd } : {}),
-      resolucao: mexeuNaQtd && ajustou ? "AJUSTADO" : undefined,
+      ...(mexeuNaQtd
+        ? { qtdRecebida: qtd, contadoPor: input.userId ?? null, contadoEm: new Date() }
+        : {}),
+      resolucao,
       ...(input.custoUnitario != null ? { custoFaturado: input.custoUnitario } : {}),
       ...(input.lote !== undefined ? { lote: input.lote?.trim() || null } : {}),
       ...(input.validade !== undefined
         ? { validade: input.validade ? new Date(`${input.validade}T00:00:00`) : null }
+        : {}),
+      // Lista vazia (e não null) para "um lote só": limpar um campo Json para
+      // NULL exige o sentinela do Prisma, e lista vazia diz a mesma coisa.
+      ...(input.lotes !== undefined
+        ? {
+            lotes: (input.lotes ?? []).map((l) => ({
+              lote: l.lote?.trim() || null,
+              validade: l.validade || null,
+              quantidade: l.quantidade,
+            })),
+          }
         : {}),
       ...(input.motivoDivergencia !== undefined
         ? { motivoDivergencia: input.motivoDivergencia?.trim() || null }
@@ -1182,6 +1577,75 @@ export async function registrarContagem(input: {
   });
 
   await marcarEmConferencia(input.receiptId);
+}
+
+/**
+ * O bipe: SOMA ao que já está contado, no servidor.
+ *
+ * A tela mandava o total ("13") calculado com o que ELA via. Com dois
+ * conferentes bipando a mesma carga — um celular em cada ponta do caminhão —,
+ * os dois mandavam "13" e uma caixa sumia da contagem. Aqui o primeiro bipe
+ * sai de "não contado" para o incremento e os seguintes somam no banco; quem
+ * chega por último soma por cima, não apaga. Devolve o total de verdade, que
+ * a tela passa a mostrar.
+ *
+ * Bipe é contagem EM ANDAMENTO: não marca "ajustado" a cada caixa que ainda
+ * falta. Só desfaz o "ajustado" de antes quando a soma chega ao esperado.
+ */
+export async function somarContagem(input: {
+  receiptId: string;
+  itemId: string;
+  /** Em unidade base: 1 pela unidade, o fator pela caixa. */
+  incremento: number;
+  userId?: string | null;
+}): Promise<number> {
+  if (!Number.isInteger(input.incremento) || input.incremento <= 0) {
+    throw new Error("O bipe soma unidades inteiras.");
+  }
+  const linha = await db.purchaseReconciliationItem.findFirst({
+    where: { id: input.itemId, receiptId: input.receiptId },
+    select: {
+      id: true,
+      status: true,
+      resolucao: true,
+      qtdPedida: true,
+      qtdFaturada: true,
+      receipt: { select: { status: true } },
+    },
+  });
+  if (!linha) throw new Error("Item não encontrado neste recebimento.");
+  if (linha.receipt?.status === "FINALIZADO" || linha.receipt?.status === "CANCELADO") {
+    throw new Error("Este recebimento está encerrado.");
+  }
+
+  const quem = { contadoPor: input.userId ?? null, contadoEm: new Date() };
+  // Duas escritas atômicas, nenhuma leitura-e-escrita no meio: "de nulo para
+  // N" só vale se ainda for nulo; senão, incremento no próprio UPDATE.
+  const primeiro = await db.purchaseReconciliationItem.updateMany({
+    where: { id: linha.id, qtdRecebida: null },
+    data: { qtdRecebida: input.incremento, ...quem },
+  });
+  if (primeiro.count === 0) {
+    await db.purchaseReconciliationItem.update({
+      where: { id: linha.id },
+      data: { qtdRecebida: { increment: input.incremento }, ...quem },
+    });
+  }
+
+  const depois = await db.purchaseReconciliationItem.findFirst({
+    where: { id: linha.id },
+    select: { qtdRecebida: true },
+  });
+  const total = Number(depois?.qtdRecebida ?? input.incremento);
+  if (linha.resolucao === "AJUSTADO" && Math.abs(total - esperadoDaLinha(linha)) <= TOL_QTD) {
+    await db.purchaseReconciliationItem.update({
+      where: { id: linha.id },
+      data: { resolucao: null },
+    });
+  }
+
+  await marcarEmConferencia(input.receiptId);
+  return total;
 }
 
 // ── Atalho: conferir e fechar num passo só ──────────────────

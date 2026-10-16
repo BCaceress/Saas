@@ -798,18 +798,45 @@ export async function gerarEntradaDaNota(input: {
   // procuraria pela carga num lugar onde ela nunca esteve.
   const receipt = await garantirRecebimentoDaNota({ tenantId, inboundId, userId });
 
-  const purchaseId = await registrarEntrada(tenantId, nota.siteId, itens, {
-    tipo: "FORNECEDOR",
-    motivo: soBonificacao ? "BONIFICACAO" : purchaseOrderId ? null : "COMPRA_SEM_PEDIDO",
-    supplierId: nota.supplierId,
-    purchaseOrderId,
-    receiptId: receipt.id,
-    numero: receipt.numero,
-    numeroNota: `${nota.numero}/${nota.serie}`,
-    observacao: `Recebimento ${receipt.numero} — entrada direta pela NF-e ${nota.emitRazaoSocial}`,
-    createdBy: userId ?? undefined,
-    chaveNfe: nota.chave,
+  // A mesma trava do fechamento pela conferência (`finalizarRecebimento`): o
+  // duplo clique e duas abas chegam aqui juntos, e só um pode lançar a nota.
+  const travou = await db.goodsReceipt.updateMany({
+    where: { id: receipt.id, status: { in: ["PENDENTE", "EM_CONFERENCIA", "DIVERGENCIA"] } },
+    data: { status: "FINALIZADO", finalizadoEm: new Date() },
   });
+  if (travou.count === 0) {
+    throw new Error(
+      `O recebimento ${receipt.numero} desta nota já foi finalizado ou cancelado — recarregue a tela.`,
+    );
+  }
+
+  let purchaseId: string;
+  try {
+    purchaseId = await registrarEntrada(tenantId, nota.siteId, itens, {
+      tipo: "FORNECEDOR",
+      motivo: soBonificacao ? "BONIFICACAO" : purchaseOrderId ? null : "COMPRA_SEM_PEDIDO",
+      supplierId: nota.supplierId,
+      purchaseOrderId,
+      receiptId: receipt.id,
+      numero: receipt.numero,
+      numeroNota: `${nota.numero}/${nota.serie}`,
+      observacao: `Recebimento ${receipt.numero} — entrada direta pela NF-e ${nota.emitRazaoSocial}`,
+      createdBy: userId ?? undefined,
+      chaveNfe: nota.chave,
+    });
+  } catch (e) {
+    // Nada entrou: destrava, para a pessoa corrigir e tentar de novo.
+    const lancadas = await db.purchase.count({
+      where: { receiptId: receipt.id, estornadaEm: null },
+    });
+    if (lancadas === 0) {
+      await db.goodsReceipt.updateMany({
+        where: { id: receipt.id, status: "FINALIZADO" },
+        data: { status: receipt.status, finalizadoEm: null },
+      });
+    }
+    throw e;
+  }
 
   await db.goodsReceipt.update({
     where: { id: receipt.id },

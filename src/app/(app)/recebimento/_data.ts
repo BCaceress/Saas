@@ -1,8 +1,16 @@
 import "server-only";
-import { db } from "@/lib/prisma";
+import { basePrisma, db } from "@/lib/prisma";
 import { urlImagemProduto } from "@/lib/imagem";
 import { sugerirPedidos, type SugestaoPedido } from "@/lib/compras/conciliacao";
 import { listarEventosDoRecebimento, type EventoPedido } from "@/lib/compras/eventos";
+import {
+  custoDeEntradaDaLinha,
+  lotesDoJson,
+  margemAposEntrada,
+  quantidadeQueEntra,
+  type LoteDaLinha,
+} from "@/lib/compras/recebimento-regras";
+import { vasilhameDoRecebimento, type VasilhameDoTipo } from "@/lib/compras/vasilhame";
 import { sugestoesDaNota, type SugestaoDePara } from "@/lib/compras/sugestao-de-para";
 import {
   resumoSincronizacaoDaNota,
@@ -60,6 +68,11 @@ export type LinhaRecebimento = {
   motivoDivergencia: string | null;
   lote: string | null;
   validade: string | null;
+  /** A linha dividida em lotes (validades diferentes na mesma carga). */
+  lotes: LoteDaLinha[] | null;
+  /** Quem gravou a contagem por último, e quando. */
+  contadoPor: string | null;
+  contadoEm: string | null;
   embalagens: EmbalagemView[];
   /** Linha que ninguém esperava (item fora do pedido/nota, ou o avulso). */
   avulsa: boolean;
@@ -122,6 +135,8 @@ export type CabecalhoRecebimento = {
   /** Número da nota no papel, quando o XML ainda não veio. */
   numeroNota: string | null;
   iniciadoEm: string;
+  /** Quando a mercadoria chegou de fato à doca (primeira contagem). */
+  chegadaEm: string | null;
   finalizadoEm: string | null;
   divergenciaMotivo: string | null;
   canceladoMotivo: string | null;
@@ -194,6 +209,25 @@ export type RecebimentoView = {
   linhas: LinhaRecebimento[];
   resumo: ResumoRecebimento;
   timeline: EventoPedido[];
+  /**
+   * Cascos com a distribuidora neste recebimento, por tipo. Nulo quando a loja
+   * não controla vasilhame (sem comodato, sem tipo ativo ou sem fornecedor).
+   */
+  vasilhame: VasilhameDoTipo[] | null;
+  /**
+   * Produtos que, com o custo desta entrada, ficaram abaixo da margem da régua
+   * do cadastro — só no recebimento concluído. Aviso, nunca remarcação.
+   */
+  margens: MargemAposEntrada[];
+};
+
+export type MargemAposEntrada = {
+  productId: string;
+  nome: string;
+  precoVenda: number;
+  custo: number;
+  pct: number;
+  nivel: "NEGATIVA" | "BAIXA";
 };
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
@@ -221,6 +255,8 @@ export async function carregarRecebimento(
      * revalida a rota a cada campo, e ela não usa nada disso.
      */
     verNota?: boolean;
+    /** A loja controla vasilhame (módulo de comodato ligado). */
+    comVasilhame?: boolean;
   } = {},
 ): Promise<RecebimentoView | null> {
   const receipt = await db.goodsReceipt.findFirst({
@@ -239,6 +275,7 @@ export async function carregarRecebimento(
       divergenciaMotivo: true,
       canceladoMotivo: true,
       iniciadoEm: true,
+      chegadaEm: true,
       finalizadoEm: true,
       purchaseOrderId: true,
       inboundId: true,
@@ -297,9 +334,9 @@ export async function carregarRecebimento(
       : null,
     db.purchaseReconciliationItem.findMany({
       where: { receiptId: receipt.id },
-      // Ordem alfabética e estável: a lista é para conferir na sequência da
-      // paleteira, e o que está errado já subiu para o painel de divergências.
-      orderBy: { descricao: "asc" },
+      // Ordem de base estável; a ordem da tela (a da nota) é aplicada abaixo,
+      // quando os itens do XML estiverem em mão.
+      orderBy: [{ descricao: "asc" }, { createdAt: "asc" }],
     }),
   ]);
 
@@ -328,6 +365,8 @@ export async function carregarRecebimento(
           where: { inboundId },
           select: {
             id: true,
+            ordem: true,
+            descricao: true,
             unidade: true,
             quantidade: true,
             fatorConversao: true,
@@ -453,6 +492,35 @@ export async function carregarRecebimento(
     };
   });
 
+  // A conferência segue a ORDEM DA NOTA, como o papel na mão de quem confere
+  // e como a etapa 1 numera: o item 7 da DANFE é o 7 nas duas telas. Depois
+  // vem o que o pedido tinha e a nota não trouxe (alfabético) e, por último, o
+  // que a doca acrescentou, na ordem em que foi acrescentado.
+  const posicao = (l: (typeof linhasCru)[number]) => {
+    const doXml = l.inboundItemId ? xmlPorItem.get(l.inboundItemId) : null;
+    if (doXml) return [0, doXml.ordem] as const;
+    if (l.purchaseOrderItemId) return [1, 0] as const;
+    return [2, l.createdAt.getTime()] as const;
+  };
+  linhasCru.sort((a, b) => {
+    const [ga, oa] = posicao(a);
+    const [gb, ob] = posicao(b);
+    return ga - gb || oa - ob;
+  });
+
+  // Quem contou cada linha: nome, não id — e numa consulta só para a nota toda.
+  const contadores = [...new Set(linhasCru.map((l) => l.contadoPor).filter((v): v is string => !!v))];
+  const nomesDeQuemContou = contadores.length
+    ? new Map(
+        (
+          await basePrisma.user.findMany({
+            where: { id: { in: contadores } },
+            select: { id: true, name: true, email: true },
+          })
+        ).map((u) => [u.id, u.name ?? u.email ?? null]),
+      )
+    : new Map<string, string | null>();
+
   const linhas: LinhaRecebimento[] = linhasCru.map((l) => {
     const p = l.productId ? produtos.get(l.productId) : null;
     const doXml = l.inboundItemId ? xmlPorItem.get(l.inboundItemId) : null;
@@ -460,7 +528,10 @@ export async function carregarRecebimento(
       id: l.id,
       productId: l.productId,
       inboundItemId: l.inboundItemId,
-      descricao: l.descricao,
+      // A linha guarda o nome do CATÁLOGO depois de relacionada; "Produto na
+      // nota" é o que o fornecedor escreveu — é o que se confere contra o
+      // papel. Sem isto as duas colunas da conferência diziam a mesma coisa.
+      descricao: doXml?.descricao ?? l.descricao,
       produtoNome: p?.nome ?? null,
       sku: p?.sku ?? null,
       imagemUrl: p?.imagemUrl ?? null,
@@ -477,6 +548,9 @@ export async function carregarRecebimento(
       motivoDivergencia: l.motivoDivergencia,
       lote: l.lote,
       validade: l.validade ? l.validade.toISOString().slice(0, 10) : null,
+      lotes: lotesDoJson(l.lotes),
+      contadoPor: l.contadoPor ? (nomesDeQuemContou.get(l.contadoPor) ?? null) : null,
+      contadoEm: iso(l.contadoEm),
       embalagens: p?.embalagens ?? [],
       /** Linha que ninguém esperava — só ela pode ser removida da conferência. */
       avulsa: !l.purchaseOrderItemId && !l.inboundItemId,
@@ -527,6 +601,7 @@ export async function carregarRecebimento(
         null,
       numeroNota: receipt.numeroNota,
       iniciadoEm: receipt.iniciadoEm.toISOString(),
+      chegadaEm: iso(receipt.chegadaEm),
       finalizadoEm: iso(receipt.finalizadoEm),
       divergenciaMotivo: receipt.divergenciaMotivo,
       canceladoMotivo: receipt.canceladoMotivo,
@@ -584,6 +659,13 @@ export async function carregarRecebimento(
     // A história é DESTE recebimento. A do pedido inteiro (que pode ter três
     // entregas) fica na tela do pedido.
     timeline: await listarEventosDoRecebimento(tenantId, receipt.id),
+    vasilhame:
+      opts.comVasilhame && receipt.supplierId && receipt.status !== "CANCELADO"
+        ? await vasilhameDoRecebimento(receipt.id, receipt.supplierId).then((v) =>
+            v.length > 0 ? v : null,
+          )
+        : null,
+    margens: receipt.status === "FINALIZADO" ? await margensAposEntrada(linhasCru) : [],
   };
 }
 
@@ -660,6 +742,50 @@ async function produtosDe(ids: (string | null)[]): Promise<Map<string, ProdutoVi
       },
     ]),
   );
+}
+
+/**
+ * Produtos que, com o custo DESTA entrada, ficaram abaixo da régua de margem
+ * do cadastro (ou no prejuízo) pelo preço de venda de hoje.
+ *
+ * Não remarca nada — preço de venda mora no cadastro. É o aviso que faltava:
+ * o custo subiu na nota e ninguém percebe até o fechamento do mês.
+ */
+async function margensAposEntrada(
+  linhas: {
+    productId: string | null;
+    bonificacao: boolean;
+    status: string;
+    qtdPedida: unknown;
+    qtdFaturada: unknown;
+    qtdRecebida: unknown;
+    custoFaturado: unknown;
+    custoPedido: unknown;
+  }[],
+): Promise<MargemAposEntrada[]> {
+  // O custo mais alto que entrou para cada produto — é ele que aperta a margem.
+  const custoPorProduto = new Map<string, number>();
+  for (const l of linhas) {
+    if (!l.productId || l.bonificacao || quantidadeQueEntra(l) <= 0) continue;
+    const custo = custoDeEntradaDaLinha(l);
+    if (custo > (custoPorProduto.get(l.productId) ?? 0)) custoPorProduto.set(l.productId, custo);
+  }
+  if (custoPorProduto.size === 0) return [];
+
+  const produtos = await db.product.findMany({
+    where: { id: { in: [...custoPorProduto.keys()] } },
+    select: { id: true, nome: true, precoVenda: true },
+  });
+  return produtos
+    .flatMap((p) => {
+      const custo = custoPorProduto.get(p.id) ?? 0;
+      const preco = p.precoVenda == null ? null : Number(p.precoVenda);
+      const m = margemAposEntrada(preco, custo);
+      return m && preco != null
+        ? [{ productId: p.id, nome: p.nome, precoVenda: preco, custo, pct: m.pct, nivel: m.nivel }]
+        : [];
+    })
+    .sort((a, b) => a.pct - b.pct);
 }
 
 export type DonoDeCodigo = {

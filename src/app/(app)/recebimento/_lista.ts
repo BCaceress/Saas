@@ -2,6 +2,7 @@ import "server-only";
 import { db, basePrisma } from "@/lib/prisma";
 import type { GoodsReceiptOrigem, GoodsReceiptStatus, Prisma } from "@/generated/prisma";
 import { RECEBIMENTOS_ABERTOS } from "@/lib/compras/recebimento";
+import { custoDeEntradaDaLinha, esperadoDaLinha } from "@/lib/compras/recebimento-regras";
 import { montarPagina, periodoAplicavel, type Pagina, type RecFiltros, type RecMarca } from "./_query";
 
 // ── Leitura de /recebimento ─────────────────────────────────────
@@ -31,7 +32,10 @@ import { montarPagina, periodoAplicavel, type Pagina, type RecFiltros, type RecM
 export type RecebimentoRow = {
   id: string;
   numero: string;
-  /** Quando o recebimento foi aberto — mede há quanto tempo está parado. */
+  /**
+   * Quando a carga chegou à doca — mede há quanto tempo está parada. Sem
+   * chegada registrada (a nota importada antes do caminhão), vale a abertura.
+   */
   data: Date;
   /**
    * Quando foi recebido de fato — conferência concluída, mercadoria no
@@ -346,6 +350,7 @@ const selectRecebimento = {
   status: true,
   origem: true,
   iniciadoEm: true,
+  chegadaEm: true,
   finalizadoEm: true,
   numeroNota: true,
   fornecedorLivre: true,
@@ -359,9 +364,11 @@ const selectRecebimento = {
   inbound: { select: { id: true, numero: true, serie: true, valorTotal: true, dataEmissao: true } },
   itens: {
     select: {
+      status: true,
       qtdPedida: true,
       qtdFaturada: true,
       qtdRecebida: true,
+      custoPedido: true,
       custoFaturado: true,
       bonificacao: true,
       resolucao: true,
@@ -377,18 +384,19 @@ type ReceiptCru = Prisma.GoodsReceiptGetPayload<{ select: typeof selectRecebimen
 
 function paraLinha(r: ReceiptCru, usuarios: Map<string, string>): RecebimentoRow {
   const encerrado = r.status === "FINALIZADO";
-  const esperadoDe = (i: ReceiptCru["itens"][number]) =>
-    Number(i.qtdFaturada) || Number(i.qtdPedida);
+  // A mesma régua da tela e do fechamento: o que a nota não trouxe espera 0,
+  // e cada linha vale pelo custo com que entra (ou entraria).
+  const esperadoDe = (i: ReceiptCru["itens"][number]) => esperadoDaLinha(i);
   const recebidoDe = (i: ReceiptCru["itens"][number]) =>
     i.qtdRecebida == null ? (encerrado ? esperadoDe(i) : 0) : Number(i.qtdRecebida);
 
   const aberto = RECEBIMENTOS_ABERTOS.includes(r.status);
   const valorRecebido = r.itens.reduce(
-    (a, i) => a + (i.bonificacao ? 0 : recebidoDe(i) * Number(i.custoFaturado)),
+    (a, i) => a + recebidoDe(i) * custoDeEntradaDaLinha(i),
     0,
   );
   const valorEsperado = r.itens.reduce(
-    (a, i) => a + (i.bonificacao ? 0 : esperadoDe(i) * Number(i.custoFaturado)),
+    (a, i) => a + esperadoDe(i) * custoDeEntradaDaLinha(i),
     0,
   );
 
@@ -396,7 +404,9 @@ function paraLinha(r: ReceiptCru, usuarios: Map<string, string>): RecebimentoRow
   return {
     id: r.id,
     numero: r.numero,
-    data: r.iniciadoEm,
+    // A nota costuma ser importada dias antes do caminhão: contar dali dizia
+    // "parada há 4 dias" de uma carga que acabou de encostar.
+    data: r.chegadaEm ?? r.iniciadoEm,
     concluidoEm: r.finalizadoEm,
     supplierNome:
       r.supplier?.nomeFantasia || r.supplier?.razaoSocial || r.fornecedorLivre || "Sem fornecedor",

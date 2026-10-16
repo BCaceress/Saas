@@ -11,7 +11,6 @@ import {
   CheckCircle2,
   CloudDownload,
   FileSignature,
-  FileUp,
   Inbox,
   Mail,
   Pause,
@@ -29,11 +28,15 @@ import { Badge, Field } from "@/components/ui/misc";
 import { Sheet } from "@/components/ui/sheet";
 import { toast } from "@/components/ui/toast";
 import { Switch } from "../_ui";
+import { ModalManifestacao } from "@/components/fiscal/modal-manifestacao";
+import { maskCnpj } from "@/lib/masks";
+import { fmtMoney } from "../../cotacoes/_ui";
 import { enviarCertificadoAction } from "../fiscal/actions";
 import {
   consultarSefazAction,
   historicoImportacoesAction,
   iniciarConexaoOauthAction,
+  manifestarNotaSefazAction,
   removerCaixaEmailAction,
   salvarCaixaEmailAction,
   salvarManifestacaoAutomaticaAction,
@@ -46,21 +49,37 @@ import type { LinhaHistorico } from "@/lib/fiscal/import-log";
 // ============================================================
 // Configuração dos canais de entrada de NF-e.
 //
-// Três abas porque são três decisões independentes, não três passos: quem
-// recebe pouca nota vive de upload; quem tem fornecedor organizado liga o
-// e-mail; quem tem certificado A1 deixa a SEFAZ entregar. Dá para usar os três
-// ao mesmo tempo — a chave da nota impede a mesma entrar duas vezes.
+// Cada canal é uma decisão independente, não um passo de configuração: quem
+// tem fornecedor organizado liga o e-mail; quem tem certificado A1 deixa a
+// SEFAZ entregar. Dá para usar os dois ao mesmo tempo — a chave da nota
+// impede a mesma entrar duas vezes.
 // ============================================================
 
-type Aba = "upload" | "email" | "sefaz" | "historico";
+type Aba = "sefaz" | "email" | "historico";
 
 export type EmitenteResumo = {
   siteId: string;
   cnpj: string;
   razaoSocial: string;
   temCertificado: boolean;
+  precisaReenviar: boolean;
   certificadoTitular: string | null;
   certificadoValidade: string | null;
+  consultadoEm: string | null;
+  ultimoErro: string | null;
+  /** A SEFAZ exige 1 h entre consultas sem nota nova — antes disso responde 656. */
+  proximaConsultaEm: string | null;
+};
+
+export type NotaPendente = {
+  siteId: string;
+  chave: string;
+  emitCnpj: string;
+  emitRazaoSocial: string;
+  valorTotal: number | null;
+  dataEmissao: string | null;
+  numero: number;
+  serie: number;
 };
 
 export function NotasFiscaisClient({
@@ -69,9 +88,9 @@ export function NotasFiscaisClient({
   caixas,
   historico,
   emitentes,
-  provider,
+  pendentes,
+  podeManifestar,
   ambiente,
-  providerAtivo,
   manifestacaoAutomatica,
   oauth,
   oauthMotivo,
@@ -81,35 +100,40 @@ export function NotasFiscaisClient({
   caixas: CaixaView[];
   historico: LinhaHistorico[];
   emitentes: EmitenteResumo[];
-  provider: string | null;
-  ambiente: string | null;
-  providerAtivo: boolean;
+  pendentes: NotaPendente[];
+  podeManifestar: boolean;
+  ambiente: string;
   manifestacaoAutomatica: boolean;
   oauth: "ok" | "erro" | null;
   oauthMotivo: string | null;
 }) {
   // Voltou do consentimento: abre direto na aba de e-mail, que é onde a
-  // resposta faz sentido.
-  const [aba, setAba] = React.useState<Aba>(oauth ? "email" : "upload");
+  // resposta faz sentido. Fora isso, o certificado é o caminho mais curto.
+  const [aba, setAba] = React.useState<Aba>(oauth ? "email" : "sefaz");
 
   const abas: { id: Aba; label: string; icon: React.ReactNode; badge?: string }[] = [
-    { id: "upload", label: "Upload manual", icon: <FileUp size={14} /> },
+    {
+      id: "sefaz",
+      label: "Certificado e SEFAZ",
+      icon: <CloudDownload size={14} />,
+      badge: pendentes.length > 0 ? String(pendentes.length) : undefined,
+    },
     {
       id: "email",
       label: "E-mail",
       icon: <Mail size={14} />,
       badge: caixas.length > 0 ? String(caixas.length) : undefined,
     },
-    { id: "sefaz", label: "Consulta SEFAZ", icon: <CloudDownload size={14} /> },
     { id: "historico", label: "Histórico", icon: <ScrollText size={14} /> },
   ];
 
   return (
     <div className="flex flex-col gap-5">
-      {!moduloLigado && (
+      {!moduloLigado && aba === "email" && (
         <Aviso tom="warn">
-          O módulo fiscal está desligado no seu plano. Você pode configurar os canais agora,
-          mas a importação automática só roda com o módulo ativo.{" "}
+          O módulo fiscal está desligado no seu plano. Você pode configurar as caixas agora,
+          mas a varredura automática de e-mail só roda com o módulo ativo. A consulta à SEFAZ
+          pelo certificado funciona sem ele.{" "}
           <Link href="/configuracoes/modulos" className="font-medium underline">
             Ver módulos
           </Link>
@@ -154,15 +178,14 @@ export function NotasFiscaisClient({
         ))}
       </div>
 
-      {aba === "upload" && <AbaUpload />}
       {aba === "email" && <AbaEmail caixas={caixas} sites={sites} />}
       {aba === "sefaz" && (
         <AbaSefaz
           sites={sites}
           emitentes={emitentes}
-          provider={provider}
+          pendentes={pendentes}
+          podeManifestar={podeManifestar}
           ambiente={ambiente}
-          providerAtivo={providerAtivo}
           manifestacaoAutomatica={manifestacaoAutomatica}
         />
       )}
@@ -171,49 +194,7 @@ export function NotasFiscaisClient({
   );
 }
 
-// ── Aba 1: upload manual ────────────────────────────────────
-
-function AbaUpload() {
-  return (
-    <div className="flex flex-col gap-4">
-      <Painel
-        icon={<Upload size={18} />}
-        titulo="Sem configuração"
-        descricao="O upload manual já está pronto para usar. Ele é o caminho mais rápido quando o fornecedor manda o XML no WhatsApp ou o contador manda o mês inteiro zipado."
-      >
-        <ul className="mt-4 flex flex-col gap-2 text-sm text-ink-2">
-          <ItemLista>
-            Arraste o <strong>XML</strong> da NF-e (modelo 55) ou um <strong>ZIP</strong> com
-            vários — o ZIP é aberto e cada nota entra separada.
-          </ItemLista>
-          <ItemLista>
-            A mesma nota não entra duas vezes: a chave de 44 dígitos é a trava, valha ela por
-            upload, e-mail ou SEFAZ.
-          </ItemLista>
-          <ItemLista>
-            O <strong>DANFE em PDF</strong> não substitui o XML — ele não traz os itens, e sem
-            item não há entrada de estoque. Guarde o PDF, importe o XML.
-          </ItemLista>
-        </ul>
-
-        <div className="mt-5 flex flex-wrap gap-2">
-          <Link href="/pedidos">
-            <Button size="sm">
-              <FileUp size={15} /> Importar XML agora
-            </Button>
-          </Link>
-          <Link href="/fiscal/notas-recebidas">
-            <Button size="sm" variant="secondary">
-              Ver notas recebidas
-            </Button>
-          </Link>
-        </div>
-      </Painel>
-    </div>
-  );
-}
-
-// ── Aba 2: e-mail (IMAP) ────────────────────────────────────
+// ── Aba 1: e-mail (IMAP) ────────────────────────────────────
 
 const PRESETS: Record<string, { host: string; porta: number; ssl: boolean; dica: string }> = {
   gmail: {
@@ -843,26 +824,32 @@ function SheetCaixa({
   );
 }
 
-// ── Aba 3: consulta SEFAZ ───────────────────────────────────
+// ── Aba: consulta SEFAZ (certificado A1) ────────────────────
 
+/**
+ * O certificado é o único passo. Com ele o NoHub conversa direto com o
+ * serviço oficial de Distribuição DF-e: sem provedor, sem config fiscal, sem
+ * o módulo de emissão — receber nota não emite nada.
+ */
 function AbaSefaz({
   sites,
   emitentes,
-  provider,
+  pendentes,
+  podeManifestar,
   ambiente,
-  providerAtivo,
   manifestacaoAutomatica,
 }: {
   sites: { id: string; nome: string }[];
   emitentes: EmitenteResumo[];
-  provider: string | null;
-  ambiente: string | null;
-  providerAtivo: boolean;
+  pendentes: NotaPendente[];
+  podeManifestar: boolean;
+  ambiente: string;
   manifestacaoAutomatica: boolean;
 }) {
   const router = useRouter();
   const [consultando, setConsultando] = React.useState(false);
   const [ciencia, setCiencia] = React.useState(manifestacaoAutomatica);
+  const [alvo, setAlvo] = React.useState<NotaPendente | null>(null);
 
   function alternarCiencia(valor: boolean) {
     setCiencia(valor);
@@ -881,20 +868,42 @@ function AbaSefaz({
       }
     })();
   }
-  const distribuicaoOk = provider === "NUVEM_FISCAL" && emitentes.some((e) => e.temCertificado);
+  const distribuicaoOk = emitentes.some((e) => e.temCertificado && !e.precisaReenviar);
+  const nomeDaLoja = (siteId: string) => sites.find((s) => s.id === siteId)?.nome ?? "Loja";
+  // Todas as lojas na espera de 1 h: o botão só geraria outro 656 (que reinicia a espera).
+  const comCertificado = emitentes.filter((e) => e.temCertificado && !e.precisaReenviar);
+  const liberaEm =
+    comCertificado.length > 0 && comCertificado.every((e) => e.proximaConsultaEm)
+      ? comCertificado.map((e) => e.proximaConsultaEm!).sort()[0]
+      : null;
 
   function consultar() {
     setConsultando(true);
     void (async () => {
       try {
         const r = await consultarSefazAction();
-        toast.success(
-          `${r.consultadas} documento(s) na SEFAZ · ${r.importadas} importado(s) · ` +
-            `${r.aguardandoManifestacao} aguardando manifestação.`,
-        );
+        const resumo =
+          `${r.importadas} nota(s) importada(s) · ` +
+          `${r.aguardandoManifestacao} aguardando manifestação.`;
+        const espera = r.aguardando
+          .map((a) => `${a.loja}: nova consulta às ${fmtHora(a.liberaEm)}`)
+          .join(" · ");
+        if (r.erros.length > 0) {
+          toast.error(`Algumas lojas falharam. ${resumo}`, r.erros.join(" · "));
+        } else if (r.importadas > 0) {
+          toast.success(resumo, "As notas importadas já estão em Recebimento.");
+        } else if (espera) {
+          toast.success(
+            "Sem consulta à SEFAZ agora.",
+            `A SEFAZ exige 1 hora entre consultas quando não há nota nova. ${espera}.`,
+          );
+        } else {
+          toast.success(resumo);
+        }
         router.refresh();
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Falha ao consultar a SEFAZ.");
+        router.refresh();
       } finally {
         setConsultando(false);
       }
@@ -904,56 +913,97 @@ function AbaSefaz({
   return (
     <div className="flex flex-col gap-4">
       <Painel
+        icon={<FileSignature size={18} />}
+        titulo="Certificado digital A1"
+        descricao="É só o que precisa. Envie o .pfx da loja e o NoHub passa a buscar na SEFAZ as notas que os fornecedores emitiram para o seu CNPJ — mesmo as que ninguém mandou por e-mail."
+      >
+        {sites.length === 0 ? (
+          <p className="mt-3 text-sm text-muted">Cadastre uma loja primeiro.</p>
+        ) : (
+          <ul className="mt-4 flex flex-col gap-2.5">
+            {sites.map((s) => (
+              <CertificadoLoja
+                key={s.id}
+                site={s}
+                emitente={emitentes.find((e) => e.siteId === s.id) ?? null}
+              />
+            ))}
+          </ul>
+        )}
+        <p className="mt-4 text-[12px] text-muted">
+          O CNPJ sai do próprio certificado e o endereço, da Receita. O arquivo e a senha
+          ficam cifrados no NoHub e nunca voltam para o navegador.
+        </p>
+      </Painel>
+
+      <Painel
         icon={<CloudDownload size={18} />}
         titulo="Notas emitidas contra o seu CNPJ"
-        descricao="Com certificado A1 configurado, a SEFAZ entrega a lista do que os fornecedores faturaram para você — mesmo o que ninguém mandou por e-mail."
+        descricao={`O sistema consulta a SEFAZ sozinho todos os dias${
+          ambiente === "HOMOLOGACAO" ? " (ambiente de homologação)" : ""
+        }. Use o botão quando a mercadoria chegou e a nota ainda não apareceu.`}
         acao={
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={!distribuicaoOk || consultando} onClick={consultar}>
-              <CloudDownload size={15} /> {consultando ? "Consultando…" : "Consultar NF-es"}
-            </Button>
-            <Link href="/fiscal/notas-recebidas">
-              <Button size="sm" variant="secondary">
-                Fila de manifestação
-              </Button>
-            </Link>
-          </div>
+          <Button
+            size="sm"
+            disabled={!distribuicaoOk || consultando || liberaEm != null}
+            onClick={consultar}
+            title={
+              liberaEm
+                ? "A SEFAZ exige 1 hora entre consultas quando não há nota nova."
+                : undefined
+            }
+          >
+            <RefreshCw size={15} className={consultando ? "animate-spin" : undefined} />
+            {consultando
+              ? "Consultando…"
+              : liberaEm
+                ? `Liberado às ${fmtHora(liberaEm)}`
+                : "Consultar agora"}
+          </Button>
         }
       >
-        <div className="mt-4 grid gap-2 text-[13px]">
-          <Requisito
-            ok={provider === "NUVEM_FISCAL"}
-            texto={
-              provider === "NUVEM_FISCAL"
-                ? `Provedor Nuvem Fiscal (${ambiente === "PRODUCAO" ? "produção" : "homologação"}${providerAtivo ? "" : ", inativo"})`
-                : "Provedor: a consulta à SEFAZ exige a Nuvem Fiscal"
-            }
-            href="/configuracoes/fiscal"
-          />
-          <Requisito
-            ok={emitentes.length > 0}
-            texto={
-              emitentes.length > 0
-                ? `${emitentes.length} loja(s) com dados fiscais preenchidos`
-                : "Dados fiscais da loja (CNPJ, IE, endereço) ainda não preenchidos"
-            }
-            href="/configuracoes/fiscal"
-          />
-          <Requisito
-            ok={emitentes.some((e) => e.temCertificado)}
-            texto={
-              emitentes.some((e) => e.temCertificado)
-                ? "Certificado A1 enviado"
-                : "Certificado A1 ainda não enviado"
-            }
-          />
-        </div>
-
-        <p className="mt-4 text-[12px] text-muted">
-          A SEFAZ devolve primeiro um resumo (chave, emitente, valor). O XML completo — com os
-          itens — só libera depois da manifestação do destinatário, feita na fila de notas
-          recebidas. Por isso o resumo não vira entrada de estoque sozinho.
-        </p>
+        {!distribuicaoOk ? (
+          <p className="mt-4 rounded-[var(--radius)] border border-dashed border-line-strong px-4 py-6 text-center text-sm text-muted">
+            Envie o certificado de uma loja para começar a receber as notas.
+          </p>
+        ) : pendentes.length === 0 ? (
+          <p className="mt-4 text-sm text-muted">
+            Nenhuma nota esperando manifestação. As que chegam completas vão direto para{" "}
+            <Link href="/recebimento" className="text-brand underline">
+              Recebimento
+            </Link>
+            .
+          </p>
+        ) : (
+          <div className="mt-4">
+            <p className="text-[13px] text-ink-2">
+              <strong>{pendentes.length}</strong> nota(s) esperando manifestação. A SEFAZ só
+              libera o XML com os itens depois que você dá ciência.
+            </p>
+            <ul className="mt-3 divide-y divide-line rounded-[var(--radius)] border border-line">
+              {pendentes.map((n) => (
+                <li key={n.chave} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium text-ink">{n.emitRazaoSocial}</p>
+                    <p className="font-mono text-[11px] text-faint">
+                      {maskCnpj(n.emitCnpj)} · NF-e {n.numero}/{n.serie}
+                      {n.dataEmissao ? ` · ${fmtData(n.dataEmissao)}` : ""}
+                      {sites.length > 1 ? ` · ${nomeDaLoja(n.siteId)}` : ""}
+                    </p>
+                  </div>
+                  <span className="font-mono text-sm text-ink-2">
+                    {n.valorTotal == null ? "—" : fmtMoney(n.valorTotal)}
+                  </span>
+                  {podeManifestar && (
+                    <Button size="sm" variant="secondary" onClick={() => setAlvo(n)}>
+                      Manifestar
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </Painel>
 
       <div className="rounded-[var(--radius-lg)] border border-line bg-surface p-5">
@@ -982,25 +1032,17 @@ function AbaSefaz({
         </p>
       </div>
 
-      <Painel
-        icon={<FileSignature size={18} />}
-        titulo="Certificado digital A1"
-        descricao="O arquivo .pfx vai para o provedor e não fica no nosso banco: guardamos só o titular e a validade."
-      >
-        {sites.length === 0 ? (
-          <p className="mt-3 text-sm text-muted">Cadastre uma loja primeiro.</p>
-        ) : (
-          <ul className="mt-4 flex flex-col gap-2.5">
-            {sites.map((s) => (
-              <CertificadoLoja
-                key={s.id}
-                site={s}
-                emitente={emitentes.find((e) => e.siteId === s.id) ?? null}
-              />
-            ))}
-          </ul>
-        )}
-      </Painel>
+      {alvo && (
+        <ModalManifestacao
+          nota={alvo}
+          manifestar={(input) => manifestarNotaSefazAction({ ...input, siteId: alvo.siteId })}
+          onClose={() => setAlvo(null)}
+          onFeito={() => {
+            setAlvo(null);
+            router.refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1018,6 +1060,7 @@ function CertificadoLoja({
   const [enviando, setEnviando] = React.useState(false);
 
   const dias = emitente?.certificadoValidade ? diasAte(emitente.certificadoValidade) : null;
+  const inputId = `pfx-${site.id}`;
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -1048,6 +1091,7 @@ function CertificadoLoja({
           `Certificado validado: ${r.titular ?? "titular não informado"}${
             r.validade ? ` · vence ${fmtData(String(r.validade))}` : ""
           }.`,
+          "Clique em Consultar agora para buscar as notas.",
         );
         setArquivo(null);
         setSenha("");
@@ -1067,19 +1111,20 @@ function CertificadoLoja({
           <p className="text-sm font-semibold text-ink">{site.nome}</p>
           {emitente ? (
             <p className="mt-0.5 font-mono text-[12px] text-muted">
-              {emitente.cnpj} · {emitente.razaoSocial}
+              {maskCnpj(emitente.cnpj)} · {emitente.razaoSocial}
             </p>
           ) : (
             <p className="mt-0.5 text-[12px] text-muted">
-              Sem dados fiscais.{" "}
-              <Link href="/configuracoes/fiscal" className="underline">
-                Preencher agora
-              </Link>
+              Envie o certificado desta loja — o CNPJ vem dele.
             </p>
           )}
         </div>
 
-        {emitente?.temCertificado ? (
+        {emitente?.precisaReenviar ? (
+          <Badge tone="warn">
+            <AlertTriangle size={11} /> Reenvie o certificado
+          </Badge>
+        ) : emitente?.temCertificado ? (
           dias != null && dias <= 0 ? (
             <Badge tone="danger">
               <AlertTriangle size={11} /> Vencido
@@ -1103,35 +1148,59 @@ function CertificadoLoja({
           {emitente.certificadoTitular ?? "Titular não informado"}
           {emitente.certificadoValidade &&
             ` · válido até ${fmtData(emitente.certificadoValidade)}`}
+          {emitente.consultadoEm && ` · última consulta ${fmtQuando(emitente.consultadoEm)}`}
+          {emitente.proximaConsultaEm &&
+            ` · próxima a partir das ${fmtHora(emitente.proximaConsultaEm)}`}
         </p>
       )}
-
-      {emitente && (
-        <div className="mt-3 flex flex-wrap items-end gap-2">
-          <label className="cursor-pointer">
-            <input
-              type="file"
-              accept=".pfx,.p12"
-              className="sr-only"
-              onChange={(e) => void onFile(e)}
-            />
-            <span className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-full border border-line-button bg-surface px-4 text-[13px] font-medium text-ink hover:bg-surface-2">
-              <Upload size={14} /> {arquivo ? arquivo.nome : "Escolher .pfx"}
-            </span>
-          </label>
-          <Input
-            type="password"
-            autoComplete="new-password"
-            placeholder="Senha do certificado"
-            value={senha}
-            onChange={(e) => setSenha(e.target.value)}
-            className="h-9 w-52"
-          />
-          <Button size="sm" disabled={enviando} onClick={enviar}>
-            {enviando ? "Validando…" : "Validar e salvar"}
-          </Button>
-        </div>
+      {emitente?.precisaReenviar && (
+        <p className="mt-2 text-[12px] text-warn">
+          Este certificado foi enviado só ao provedor de emissão. Envie o .pfx de novo para o
+          NoHub consultar a SEFAZ diretamente.
+        </p>
       )}
+      {emitente?.ultimoErro &&
+        (emitente.ultimoErro.startsWith("SEFAZ 656") ? (
+          <p className="mt-2 rounded-[var(--radius)] bg-warn-soft px-3 py-2 text-[12px] text-warn">
+            A SEFAZ pausou as consultas desta loja por 1 hora (consultas seguidas sem nota
+            nova).{" "}
+            {emitente.proximaConsultaEm
+              ? `Nova consulta liberada às ${fmtHora(emitente.proximaConsultaEm)}.`
+              : "Já pode consultar de novo."}
+          </p>
+        ) : (
+          <p className="mt-2 rounded-[var(--radius)] bg-warn-soft px-3 py-2 text-[12px] text-warn">
+            A última consulta falhou: {emitente.ultimoErro}
+          </p>
+        ))}
+
+      <div className="mt-3 flex flex-wrap items-end gap-2">
+        <label htmlFor={inputId} className="cursor-pointer">
+          <input
+            id={inputId}
+            type="file"
+            accept=".pfx,.p12"
+            className="peer sr-only"
+            onChange={(e) => void onFile(e)}
+          />
+          <span className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-full border border-line-button bg-surface px-4 text-[13px] font-medium text-ink peer-focus-visible:ring-2 peer-focus-visible:ring-brand hover:bg-surface-2">
+            <Upload size={14} />{" "}
+            {arquivo ? arquivo.nome : emitente?.temCertificado ? "Trocar .pfx" : "Escolher .pfx"}
+          </span>
+        </label>
+        <Input
+          type="password"
+          autoComplete="new-password"
+          placeholder="Senha do certificado"
+          aria-label={`Senha do certificado de ${site.nome}`}
+          value={senha}
+          onChange={(e) => setSenha(e.target.value)}
+          className="h-9 w-52"
+        />
+        <Button size="sm" disabled={enviando || !arquivo} onClick={enviar}>
+          {enviando ? "Validando…" : "Validar e salvar"}
+        </Button>
+      </div>
     </li>
   );
 }
@@ -1299,35 +1368,6 @@ function Painel({
   );
 }
 
-function ItemLista({ children }: { children: React.ReactNode }) {
-  return (
-    <li className="flex gap-2">
-      <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand" aria-hidden />
-      <span>{children}</span>
-    </li>
-  );
-}
-
-function Requisito({ ok, texto, href }: { ok: boolean; texto: string; href?: string }) {
-  const conteudo = (
-    <span className={cn("flex items-center gap-2", ok ? "text-ink-2" : "text-muted")}>
-      {ok ? (
-        <CheckCircle2 size={14} className="shrink-0 text-ok" />
-      ) : (
-        <AlertTriangle size={14} className="shrink-0 text-warn" />
-      )}
-      {texto}
-    </span>
-  );
-  return href && !ok ? (
-    <Link href={href} className="underline-offset-2 hover:underline">
-      {conteudo}
-    </Link>
-  ) : (
-    conteudo
-  );
-}
-
 function Aviso({ tom, children }: { tom: "warn" | "brand"; children: React.ReactNode }) {
   return (
     <p
@@ -1348,6 +1388,10 @@ function diasAte(iso: string): number {
 
 function fmtData(iso: string): string {
   return new Date(iso).toLocaleDateString("pt-BR");
+}
+
+function fmtHora(iso: string): string {
+  return new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
 
 function fmtQuando(iso: string): string {

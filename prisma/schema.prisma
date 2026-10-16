@@ -1008,6 +1008,7 @@ model Supplier {
   fornecidos   SupplierProductHistory[]
   titulos      AccountPayable[]
   devolucoes   SupplierReturn[]
+  vasilhames   SupplierContainerMovement[]
 
   @@unique([tenantId, cnpj])
   @@index([tenantId])
@@ -1829,6 +1830,11 @@ model GoodsReceipt {
   divergenciaMotivo String?
 
   iniciadoEm      DateTime  @default(now())
+  /// Quando a mercadoria chegou de fato à doca: a primeira contagem (ou a
+  /// abertura do recebimento já na porta). `iniciadoEm` da nota é a EMISSÃO —
+  /// o XML que cai no e-mail dias antes do caminhão não está "em aberto há N
+  /// dias" na doca.
+  chegadaEm       DateTime?
   finalizadoEm    DateTime?
   canceladoEm     DateTime?
   canceladoMotivo String?
@@ -1844,6 +1850,7 @@ model GoodsReceipt {
   itens         PurchaseReconciliationItem[]
   entradas      Purchase[]
   eventos       PurchaseEvent[]
+  vasilhames    SupplierContainerMovement[]
 
   @@unique([tenantId, numero])
   @@index([tenantId])
@@ -2675,11 +2682,47 @@ model ContainerType {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  tenant    Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  movements ContainerMovement[]
+  tenant     Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  movements  ContainerMovement[]
+  /// O mesmo casco, do lado da distribuidora: chega cheio, volta vazio.
+  fornecedor SupplierContainerMovement[]
 
   @@unique([tenantId, nome])
   @@index([tenantId])
+}
+
+/// Vasilhame com a DISTRIBUIDORA — o espelho do `ContainerMovement` do
+/// cliente. Cerveja retornável e barril chegam cheios e o caminhão leva os
+/// vazios de volta; a diferença é o que a loja deve em casco ao fornecedor (e
+/// que vira cobrança quando some). Razão ASSINADA: + cheio que entrou (a loja
+/// passa a dever o casco), − vazio que voltou. Saldo = Σ quantidade.
+model SupplierContainerMovement {
+  id              String                        @id @default(cuid())
+  tenantId        String
+  supplierId      String
+  containerTypeId String
+  /// Recebimento em que o caminhão trouxe/levou — nulo no acerto avulso.
+  receiptId       String?
+  tipo            SupplierContainerMovementType
+  quantidade      Int // assinada
+  observacao      String?
+  createdBy       String?
+  createdAt       DateTime                      @default(now())
+
+  supplier      Supplier      @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  containerType ContainerType @relation(fields: [containerTypeId], references: [id], onDelete: Restrict)
+  receipt       GoodsReceipt? @relation(fields: [receiptId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([tenantId, supplierId])
+  @@index([containerTypeId])
+  @@index([receiptId])
+}
+
+enum SupplierContainerMovementType {
+  RECEBIDO // chegou cheio do fornecedor (a loja passa a dever o casco)
+  DEVOLVIDO // vazio que voltou no caminhão (a dívida de casco baixa)
+  AJUSTE // acerto manual (quantidade assinada)
 }
 
 // Razão assinado: quantidade guardada JÁ com sinal (ENTREGA > 0, DEVOLUCAO < 0,
@@ -2922,10 +2965,19 @@ model FiscalEmitente {
   uf              String
   telefone        String?
 
-  // Certificado A1 — armazenado NO PROVEDOR. Aqui só o rastro.
+  // Certificado A1 usado pela emissão do provedor e pela Distribuição DF-e
+  // direta. O conteúdo e a senha ficam cifrados com SECRETS_KEY.
   certificadoId       String? // id opaco devolvido pelo provedor
   certificadoTitular  String? // CN do certificado, para conferência visual
   certificadoValidade DateTime?
+  certificadoPfx      String? // base64 cifrado do .pfx/.p12
+  certificadoSenha    String? // senha cifrada do certificado
+
+  // Cursor oficial da Distribuição DF-e. O NSU é por CNPJ e não pode voltar.
+  distribuicaoUltNsu       BigInt    @default(0)
+  distribuicaoMaxNsu       BigInt    @default(0)
+  distribuicaoConsultadoEm DateTime?
+  distribuicaoUltimoErro   String?
 
   // NFC-e (modelo 65): CSC/token vêm do portal da SEFAZ da UF.
   cscId String? // idToken (identificador do CSC)
@@ -2938,9 +2990,39 @@ model FiscalEmitente {
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   site   Site   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  distribuicaoDocumentos FiscalDistribuicaoDocumento[]
 
   @@unique([tenantId, cnpj])
   @@index([tenantId])
+}
+
+/// Resumo/documento devolvido pela Distribuição DF-e oficial.
+/// Resumos ficam pendentes de manifestação; XML completo pode ser importado
+/// diretamente no pipeline de entrada.
+model FiscalDistribuicaoDocumento {
+  id              String            @id @default(cuid())
+  tenantId        String
+  emitenteId      String
+  nsu             BigInt
+  chave           String
+  emitCnpj        String
+  emitRazaoSocial String
+  valorTotal      Decimal?          @db.Decimal(12, 2)
+  dataEmissao     DateTime?
+  schema          String
+  resumo          Boolean           @default(true)
+  xml             String?
+  manifestacao    ManifestacaoTipo?
+  manifestadoEm   DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  emitente FiscalEmitente @relation(fields: [emitenteId], references: [id], onDelete: Cascade)
+
+  @@unique([emitenteId, nsu])
+  @@unique([tenantId, chave])
+  @@index([tenantId, resumo])
+  @@index([tenantId, emitenteId])
 }
 
 // Contador de numeração por (loja × modelo × série). O próximo número sai de
@@ -3333,6 +3415,16 @@ model PurchaseReconciliationItem {
   // Conferência física: o único dado que só existe na porta.
   lote     String?
   validade DateTime?
+  /// A linha chegou em MAIS de um lote (validades diferentes na mesma carga):
+  /// [{ lote, validade: "aaaa-mm-dd", quantidade }], em unidade base. Nulo =
+  /// um lote só, o dos campos acima. A soma nunca passa de `qtdRecebida`; o
+  /// que sobrar entra sem lote.
+  lotes    Json?
+
+  /// Quem gravou a contagem por último, e quando — com dois conferentes na
+  /// mesma carga, "quem contou 20?" precisa de resposta.
+  contadoPor String?
+  contadoEm  DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -3373,6 +3465,7 @@ enum PurchaseEventType {
   DEVOLUCAO_REGISTRADA // mercadoria voltou ao fornecedor
   DOCUMENTO_VINCULADO // XML documentou uma entrada já lançada à mão
   PEDIDO_CONTESTADO // o fornecedor apontou problema no pedido pelo link
+  FORNECEDOR_AVISADO // divergência do recebimento comunicada ao fornecedor
 }
 
 model PurchaseEvent {
@@ -4004,18 +4097,18 @@ model Quotation {
 /// nos dias marcados, o job diário cria um RASCUNHO com a mesma lista e os
 /// mesmos fornecedores. Nunca envia sozinho: o operador revisa e envia.
 model QuotationSchedule {
-  id          String @id @default(cuid())
-  tenantId    String
-  siteId      String
+  id              String    @id @default(cuid())
+  tenantId        String
+  siteId          String
   /// Cotação cuja lista e fornecedores são copiados a cada geração.
-  quotationId String @unique
-  titulo      String
+  quotationId     String    @unique
+  titulo          String
   /// Dias da semana (0 = domingo … 6 = sábado), no fuso de São Paulo.
-  diasSemana  Int[]
+  diasSemana      Int[]
   /// "FIXA" = copia as quantidades do molde. "REPOSICAO" = recalcula pela
   /// estratégia de estoque da empresa e deixa de fora o que não precisa.
-  modoQuantidade String @default("FIXA")
-  ativo          Boolean @default(true)
+  modoQuantidade  String    @default("FIXA")
+  ativo           Boolean   @default(true)
   /// Dia (fuso de SP) da última geração — impede duas cotações no mesmo dia.
   ultimaGeracaoEm DateTime?
 

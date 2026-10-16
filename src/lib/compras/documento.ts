@@ -1,6 +1,7 @@
 import "server-only";
 import { db } from "@/lib/prisma";
 import { registrarEvento } from "@/lib/compras/eventos";
+import { liberarRecebimentoDaNota, titulosDaNotaQueDocumenta } from "@/lib/compras/recebimento";
 
 // ============================================================
 // Entrada lançada à mão × XML que chega depois.
@@ -120,7 +121,7 @@ export async function vincularNotaAEntradaManual(input: {
   inboundId: string;
   purchaseId: string;
   userId?: string | null;
-}): Promise<void> {
+}): Promise<{ receiptId: string | null }> {
   const { tenantId, inboundId, purchaseId, userId } = input;
 
   const nota = await db.fiscalInbound.findFirst({
@@ -131,6 +132,7 @@ export async function vincularNotaAEntradaManual(input: {
       chave: true,
       numero: true,
       serie: true,
+      siteId: true,
       supplierId: true,
       purchaseOrderId: true,
       emitRazaoSocial: true,
@@ -145,19 +147,46 @@ export async function vincularNotaAEntradaManual(input: {
     where: { id: purchaseId },
     select: {
       id: true,
+      siteId: true,
       chaveNfe: true,
       purchaseOrderId: true,
       receiptId: true,
       aguardandoDocumento: true,
+      receipt: { select: { numero: true, inboundId: true } },
     },
   });
   if (!entrada) throw new Error("Entrada não encontrada.");
   if (entrada.chaveNfe) {
     throw new Error("Esta entrada já foi documentada por outra nota.");
   }
+  if (entrada.siteId !== nota.siteId) {
+    throw new Error("A entrada é de outra loja — esta nota não a documenta.");
+  }
+  if (entrada.receipt?.inboundId && entrada.receipt.inboundId !== inboundId) {
+    throw new Error(`O recebimento ${entrada.receipt.numero} já tem outra NF-e vinculada.`);
+  }
 
-  await db.purchase.update({
-    where: { id: purchaseId },
+  // Tudo que pode recusar vem ANTES de gravar: antes, a entrada era marcada
+  // como documentada e só depois a checagem do recebimento estourava — a
+  // entrada ficava "com nota" e a nota, na fila.
+  if (entrada.receiptId && entrada.receipt) {
+    await liberarRecebimentoDaNota({
+      tenantId,
+      inboundId,
+      exceto: entrada.receiptId,
+      destinoNumero: entrada.receipt.numero,
+      userId,
+    });
+  }
+
+  // O XML chegou DEPOIS da mercadoria — cenário obrigatório, não exceção. Ele
+  // documenta o recebimento que já existe em vez de abrir outro; é isto que
+  // impede a mesma carga de entrar duas vezes. A bonificação da mesma carga
+  // é outra entrada do mesmo recebimento: a nota documenta as duas.
+  await db.purchase.updateMany({
+    where: entrada.receiptId
+      ? { receiptId: entrada.receiptId, estornadaEm: null, chaveNfe: null }
+      : { id: purchaseId },
     data: {
       aguardandoDocumento: false,
       chaveNfe: nota.chave,
@@ -166,17 +195,7 @@ export async function vincularNotaAEntradaManual(input: {
     },
   });
 
-  // O XML chegou DEPOIS da mercadoria — cenário obrigatório, não exceção. Ele
-  // documenta o recebimento que já existe em vez de abrir outro; é isto que
-  // impede a mesma carga de entrar duas vezes.
   if (entrada.receiptId) {
-    const jaVinculada = await db.goodsReceipt.findFirst({
-      where: { inboundId, id: { not: entrada.receiptId } },
-      select: { numero: true },
-    });
-    if (jaVinculada) {
-      throw new Error(`Esta nota já documenta o recebimento ${jaVinculada.numero}.`);
-    }
     await db.goodsReceipt.update({
       where: { id: entrada.receiptId },
       data: { inboundId, numeroNota: `${nota.numero}/${nota.serie}` },
@@ -196,6 +215,26 @@ export async function vincularNotaAEntradaManual(input: {
   });
 
   const pedidoId = nota.purchaseOrderId ?? entrada.purchaseOrderId;
+
+  // O boleto chega com a nota: sem isto a entrada documentada ficava sem conta
+  // a pagar, salvo quando o título já foi lançado à mão junto com a entrada.
+  const documentadas = entrada.receiptId
+    ? await db.purchase.findMany({
+        where: { receiptId: entrada.receiptId, estornadaEm: null },
+        select: { id: true },
+        orderBy: { data: "asc" },
+      })
+    : [{ id: purchaseId }];
+  const aviso = await titulosDaNotaQueDocumenta({
+    tenantId,
+    inboundId,
+    // A entrada escolhida primeiro: é nela que o título se pendura.
+    purchaseIds: [purchaseId, ...documentadas.map((d) => d.id).filter((id) => id !== purchaseId)],
+    receiptId: entrada.receiptId,
+    purchaseOrderId: pedidoId,
+    userId,
+  });
+
   if (pedidoId || entrada.receiptId) {
     await registrarEvento({
       tenantId,
@@ -203,8 +242,10 @@ export async function vincularNotaAEntradaManual(input: {
       inboundId,
       receiptId: entrada.receiptId,
       tipo: "DOCUMENTO_VINCULADO",
-      descricao: `NF-e ${nota.numero}/${nota.serie} documentou a entrada lançada à mão — estoque não movimentado de novo.`,
+      descricao: `NF-e ${nota.numero}/${nota.serie} documentou a entrada lançada à mão — estoque não movimentado de novo.${aviso}`,
       createdBy: userId,
     });
   }
+
+  return { receiptId: entrada.receiptId };
 }

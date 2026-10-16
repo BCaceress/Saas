@@ -7,12 +7,15 @@ import { featureAtiva } from "@/lib/planos";
 import { db } from "@/lib/prisma";
 import { listarCaixas } from "@/lib/fiscal/email-inbox";
 import { listarImportacoes } from "@/lib/fiscal/import-log";
+import { listarAguardandoManifestacao, proximaConsultaSefaz } from "@/lib/fiscal/distribuicao";
+import { ambienteDistribuicao } from "@/lib/fiscal/sefaz-distribuicao";
+import { podeEmAlguma } from "@/lib/permissoes";
 import { NotasFiscaisClient } from "./_client";
 
 export const metadata = { title: "Notas fiscais — NoHub Market" };
 
 /**
- * As três portas de entrada do XML numa tela só: upload, e-mail e SEFAZ.
+ * As portas de entrada automatizadas do XML numa tela só: e-mail e SEFAZ.
  *
  * Ficam juntas de propósito — a pergunta do operador é "como a nota do meu
  * fornecedor chega aqui?", e a resposta é escolher (ou combinar) os canais.
@@ -40,24 +43,37 @@ export default async function NotasFiscaisConfigPage({
           certificadoId: true,
           certificadoTitular: true,
           certificadoValidade: true,
+          certificadoPfx: true,
+          distribuicaoConsultadoEm: true,
+          distribuicaoUltimoErro: true,
+          distribuicaoUltNsu: true,
+          distribuicaoMaxNsu: true,
         },
       }),
-      db.fiscalConfig.findFirst({
-        select: {
-          provider: true,
-          ambiente: true,
-          ativo: true,
-          manifestacaoAutomatica: true,
-        },
-      }),
+      db.fiscalConfig.findFirst({ select: { provider: true, manifestacaoAutomatica: true } }),
     ]);
+
+    // Resumos à espera de manifestação, de todas as lojas com certificado. Com
+    // o certificado guardado aqui é leitura do acervo local, sem ir à SEFAZ.
+    const pendentes = (
+      await Promise.all(
+        emitentes
+          .filter((e) => e.certificadoPfx)
+          .map(async (e) =>
+            (await listarAguardandoManifestacao(ctx.tenant.id, e.siteId)).map((n) => ({
+              ...n,
+              siteId: e.siteId,
+            })),
+          ),
+      )
+    ).flat();
 
     return (
       <div className="flex flex-col gap-5">
         <PageHeader
           title="Notas fiscais"
           icon={FileInput}
-          description="Por onde o XML do fornecedor entra: arquivo, caixa de e-mail ou consulta à SEFAZ."
+          description="Por onde o XML do fornecedor entra: caixa de e-mail ou consulta à SEFAZ."
           backHref="/configuracoes"
           innerClassName="max-w-none"
         />
@@ -70,13 +86,20 @@ export default async function NotasFiscaisConfigPage({
             siteId: e.siteId,
             cnpj: e.cnpj,
             razaoSocial: e.razaoSocial,
-            temCertificado: Boolean(e.certificadoId),
+            temCertificado: Boolean(e.certificadoPfx || e.certificadoId),
+            // Certificado antigo foi só para o provedor: a consulta direta
+            // precisa dele de novo aqui.
+            precisaReenviar:
+              !e.certificadoPfx && Boolean(e.certificadoId) && config?.provider !== "NUVEM_FISCAL",
             certificadoTitular: e.certificadoTitular,
             certificadoValidade: e.certificadoValidade?.toISOString() ?? null,
+            consultadoEm: e.distribuicaoConsultadoEm?.toISOString() ?? null,
+            ultimoErro: e.distribuicaoUltimoErro,
+            proximaConsultaEm: proximaConsultaSefaz(e)?.toISOString() ?? null,
           }))}
-          provider={config?.provider ?? null}
-          ambiente={config?.ambiente ?? null}
-          providerAtivo={config?.ativo ?? false}
+          pendentes={pendentes}
+          podeManifestar={podeEmAlguma(ctx.acessos, "fiscal.importar")}
+          ambiente={ambienteDistribuicao()}
           manifestacaoAutomatica={config?.manifestacaoAutomatica ?? false}
           oauth={oauth === "ok" || oauth === "erro" ? oauth : null}
           oauthMotivo={motivo ?? null}
